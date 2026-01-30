@@ -1381,12 +1381,18 @@ app.post('/api/sync/vendedores', (req, res) => {
         res.json({ message: "KPIs atualizados com sucesso!" });
     });
 });
+// ... (seu código das rotas de sincronização acima) ...
+
+// Rota 2: Receber KPI Vendedores
+app.post('/api/sync/vendedores', (req, res) => {
+    // ... (código da rota ...)
+});
 // --- FIM DO BLOCO DE SINCRONIZAÇÃO ---
 
-// Define a porta: Usa a do Render (process.env.PORT) ou a 3000 se for local
+// 👇👇👇 AQUI É O SEGREDO: SÓ PODE TER ESTE BLOCO ABAIXO 👇👇👇
 const PORT = process.env.PORT || 3000;
 
 app.listen(Number(PORT), '0.0.0.0', () => {
     console.log(`✅ SERVIDOR RODANDO NA PORTA ${PORT}`);
-})
+});
 
