@@ -476,7 +476,8 @@ async function getSalesFilter(userId: string): Promise<string> {
 // ==========================================
 app.get('/sales', async (req, res) => {
     try {
-        const DB_PATH = 'C:/Users/Usuario/Desktop/TeleFluxo_Instalador/database/samsung_vendas.db';
+        const DB_PATH = path.resolve(__dirname, '../database/samsung_vendas.db');
+    
         
         if (!fs.existsSync(DB_PATH)) {
             return res.json([]);
@@ -1174,7 +1175,7 @@ app.post('/sales/refresh', (req, res) => {
 // ROTA /sellers-kpi COM FILTRO DE USUÁRIO (CORRIGIDA)
 // =======================================================
 app.get('/sellers-kpi', async (req, res) => {
-    const DB_PATH = 'C:/Users/Usuario/Desktop/TeleFluxo_Instalador/database/samsung_vendas.db';
+    const DB_PATH = path.resolve(__dirname, '../database/samsung_vendas.db');
     if (!fs.existsSync(DB_PATH)) return res.json([]);
 
     const userId = String(req.query.userId || '');
@@ -1239,7 +1240,7 @@ const LOJAS_MAP: Record<string, string> = {
 };
 
 app.get('/external-stores', async (req, res) => {
-    const DB_PATH_EXT = 'C:/Users/Usuario/Desktop/TeleFluxo_Instalador/database/samsung_vendas.db';
+    const DB_PATH_EXT = path.resolve(__dirname, '../database/samsung_vendas.db');
     
     // Se não achar o banco, retorna a lista completa fixa (Fallback)
     if (!fs.existsSync(DB_PATH_EXT)) {
@@ -1381,15 +1382,9 @@ app.post('/api/sync/vendedores', (req, res) => {
         res.json({ message: "KPIs atualizados com sucesso!" });
     });
 });
-// ... (seu código das rotas de sincronização acima) ...
-
-// Rota 2: Receber KPI Vendedores
-app.post('/api/sync/vendedores', (req, res) => {
-    // ... (código da rota ...)
-});
 // --- FIM DO BLOCO DE SINCRONIZAÇÃO ---
 
-// 👇👇👇 AQUI É O SEGREDO: SÓ PODE TER ESTE BLOCO ABAIXO 👇👇👇
+// Define a porta: Usa a do Render (process.env.PORT) ou a 3000 se for local
 const PORT = process.env.PORT || 3000;
 
 app.listen(Number(PORT), '0.0.0.0', () => {
