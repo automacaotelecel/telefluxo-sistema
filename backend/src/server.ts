@@ -8,6 +8,8 @@ import csv from 'csv-parser';
 import * as XLSX from 'xlsx';
 import { open } from 'sqlite';
 import bcrypt from 'bcryptjs';
+import sqlite3 from 'sqlite3';
+import path from 'path';
 
 
 const app = express();
@@ -1288,27 +1290,26 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // --- INICIO DO BLOCO DE SINCRONIZAÇÃO ---
-import sqlite3 from 'sqlite3';
-import path from 'path';
 
 // Rota 1: Receber Vendas Gerais
 app.post('/api/sync/vendas', (req, res) => {
     const dados = req.body;
     
+    // Usa o DB_PATH global definido lá na linha 400 (path.resolve...)
+    // Se o TS reclamar, garanta que a const DB_PATH da linha 400 está no escopo global
+    const DB_PATH_SYNC = path.resolve(__dirname, '../database/samsung_vendas.db');
+
     if (!dados || !Array.isArray(dados)) {
         return res.status(400).json({ error: "Formato de dados inválido. Esperado um array." });
     }
 
     console.log(`📡 Recebendo ${dados.length} registros de vendas...`);
 
-    const db = new sqlite3.Database(DB_PATH);
+    const db = new sqlite3.Database(DB_PATH_SYNC);
 
     db.serialize(() => {
-        // 1. Opcional: Limpar vendas antigas ou duplicadas (aqui limpamos tudo para repor)
-        // Se quiser manter histórico e só adicionar, remova a linha do DELETE
         db.run("DELETE FROM vendas"); 
 
-        // 2. Preparar a inserção (Segurança e Velocidade)
         const stmt = db.prepare(`
             INSERT INTO vendas (
                 data_emissao, nome_vendedor, descricao, quantidade, 
@@ -1316,7 +1317,6 @@ app.post('/api/sync/vendas', (req, res) => {
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         `);
 
-        // 3. Inserir um por um dentro de uma transação
         db.run("BEGIN TRANSACTION");
         dados.forEach(item => {
             stmt.run(
@@ -1347,14 +1347,16 @@ app.post('/api/sync/vendas', (req, res) => {
 // Rota 2: Receber KPI Vendedores
 app.post('/api/sync/vendedores', (req, res) => {
     const dados = req.body;
+    // Recriando o caminho aqui para garantir que não pegue o C:/Users...
+    const DB_PATH_SYNC = path.resolve(__dirname, '../database/samsung_vendas.db');
     
     if (!dados || !Array.isArray(dados)) return res.status(400).json({ error: "Dados inválidos" });
 
     console.log(`🏆 Recebendo ${dados.length} KPIs de vendedores...`);
-    const db = new sqlite3.Database(DB_PATH);
+    const db = new sqlite3.Database(DB_PATH_SYNC);
 
     db.serialize(() => {
-        db.run("DELETE FROM vendedores_kpi"); // Limpa tabela antiga para atualizar o ranking
+        db.run("DELETE FROM vendedores_kpi"); 
 
         const stmt = db.prepare(`
             INSERT INTO vendedores_kpi (
@@ -1381,5 +1383,5 @@ app.post('/api/sync/vendedores', (req, res) => {
 });
 // --- FIM DO BLOCO DE SINCRONIZAÇÃO ---
 
-app.listen(3000, '0.0.0.0', () => console.log("✅ SERVIDOR 8.9.2 - SUCESSO TOTAL!"));
+app.listen(3000, '0.0.0.0', () => console.log("✅ SERVIDOR ONLINE!"));
 

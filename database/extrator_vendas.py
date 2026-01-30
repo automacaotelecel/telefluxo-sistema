@@ -8,7 +8,7 @@ CAMINHO_EXCEL = r"C:\Users\Usuario\Desktop\BI AUTOMATICO\BI_SAMSUNG\Vendas_Diari
 
 # 🔴 ATENÇÃO: COLOQUE AQUI O LINK DO SEU BACKEND NO RENDER (NÃO O DA VERCEL)
 # Exemplo: URL_BACKEND = "https://telefluxo-backend.onrender.com"
-URL_BACKEND = "https://telefluxo-api.onrender.com" 
+URL_BACKEND = "https://telefluxo-aplicacao.onrender.com" 
 
 def enviar_dados_para_api(endpoint, dados):
     """Função auxiliar para enviar dados para a nuvem"""
