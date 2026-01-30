@@ -1383,5 +1383,10 @@ app.post('/api/sync/vendedores', (req, res) => {
 });
 // --- FIM DO BLOCO DE SINCRONIZAÇÃO ---
 
-app.listen(3000, '0.0.0.0', () => console.log("✅ SERVIDOR ONLINE!"));
+// Define a porta: Usa a do Render (process.env.PORT) ou a 3000 se for local
+const PORT = process.env.PORT || 3000;
+
+app.listen(Number(PORT), '0.0.0.0', () => {
+    console.log(`✅ SERVIDOR RODANDO NA PORTA ${PORT}`);
+})
 
