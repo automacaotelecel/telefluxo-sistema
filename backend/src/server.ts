@@ -11,6 +11,7 @@ import * as XLSX from 'xlsx';
 import { open } from 'sqlite';
 import bcrypt from 'bcryptjs';
 
+
 const app = express();
 const prisma = new PrismaClient();
 
@@ -1283,6 +1284,107 @@ app.get('/external-stores', async (req, res) => {
         res.json(uniqueStores);
     });
 });
+
+// Aumentamos o limite para 50mb para aguentar o Excel
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
+
+// --- INICIO DO BLOCO DE SINCRONIZAÇÃO ---
+import sqlite3 from 'sqlite3';
+import path from 'path';
+
+// Garante que o caminho do banco está certo (ajuste 'database' se sua pasta tiver outro nome)
+const DB_PATH = path.resolve(__dirname, '../database/samsung_vendas.db');
+
+// Rota 1: Receber Vendas Gerais
+app.post('/api/sync/vendas', (req, res) => {
+    const dados = req.body;
+    
+    if (!dados || !Array.isArray(dados)) {
+        return res.status(400).json({ error: "Formato de dados inválido. Esperado um array." });
+    }
+
+    console.log(`📡 Recebendo ${dados.length} registros de vendas...`);
+
+    const db = new sqlite3.Database(DB_PATH);
+
+    db.serialize(() => {
+        // 1. Opcional: Limpar vendas antigas ou duplicadas (aqui limpamos tudo para repor)
+        // Se quiser manter histórico e só adicionar, remova a linha do DELETE
+        db.run("DELETE FROM vendas"); 
+
+        // 2. Preparar a inserção (Segurança e Velocidade)
+        const stmt = db.prepare(`
+            INSERT INTO vendas (
+                data_emissao, nome_vendedor, descricao, quantidade, 
+                total_liquido, cnpj_empresa, familia, regiao
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+
+        // 3. Inserir um por um dentro de uma transação
+        db.run("BEGIN TRANSACTION");
+        dados.forEach(item => {
+            stmt.run(
+                item.data_emissao,
+                item.nome_vendedor,
+                item.descricao,
+                item.quantidade,
+                item.total_liquido,
+                item.cnpj_empresa,
+                item.familia,
+                item.regiao
+            );
+        });
+        db.run("COMMIT");
+        stmt.finalize();
+    });
+
+    db.close((err) => {
+        if (err) {
+            console.error("❌ Erro ao salvar vendas:", err);
+            return res.status(500).json({ error: "Erro no banco de dados" });
+        }
+        console.log("✅ Vendas sincronizadas com sucesso!");
+        res.json({ message: "Sincronização de Vendas concluída!" });
+    });
+});
+
+// Rota 2: Receber KPI Vendedores
+app.post('/api/sync/vendedores', (req, res) => {
+    const dados = req.body;
+    
+    if (!dados || !Array.isArray(dados)) return res.status(400).json({ error: "Dados inválidos" });
+
+    console.log(`🏆 Recebendo ${dados.length} KPIs de vendedores...`);
+    const db = new sqlite3.Database(DB_PATH);
+
+    db.serialize(() => {
+        db.run("DELETE FROM vendedores_kpi"); // Limpa tabela antiga para atualizar o ranking
+
+        const stmt = db.prepare(`
+            INSERT INTO vendedores_kpi (
+                loja, vendedor, fat_atual, tendencia, fat_anterior, 
+                crescimento, seguros, pa, qtd, ticket, regiao, pct_seguro
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+
+        db.run("BEGIN TRANSACTION");
+        dados.forEach(item => {
+            stmt.run(
+                item.loja, item.vendedor, item.fat_atual, item.tendencia, 
+                item.fat_anterior, item.crescimento, item.seguros, item.pa, 
+                item.qtd, item.ticket, item.regiao, item.pct_seguro
+            );
+        });
+        db.run("COMMIT");
+        stmt.finalize();
+    });
+
+    db.close(() => {
+        res.json({ message: "KPIs atualizados com sucesso!" });
+    });
+});
+// --- FIM DO BLOCO DE SINCRONIZAÇÃO ---
 
 app.listen(3000, '0.0.0.0', () => console.log("✅ SERVIDOR 8.9.2 - SUCESSO TOTAL!"));
 
