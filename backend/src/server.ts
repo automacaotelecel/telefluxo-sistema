@@ -3,8 +3,6 @@ import cors from 'cors';
 import { PrismaClient } from '@prisma/client';
 import multer from 'multer';
 import fs from 'fs';
-import path from 'path';
-import sqlite3 from 'sqlite3';
 import crypto from 'crypto'; 
 import csv from 'csv-parser';
 import * as XLSX from 'xlsx';
@@ -1292,9 +1290,6 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 // --- INICIO DO BLOCO DE SINCRONIZAÇÃO ---
 import sqlite3 from 'sqlite3';
 import path from 'path';
-
-// Garante que o caminho do banco está certo (ajuste 'database' se sua pasta tiver outro nome)
-const DB_PATH = path.resolve(__dirname, '../database/samsung_vendas.db');
 
 // Rota 1: Receber Vendas Gerais
 app.post('/api/sync/vendas', (req, res) => {
