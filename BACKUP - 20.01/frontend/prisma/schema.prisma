@@ -1,0 +1,48 @@
+// Isso diz para conectar no arquivo dev.db
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+// Tabela de Usuários
+model User {
+  id         String  @id @default(uuid()) // Gera ID automático
+  name       String
+  email      String  @unique
+  password   String
+  role       String
+  department String
+  isAdmin    Boolean @default(false)
+  status     String  @default("active")
+}
+
+// Tabela de Tarefas
+model Task {
+  id        String    @id // Vamos gerar o ID manualmente (TASK-...)
+  title     String
+  user      String    // Responsável atual
+  status    String
+  priority  String
+  deadline  String
+  createdAt DateTime  @default(now())
+  
+  // Relacionamento: Uma tarefa tem vários comentários (histórico)
+  history   Comment[] 
+}
+
+// Tabela de Histórico (Comentários e Logs)
+model Comment {
+  id      Int    @id @default(autoincrement())
+  text    String
+  user    String // Quem fez o comentário
+  date    String // Data formatada
+  type    String // 'system', 'comment' ou 'action'
+  
+  // Conexão com a Tarefa
+  taskId  String
+  task    Task   @relation(fields: [taskId], references: [id])
+}
