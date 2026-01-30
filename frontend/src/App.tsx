@@ -9,7 +9,7 @@ import Agenda from "./components/Agenda";
 import ManagerDashboard from "./components/ManagerDashboard"; 
 import SalesModule from "./components/SalesModule"; 
 import NotificationBell from "./components/NotificationBell";
-import Home from "./components/Home";
+import Home from "./components/home";
 import DeptBulletin from "./components/DeptBulletin";
 import FinanceModule from "./components/FinanceModule"; 
 import StockModule from "./components/StockModule"; 
