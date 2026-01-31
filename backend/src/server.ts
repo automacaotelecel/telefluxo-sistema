@@ -399,7 +399,15 @@ app.get('/manager-stats', async (req, res) => {
 // =======================================================
 
 // Caminho dinâmico para o banco Samsung
-const DB_PATH = path.resolve(__dirname, '../database/samsung_vendas.db');
+// --- CORREÇÃO DE CAMINHO (BLINDADA PARA RENDER) ---
+const ROOT_DIR = process.cwd(); // Pega a raiz do projeto no Linux
+const DB_PATH = path.join(ROOT_DIR, 'database', 'samsung_vendas.db'); // Monta o caminho certo
+
+// Garante que a pasta existe (para não dar erro na primeira vez)
+if (!fs.existsSync(path.join(ROOT_DIR, 'database'))) {
+    try { fs.mkdirSync(path.join(ROOT_DIR, 'database')); } catch(e) {}
+}
+// --------------------------------------------------
 
 // 1. MAPA DE TRADUÇÃO (AGORA GLOBAL)
 // Esse mapa converte o CNPJ do banco (chave) no Nome da Loja (valor)
@@ -476,7 +484,15 @@ async function getSalesFilter(userId: string): Promise<string> {
 // ==========================================
 app.get('/sales', async (req, res) => {
     try {
-        const DB_PATH = path.resolve(__dirname, '../database/samsung_vendas.db');
+        // --- CORREÇÃO DE CAMINHO (BLINDADA PARA RENDER) ---
+            const ROOT_DIR = process.cwd(); // Pega a raiz do projeto no Linux
+            const DB_PATH = path.join(ROOT_DIR, 'database', 'samsung_vendas.db'); // Monta o caminho certo
+
+// Garante que a pasta existe (para não dar erro na primeira vez)
+            if (!fs.existsSync(path.join(ROOT_DIR, 'database'))) {
+                try { fs.mkdirSync(path.join(ROOT_DIR, 'database')); } catch(e) {}
+        }
+// --------------------------------------------------
     
         
         if (!fs.existsSync(DB_PATH)) {
@@ -1175,7 +1191,15 @@ app.post('/sales/refresh', (req, res) => {
 // ROTA /sellers-kpi COM FILTRO DE USUÁRIO (CORRIGIDA)
 // =======================================================
 app.get('/sellers-kpi', async (req, res) => {
-    const DB_PATH = path.resolve(__dirname, '../database/samsung_vendas.db');
+    // --- CORREÇÃO DE CAMINHO (BLINDADA PARA RENDER) ---
+        const ROOT_DIR = process.cwd(); // Pega a raiz do projeto no Linux
+        const DB_PATH = path.join(ROOT_DIR, 'database', 'samsung_vendas.db'); // Monta o caminho certo
+
+// Garante que a pasta existe (para não dar erro na primeira vez)
+        if (!fs.existsSync(path.join(ROOT_DIR, 'database'))) {
+         try { fs.mkdirSync(path.join(ROOT_DIR, 'database')); } catch(e) {}
+    }
+// --------------------------------------------------
     if (!fs.existsSync(DB_PATH)) return res.json([]);
 
     const userId = String(req.query.userId || '');
