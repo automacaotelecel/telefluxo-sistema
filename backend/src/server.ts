@@ -59,6 +59,17 @@ dbInit.serialize(() => {
 const app = express();
 const prisma = new PrismaClient();
 
+// ✅ FILA GLOBAL DE ESCRITA (MUTEX SQLITE)
+// ==========================================
+let writeQueue = Promise.resolve();
+
+function enqueueWrite<T>(fn: () => Promise<T>): Promise<T> {
+  const run = writeQueue.then(fn, fn);
+  // mantém a fila viva mesmo se der erro
+  writeQueue = run.then(() => undefined, () => undefined);
+  return run;
+}
+
 // Configuração de Uploads
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
@@ -1316,91 +1327,162 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 // --- INICIO DO BLOCO DE SINCRONIZAÇÃO ---
 
 // Rota 1: Receber Vendas Gerais
-app.post('/api/sync/vendas', (req, res) => {
-    const dados = req.body;
-    // Se o TS reclamar, garanta que a const DB_PATH da linha 400 está no escopo global
-    
-    if (!dados || !Array.isArray(dados)) {
-        return res.status(400).json({ error: "Formato de dados inválido. Esperado um array." });
-    }
+app.post('/api/sync/vendas', async (req, res) => {
+  const dados = req.body;
 
-    console.log(`📡 Recebendo ${dados.length} registros de vendas...`);
+  if (!dados || !Array.isArray(dados)) {
+    return res.status(400).json({ error: "Formato de dados inválido. Esperado um array." });
+  }
 
-    const db = new sqlite3.Database(GLOBAL_DB_PATH);
+  console.log(`📡 Recebendo ${dados.length} registros de vendas...`);
 
-    db.serialize(() => {
-        db.run("DELETE FROM vendas"); 
+  try {
+    await enqueueWrite(() => new Promise<void>((resolve, reject) => {
+      const db = new sqlite3.Database(GLOBAL_DB_PATH);
 
-        const stmt = db.prepare(`
+      // evita SQLITE_BUSY imediato
+      db.configure("busyTimeout", 15000);
+
+      db.serialize(() => {
+        db.run("PRAGMA journal_mode=WAL;");
+        db.run("PRAGMA synchronous=NORMAL;");
+
+        db.run("BEGIN IMMEDIATE TRANSACTION");
+
+        db.run("DELETE FROM vendas", (err) => {
+          if (err) {
+            db.run("ROLLBACK", () => db.close(() => reject(err)));
+            return;
+          }
+
+          const stmt = db.prepare(`
             INSERT INTO vendas (
-                data_emissao, nome_vendedor, descricao, quantidade, 
-                total_liquido, cnpj_empresa, familia, regiao
+              data_emissao, nome_vendedor, descricao, quantidade,
+              total_liquido, cnpj_empresa, familia, regiao
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        `);
+          `);
 
-        db.run("BEGIN TRANSACTION");
-        dados.forEach(item => {
+          for (const item of dados) {
             stmt.run(
-                item.data_emissao,
-                item.nome_vendedor,
-                item.descricao,
-                item.quantidade,
-                item.total_liquido,
-                item.cnpj_empresa,
-                item.familia,
-                item.regiao
+              item.data_emissao,
+              item.nome_vendedor,
+              item.descricao,
+              item.quantidade,
+              item.total_liquido,
+              item.cnpj_empresa,
+              item.familia,
+              item.regiao
             );
-        });
-        db.run("COMMIT");
-        stmt.finalize();
-    });
+          }
 
-    db.close((err) => {
-        if (err) {
-            console.error("❌ Erro ao salvar vendas:", err);
-            return res.status(500).json({ error: "Erro no banco de dados" });
-        }
-        console.log("✅ Vendas sincronizadas com sucesso!");
-        res.json({ message: "Sincronização de Vendas concluída!" });
-    });
+          stmt.finalize((err2) => {
+            if (err2) {
+              db.run("ROLLBACK", () => db.close(() => reject(err2)));
+              return;
+            }
+
+            db.run("COMMIT", (err3) => {
+              if (err3) {
+                db.run("ROLLBACK", () => db.close(() => reject(err3)));
+                return;
+              }
+              db.close((err4) => {
+                if (err4) return reject(err4);
+                resolve();
+              });
+            });
+          });
+        });
+      });
+    }));
+
+    console.log("✅ Vendas sincronizadas com sucesso!");
+    res.json({ message: "Sincronização de Vendas concluída!" });
+
+  } catch (e: any) {
+    console.error("❌ Erro ao salvar vendas:", e);
+    // Se estiver ocupado, retorne 503 para o cliente tentar de novo
+    if (String(e?.message || "").includes("SQLITE_BUSY")) {
+      return res.status(503).json({ error: "Banco ocupado (SQLITE_BUSY). Tente novamente em alguns segundos." });
+    }
+    res.status(500).json({ error: "Erro no banco de dados" });
+  }
 });
+
 
 // Rota 2: Receber KPI Vendedores
-app.post('/api/sync/vendedores', (req, res) => {
-    const dados = req.body;
-    // Recriando o caminho aqui para garantir que não pegue o C:/Users...
-        
-    if (!dados || !Array.isArray(dados)) return res.status(400).json({ error: "Dados inválidos" });
+app.post('/api/sync/vendedores', async (req, res) => {
+  const dados = req.body;
 
-    console.log(`🏆 Recebendo ${dados.length} KPIs de vendedores...`);
-    const db = new sqlite3.Database(GLOBAL_DB_PATH);
+  if (!dados || !Array.isArray(dados)) {
+    return res.status(400).json({ error: "Dados inválidos" });
+  }
 
-    db.serialize(() => {
-        db.run("DELETE FROM vendedores_kpi"); 
+  console.log(`🏆 Recebendo ${dados.length} KPIs de vendedores...`);
 
-        const stmt = db.prepare(`
+  try {
+    await enqueueWrite(() => new Promise<void>((resolve, reject) => {
+      const db = new sqlite3.Database(GLOBAL_DB_PATH);
+      db.configure("busyTimeout", 15000);
+
+      db.serialize(() => {
+        db.run("PRAGMA journal_mode=WAL;");
+        db.run("PRAGMA synchronous=NORMAL;");
+
+        db.run("BEGIN IMMEDIATE TRANSACTION");
+        db.run("DELETE FROM vendedores_kpi", (err) => {
+          if (err) {
+            db.run("ROLLBACK", () => db.close(() => reject(err)));
+            return;
+          }
+
+          const stmt = db.prepare(`
             INSERT INTO vendedores_kpi (
-                loja, vendedor, fat_atual, tendencia, fat_anterior, 
-                crescimento, seguros, pa, qtd, ticket, regiao, pct_seguro
+              loja, vendedor, fat_atual, tendencia, fat_anterior,
+              crescimento, seguros, pa, qtd, ticket, regiao, pct_seguro
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `);
+          `);
 
-        db.run("BEGIN TRANSACTION");
-        dados.forEach(item => {
+          for (const item of dados) {
             stmt.run(
-                item.loja, item.vendedor, item.fat_atual, item.tendencia, 
-                item.fat_anterior, item.crescimento, item.seguros, item.pa, 
-                item.qtd, item.ticket, item.regiao, item.pct_seguro
+              item.loja, item.vendedor, item.fat_atual, item.tendencia,
+              item.fat_anterior, item.crescimento, item.seguros, item.pa,
+              item.qtd, item.ticket, item.regiao, item.pct_seguro
             );
-        });
-        db.run("COMMIT");
-        stmt.finalize();
-    });
+          }
 
-    db.close(() => {
-        res.json({ message: "KPIs atualizados com sucesso!" });
-    });
+          stmt.finalize((err2) => {
+            if (err2) {
+              db.run("ROLLBACK", () => db.close(() => reject(err2)));
+              return;
+            }
+
+            db.run("COMMIT", (err3) => {
+              if (err3) {
+                db.run("ROLLBACK", () => db.close(() => reject(err3)));
+                return;
+              }
+              db.close((err4) => {
+                if (err4) return reject(err4);
+                resolve();
+              });
+            });
+          });
+        });
+      });
+    }));
+
+    res.json({ message: "KPIs atualizados com sucesso!" });
+
+  } catch (e: any) {
+    console.error("❌ Erro ao salvar KPI:", e);
+    if (String(e?.message || "").includes("SQLITE_BUSY")) {
+      return res.status(503).json({ error: "Banco ocupado (SQLITE_BUSY). Tente novamente em alguns segundos." });
+    }
+    res.status(500).json({ error: "Erro no banco de dados" });
+  }
 });
+
 // --- FIM DO BLOCO DE SINCRONIZAÇÃO ---
 
 // Define a porta: Usa a do Render (process.env.PORT) ou a 3000 se for local
