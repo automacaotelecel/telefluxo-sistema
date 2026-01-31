@@ -10,6 +10,7 @@ import { open } from 'sqlite';
 import bcrypt from 'bcryptjs';
 import sqlite3 from 'sqlite3';
 import path from 'path';
+
 const ROOT_DIR = process.cwd(); 
 const GLOBAL_DB_PATH = path.join(ROOT_DIR, 'database', 'samsung_vendas.db');
 // Cria a pasta automaticamente se não existir
@@ -441,16 +442,7 @@ app.get('/manager-stats', async (req, res) => {
 // 4. BI DE VENDAS (SAMSUNG) - COM FILTRO DE ACESSO 🛡️
 // =======================================================
 
-// Caminho dinâmico para o banco Samsung
-// --- CORREÇÃO DE CAMINHO (BLINDADA PARA RENDER) ---
-const ROOT_DIR = process.cwd(); // Pega a raiz do projeto no Linux
-const DB_PATH = path.join(ROOT_DIR, 'database', 'samsung_vendas.db'); // Monta o caminho certo
-
-// Garante que a pasta existe (para não dar erro na primeira vez)
-if (!fs.existsSync(path.join(ROOT_DIR, 'database'))) {
-    try { fs.mkdirSync(path.join(ROOT_DIR, 'database')); } catch(e) {}
-}
-// --------------------------------------------------
+const DB_PATH = GLOBAL_DB_PATH;
 
 // 1. MAPA DE TRADUÇÃO (AGORA GLOBAL)
 // Esse mapa converte o CNPJ do banco (chave) no Nome da Loja (valor)
@@ -523,33 +515,29 @@ async function getSalesFilter(userId: string): Promise<string> {
 // 2. ROTA /sales (VERSÃO FINAL LIMPA)
 // ==========================================
 app.get('/sales', async (req, res) => {
-    try {
-        // USE A VARIÁVEL GLOBAL
-        if (!fs.existsSync(GLOBAL_DB_PATH)) {
-            return res.json([]);
-        }
-        // ... (mantenha o resto da lógica de userId e filterWhere)
+  try {
+    if (!fs.existsSync(GLOBAL_DB_PATH)) return res.json([]);
 
-        // NA CONEXÃO DO BANCO, MUDE PARA:
-        const db = await open({
-             filename: GLOBAL_DB_PATH, // <--- Use a global aqui
-             driver: sqlite3.Database
-        });
+    const userId = String(req.query.userId || '');
+    const filterWhere = await getSalesFilter(userId);
 
-        const query = `
-            SELECT * FROM vendas 
-            WHERE ${filterWhere.replace('CNPJ_EMPRESA', "TRIM(CAST(CNPJ_EMPRESA AS TEXT))")}
-        `;
-        
-        const sales = await db.all(query);
-        await db.close();
-        
-        res.json(sales);
-    } catch (error: any) {
-        console.error("❌ Erro em /sales:", error.message);
-        res.status(500).json({ error: "Erro ao buscar vendas" });
-    }
+    const db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+
+    const query = `
+      SELECT * FROM vendas
+      WHERE ${filterWhere}
+    `;
+
+    const sales = await db.all(query);
+    await db.close();
+
+    res.json(sales);
+  } catch (error: any) {
+    console.error("❌ Erro em /sales:", error.message);
+    res.status(500).json({ error: "Erro ao buscar vendas" });
+  }
 });
+
 
 // --- ROTA: RESUMO (CARDS) ---
 app.get('/bi/summary', async (req, res) => {
@@ -559,7 +547,7 @@ app.get('/bi/summary', async (req, res) => {
     const filterWhere = await getSalesFilter(userId);
 
     const db = new sqlite3.Database(DB_PATH);
-    const sql = `SELECT SUM(TOTAL_LIQUIDO) as total_vendas, SUM(QUANTIDADE) as total_pecas, COUNT(DISTINCT NOTA_FISCAL) as qtd_notas 
+    const sql = `SELECT SUM(TOTAL_LIQUIDO) as total_vendas, SUM(QUANTIDADE) as total_pecas, COUNT(*) as qtd_notas
                  FROM vendas 
                  WHERE ${filterWhere}`;
 
@@ -1276,10 +1264,10 @@ const LOJAS_MAP: Record<string, string> = {
 };
 
 app.get('/external-stores', async (req, res) => {
-    const DB_PATH_EXT = path.resolve(__dirname, '../database/samsung_vendas.db');
+    
         // Se não achar o banco, retorna a lista completa fixa (Fallback)
-    if (!fs.existsSync(GLOBAL_DB_PATH)) {
-        return res.json(Object.values(LOJAS_MAP).sort()); 
+   if (!fs.existsSync(GLOBAL_DB_PATH)) { // (Isso já deve estar assim, mantenha)
+    return res.json(Object.values(LOJAS_MAP).sort()); 
     }
 
     const db = new sqlite3.Database(GLOBAL_DB_PATH);
