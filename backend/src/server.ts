@@ -17,6 +17,43 @@ if (!fs.existsSync(path.join(ROOT_DIR, 'database'))) {
     try { fs.mkdirSync(path.join(ROOT_DIR, 'database')); } catch(e) {}
 }
 // ----------------------------------------------------
+const dbInit = new sqlite3.Database(GLOBAL_DB_PATH);
+dbInit.serialize(() => {
+    // 1. Cria tabela de Vendas se não existir
+    dbInit.run(`
+        CREATE TABLE IF NOT EXISTS vendas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            data_emissao TEXT,
+            nome_vendedor TEXT,
+            descricao TEXT,
+            quantidade REAL,
+            total_liquido REAL,
+            cnpj_empresa TEXT,
+            familia TEXT,
+            regiao TEXT
+        )
+    `);
+
+    //2. Cria tabela de KPIs se não existir
+    dbInit.run(`
+        CREATE TABLE IF NOT EXISTS vendedores_kpi (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            loja TEXT,
+            vendedor TEXT,
+            fat_atual REAL,
+            tendencia REAL,
+            fat_anterior REAL,
+            crescimento REAL,
+            seguros REAL,
+            pa REAL,
+            qtd REAL,
+            ticket REAL,
+            regiao TEXT,
+            pct_seguro REAL
+        )
+    `);
+        console.log("📦 Tabelas do Banco de Dados Garantidas!");
+})
 
 const app = express();
 const prisma = new PrismaClient();
