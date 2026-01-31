@@ -10,7 +10,13 @@ import { open } from 'sqlite';
 import bcrypt from 'bcryptjs';
 import sqlite3 from 'sqlite3';
 import path from 'path';
-
+const ROOT_DIR = process.cwd(); 
+const GLOBAL_DB_PATH = path.join(ROOT_DIR, 'database', 'samsung_vendas.db');
+// Cria a pasta automaticamente se não existir
+if (!fs.existsSync(path.join(ROOT_DIR, 'database'))) {
+    try { fs.mkdirSync(path.join(ROOT_DIR, 'database')); } catch(e) {}
+}
+// ----------------------------------------------------
 
 const app = express();
 const prisma = new PrismaClient();
@@ -479,36 +485,20 @@ async function getSalesFilter(userId: string): Promise<string> {
 // ==========================================
 // 2. ROTA /sales (VERSÃO FINAL LIMPA)
 // ==========================================
-// ==========================================
-// 2. ROTA /sales (VERSÃO FINAL LIMPA)
-// ==========================================
 app.get('/sales', async (req, res) => {
     try {
-        // --- CORREÇÃO DE CAMINHO (BLINDADA PARA RENDER) ---
-            const ROOT_DIR = process.cwd(); // Pega a raiz do projeto no Linux
-            const DB_PATH = path.join(ROOT_DIR, 'database', 'samsung_vendas.db'); // Monta o caminho certo
-
-// Garante que a pasta existe (para não dar erro na primeira vez)
-            if (!fs.existsSync(path.join(ROOT_DIR, 'database'))) {
-                try { fs.mkdirSync(path.join(ROOT_DIR, 'database')); } catch(e) {}
-        }
-// --------------------------------------------------
-    
-        
-        if (!fs.existsSync(DB_PATH)) {
+        // USE A VARIÁVEL GLOBAL
+        if (!fs.existsSync(GLOBAL_DB_PATH)) {
             return res.json([]);
         }
+        // ... (mantenha o resto da lógica de userId e filterWhere)
 
-        const userId = String(req.query.userId || '');
-        const filterWhere = await getSalesFilter(userId); 
-
+        // NA CONEXÃO DO BANCO, MUDE PARA:
         const db = await open({
-             filename: DB_PATH,
+             filename: GLOBAL_DB_PATH, // <--- Use a global aqui
              driver: sqlite3.Database
         });
 
-        // Query Otimizada:
-        // TRIM(CAST(...)) garante que o banco trate o campo como texto limpo antes de comparar
         const query = `
             SELECT * FROM vendas 
             WHERE ${filterWhere.replace('CNPJ_EMPRESA', "TRIM(CAST(CNPJ_EMPRESA AS TEXT))")}
@@ -1185,41 +1175,27 @@ app.post('/sales/refresh', (req, res) => {
 });
 
 // =======================================================
-// ROTA /sellers-kpi COM FILTRO DE USUÁRIO
-// =======================================================
-// =======================================================
-// ROTA /sellers-kpi COM FILTRO DE USUÁRIO (CORRIGIDA)
+// ROTA /sellers-kpi (CORRIGIDA E LIMPA)
 // =======================================================
 app.get('/sellers-kpi', async (req, res) => {
-    // --- CORREÇÃO DE CAMINHO (BLINDADA PARA RENDER) ---
-        const ROOT_DIR = process.cwd(); // Pega a raiz do projeto no Linux
-        const DB_PATH = path.join(ROOT_DIR, 'database', 'samsung_vendas.db'); // Monta o caminho certo
-
-// Garante que a pasta existe (para não dar erro na primeira vez)
-        if (!fs.existsSync(path.join(ROOT_DIR, 'database'))) {
-         try { fs.mkdirSync(path.join(ROOT_DIR, 'database')); } catch(e) {}
-    }
-// --------------------------------------------------
-    if (!fs.existsSync(DB_PATH)) return res.json([]);
+    // Verifica o banco global
+    if (!fs.existsSync(GLOBAL_DB_PATH)) return res.json([]);
 
     const userId = String(req.query.userId || '');
-    // const filterWhere = await getSalesFilter(userId); // (Não usamos aqui pois filtramos pela Loja direto)
-
-    const db = new sqlite3.Database(DB_PATH);
+    const db = new sqlite3.Database(GLOBAL_DB_PATH); // <--- Use a global
     
-    // CORREÇÃO 1: Adicionei ": any" para o TypeScript parar de reclamar do allowedStores
+    // Busca usuário (com tipagem any para evitar erro)
     const user: any = await prisma.user.findUnique({ where: { id: userId } });
     
     let kpiSql = `SELECT * FROM vendedores_kpi ORDER BY FAT_ATUAL DESC`;
 
-    // Lógica de Filtro
+    // (Mantenha sua lógica de filtro de lojas aqui... if (user && !user.isAdmin...) { ... } )
     if (user && !user.isAdmin && !['CEO', 'DIRETOR', 'ADM'].includes(user.role)) {
         if (user.allowedStores) {
-            // CORREÇÃO 2: Adicionei "(s: string)" para corrigir o erro do parâmetro 's'
             const stores = user.allowedStores.split(',').map((s: string) => `'${s.trim()}'`).join(',');
             kpiSql = `SELECT * FROM vendedores_kpi WHERE LOJA IN (${stores}) ORDER BY FAT_ATUAL DESC`;
         } else {
-            kpiSql = `SELECT * FROM vendedores_kpi WHERE 1=0`; // Bloqueia tudo se não tiver loja definida
+            kpiSql = `SELECT * FROM vendedores_kpi WHERE 1=0`;
         }
     }
 
@@ -1228,8 +1204,7 @@ app.get('/sellers-kpi', async (req, res) => {
         if (err) return res.status(400).json({ "error": err.message });
         res.json(rows);
     });
-});
-
+});;
 // ==========================================
 // ROTA TRADUTORA (CORRIGIDA - TYPE ANY)
 // ==========================================
@@ -1265,13 +1240,12 @@ const LOJAS_MAP: Record<string, string> = {
 
 app.get('/external-stores', async (req, res) => {
     const DB_PATH_EXT = path.resolve(__dirname, '../database/samsung_vendas.db');
-    
-    // Se não achar o banco, retorna a lista completa fixa (Fallback)
-    if (!fs.existsSync(DB_PATH_EXT)) {
+        // Se não achar o banco, retorna a lista completa fixa (Fallback)
+    if (!fs.existsSync(GLOBAL_DB_PATH)) {
         return res.json(Object.values(LOJAS_MAP).sort()); 
     }
 
-    const db = new sqlite3.Database(DB_PATH_EXT);
+    const db = new sqlite3.Database(GLOBAL_DB_PATH);
 
     const sql = `SELECT DISTINCT CNPJ_EMPRESA as cnpj FROM vendas WHERE CNPJ_EMPRESA IS NOT NULL`;
 
@@ -1319,18 +1293,15 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 // Rota 1: Receber Vendas Gerais
 app.post('/api/sync/vendas', (req, res) => {
     const dados = req.body;
-    
-    // Usa o DB_PATH global definido lá na linha 400 (path.resolve...)
     // Se o TS reclamar, garanta que a const DB_PATH da linha 400 está no escopo global
-    const DB_PATH_SYNC = path.resolve(__dirname, '../database/samsung_vendas.db');
-
+    
     if (!dados || !Array.isArray(dados)) {
         return res.status(400).json({ error: "Formato de dados inválido. Esperado um array." });
     }
 
     console.log(`📡 Recebendo ${dados.length} registros de vendas...`);
 
-    const db = new sqlite3.Database(DB_PATH_SYNC);
+    const db = new sqlite3.Database(GLOBAL_DB_PATH);
 
     db.serialize(() => {
         db.run("DELETE FROM vendas"); 
@@ -1373,12 +1344,11 @@ app.post('/api/sync/vendas', (req, res) => {
 app.post('/api/sync/vendedores', (req, res) => {
     const dados = req.body;
     // Recriando o caminho aqui para garantir que não pegue o C:/Users...
-    const DB_PATH_SYNC = path.resolve(__dirname, '../database/samsung_vendas.db');
-    
+        
     if (!dados || !Array.isArray(dados)) return res.status(400).json({ error: "Dados inválidos" });
 
     console.log(`🏆 Recebendo ${dados.length} KPIs de vendedores...`);
-    const db = new sqlite3.Database(DB_PATH_SYNC);
+    const db = new sqlite3.Database(GLOBAL_DB_PATH);
 
     db.serialize(() => {
         db.run("DELETE FROM vendedores_kpi"); 
