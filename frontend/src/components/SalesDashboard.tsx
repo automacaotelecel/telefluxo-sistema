@@ -1,18 +1,22 @@
 import React, { useEffect, useState } from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
-import { DollarSign, ShoppingBag, TrendingUp, Trophy } from 'lucide-react';
+// ✅ ADICIONADO: AlertCircle para mostrar erro na tela se houver
+import { DollarSign, ShoppingBag, TrendingUp, Trophy, AlertCircle } from 'lucide-react';
 
 export default function SalesDashboard() {
   // Estados para guardar os dados que vêm do servidor
   const [summary, setSummary] = useState<any>({ total_vendas: 0, total_pecas: 0, ticket_medio: 0 });
   const [chartData, setChartData] = useState<any[]>([]);
   const [ranking, setRanking] = useState<any[]>([]);
+  
+  // ✅ ADICIONADO: Estado para capturar erros e mostrar na tela
+  const [errorMsg, setErrorMsg] = useState<string>('');
 
   // 🔴 IMPORTANTE: Forçando o endereço do seu servidor no Render
   const API_URL = 'https://telefluxo-aplicacao.onrender.com';
 
   useEffect(() => {
-    // Tenta pegar o usuário logado para enviar o ID (caso precisemos do filtro no futuro)
+    // Tenta pegar o usuário logado para enviar o ID
     const savedUser = localStorage.getItem('user') || localStorage.getItem('telefluxo_user');
     let userId = '';
     
@@ -24,33 +28,35 @@ export default function SalesDashboard() {
     }
 
     console.log(`📡 CONECTANDO EM: ${API_URL}`);
-    
-    // 1. Busca os Cards (Total, Peças, Ticket)
-    fetch(`${API_URL}/bi/summary?userId=${userId}`)
-        .then(r => r.json())
-        .then(data => {
-            console.log("📦 DADOS DOS CARDS RECEBIDOS:", data);
-            setSummary(data);
-        })
-        .catch(err => console.error("❌ Erro ao buscar Cards:", err));
+    console.log(`👤 Usuário ID: ${userId || 'Não identificado'}`);
 
-    // 2. Busca o Gráfico de Barras
-    fetch(`${API_URL}/bi/chart?userId=${userId}`)
-        .then(r => r.json())
-        .then(data => {
-            console.log("📊 DADOS DO GRÁFICO RECEBIDOS:", data);
-            setChartData(data);
-        })
-        .catch(err => console.error("❌ Erro ao buscar Gráfico:", err));
+    // ✅ MELHORIA: Função auxiliar para buscar dados e capturar erros
+    const fetchData = async (endpoint: string, setter: Function, nome: string) => {
+        try {
+            const res = await fetch(`${API_URL}${endpoint}?userId=${userId}`);
+            
+            if (!res.ok) {
+                throw new Error(`Erro ${res.status}: ${res.statusText}`);
+            }
 
-    // 3. Busca o Ranking de Vendedores
-    fetch(`${API_URL}/bi/ranking?userId=${userId}`)
-        .then(r => r.json())
-        .then(data => {
-            console.log("🏆 DADOS DO RANKING RECEBIDOS:", data);
-            setRanking(data);
-        })
-        .catch(err => console.error("❌ Erro ao buscar Ranking:", err));
+            const data = await res.json();
+            console.log(`📦 ${nome} RECEBIDO:`, data);
+            setter(data);
+        } catch (err: any) {
+            console.error(`❌ Erro em ${nome}:`, err);
+            // Atualiza a mensagem de erro na tela
+            setErrorMsg(prev => `${prev} | Falha ${nome}: ${err.message}`);
+        }
+    };
+
+    // 1. Busca os Cards
+    fetchData('/bi/summary', setSummary, 'CARDS');
+
+    // 2. Busca o Gráfico
+    fetchData('/bi/chart', setChartData, 'GRÁFICO');
+
+    // 3. Busca o Ranking
+    fetchData('/bi/ranking', setRanking, 'RANKING');
 
   }, []);
 
@@ -59,6 +65,19 @@ export default function SalesDashboard() {
 
   return (
     <div className="h-full overflow-y-auto p-8 bg-slate-50">
+      
+      {/* ✅ ADICIONADO: ÁREA DE DIAGNÓSTICO (SÓ APARECE SE TIVER ERRO) */}
+      {errorMsg && (
+        <div className="mb-6 p-4 bg-red-100 border border-red-400 text-red-700 rounded-xl flex items-center gap-3">
+            <AlertCircle size={24} />
+            <div>
+                <strong className="block text-sm font-bold">Ocorreu um erro de conexão:</strong>
+                <p className="text-xs">{errorMsg}</p>
+                <p className="text-[10px] mt-1 text-red-500">Se o erro for "Failed to fetch", é bloqueio de CORS ou o servidor Render está dormindo.</p>
+            </div>
+        </div>
+      )}
+
       <div className="mb-8">
           <h2 className="text-2xl font-black uppercase tracking-tight text-slate-800">BI de Vendas (Samsung)</h2>
           <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest">Painel Comercial - Conectado ao Render</p>
