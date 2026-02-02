@@ -454,10 +454,6 @@ app.get('/manager-stats', async (req, res) => {
     } catch (e) { res.status(500).json({ error: "Erro stats" }); }
 });
 
-// =======================================================
-// 4. BI DE VENDAS (SAMSUNG) - COM FILTRO DE ACESSO 🛡️
-// =======================================================
-
 const DB_PATH = GLOBAL_DB_PATH;
 
 // =======================================================
@@ -1319,84 +1315,6 @@ app.get('/sellers-kpi', async (req, res) => {
         res.json(rows);
     });
 });;
-// ==========================================
-// ROTA TRADUTORA (CORRIGIDA - TYPE ANY)
-// ==========================================
-
-const LOJAS_MAP: Record<string, string> = {
-    "12309173001309": "ARAGUAIA SHOPPING",
-    "12309173000418": "BOULEVARD SHOPPING",
-    "12309173000175": "BRASILIA SHOPPING",
-    "12309173000680": "CONJUNTO NACIONAL",
-    "12309173001228": "CONJUNTO NACIONAL QUIOSQUE",
-    "12309173000507": "GOIANIA SHOPPING",
-    "12309173000256": "IGUATEMI SHOPPING",
-    "12309173000841": "JK SHOPPING",
-    "12309173000337": "PARK SHOPPING",
-    "12309173000922": "PATIO BRASIL",
-    "12309173000760": "TAGUATINGA SHOPPING",
-    "12309173001147": "TERRAÇO SHOPPING",
-    "12309173001651": "TAGUATINGA SHOPPING QQ",
-    "12309173001732": "UBERLÂNDIA SHOPPING",
-    "12309173001813": "UBERABA SHOPPING",
-    "12309173001570": "FLAMBOYANT SHOPPING",
-    "12309173002119": "BURITI SHOPPING",
-    "12309173002461": "PASSEIO DAS AGUAS",
-    "12309173002038": "PORTAL SHOPPING",
-    "12309173002208": "SHOPPING SUL",
-    "12309173001902": "BURITI RIO VERDE",
-    "12309173002380": "PARK ANAPOLIS",
-    "12309173002542": "SHOPPING RECIFE",
-    "12309173002895": "MANAIRA SHOPPING",
-    "12309173002976": "IGUATEMI FORTALEZA",
-    "12309173001066": "CD TAGUATINGA"
-};
-
-app.get('/external-stores', async (req, res) => {
-    
-        // Se não achar o banco, retorna a lista completa fixa (Fallback)
-   if (!fs.existsSync(GLOBAL_DB_PATH)) { // (Isso já deve estar assim, mantenha)
-    return res.json(Object.values(LOJAS_MAP).sort()); 
-    }
-
-    const db = new sqlite3.Database(GLOBAL_DB_PATH);
-
-    const sql = `SELECT DISTINCT CNPJ_EMPRESA as cnpj FROM vendas WHERE CNPJ_EMPRESA IS NOT NULL`;
-
-    // AQUI ESTAVA O ERRO: Adicionei ": any[]" depois de rows para o TS aceitar
-    db.all(sql, [], (err, rows: any[]) => {
-        db.close();
-        
-        if (err) {
-            console.error("❌ Erro SQL:", err.message);
-            return res.json(Object.values(LOJAS_MAP).sort());
-        }
-
-        // === DEBUG: MOSTRAR O PRIMEIRO CNPJ ENCONTRADO ===
-        if (rows && rows.length > 0) {
-            console.log("🔎 DADO BRUTO DO BANCO (Exemplo):", rows[0].cnpj);
-        }
-        // =================================================
-
-        const storeNames = rows.map((r: any) => {
-            // Tenta limpar para deixar só números
-            const cleanCnpj = String(r.cnpj).replace(/\D/g, '').trim();
-            return LOJAS_MAP[cleanCnpj] || null;
-        });
-
-        const uniqueStores = [...new Set(storeNames.filter((name: any) => name !== null))];
-        uniqueStores.sort();
-
-        // SE NÃO ACHOU NADA (0 encontradas), RETORNA A LISTA COMPLETA FIXA
-        if (uniqueStores.length === 0) {
-            console.warn("⚠️ Nenhuma correspondência exata. Usando lista completa de backup.");
-            return res.json(Object.values(LOJAS_MAP).sort());
-        }
-
-        console.log(`✅ Lojas Filtradas: ${uniqueStores.length} encontradas.`);
-        res.json(uniqueStores);
-    });
-});
 
 // Aumentamos o limite para 50mb para aguentar o Excel
 app.use(express.json({ limit: '50mb' }));
