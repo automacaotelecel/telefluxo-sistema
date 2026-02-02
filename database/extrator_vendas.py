@@ -341,16 +341,16 @@ def integrar_kpi_vendedores():
         output_list.append({
             "loja": str(row[col_loja]).upper(),
             "vendedor": vendedor,
-            "faturamento": total,        # <--- MUDOU DE 'fat_atual' PARA 'faturamento'
-            "tendencia": 0,              # Campo obrigatório no banco, enviamos 0 ou calculamos
-            "mes_anterior": anterior,    # <--- MUDOU DE 'fat_anterior' PARA 'mes_anterior'
+            "fat_atual": total,          # ✅ CORRIGIDO: O servidor lê item.fat_atual
+            "tendencia": 0,
+            "fat_anterior": anterior,    # ✅ CORRIGIDO: O servidor lê item.fat_anterior
             "crescimento": crescimento,
             "pa": pa,
             "ticket": ticket,
             "qtd": qtd,
             "regiao": str(row["REGIAO"]).upper(),
             "pct_seguro": float(row["pct_seguro"]),
-            "seguros": 0                 # Campo obrigatório, pode virar 0 por enquanto
+            "seguros": 0
         })
 
     # Envia

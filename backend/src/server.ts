@@ -492,11 +492,59 @@ const LOJAS_MAP_GLOBAL: Record<string, string> = {
 };
 
 // ==========================================
-// 1. FUNÇÃO DE FILTRO (MODO LIBERADO - CORREÇÃO)
+// 🛡️ SISTEMA DE SEGURANÇA E FILTROS (RBAC)
 // ==========================================
-async function getSalesFilter(userId: string): Promise<string> {
-    // Retorna SEMPRE "verdadeiro" para ignorar a trava de segurança temporariamente
-    return "1=1"; 
+
+// Função Auxiliar: Descobre o CNPJ pelo Nome da Loja (Reverso)
+function getCnpjByName(storeName: string): string | null {
+    const cleanName = String(storeName).trim().toUpperCase();
+    for (const [cnpj, name] of Object.entries(LOJAS_MAP_GLOBAL)) {
+        if (String(name).toUpperCase() === cleanName) return cnpj;
+    }
+    return null;
+}
+
+// O GUARDA-COSTAS INTELIGENTE
+async function getSalesFilter(userId: string, tableType: 'vendas' | 'kpi'): Promise<string> {
+    // 1. Sem crachá (userId), sem dados.
+    if (!userId || userId === 'undefined') return "1=0"; 
+
+    // 2. Busca o usuário no banco para ver as permissões
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) return "1=0"; // Usuário não existe? Bloqueia.
+
+    // 3. DIRETORIA E ADM: ACESSO TOTAL (Chave Mestra) 🟢
+    const superRoles = ['CEO', 'DIRETOR', 'ADM', 'GESTOR', 'SÓCIO'];
+    // Se for Admin ou tiver cargo de chefia, libera tudo (1=1)
+    if (user.isAdmin || superRoles.includes(String(user.role).toUpperCase())) {
+        return "1=1"; 
+    }
+
+    // 4. USUÁRIOS COMUNS: FILTRO RESTRITO 🟡
+    // Se o campo "Lojas Permitidas" estiver vazio, ele não vê nada.
+    if (!user.allowedStores || user.allowedStores.trim() === "") {
+        return "1=0"; 
+    }
+
+    // Transforma a string "Loja A, Loja B" em uma lista
+    const storeNames = user.allowedStores.split(',').map(s => s.trim());
+
+    if (tableType === 'kpi') {
+        // A tabela 'vendedores_kpi' usa o NOME da loja
+        // Gera: loja IN ('ARAGUAIA SHOPPING', 'PARK SHOPPING')
+        const storesSql = storeNames.map(s => `'${s}'`).join(',');
+        return `loja IN (${storesSql})`;
+    } else {
+        // A tabela 'vendas' usa o CNPJ da loja
+        // Traduzimos os nomes para CNPJs antes de filtrar
+        const cnpjs = storeNames.map(name => getCnpjByName(name)).filter(c => c !== null);
+        
+        if (cnpjs.length === 0) return "1=0"; // Nome da loja não bateu com nenhum CNPJ
+        
+        // Gera: cnpj_empresa IN ('123...', '456...')
+        const cnpjsSql = cnpjs.map(c => `'${c}'`).join(',');
+        return `cnpj_empresa IN (${cnpjsSql})`;
+    }
 }
 
 // ==========================================
@@ -507,18 +555,15 @@ app.get('/sales', async (req, res) => {
     if (!fs.existsSync(GLOBAL_DB_PATH)) return res.json([]);
 
     const userId = String(req.query.userId || '');
-    const filterWhere = await getSalesFilter(userId);
+    // SEGURANÇA: Pede o filtro para tabela de 'vendas' (CNPJ)
+    const filterWhere = await getSalesFilter(userId, 'vendas'); 
 
     const db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
-
-    const query = `
-      SELECT * FROM vendas
-      WHERE ${filterWhere}
-    `;
+    // INJEÇÃO: Adiciona o filtro na consulta SQL
+    const query = `SELECT * FROM vendas WHERE ${filterWhere}`;
 
     const sales = await db.all(query);
     await db.close();
-
     res.json(sales);
   } catch (error: any) {
     console.error("❌ Erro em /sales:", error.message);
@@ -529,22 +574,20 @@ app.get('/sales', async (req, res) => {
 
 // --- ROTA: RESUMO (CARDS) ---
 app.get('/bi/summary', async (req, res) => {
-    if (!fs.existsSync(DB_PATH)) return res.json({ total_vendas: 0, total_pecas: 0, ticket_medio: 0 });
+    if (!fs.existsSync(GLOBAL_DB_PATH)) return res.json({ total_vendas: 0, total_pecas: 0, ticket_medio: 0 });
     
     const userId = String(req.query.userId || '');
-    const filterWhere = await getSalesFilter(userId);
+    // SEGURANÇA: Filtra por CNPJ
+    const filterWhere = await getSalesFilter(userId, 'vendas'); 
 
-    const db = new sqlite3.Database(DB_PATH);
+    const db = new sqlite3.Database(GLOBAL_DB_PATH);
     const sql = `SELECT SUM(TOTAL_LIQUIDO) as total_vendas, SUM(QUANTIDADE) as total_pecas, COUNT(*) as qtd_notas
                  FROM vendas 
-                 WHERE ${filterWhere}`;
+                 WHERE ${filterWhere}`; // <--- Filtro aplicado aqui
 
     db.get(sql, [], (err, row: any) => {
         db.close();
-        if (err) {
-            console.error("Erro BI Summary:", err);
-            return res.json({ total_vendas: 0, total_pecas: 0, ticket_medio: 0 });
-        }
+        if (err) return res.json({ total_vendas: 0, total_pecas: 0, ticket_medio: 0 });
         const total = row?.total_vendas || 0;
         const pecas = row?.total_pecas || 0;
         const notas = row?.qtd_notas || 1;
@@ -557,56 +600,54 @@ app.get('/bi/chart', async (req, res) => {
     if (!fs.existsSync(GLOBAL_DB_PATH)) return res.json([]);
     
     const userId = String(req.query.userId || '');
-    const filterWhere = await getSalesFilter(userId);
+    const filterWhere = await getSalesFilter(userId, 'vendas');
 
     const db = new sqlite3.Database(GLOBAL_DB_PATH);
     
-    // AQUI MUDOU: Ordenação simples por DATA_EMISSAO (já que o formato agora é ISO correto)
     const sql = `SELECT substr(DATA_EMISSAO, 6, 5) as dia, SUM(TOTAL_LIQUIDO) as valor 
                  FROM vendas 
-                 WHERE ${filterWhere}
+                 WHERE ${filterWhere} -- <--- Segurança aqui
                  GROUP BY DATA_EMISSAO 
                  ORDER BY DATA_EMISSAO DESC LIMIT 7`;
                  
     db.all(sql, [], (err, rows) => {
         db.close();
         if (err) return res.json([]);
-        // Reverte para o gráfico mostrar da esquerda (antigo) para direita (novo)
         res.json(rows ? rows.reverse() : []);
     });
 });
-
 
 // --- ROTA: RANKING / KPI VENDEDORES (CORREÇÃO FINAL) ---
 // --- ROTA: RANKING / KPI VENDEDORES (CORREÇÃO FINAL) ---
 app.get('/bi/ranking', async (req, res) => {
     if (!fs.existsSync(GLOBAL_DB_PATH)) return res.json([]);
     const db = new sqlite3.Database(GLOBAL_DB_PATH);
+    
+    const userId = String(req.query.userId || '');
+    
+    // ATENÇÃO: Aqui usamos 'kpi' porque esta tabela usa NOME DA LOJA, não CNPJ
+    const filterWhere = await getSalesFilter(userId, 'kpi'); 
 
-    // ✅ CORREÇÃO: Lendo da tabela correta 'vendedores_kpi'
     const sql = `
         SELECT 
             vendedor as nome,
             loja,
             regiao,
-            fat_atual as total,          -- O Site espera 'total'
+            fat_atual as total,
             fat_anterior,
             crescimento,
             pa,
             ticket,
             qtd,
             pct_seguro
-        FROM vendedores_kpi              -- ✅ Tabela onde o Python salvou os dados
-        WHERE fat_atual > 0
+        FROM vendedores_kpi 
+        WHERE fat_atual > 0 AND ${filterWhere}  -- <--- Filtro Mágico Injetado
         ORDER BY fat_atual DESC
     `;
 
     db.all(sql, [], (err, rows) => {
         db.close();
-        if (err) {
-            console.error("Erro SQL Ranking:", err);
-            return res.json([]);
-        }
+        if (err) return res.json([]);
         res.json(rows);
     });
 });
