@@ -460,8 +460,11 @@ app.get('/manager-stats', async (req, res) => {
 
 const DB_PATH = GLOBAL_DB_PATH;
 
-// 1. MAPA DE TRADUÇÃO (AGORA GLOBAL)
-// Esse mapa converte o CNPJ do banco (chave) no Nome da Loja (valor)
+// =======================================================
+// 4. BI DE VENDAS (SAMSUNG) - COM FILTRO DE ACESSO 🛡️
+// =======================================================
+
+// 1. MAPA DE TRADUÇÃO OFICIAL (CNPJ -> NOME)
 const LOJAS_MAP_GLOBAL: Record<string, string> = {
     "12309173001309": "ARAGUAIA SHOPPING",
     "12309173000418": "BOULEVARD SHOPPING",
@@ -491,30 +494,8 @@ const LOJAS_MAP_GLOBAL: Record<string, string> = {
     "12309173001066": "CD TAGUATINGA"
 };
 
-// ✅ LISTA DE CORREÇÃO MANUAL NO SERVIDOR
-const CORRECAO_NOMES_SERVER: Record<string, string> = {
-    "UBERABA": "UBERABA SHOPPING",
-    "UBERLÂNDIA": "UBERLÂNDIA SHOPPING",
-    "UBERLANDIA": "UBERLÂNDIA SHOPPING",
-    "CNB SHOPPING": "CONJUNTO NACIONAL",
-    "CNB QUIOSQUE": "CONJUNTO NACIONAL QUIOSQUE",
-    "QQ TAGUATINGA SHOPPING": "TAGUATINGA SHOPPING QQ",
-    "ESTOQUE CD": "CD TAGUATINGA",
-    "CD": "CD TAGUATINGA",
-    "PASSEIO DAS ÁGUAS": "PASSEIO DAS AGUAS",
-    "TERRACO SHOPPING": "TERRAÇO SHOPPING",
-    "PARK": "PARK SHOPPING",
-    "PARKSHOPPING": "PARK SHOPPING"
-};
-
-
-// ==========================================
-// 🛡️ SISTEMA DE SEGURANÇA E FILTROS (VERSÃO FINAL BLINDADA)
-// ==========================================
-
-// 1. MAPA DE TRADUÇÃO (Mantenha o seu LOJAS_MAP_GLOBAL acima deste bloco)
-
-// 2. LISTA DE CORREÇÃO MANUAL
+// 2. LISTA DE CORREÇÃO MANUAL NO SERVIDOR
+// Se o usuário estiver cadastrado como "PARK", o sistema converte para "PARK SHOPPING"
 const CORRECAO_NOMES_SERVER: Record<string, string> = {
     "UBERABA": "UBERABA SHOPPING",
     "UBERLÂNDIA": "UBERLÂNDIA SHOPPING",
@@ -531,18 +512,22 @@ const CORRECAO_NOMES_SERVER: Record<string, string> = {
     "PARK SHOPPING": "PARK SHOPPING"
 };
 
-// Função Auxiliar: Descobre o CNPJ pelo Nome da Loja
+
+// ==========================================
+// 🛡️ SISTEMA DE SEGURANÇA E FILTROS
+// ==========================================
+
+// Função Auxiliar: Descobre o CNPJ pelo Nome da Loja (Reverso)
 function getCnpjByName(storeName: string): string | null {
     let cleanName = String(storeName).trim().toUpperCase();
     
-    // ✅ CORREÇÃO DO ERRO DE TYPE (TS2322):
-    // Verifica se existe antes de atribuir
+    // ✅ 1. CORREÇÃO DE NOMES (Evita erro de digitação)
     const nomeCorrigido = CORRECAO_NOMES_SERVER[cleanName];
     if (nomeCorrigido) {
-        // console.log(`🔄 Corrigindo busca CNPJ: '${cleanName}' -> '${nomeCorrigido}'`);
         cleanName = nomeCorrigido;
     }
 
+    // 2. Busca no mapa oficial
     for (const [cnpj, name] of Object.entries(LOJAS_MAP_GLOBAL)) {
         if (String(name).toUpperCase() === cleanName) return cnpj;
     }
@@ -557,7 +542,7 @@ async function getSalesFilter(userId: string, tableType: 'vendas' | 'kpi'): Prom
     const user = await prisma.user.findUnique({ where: { id: userId } });
     if (!user) return "1=0"; 
 
-    console.log(`👤 LOGIN: ${user.name} | Lojas: [${user.allowedStores}]`);
+    console.log(`👤 LOGIN: ${user.name} | Cargo: ${user.role} | Lojas no cadastro: [${user.allowedStores}]`);
 
     // 1. DIRETORIA E ADM: ACESSO TOTAL
     const superRoles = ['CEO', 'DIRETOR', 'ADM', 'ADMIN', 'GESTOR', 'SÓCIO', 'MASTER'];
@@ -573,7 +558,8 @@ async function getSalesFilter(userId: string, tableType: 'vendas' | 'kpi'): Prom
 
     const rawStoreNames = user.allowedStores.split(',').map(s => s.trim());
     
-    // ✅ TRADUÇÃO DE APELIDOS (CORREÇÃO DO ERRO TS)
+    // ✅ TRADUÇÃO DE APELIDOS (Aqui a mágica acontece)
+    // Se o usuário tem "Park" cadastrado, transformamos em "PARK SHOPPING"
     const correctedStoreNames = rawStoreNames.map(s => {
         const upper = s.toUpperCase();
         const corrigido = CORRECAO_NOMES_SERVER[upper];
@@ -586,9 +572,11 @@ async function getSalesFilter(userId: string, tableType: 'vendas' | 'kpi'): Prom
     });
 
     if (tableType === 'kpi') {
+        // Tabela KPI usa NOME DA LOJA (Texto)
         const storesSql = correctedStoreNames.map(s => `'${s}'`).join(',');
         return `loja IN (${storesSql})`;
     } else {
+        // Tabela VENDAS usa CNPJ
         const cnpjs = correctedStoreNames.map(name => getCnpjByName(name)).filter((c): c is string => c !== null);
         
         if (cnpjs.length === 0) {
