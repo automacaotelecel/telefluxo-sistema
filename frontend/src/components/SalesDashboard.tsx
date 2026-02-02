@@ -4,7 +4,8 @@ import {
 } from 'recharts';
 import { 
   DollarSign, ShoppingBag, TrendingUp, Trophy, AlertCircle, 
-  MapPin, Calendar, LayoutGrid, Users, Package, RefreshCw, Store 
+  MapPin, Calendar, LayoutGrid, Users, Package, RefreshCw, Store, 
+  BarChart3 // <--- CORREÇÃO: Importando o ícone correto aqui
 } from 'lucide-react';
 
 export default function SalesDashboard() {
@@ -13,9 +14,11 @@ export default function SalesDashboard() {
   const [ranking, setRanking] = useState<any[]>([]);
   const [storeRanking, setStoreRanking] = useState<any[]>([]);
   const [errorMsg, setErrorMsg] = useState<string>('');
-  const [activeTab, setActiveTab] = useState('visao_geral'); // Controle das abas
+  const [activeTab, setActiveTab] = useState('visao_geral');
 
+  // Ajuste para HTTPS se necessário, ou mantenha a URL do Render
   const API_URL = 'https://telefluxo-aplicacao.onrender.com';
+  
   const formatMoney = (val: number) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val || 0);
   const formatPercent = (val: number) => `${(val * 100).toFixed(1)}%`;
 
@@ -30,7 +33,6 @@ export default function SalesDashboard() {
             if (!res.ok) throw new Error(`Status: ${res.status}`);
             const data = await res.json();
             setter(data);
-            return data; // Retorna para uso posterior
         } catch (err: any) {
             console.error(`❌ Erro ${endpoint}:`, err);
             setErrorMsg(prev => `${prev} | ${endpoint}: ${err.message}`);
@@ -40,15 +42,15 @@ export default function SalesDashboard() {
     fetchData('/bi/summary', setSummary);
     fetchData('/bi/chart', setChartData);
     
-    // Busca Ranking e processa Lojas
     fetchData('/bi/ranking', (data: any[]) => {
         setRanking(data);
         
         // Agrupa por Loja para criar o Ranking de Lojas
         const stores: any = {};
         data.forEach(item => {
-            if (!stores[item.loja]) stores[item.loja] = 0;
-            stores[item.loja] += (item.total || 0);
+            const lojaNome = item.loja || 'OUTROS';
+            if (!stores[lojaNome]) stores[lojaNome] = 0;
+            stores[lojaNome] += (item.total || 0); // 'total' vem do banco (mapeado de 'faturamento')
         });
         const storeList = Object.keys(stores)
             .map(key => ({ nome: key, total: stores[key] }))
@@ -122,7 +124,7 @@ export default function SalesDashboard() {
                         <h3 className="font-black text-slate-800 uppercase text-sm">Ranking de Lojas</h3>
                     </div>
                     <div className="space-y-3">
-                        {storeRanking.map((loja, i) => (
+                        {storeRanking.length === 0 ? <p className="text-xs text-slate-400">Sem dados...</p> : storeRanking.map((loja, i) => (
                             <div key={i} className="flex items-center justify-between p-2 hover:bg-slate-50 rounded-lg">
                                 <div className="flex items-center gap-3">
                                     <span className="w-6 h-6 flex items-center justify-center bg-slate-100 text-slate-600 text-[10px] font-black rounded">{i+1}</span>
@@ -145,7 +147,7 @@ export default function SalesDashboard() {
                             <div key={i} className="flex items-center justify-between p-2 hover:bg-slate-50 rounded-lg">
                                 <div className="flex items-center gap-3">
                                     <div className={`w-6 h-6 rounded flex items-center justify-center text-[10px] font-black ${i < 3 ? 'bg-amber-100 text-amber-600' : 'bg-slate-100 text-slate-500'}`}>{i+1}</div>
-                                    <span className="text-xs font-bold text-slate-700 uppercase truncate w-40">{v.nome}</span>
+                                    <span className="text-xs font-bold text-slate-700 uppercase truncate w-40" title={v.nome}>{v.nome}</span>
                                 </div>
                                 <span className="text-xs font-black text-slate-800">{formatMoney(v.total)}</span>
                             </div>
@@ -157,25 +159,30 @@ export default function SalesDashboard() {
             {/* GRÁFICO (NO FINAL) */}
             <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-6">
                 <div className="flex items-center gap-2 mb-6 border-b border-slate-100 pb-4">
-                    <div className="p-2 bg-indigo-50 text-indigo-600 rounded-lg"><BarChart size={18}/></div>
+                    {/* CORREÇÃO: Usando BarChart3 (ícone) em vez de BarChart (gráfico) */}
+                    <div className="p-2 bg-indigo-50 text-indigo-600 rounded-lg"><BarChart3 size={18}/></div>
                     <h3 className="font-black text-slate-800 uppercase text-sm">Evolução de Vendas</h3>
                 </div>
                 <div className="h-64">
-                    <ResponsiveContainer width="100%" height="100%">
-                        <AreaChart data={chartData}>
-                            <defs>
-                                <linearGradient id="colorValor" x1="0" y1="0" x2="0" y2="1">
-                                    <stop offset="5%" stopColor="#4F46E5" stopOpacity={0.1}/>
-                                    <stop offset="95%" stopColor="#4F46E5" stopOpacity={0}/>
-                                </linearGradient>
-                            </defs>
-                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                            <XAxis dataKey="dia" axisLine={false} tickLine={false} tick={{fontSize: 10, fontWeight: 700, fill: '#94a3b8'}} />
-                            <YAxis axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#94a3b8'}} tickFormatter={(val) => `R$${val/1000}k`} />
-                            <Tooltip formatter={(value: number) => [formatMoney(value), 'Venda']} />
-                            <Area type="monotone" dataKey="valor" stroke="#4F46E5" strokeWidth={3} fillOpacity={1} fill="url(#colorValor)" />
-                        </AreaChart>
-                    </ResponsiveContainer>
+                    {chartData.length > 0 ? (
+                        <ResponsiveContainer width="100%" height="100%">
+                            <AreaChart data={chartData}>
+                                <defs>
+                                    <linearGradient id="colorValor" x1="0" y1="0" x2="0" y2="1">
+                                        <stop offset="5%" stopColor="#4F46E5" stopOpacity={0.1}/>
+                                        <stop offset="95%" stopColor="#4F46E5" stopOpacity={0}/>
+                                    </linearGradient>
+                                </defs>
+                                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                                <XAxis dataKey="dia" axisLine={false} tickLine={false} tick={{fontSize: 10, fontWeight: 700, fill: '#94a3b8'}} />
+                                <YAxis axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#94a3b8'}} tickFormatter={(val) => `R$${val/1000}k`} />
+                                <Tooltip formatter={(value: number) => [formatMoney(value), 'Venda']} />
+                                <Area type="monotone" dataKey="valor" stroke="#4F46E5" strokeWidth={3} fillOpacity={1} fill="url(#colorValor)" />
+                            </AreaChart>
+                        </ResponsiveContainer>
+                    ) : (
+                        <div className="flex h-full items-center justify-center text-slate-400 text-xs">Carregando gráfico...</div>
+                    )}
                 </div>
             </div>
         </>
@@ -221,7 +228,7 @@ export default function SalesDashboard() {
                                 <td className={`p-4 text-right ${v.crescimento >= 0 ? 'text-green-500' : 'text-red-500'}`}>
                                     {formatPercent(v.crescimento)}
                                 </td>
-                                <td className="p-4 text-right text-slate-600">{Number(v.pa).toFixed(2)}</td>
+                                <td className="p-4 text-right text-slate-600">{Number(v.pa || 0).toFixed(2)}</td>
                                 <td className="p-4 text-right text-slate-600">{formatMoney(v.ticket)}</td>
                                 <td className="p-4 text-right text-slate-800">{v.qtd}</td>
                                 <td className="p-4 text-right font-black text-purple-600">{formatPercent(v.pct_seguro)}</td>
