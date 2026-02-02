@@ -5,7 +5,7 @@ import {
 import { 
   DollarSign, ShoppingBag, TrendingUp, Trophy, AlertCircle, 
   MapPin, Calendar, LayoutGrid, Users, Package, RefreshCw, Store, 
-  BarChart3 // <--- CORREÇÃO: Importando o ícone correto aqui
+  BarChart3 // <--- ✅ CORREÇÃO: Importando o ícone correto aqui
 } from 'lucide-react';
 
 export default function SalesDashboard() {
@@ -16,7 +16,7 @@ export default function SalesDashboard() {
   const [errorMsg, setErrorMsg] = useState<string>('');
   const [activeTab, setActiveTab] = useState('visao_geral');
 
-  // Ajuste para HTTPS se necessário, ou mantenha a URL do Render
+  // Ajuste a URL se necessário
   const API_URL = 'https://telefluxo-aplicacao.onrender.com';
   
   const formatMoney = (val: number) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val || 0);
@@ -50,7 +50,7 @@ export default function SalesDashboard() {
         data.forEach(item => {
             const lojaNome = item.loja || 'OUTROS';
             if (!stores[lojaNome]) stores[lojaNome] = 0;
-            stores[lojaNome] += (item.total || 0); // 'total' vem do banco (mapeado de 'faturamento')
+            stores[lojaNome] += (item.total || 0); // 'total' vem do banco
         });
         const storeList = Object.keys(stores)
             .map(key => ({ nome: key, total: stores[key] }))
@@ -159,7 +159,7 @@ export default function SalesDashboard() {
             {/* GRÁFICO (NO FINAL) */}
             <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-6">
                 <div className="flex items-center gap-2 mb-6 border-b border-slate-100 pb-4">
-                    {/* CORREÇÃO: Usando BarChart3 (ícone) em vez de BarChart (gráfico) */}
+                    {/* ✅ CORREÇÃO APLICADA: Usando BarChart3 (ícone) */}
                     <div className="p-2 bg-indigo-50 text-indigo-600 rounded-lg"><BarChart3 size={18}/></div>
                     <h3 className="font-black text-slate-800 uppercase text-sm">Evolução de Vendas</h3>
                 </div>
