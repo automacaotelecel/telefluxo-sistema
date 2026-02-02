@@ -1,19 +1,22 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { 
-  XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, AreaChart, Area 
+  XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, AreaChart, Area, BarChart, Bar, Cell 
 } from 'recharts';
 import { 
-  DollarSign, ShoppingBag, TrendingUp, Trophy, AlertCircle, 
-  LayoutGrid, Users, Package, RefreshCw, Store, 
-  BarChart3
+  DollarSign, TrendingUp, Trophy, AlertCircle, 
+  LayoutGrid, Users, Calendar, Store, Smartphone, X 
 } from 'lucide-react';
 
 export default function SalesDashboard() {
   const [summary, setSummary] = useState<any>({ total_vendas: 0, total_pecas: 0, ticket_medio: 0 });
   const [chartData, setChartData] = useState<any[]>([]);
   const [ranking, setRanking] = useState<any[]>([]);
-  const [storeRanking, setStoreRanking] = useState<any[]>([]);
   const [errorMsg, setErrorMsg] = useState<string>('');
+  
+  // --- ESTADOS DE FILTRO ---
+  const [selectedStore, setSelectedStore] = useState('todas'); // Filtro de Loja
+  const [filterDate, setFilterDate] = useState('este_mes');    // Filtro de Data (Visual)
+  const [filterCategory, setFilterCategory] = useState('todas'); // Filtro de Categoria (Visual)
   const [activeTab, setActiveTab] = useState('visao_geral');
 
   const API_URL = 'https://telefluxo-aplicacao.onrender.com';
@@ -40,210 +43,322 @@ export default function SalesDashboard() {
 
     fetchData('/bi/summary', setSummary);
     
-    // Dados para o Gráfico
     fetchData('/bi/chart', (data: any[]) => {
        if(Array.isArray(data)) setChartData(data);
     });
     
-    // Dados para o Ranking
     fetchData('/bi/ranking', (data: any[]) => {
         if(!Array.isArray(data)) return;
         setRanking(data);
-        
-        // Agrupa por Loja para criar o Ranking de Lojas
-        const stores: any = {};
-        data.forEach(item => {
-            const lojaNome = item.loja || 'OUTROS';
-            if (!stores[lojaNome]) stores[lojaNome] = 0;
-            stores[lojaNome] += (item.total || 0);
-        });
-        const storeList = Object.keys(stores)
-            .map(key => ({ nome: key, total: stores[key] }))
-            .sort((a, b) => b.total - a.total);
-        setStoreRanking(storeList);
     });
 
   }, []);
 
-  // --- ATUALIZAÇÃO MANUAL (Chama o Python) ---
-  const handleRefresh = async () => {
-      try {
-          await fetch(`${API_URL}/sales/refresh`, { method: 'POST' });
-          alert("Atualização solicitada! Aguarde 10 segundos e recarregue a página.");
-      } catch (e) { alert("Erro ao solicitar atualização."); }
+  // --- LÓGICA DE PROCESSAMENTO E FILTROS ---
+
+  // 1. Lista Única de Lojas (para o Dropdown)
+  const uniqueStores = useMemo(() => {
+      const stores = new Set(ranking.map(r => r.loja).filter(Boolean));
+      return Array.from(stores).sort();
+  }, [ranking]);
+
+  // 2. Ranking de Lojas (Agrupado)
+  const storeRanking = useMemo(() => {
+      const stores: any = {};
+      ranking.forEach(item => {
+          const lojaNome = item.loja || 'OUTROS';
+          if (!stores[lojaNome]) stores[lojaNome] = 0;
+          stores[lojaNome] += (item.total || 0);
+      });
+      return Object.keys(stores)
+          .map(key => ({ nome: key, total: stores[key] }))
+          .sort((a, b) => b.total - a.total);
+  }, [ranking]);
+
+  // 3. Ranking de Vendedores (Filtrado pela Loja Selecionada)
+  const filteredSellers = useMemo(() => {
+      if (selectedStore === 'todas') return ranking;
+      return ranking.filter(r => r.loja === selectedStore);
+  }, [ranking, selectedStore]);
+
+  // 4. Resumo Dinâmico (Cards se atualizam ao filtrar loja)
+  const filteredSummary = useMemo(() => {
+      if (selectedStore === 'todas') return summary;
+      
+      // Recalcula summary baseado nos vendedores filtrados
+      const total = filteredSellers.reduce((acc, curr) => acc + (curr.total || 0), 0);
+      const pecas = filteredSellers.reduce((acc, curr) => acc + (curr.qtd || 0), 0);
+      const ticket = pecas > 0 ? total / pecas : 0; // Aproximação (Ideal seria via backend)
+
+      return { total_vendas: total, total_pecas: pecas, ticket_medio: ticket };
+  }, [summary, filteredSellers, selectedStore]);
+
+
+  // --- CÁLCULO DE TENDÊNCIA ---
+  const calculateProjection = () => {
+      const today = new Date();
+      const currentDay = today.getDate();
+      const lastDayOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
+      const totalAtual = filteredSummary.total_vendas || 0;
+      
+      if (currentDay === 0) return 0;
+      return (totalAtual / currentDay) * lastDayOfMonth;
+  };
+
+  const projectionValue = calculateProjection();
+  const performancePercent = projectionValue > 0 ? (filteredSummary.total_vendas / projectionValue) * 100 : 0;
+
+  // --- HANDLER DE CLIQUE NO GRÁFICO ---
+  const handleStoreClick = (data: any) => {
+      if (data && data.nome) {
+          // Se clicar na mesma loja, limpa o filtro. Se for nova, seleciona.
+          setSelectedStore(prev => prev === data.nome ? 'todas' : data.nome);
+      }
   };
 
   return (
-    <div className="h-full overflow-y-auto p-4 md:p-8 bg-[#F3F4F6] font-sans">
+    <div className="h-full overflow-y-auto p-4 md:p-6 bg-[#F0F2F5] font-sans text-slate-800">
       
-      {/* ALERTA DE ERRO DISCRETO SE HOUVER */}
-      {errorMsg && (
-        <div className="mb-6 p-4 bg-red-100 border border-red-400 text-red-700 rounded-lg flex items-center gap-3 animate-pulse">
-            <AlertCircle size={24} /> <span className="text-xs font-bold">Erro de conexão: {errorMsg}</span>
-        </div>
-      )}
-
-      {/* --- HEADER --- */}
-      <div className="bg-white rounded-2xl p-6 shadow-sm border border-slate-200 mb-6 flex flex-col md:flex-row justify-between items-center gap-4">
+      {/* --- HEADER COM FILTROS AVANÇADOS --- */}
+      <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center mb-6 gap-4 bg-white p-4 rounded-xl shadow-sm border border-slate-200">
         <div>
-            <div className="flex items-center gap-3 mb-1">
-                <div className="p-2 bg-blue-600 rounded-lg text-white"><LayoutGrid size={20} /></div>
-                <h1 className="text-xl font-black text-slate-800 tracking-tight">PERFORMANCE COMERCIAL v2.0</h1>
+            <div className="flex items-center gap-2 mb-1">
+                <div className="p-2 bg-[#1428A0] rounded text-white"><LayoutGrid size={18} /></div>
+                <h1 className="text-lg font-black uppercase tracking-tight text-[#1428A0]">Performance Comercial</h1>
             </div>
-            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-12">SAMSUNG • BI AUTOMÁTICO</p>
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-10">
+                Samsung • BI Automático • v2.2
+            </p>
         </div>
 
-        <div className="flex bg-slate-100 p-1 rounded-xl">
-            <button onClick={() => setActiveTab('visao_geral')} className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-black uppercase transition-all ${activeTab === 'visao_geral' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}>
-                <TrendingUp size={14} /> Visão Geral
-            </button>
-            <button onClick={() => setActiveTab('vendedores')} className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-black uppercase transition-all ${activeTab === 'vendedores' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}>
-                <Users size={14} /> Vendedores
+        {/* ÁREA DE FILTROS GLOBAIS */}
+        <div className="flex flex-wrap gap-3 items-center w-full xl:w-auto">
+            
+            {/* FILTRO DE LOJA (Interativo) */}
+            <div className={`flex items-center gap-2 px-3 py-2 rounded-lg border transition-all ${selectedStore !== 'todas' ? 'bg-blue-50 border-blue-300' : 'bg-slate-50 border-slate-200'}`}>
+                <Store size={14} className={selectedStore !== 'todas' ? "text-blue-600" : "text-slate-400"}/>
+                <select 
+                    className="bg-transparent text-xs font-bold text-slate-700 outline-none uppercase min-w-[140px]"
+                    value={selectedStore}
+                    onChange={(e) => setSelectedStore(e.target.value)}
+                >
+                    <option value="todas">Todas as Lojas</option>
+                    {uniqueStores.map(store => (
+                        <option key={store} value={store}>{store}</option>
+                    ))}
+                </select>
+                {selectedStore !== 'todas' && (
+                    <button onClick={() => setSelectedStore('todas')} className="text-blue-600 hover:bg-blue-100 rounded-full p-1">
+                        <X size={12} />
+                    </button>
+                )}
+            </div>
+
+            {/* Filtro de Categoria */}
+            <div className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-lg border border-slate-200">
+                <Smartphone size={14} className="text-slate-400"/>
+                <select 
+                    className="bg-transparent text-xs font-bold text-slate-600 outline-none uppercase"
+                    value={filterCategory}
+                    onChange={(e) => setFilterCategory(e.target.value)}
+                >
+                    <option value="todas">Todas as Categorias</option>
+                    <option value="smartphone">Smartphones</option>
+                    <option value="wearable">Wearables</option>
+                    <option value="tablet">Tablets</option>
+                </select>
+            </div>
+
+            {/* Filtro de Data */}
+            <div className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-lg border border-slate-200">
+                <Calendar size={14} className="text-slate-400"/>
+                <select 
+                    className="bg-transparent text-xs font-bold text-slate-600 outline-none uppercase"
+                    value={filterDate}
+                    onChange={(e) => setFilterDate(e.target.value)}
+                >
+                    <option value="este_mes">Este Mês</option>
+                    <option value="hoje">Hoje</option>
+                    <option value="ontem">Ontem</option>
+                    <option value="mes_passado">Mês Passado</option>
+                </select>
+            </div>
+
+            <button onClick={() => window.location.reload()} className="bg-slate-800 hover:bg-slate-900 text-white px-4 py-2 rounded-lg text-xs font-bold transition-colors ml-auto xl:ml-0">
+                ATUALIZAR
             </button>
         </div>
-
-        <button onClick={handleRefresh} className="bg-slate-900 hover:bg-slate-800 text-white px-4 py-2 rounded-lg text-xs font-bold flex items-center gap-2 transition-colors">
-            <RefreshCw size={14} /> ATUALIZAR DADOS
-        </button>
       </div>
 
-      {/* --- CONTEÚDO DA ABA: VISÃO GERAL --- */}
+      {/* --- NAVEGAÇÃO ENTRE ABAS --- */}
+      <div className="flex gap-2 mb-6">
+          <button 
+            onClick={() => setActiveTab('visao_geral')} 
+            className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all ${activeTab === 'visao_geral' ? 'bg-[#1428A0] text-white shadow-md' : 'bg-white text-slate-500 hover:bg-slate-50'}`}
+          >
+            Visão Geral
+          </button>
+          <button 
+            onClick={() => setActiveTab('vendedores')} 
+            className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all ${activeTab === 'vendedores' ? 'bg-[#1428A0] text-white shadow-md' : 'bg-white text-slate-500 hover:bg-slate-50'}`}
+          >
+            Vendedores
+          </button>
+      </div>
+
       {activeTab === 'visao_geral' && (
         <>
-            {/* CARDS */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-                <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm relative overflow-hidden">
-                    <div className="flex justify-between items-start mb-4"><span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Realizado</span><div className="p-2 bg-green-100 text-green-600 rounded-lg"><DollarSign size={16}/></div></div>
-                    <div className="text-3xl font-black text-slate-800 tracking-tight">{formatMoney(summary.total_vendas)}</div>
+            {/* CARDS DE KPI (Filtrados) */}
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+                <div className="bg-white p-5 rounded-xl shadow-sm border-l-4 border-[#1428A0]">
+                    <div className="flex justify-between items-start mb-2">
+                        <span className="text-[10px] font-black text-slate-400 uppercase">Faturamento {selectedStore !== 'todas' && '(Loja)'}</span>
+                        <DollarSign size={16} className="text-[#1428A0]"/>
+                    </div>
+                    <div className="text-2xl font-black text-slate-800 tracking-tight">{formatMoney(filteredSummary.total_vendas)}</div>
                 </div>
-                <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm relative overflow-hidden">
-                    <div className="flex justify-between items-start mb-4"><span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Peças</span><div className="p-2 bg-purple-100 text-purple-600 rounded-lg"><ShoppingBag size={16}/></div></div>
-                    <div className="text-3xl font-black text-slate-800 tracking-tight">{summary.total_pecas}</div>
+
+                <div className="bg-white p-5 rounded-xl shadow-sm border-l-4 border-purple-500">
+                    <div className="flex justify-between items-start mb-2">
+                        <span className="text-[10px] font-black text-slate-400 uppercase">Tendência Mensal</span>
+                        <TrendingUp size={16} className="text-purple-500"/>
+                    </div>
+                    <div className="text-2xl font-black text-slate-800 tracking-tight">{formatMoney(projectionValue)}</div>
+                    <div className="text-[9px] text-purple-600 font-bold mt-1">{performancePercent.toFixed(0)}% da Projeção</div>
                 </div>
-                <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm relative overflow-hidden">
-                    <div className="flex justify-between items-start mb-4"><span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Ticket Médio</span><div className="p-2 bg-blue-100 text-blue-600 rounded-lg"><BarChart3 size={16}/></div></div>
-                    <div className="text-3xl font-black text-slate-800 tracking-tight">{formatMoney(summary.ticket_medio)}</div>
+
+                <div className="bg-white p-5 rounded-xl shadow-sm border-l-4 border-slate-800">
+                    <div className="flex justify-between items-start mb-2">
+                        <span className="text-[10px] font-black text-slate-400 uppercase">Peças</span>
+                        <Users size={16} className="text-slate-800"/>
+                    </div>
+                    <div className="text-2xl font-black text-slate-800 tracking-tight">{filteredSummary.total_pecas}</div>
+                </div>
+
+                <div className="bg-white p-5 rounded-xl shadow-sm border-l-4 border-green-500">
+                    <div className="flex justify-between items-start mb-2">
+                        <span className="text-[10px] font-black text-slate-400 uppercase">Ticket Médio</span>
+                        <Trophy size={16} className="text-green-500"/>
+                    </div>
+                    <div className="text-2xl font-black text-slate-800 tracking-tight">{formatMoney(filteredSummary.ticket_medio)}</div>
                 </div>
             </div>
 
-            {/* SPLIT: RANKING LOJAS (ESQUERDA) vs RANKING VENDEDORES (DIREITA) */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
-                {/* Ranking Lojas */}
-                <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-6 h-96 overflow-y-auto custom-scrollbar">
-                    <div className="flex items-center gap-2 mb-6 border-b border-slate-100 pb-4 sticky top-0 bg-white z-10">
-                        <div className="p-2 bg-indigo-50 text-indigo-600 rounded-lg"><Store size={18}/></div>
-                        <h3 className="font-black text-slate-800 uppercase text-sm">Ranking de Lojas</h3>
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6 h-[400px]">
+                {/* RANKING DE LOJAS (CLICÁVEL) */}
+                <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-100 flex flex-col h-full overflow-hidden">
+                    <div className="flex items-center gap-2 mb-4 border-b border-slate-100 pb-2">
+                        <Store size={14} className="text-slate-400"/>
+                        <h3 className="font-black text-slate-700 uppercase text-xs">Ranking de Lojas (Clique para Filtrar)</h3>
                     </div>
-                    <div className="space-y-3">
-                        {storeRanking.length === 0 ? <p className="text-xs text-slate-400">Carregando...</p> : storeRanking.map((loja, i) => (
-                            <div key={i} className="flex items-center justify-between p-2 hover:bg-slate-50 rounded-lg">
-                                <div className="flex items-center gap-3">
-                                    <span className="w-6 h-6 flex items-center justify-center bg-slate-100 text-slate-600 text-[10px] font-black rounded">{i+1}</span>
-                                    <span className="text-xs font-bold text-slate-700 uppercase">{loja.nome}</span>
-                                </div>
-                                <span className="text-xs font-black text-slate-800">{formatMoney(loja.total)}</span>
-                            </div>
-                        ))}
-                    </div>
-                </div>
-
-                {/* Ranking Vendedores (Top 10 Resumido) */}
-                <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-6 h-96 overflow-y-auto custom-scrollbar">
-                    <div className="flex items-center gap-2 mb-6 border-b border-slate-100 pb-4 sticky top-0 bg-white z-10">
-                        <div className="p-2 bg-amber-50 text-amber-500 rounded-lg"><Trophy size={18}/></div>
-                        <h3 className="font-black text-slate-800 uppercase text-sm">Top Vendedores</h3>
-                    </div>
-                    <div className="space-y-3">
-                        {ranking.slice(0, 20).map((v, i) => (
-                            <div key={i} className="flex items-center justify-between p-2 hover:bg-slate-50 rounded-lg">
-                                <div className="flex items-center gap-3">
-                                    <div className={`w-6 h-6 rounded flex items-center justify-center text-[10px] font-black ${i < 3 ? 'bg-amber-100 text-amber-600' : 'bg-slate-100 text-slate-500'}`}>{i+1}</div>
-                                    <span className="text-xs font-bold text-slate-700 uppercase truncate w-40" title={v.nome}>{v.nome}</span>
-                                </div>
-                                <span className="text-xs font-black text-slate-800">{formatMoney(v.total)}</span>
-                            </div>
-                        ))}
-                    </div>
-                </div>
-            </div>
-
-            {/* GRÁFICO (NO FINAL) */}
-            <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-6" style={{ minHeight: '300px' }}>
-                <div className="flex items-center gap-2 mb-6 border-b border-slate-100 pb-4">
-                    <div className="p-2 bg-indigo-50 text-indigo-600 rounded-lg"><BarChart3 size={18}/></div>
-                    <h3 className="font-black text-slate-800 uppercase text-sm">Evolução de Vendas</h3>
-                </div>
-                <div className="h-64 w-full">
-                    {chartData && chartData.length > 0 ? (
+                    <div className="flex-1 min-h-0 text-[10px]">
                         <ResponsiveContainer width="100%" height="100%">
-                            <AreaChart data={chartData}>
-                                <defs>
-                                    <linearGradient id="colorValor" x1="0" y1="0" x2="0" y2="1">
-                                        <stop offset="5%" stopColor="#4F46E5" stopOpacity={0.1}/>
-                                        <stop offset="95%" stopColor="#4F46E5" stopOpacity={0}/>
-                                    </linearGradient>
-                                </defs>
-                                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                                <XAxis dataKey="dia" axisLine={false} tickLine={false} tick={{fontSize: 10, fontWeight: 700, fill: '#94a3b8'}} />
-                                <YAxis axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#94a3b8'}} tickFormatter={(val) => `R$${val/1000}k`} />
-                                <Tooltip formatter={(value: any) => [formatMoney(value), 'Venda']} />
-                                <Area type="monotone" dataKey="valor" stroke="#4F46E5" strokeWidth={3} fillOpacity={1} fill="url(#colorValor)" />
-                            </AreaChart>
+                            <BarChart
+                                layout="vertical"
+                                data={storeRanking.slice(0, 12)}
+                                margin={{ top: 5, right: 30, left: 0, bottom: 5 }}
+                                barSize={18}
+                            >
+                                <CartesianGrid strokeDasharray="3 3" horizontal={true} vertical={false} stroke="#f1f5f9"/>
+                                <XAxis type="number" hide />
+                                <YAxis 
+                                    dataKey="nome" 
+                                    type="category" 
+                                    width={110} 
+                                    tick={{fontSize: 9, fontWeight: 700, fill: '#475569'}}
+                                    interval={0}
+                                />
+                                <Tooltip cursor={{fill: '#f1f5f9'}} formatter={(val: number) => [formatMoney(val), 'Faturamento']} />
+                                <Bar 
+                                    dataKey="total" 
+                                    radius={[0, 4, 4, 0]} 
+                                    onClick={handleStoreClick} 
+                                    style={{ cursor: 'pointer' }}
+                                >
+                                    {storeRanking.map((entry, index) => (
+                                        <Cell 
+                                            key={`cell-${index}`} 
+                                            fill={entry.nome === selectedStore ? '#25D366' : (index === 0 ? '#1428A0' : '#64748b')} 
+                                        />
+                                    ))}
+                                </Bar>
+                            </BarChart>
                         </ResponsiveContainer>
-                    ) : (
-                        <div className="flex h-full items-center justify-center text-slate-400 text-xs italic">
-                            Gráfico aguardando dados...
+                    </div>
+                </div>
+
+                {/* LISTA TOP VENDEDORES (FILTRADA) */}
+                <div className="lg:col-span-2 bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden flex flex-col">
+                    <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+                        <div className="flex items-center gap-2">
+                            <Users size={14} className="text-slate-500"/>
+                            <h3 className="font-black text-slate-700 uppercase text-xs">
+                                {selectedStore === 'todas' ? 'Top Vendedores (Geral)' : `Vendedores: ${selectedStore}`}
+                            </h3>
                         </div>
-                    )}
+                    </div>
+                    <div className="overflow-y-auto flex-1 p-4">
+                        <table className="w-full text-left border-collapse">
+                            <tbody>
+                                {filteredSellers.slice(0, 10).map((v, i) => (
+                                    <tr key={i} className="border-b border-slate-50 hover:bg-blue-50/30 transition-colors">
+                                        <td className="p-2 w-8"><span className={`w-5 h-5 flex items-center justify-center rounded text-[9px] font-bold ${i<3 ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-500'}`}>{i+1}</span></td>
+                                        <td className="p-2 text-xs font-bold text-slate-700 uppercase">{v.nome}</td>
+                                        <td className="p-2 text-right text-xs font-black text-[#1428A0]">{formatMoney(v.total)}</td>
+                                        <td className="p-2 text-right text-[10px] text-green-600 font-bold">{formatPercent(v.crescimento)}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
             </div>
         </>
       )}
 
-      {/* --- CONTEÚDO DA ABA: VENDEDORES (TABELA DETALHADA) --- */}
       {activeTab === 'vendedores' && (
-        <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
-            <div className="p-6 border-b border-slate-100 flex justify-between items-center">
+        <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
+            <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
                 <div className="flex items-center gap-2">
-                    <div className="p-2 bg-blue-50 text-blue-600 rounded-lg"><Users size={18}/></div>
-                    <h3 className="font-black text-slate-800 uppercase text-sm">Ranking Detalhado</h3>
+                    <Users size={14} className="text-slate-500"/>
+                    <h3 className="font-black text-slate-700 uppercase text-xs">
+                        Ranking Detalhado {selectedStore !== 'todas' ? `- ${selectedStore}` : ''}
+                    </h3>
                 </div>
-                <span className="text-[10px] font-bold text-slate-400 uppercase">{ranking.length} COLABORADORES</span>
+                <span className="text-[10px] font-bold text-slate-400 uppercase">{filteredSellers.length} RESULTADOS</span>
             </div>
             
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto max-h-[600px]">
                 <table className="w-full text-left border-collapse">
-                    <thead>
-                        <tr className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase tracking-wider border-b border-slate-100">
-                            <th className="p-4">#</th>
-                            <th className="p-4">Vendedor</th>
-                            <th className="p-4">Região</th>
-                            <th className="p-4 text-right text-blue-600">Fat. Atual</th>
-                            <th className="p-4 text-right">Fat. Anterior</th>
-                            <th className="p-4 text-right">Cresc.</th>
-                            <th className="p-4 text-right">PA</th>
-                            <th className="p-4 text-right">Ticket</th>
-                            <th className="p-4 text-right">Qtd</th>
-                            <th className="p-4 text-right text-purple-600">% Seg</th>
+                    <thead className="sticky top-0 bg-white shadow-sm z-10">
+                        <tr className="text-[9px] font-black text-slate-400 uppercase tracking-wider">
+                            <th className="p-3 text-center">#</th>
+                            <th className="p-3">Vendedor</th>
+                            <th className="p-3">Loja</th>
+                            <th className="p-3 text-right text-[#1428A0]">Faturamento</th>
+                            <th className="p-3 text-right">Meta / Ant.</th>
+                            <th className="p-3 text-right">Cresc.</th>
+                            <th className="p-3 text-right">PA</th>
+                            <th className="p-3 text-right">Ticket</th>
+                            <th className="p-3 text-right text-purple-600">% Seg</th>
                         </tr>
                     </thead>
                     <tbody className="text-xs font-bold text-slate-700">
-                        {ranking.map((v, i) => (
-                            <tr key={i} className="border-b border-slate-50 hover:bg-blue-50/50 transition-colors group">
-                                <td className="p-4">
-                                    <span className={`w-6 h-6 flex items-center justify-center rounded text-[10px] ${i<3 ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-500'}`}>{i+1}</span>
+                        {filteredSellers.map((v, i) => (
+                            <tr key={i} className="border-b border-slate-50 hover:bg-blue-50/30 transition-colors">
+                                <td className="p-3 text-center">
+                                    <span className={`w-5 h-5 flex items-center justify-center rounded text-[9px] ${i<3 ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-500'}`}>{i+1}</span>
                                 </td>
-                                <td className="p-4 uppercase group-hover:text-blue-600 transition-colors">{v.nome}</td>
-                                <td className="p-4 text-slate-400">{v.regiao || '-'}</td>
-                                <td className="p-4 text-right font-black text-slate-800">{formatMoney(v.total)}</td>
-                                <td className="p-4 text-right text-slate-500">{formatMoney(v.fat_anterior)}</td>
-                                <td className={`p-4 text-right ${v.crescimento >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                                <td className="p-3 uppercase">{v.nome}</td>
+                                <td className="p-3 text-slate-400 text-[10px] uppercase">{v.loja}</td>
+                                <td className="p-3 text-right font-black text-slate-800">{formatMoney(v.total)}</td>
+                                <td className="p-3 text-right text-slate-400">{formatMoney(v.fat_anterior)}</td>
+                                <td className={`p-3 text-right ${v.crescimento >= 0 ? 'text-green-600' : 'text-red-500'}`}>
                                     {formatPercent(v.crescimento)}
                                 </td>
-                                <td className="p-4 text-right text-slate-600">{Number(v.pa || 0).toFixed(2)}</td>
-                                <td className="p-4 text-right text-slate-600">{formatMoney(v.ticket)}</td>
-                                <td className="p-4 text-right text-slate-800">{v.qtd}</td>
-                                <td className="p-4 text-right font-black text-purple-600">{formatPercent(v.pct_seguro)}</td>
+                                <td className="p-3 text-right text-slate-600">{Number(v.pa || 0).toFixed(2)}</td>
+                                <td className="p-3 text-right text-slate-600">{formatMoney(v.ticket)}</td>
+                                <td className="p-3 text-right font-black text-purple-600">{formatPercent(v.pct_seguro)}</td>
                             </tr>
                         ))}
                     </tbody>
