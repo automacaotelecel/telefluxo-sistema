@@ -1,11 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { 
-  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, AreaChart, Area 
+  XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, AreaChart, Area 
 } from 'recharts';
 import { 
   DollarSign, ShoppingBag, TrendingUp, Trophy, AlertCircle, 
-  MapPin, Calendar, LayoutGrid, Users, Package, RefreshCw, Store, 
-  BarChart3 // ✅ ÍCONE CORRETO
+  LayoutGrid, Users, Package, RefreshCw, Store, 
+  BarChart3
 } from 'lucide-react';
 
 export default function SalesDashboard() {
@@ -34,7 +34,7 @@ export default function SalesDashboard() {
             setter(data);
         } catch (err: any) {
             console.error(`❌ Erro ${endpoint}:`, err);
-            // Não mostra erro na tela se for apenas cache vazio
+            setErrorMsg(prev => `${prev} | ${endpoint}: ${err.message}`);
         }
     };
 
@@ -76,6 +76,13 @@ export default function SalesDashboard() {
   return (
     <div className="h-full overflow-y-auto p-4 md:p-8 bg-[#F3F4F6] font-sans">
       
+      {/* ALERTA DE ERRO DISCRETO SE HOUVER */}
+      {errorMsg && (
+        <div className="mb-6 p-4 bg-red-100 border border-red-400 text-red-700 rounded-lg flex items-center gap-3 animate-pulse">
+            <AlertCircle size={24} /> <span className="text-xs font-bold">Erro de conexão: {errorMsg}</span>
+        </div>
+      )}
+
       {/* --- HEADER --- */}
       <div className="bg-white rounded-2xl p-6 shadow-sm border border-slate-200 mb-6 flex flex-col md:flex-row justify-between items-center gap-4">
         <div>
@@ -179,7 +186,7 @@ export default function SalesDashboard() {
                                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
                                 <XAxis dataKey="dia" axisLine={false} tickLine={false} tick={{fontSize: 10, fontWeight: 700, fill: '#94a3b8'}} />
                                 <YAxis axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#94a3b8'}} tickFormatter={(val) => `R$${val/1000}k`} />
-                                <Tooltip formatter={(value: number) => [formatMoney(value), 'Venda']} />
+                                <Tooltip formatter={(value: any) => [formatMoney(value), 'Venda']} />
                                 <Area type="monotone" dataKey="valor" stroke="#4F46E5" strokeWidth={3} fillOpacity={1} fill="url(#colorValor)" />
                             </AreaChart>
                         </ResponsiveContainer>
