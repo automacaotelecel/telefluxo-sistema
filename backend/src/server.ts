@@ -491,6 +491,7 @@ const LOJAS_MAP_GLOBAL: Record<string, string> = {
     "12309173001066": "CD TAGUATINGA"
 };
 
+// ✅ LISTA DE CORREÇÃO MANUAL NO SERVIDOR
 const CORRECAO_NOMES_SERVER: Record<string, string> = {
     "UBERABA": "UBERABA SHOPPING",
     "UBERLÂNDIA": "UBERLÂNDIA SHOPPING",
@@ -508,17 +509,18 @@ const CORRECAO_NOMES_SERVER: Record<string, string> = {
 
 
 // ==========================================
-// 🛡️ SISTEMA DE SEGURANÇA E FILTROS (ATUALIZADO)
+// 🛡️ SISTEMA DE SEGURANÇA E FILTROS (FIX TS2322)
 // ==========================================
 
-// Função Auxiliar: Descobre o CNPJ pelo Nome da Loja (Reverso)
+// Função Auxiliar: Descobre o CNPJ pelo Nome da Loja
 function getCnpjByName(storeName: string): string | null {
     let cleanName = String(storeName).trim().toUpperCase();
     
-    // ✅ 1. Tenta corrigir o nome se estiver na lista de apelidos
-    if (CORRECAO_NOMES_SERVER[cleanName]) {
-        console.log(`🔄 Corrigindo busca: '${cleanName}' -> '${CORRECAO_NOMES_SERVER[cleanName]}'`);
-        cleanName = CORRECAO_NOMES_SERVER[cleanName];
+    // ✅ CORREÇÃO DO ERRO: Verifica e atribui com segurança
+    const correcao = CORRECAO_NOMES_SERVER[cleanName];
+    if (correcao) {
+        console.log(`🔄 Corrigindo busca: '${cleanName}' -> '${correcao}'`);
+        cleanName = correcao;
     }
 
     // 2. Busca no mapa oficial
@@ -558,32 +560,33 @@ async function getSalesFilter(userId: string, tableType: 'vendas' | 'kpi'): Prom
         return "1=0"; 
     }
 
-    const rawStoreNames = user.allowedStores.split(',').map(s => s.trim());
+    // Garante que é array de strings para evitar erro de tipagem
+    const rawStoreNames = user.allowedStores.split(',').map((s: string) => s.trim());
     
-    // ✅ AQUI ESTÁ O SEGREDO: Aplica a correção de nomes TAMBÉM no filtro do usuário
-    const correctedStoreNames = rawStoreNames.map(s => {
+    // ✅ Aplica a correção de nomes TAMBÉM no filtro do usuário
+    const correctedStoreNames = rawStoreNames.map((s: string) => {
         const upper = s.toUpperCase();
-        // Se o cara tem "Park" no cadastro, vira "PARK SHOPPING"
+        // O "|| upper" garante que nunca será undefined, resolvendo o erro
         const corrigido = CORRECAO_NOMES_SERVER[upper] || upper;
         if (corrigido !== upper) console.log(`🔧 Filtro Ajustado: ${upper} -> ${corrigido}`);
         return corrigido;
     });
 
     if (tableType === 'kpi') {
-        // Tabela KPI usa NOME DA LOJA (Textual)
-        const storesSql = correctedStoreNames.map(s => `'${s}'`).join(',');
+        // Tabela KPI usa NOME DA LOJA
+        const storesSql = correctedStoreNames.map((s: string) => `'${s}'`).join(',');
         console.log(`🟡 Filtro KPI: loja IN (${storesSql})`);
         return `loja IN (${storesSql})`;
     } else {
         // Tabela VENDAS usa CNPJ
-        const cnpjs = correctedStoreNames.map(name => getCnpjByName(name)).filter(c => c !== null);
+        const cnpjs = correctedStoreNames.map((name: string) => getCnpjByName(name)).filter((c: string | null) => c !== null);
         
         if (cnpjs.length === 0) {
             console.log("🔴 Bloqueio: Nenhuma loja encontrada no mapa de CNPJs.");
             return "1=0";
         }
         
-        const cnpjsSql = cnpjs.map(c => `'${c}'`).join(',');
+        const cnpjsSql = cnpjs.map((c: string | null) => `'${c}'`).join(',');
         console.log(`🟡 Filtro VENDAS: cnpj_empresa IN (${cnpjsSql})`);
         return `cnpj_empresa IN (${cnpjsSql})`;
     }
