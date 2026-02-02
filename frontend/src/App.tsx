@@ -7,7 +7,8 @@ import NewTaskModal from "./components/NewTaskModal";
 import Login from "./components/Login";
 import Agenda from "./components/Agenda"; 
 import ManagerDashboard from "./components/ManagerDashboard"; 
-import SalesModule from "./components/SalesModule"; 
+// 🔴 CORREÇÃO 1: Importando o Dashboard NOVO (SalesDashboard) em vez do SalesModule antigo
+import SalesDashboard from "./components/SalesDashboard"; 
 import NotificationBell from "./components/NotificationBell";
 import Home from "./components/home";
 import DeptBulletin from "./components/DeptBulletin";
@@ -17,7 +18,7 @@ import {
   FileText, CheckCircle, LayoutDashboard, Users, LogOut, 
   Calendar, BarChart3, ChevronDown, ChevronRight, Circle, Plus,
   TrendingUp, Home as HomeIcon, MessageSquare, DollarSign,
-  Package, Menu, X // <--- ADICIONEI OS ÍCONES 'Menu' e 'X' AQUI
+  Package, Menu, X 
 } from 'lucide-react';
 
 function App() {
@@ -28,7 +29,6 @@ function App() {
   const [isUserModalOpen, setIsUserModalOpen] = useState(false);
   const [isNewTaskModalOpen, setIsNewTaskModalOpen] = useState(false);
   
-  // --- NOVO: Estado para controlar o menu no celular ---
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   const [expanded, setExpanded] = useState({ general: false, mine: true, info: false });
@@ -58,7 +58,6 @@ function App() {
   const isAdmin = user?.isAdmin === true || Number(user?.isAdmin) === 1;
   const isManager = user?.role?.toLowerCase().includes('gerente') || user?.role?.toLowerCase().includes('gestor');
 
-  // Hierarquia: Quem pode ver o quê?
   const canViewSales = ['CEO', 'DIRETOR', 'LOJA'].includes(userRole) || isAdmin;
   const canViewStock = ['CEO', 'DIRETOR', 'LOJA'].includes(userRole) || isAdmin;
   const canViewFinance = ['CEO', 'DIRETOR', 'ADM'].includes(userRole) || isAdmin;
@@ -69,10 +68,9 @@ function App() {
 
   const handleLogout = () => { localStorage.clear(); window.location.reload(); };
 
-  // --- NOVO: Função auxiliar para fechar o menu ao clicar em um item (UX Mobile) ---
   const handleNavigate = (view: string) => {
       setCurrentView(view);
-      setIsMobileMenuOpen(false); // Fecha o menu no celular automaticamente
+      setIsMobileMenuOpen(false);
   };
 
   if (isLoading) return <div className="h-screen bg-slate-900 flex items-center justify-center text-white font-black uppercase tracking-widest animate-pulse">Iniciando TeleFluxo...</div>;
@@ -92,7 +90,6 @@ function App() {
   return (
     <div className="flex h-screen bg-slate-50 font-sans text-slate-800 overflow-hidden">
       
-      {/* --- BACKDROP ESCURO (SÓ APARECE NO CELULAR QUANDO O MENU ESTÁ ABERTO) --- */}
       {isMobileMenuOpen && (
         <div 
             className="fixed inset-0 bg-black/60 z-30 md:hidden backdrop-blur-sm transition-opacity"
@@ -100,8 +97,6 @@ function App() {
         />
       )}
 
-      {/* --- MENU LATERAL (ASIDE) RESPONSIVO --- */}
-      {/* Alterações: 'fixed' no mobile, 'relative' no PC. Efeito de slide com translate-x */}
       <aside className={`
           fixed inset-y-0 left-0 z-40 w-64 bg-slate-900 text-white flex flex-col shadow-2xl transition-transform duration-300 ease-in-out
           md:relative md:translate-x-0
@@ -112,7 +107,6 @@ function App() {
               <div className="w-8 h-8 bg-orange-600 rounded text-white flex items-center justify-center font-black italic shadow-lg">T</div>
               <span className="tracking-tighter font-black">TELE<span className="text-orange-500">FLUXO</span></span>
           </div>
-          {/* Botão de Fechar (X) - Só aparece no celular */}
           <button onClick={() => setIsMobileMenuOpen(false)} className="md:hidden text-slate-400 hover:text-white">
               <X size={24} />
           </button>
@@ -245,7 +239,6 @@ function App() {
       <main className="flex-1 flex flex-col overflow-hidden w-full">
         <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-4 md:px-8 shadow-sm shrink-0">
             <div className="flex items-center gap-3">
-                {/* --- BOTÃO HAMBURGUER (SÓ NO CELULAR) --- */}
                 <button 
                     onClick={() => setIsMobileMenuOpen(true)} 
                     className="md:hidden text-slate-600 hover:text-orange-600 transition-colors"
@@ -279,7 +272,8 @@ function App() {
             ) : currentView === 'manager_dash' ? (
                 <ManagerDashboard currentUser={user} />
             ) : currentView === 'sales_dash' ? (
-                <SalesModule />
+                // 🔴 CORREÇÃO 2: Agora carregamos o componente NOVO e CORRETO
+                <SalesDashboard />
             ) : currentView === 'team' ? (
                 <div className="flex-1 p-4 md:p-8 overflow-y-auto">
                     <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
