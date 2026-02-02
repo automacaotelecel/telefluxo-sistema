@@ -577,31 +577,32 @@ app.get('/bi/chart', async (req, res) => {
 });
 
 // Ranking das vendas
+// --- ROTA: RANKING / KPI VENDEDORES ---
 app.get('/bi/ranking', async (req, res) => {
     if (!fs.existsSync(GLOBAL_DB_PATH)) return res.json([]);
     const db = new sqlite3.Database(GLOBAL_DB_PATH);
 
-    // Seleciona as colunas exatas que o Python enviou
     const sql = `
         SELECT 
             vendedor as nome,
             loja,
             regiao,
-            fat_atual as total,
-            fat_anterior,
+            faturamento as total,      -- O banco tem 'faturamento', o site quer 'total'
+            mes_anterior as fat_anterior, -- O banco tem 'mes_anterior', o site quer 'fat_anterior'
             crescimento,
             pa,
             ticket,
             qtd,
             pct_seguro
         FROM vendedores 
-        ORDER BY fat_atual DESC
+        WHERE faturamento > 0  -- Opcional: esconde quem está zerado
+        ORDER BY faturamento DESC
     `;
 
     db.all(sql, [], (err, rows) => {
         db.close();
         if (err) {
-            console.error("Erro ao ler KPIs:", err);
+            console.error("Erro SQL Ranking:", err);
             return res.json([]);
         }
         res.json(rows);

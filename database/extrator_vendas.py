@@ -191,7 +191,7 @@ def enviar_dados_para_api(endpoint: str, dados: List[Dict[str, Any]]) -> bool:
 
 
 def integrar_vendas_geral():
-    # ✅ ADICIONADO: retornar bool (mantém tudo e só acrescenta retorno)
+    # Verifica se arquivo existe
     if not os.path.exists(CAMINHO_EXCEL):
         print("❌ Arquivo Excel não encontrado.")
         return False
@@ -205,37 +205,46 @@ def integrar_vendas_geral():
 
     print(f"📌 Linhas lidas (bruto): {len(df)}")
 
-    # Remove canceladas (coluna existe na sua planilha)
+    # Remove canceladas
     if "CANCELADO" in df.columns:
         df = df[df["CANCELADO"].astype(str).str.strip().str.upper() == "N"].copy()
         print(f"📌 Linhas após remover canceladas: {len(df)}")
 
-    # Escolhe colunas corretas (pela planilha real)
+    # Definição das colunas (apenas para referência, pois vamos forçar a S)
     col_data = "DATA_EMISSAO"
     col_vendedor = "NOME_VENDEDOR"
     col_desc = "DESCRICAO"
     col_qtd = "QUANTIDADE" if "QUANTIDADE" in df.columns else "QTD REAL"
-    nome_coluna_s = df.columns[18] 
-    print(f"🎯 Usando coluna S para valor: {nome_coluna_s}")        
-    treated["total_liquido"] = pd.to_numeric(df.iloc[:, 18], errors="coerce").fillna(0)
     col_loja = "LOJA SISTEMA" if "LOJA SISTEMA" in df.columns else "NOME_FANTASIA"
     col_familia = "CATEGORIA REAL" if "CATEGORIA REAL" in df.columns else "CATEGORIA"
     col_regiao = "REGIAO"
 
     try:
+        # 1. CRIA A TABELA PRIMEIRO (Isso resolve o seu erro)
         treated = pd.DataFrame()
+
+        # 2. PREENCHE AS COLUNAS PADRÃO
         treated["data_emissao"] = pd.to_datetime(df[col_data], dayfirst=True, errors="coerce")
         treated = treated.dropna(subset=["data_emissao"])
         treated["data_emissao"] = treated["data_emissao"].dt.strftime("%Y-%m-%d")
 
         treated["nome_vendedor"] = df[col_vendedor].astype(str).str.strip().str.upper()
         treated["descricao"] = df[col_desc].astype(str).str.strip().str.upper()
+        
+        # Quantidade
         treated["quantidade"] = pd.to_numeric(df[col_qtd], errors="coerce").fillna(0)
-        treated["total_liquido"] = pd.to_numeric(df[col_total], errors="coerce").fillna(0)
 
-        # 🔥 Aqui é a correção principal: LOJA -> CNPJ
+        # -----------------------------------------------------------
+        # 🎯 AQUI ESTÁ A CORREÇÃO: COLUNA S (Índice 18)
+        # -----------------------------------------------------------
+        print(f"🎯 Usando coluna S (índice 18) para VALOR REAL...")
+        treated["total_liquido"] = pd.to_numeric(df.iloc[:, 18], errors="coerce").fillna(0)
+        # -----------------------------------------------------------
+
+        # Mapeamento de Loja -> CNPJ
         treated["cnpj_empresa"] = df[col_loja].map(loja_para_cnpj)
 
+        # Família e Região
         treated["familia"] = df[col_familia].astype(str).str.strip().str.upper()
         treated["regiao"] = df[col_regiao].astype(str).str.strip().str.upper()
 
@@ -251,13 +260,13 @@ def integrar_vendas_geral():
         print(f"❌ Erro tratamento VENDAS: {e}")
         return False
 
+    # Envia para a API
     dados_json = treated.to_dict(orient="records")
     ok = enviar_dados_para_api("/api/sync/vendas", dados_json)
 
     if ok:
         print("✅ Vendas enviadas e sincronizadas com sucesso.")
-        # ✅ ADICIONADO: pequena pausa para reduzir chance de lock no SQLite
-        time.sleep(10)
+        time.sleep(5) # Pausa de segurança
         return True
     else:
         print("❌ Falha ao enviar vendas.")
@@ -265,41 +274,91 @@ def integrar_vendas_geral():
 
 
 def integrar_kpi_vendedores():
-    # ✅ ADICIONADO: retornar bool
-    print("🏆 Lendo Aba API VENDEDORES...")
+    print("🏆 Calculando KPIs Reais (A partir da aba VENDAS)...")
+    
+    # 1. Carrega as duas abas
     try:
-        df = pd.read_excel(CAMINHO_EXCEL, sheet_name="API VENDEDORES", engine="openpyxl")
+        df_vendas = pd.read_excel(CAMINHO_EXCEL, sheet_name="VENDAS", engine="openpyxl")
+        df_meta = pd.read_excel(CAMINHO_EXCEL, sheet_name="API VENDEDORES", engine="openpyxl")
     except Exception as e:
-        print(f"❌ Erro leitura Aba Vendedores: {e}")
+        print(f"❌ Erro leitura Excel: {e}")
         return False
 
-    df_kpi = pd.DataFrame()
-    try:
-        df_kpi["loja"] = df.iloc[:, 0].astype(str).str.strip().str.upper()          # A
-        df_kpi["vendedor"] = df.iloc[:, 1].astype(str).str.strip().str.upper()      # B
-        df_kpi["fat_atual"] = pd.to_numeric(df.iloc[:, 2], errors="coerce").fillna(0)       # C
-        df_kpi["tendencia"] = pd.to_numeric(df.iloc[:, 3], errors="coerce").fillna(0)      # D
-        df_kpi["fat_anterior"] = pd.to_numeric(df.iloc[:, 4], errors="coerce").fillna(0)   # E
-        df_kpi["crescimento"] = pd.to_numeric(df.iloc[:, 5], errors="coerce").fillna(0)    # F
-        df_kpi["seguros"] = pd.to_numeric(df.iloc[:, 9], errors="coerce").fillna(0)        # J
-        df_kpi["pa"] = pd.to_numeric(df.iloc[:, 12], errors="coerce").fillna(0)            # M
-        df_kpi["qtd"] = pd.to_numeric(df.iloc[:, 13], errors="coerce").fillna(0)           # N
-        df_kpi["ticket"] = pd.to_numeric(df.iloc[:, 14], errors="coerce").fillna(0)        # O
-        df_kpi["regiao"] = df.iloc[:, 16].astype(str).str.strip().str.upper()              # Q
-        df_kpi["pct_seguro"] = pd.to_numeric(df.iloc[:, 18], errors="coerce").fillna(0)    # S
+    # 2. Prepara a base de Vendas (Raw Data)
+    # Garante que estamos lendo a Coluna S (Total Real) e Qtd Real
+    col_vendedor = "NOME_VENDEDOR"
+    col_loja = "LOJA SISTEMA" if "LOJA SISTEMA" in df_vendas.columns else "NOME_FANTASIA"
+    
+    # Limpeza básica
+    df_vendas = df_vendas[df_vendas["CANCELADO"].astype(str).str.upper() == "N"].copy()
+    
+    # Força conversão numérica
+    df_vendas["total_real"] = pd.to_numeric(df_vendas.iloc[:, 18], errors="coerce").fillna(0) # Coluna S
+    df_vendas["qtd_real"] = pd.to_numeric(df_vendas["QTD REAL"], errors="coerce").fillna(0)
+    
+    # Agrupa por Vendedor para ter os Números Reais
+    # Conta NF distintas para Ticket Médio e PA
+    kpi_real = df_vendas.groupby(col_vendedor).agg({
+        "total_real": "sum",
+        "qtd_real": "sum",
+        col_loja: "first", # Pega a loja do vendedor
+        "NOTA_FISCAL": pd.Series.nunique, # Conta notas únicas para PA/Ticket
+        "REGIAO": "first"
+    }).reset_index()
 
-        df_kpi = df_kpi[df_kpi["vendedor"].notna()]
-        df_kpi = df_kpi[df_kpi["vendedor"].astype(str).str.upper() != "NAN"]
+    # 3. Prepara a base de Metas/Anterior (Do Excel API VENDEDORES)
+    # Vamos pegar apenas o que não conseguimos calcular: Fat Anterior e % Crescimento Estimado
+    df_meta_clean = pd.DataFrame()
+    df_meta_clean["vendedor"] = df_meta.iloc[:, 1].astype(str).str.strip().str.upper() # Col B
+    df_meta_clean["fat_anterior"] = pd.to_numeric(df_meta.iloc[:, 4], errors="coerce").fillna(0) # Col E
+    df_meta_clean["pct_seguro"] = pd.to_numeric(df_meta.iloc[:, 18], errors="coerce").fillna(0) # Col S (% Seguro)
 
-    except Exception as e:
-        print(f"❌ Erro mapeamento KPI Vendedores: {e}")
-        return False
+    # 4. Cruza as informações (Merge)
+    # Usa os dados calculados (Real) e complementa com o Excel (Meta/Anterior)
+    df_final = pd.merge(kpi_real, df_meta_clean, left_on=col_vendedor, right_on="vendedor", how="left")
+    
+    # 5. Monta o JSON Final
+    output_list = []
+    for _, row in df_final.iterrows():
+        vendedor = str(row[col_vendedor]).strip().upper()
+        if vendedor == "NAN" or vendedor == "NONE": continue
 
-    dados_json = df_kpi.to_dict(orient="records")
-    ok = enviar_dados_para_api("/api/sync/vendedores", dados_json)
+        # Cálculos de KPI
+        total = float(row["total_real"])
+        qtd = int(row["qtd_real"])
+        num_nf = int(row["NOTA_FISCAL"]) if row["NOTA_FISCAL"] > 0 else 1
+        
+        # Ticket Médio e PA Calculados na hora (Mais confiável que o Excel)
+        ticket = total / num_nf if num_nf > 0 else 0
+        pa = qtd / num_nf if num_nf > 0 else 0
+        
+        # Dados Históricos (do Excel)
+        anterior = float(row["fat_anterior"]) if not pd.isna(row["fat_anterior"]) else 0
+        
+        # Cálculo de Crescimento vs Mês Anterior
+        crescimento = ((total - anterior) / anterior) if anterior > 0 else 0
+
+        output_list.append({
+            "loja": str(row[col_loja]).upper(),
+            "vendedor": vendedor,
+            "faturamento": total,        # <--- MUDOU DE 'fat_atual' PARA 'faturamento'
+            "tendencia": 0,              # Campo obrigatório no banco, enviamos 0 ou calculamos
+            "mes_anterior": anterior,    # <--- MUDOU DE 'fat_anterior' PARA 'mes_anterior'
+            "crescimento": crescimento,
+            "pa": pa,
+            "ticket": ticket,
+            "qtd": qtd,
+            "regiao": str(row["REGIAO"]).upper(),
+            "pct_seguro": float(row["pct_seguro"]),
+            "seguros": 0                 # Campo obrigatório, pode virar 0 por enquanto
+        })
+
+    # Envia
+    print(f"📊 Processados {len(output_list)} vendedores com dados reais.")
+    ok = enviar_dados_para_api("/api/sync/vendedores", output_list)
 
     if ok:
-        print("✅ KPIs enviados e sincronizados com sucesso.")
+        print("✅ KPIs Reais calculados e sincronizados!")
         return True
     else:
         print("❌ Falha ao enviar KPIs.")
