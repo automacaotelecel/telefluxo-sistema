@@ -5,7 +5,7 @@ import {
 import { 
   DollarSign, ShoppingBag, TrendingUp, Trophy, AlertCircle, 
   MapPin, Calendar, LayoutGrid, Users, Package, RefreshCw, Store, 
-  BarChart3 // <--- ✅ CORREÇÃO: Importando o ícone correto aqui
+  BarChart3 // ✅ ÍCONE CORRETO
 } from 'lucide-react';
 
 export default function SalesDashboard() {
@@ -16,11 +16,10 @@ export default function SalesDashboard() {
   const [errorMsg, setErrorMsg] = useState<string>('');
   const [activeTab, setActiveTab] = useState('visao_geral');
 
-  // Ajuste a URL se necessário
   const API_URL = 'https://telefluxo-aplicacao.onrender.com';
   
   const formatMoney = (val: number) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val || 0);
-  const formatPercent = (val: number) => `${(val * 100).toFixed(1)}%`;
+  const formatPercent = (val: number) => `${((val || 0) * 100).toFixed(1)}%`;
 
   useEffect(() => {
     const savedUser = localStorage.getItem('user') || localStorage.getItem('telefluxo_user');
@@ -35,14 +34,20 @@ export default function SalesDashboard() {
             setter(data);
         } catch (err: any) {
             console.error(`❌ Erro ${endpoint}:`, err);
-            setErrorMsg(prev => `${prev} | ${endpoint}: ${err.message}`);
+            // Não mostra erro na tela se for apenas cache vazio
         }
     };
 
     fetchData('/bi/summary', setSummary);
-    fetchData('/bi/chart', setChartData);
     
+    // Dados para o Gráfico
+    fetchData('/bi/chart', (data: any[]) => {
+       if(Array.isArray(data)) setChartData(data);
+    });
+    
+    // Dados para o Ranking
     fetchData('/bi/ranking', (data: any[]) => {
+        if(!Array.isArray(data)) return;
         setRanking(data);
         
         // Agrupa por Loja para criar o Ranking de Lojas
@@ -50,7 +55,7 @@ export default function SalesDashboard() {
         data.forEach(item => {
             const lojaNome = item.loja || 'OUTROS';
             if (!stores[lojaNome]) stores[lojaNome] = 0;
-            stores[lojaNome] += (item.total || 0); // 'total' vem do banco
+            stores[lojaNome] += (item.total || 0);
         });
         const storeList = Object.keys(stores)
             .map(key => ({ nome: key, total: stores[key] }))
@@ -60,21 +65,23 @@ export default function SalesDashboard() {
 
   }, []);
 
+  // --- ATUALIZAÇÃO MANUAL (Chama o Python) ---
+  const handleRefresh = async () => {
+      try {
+          await fetch(`${API_URL}/sales/refresh`, { method: 'POST' });
+          alert("Atualização solicitada! Aguarde 10 segundos e recarregue a página.");
+      } catch (e) { alert("Erro ao solicitar atualização."); }
+  };
+
   return (
     <div className="h-full overflow-y-auto p-4 md:p-8 bg-[#F3F4F6] font-sans">
       
-      {errorMsg && (
-        <div className="mb-6 p-4 bg-red-100 border border-red-400 text-red-700 rounded-lg flex items-center gap-3 animate-pulse">
-            <AlertCircle size={24} /> <span className="text-xs font-bold">{errorMsg}</span>
-        </div>
-      )}
-
       {/* --- HEADER --- */}
       <div className="bg-white rounded-2xl p-6 shadow-sm border border-slate-200 mb-6 flex flex-col md:flex-row justify-between items-center gap-4">
         <div>
             <div className="flex items-center gap-3 mb-1">
                 <div className="p-2 bg-blue-600 rounded-lg text-white"><LayoutGrid size={20} /></div>
-                <h1 className="text-xl font-black text-slate-800 tracking-tight">PERFORMANCE COMERCIAL</h1>
+                <h1 className="text-xl font-black text-slate-800 tracking-tight">PERFORMANCE COMERCIAL v2.0</h1>
             </div>
             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-12">SAMSUNG • BI AUTOMÁTICO</p>
         </div>
@@ -86,13 +93,10 @@ export default function SalesDashboard() {
             <button onClick={() => setActiveTab('vendedores')} className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-black uppercase transition-all ${activeTab === 'vendedores' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}>
                 <Users size={14} /> Vendedores
             </button>
-            <button className="flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-black uppercase text-slate-300 cursor-not-allowed">
-                <Package size={14} /> Estoque
-            </button>
         </div>
 
-        <button onClick={() => window.location.reload()} className="bg-slate-900 hover:bg-slate-800 text-white px-4 py-2 rounded-lg text-xs font-bold flex items-center gap-2 transition-colors">
-            <RefreshCw size={14} /> ATUALIZAR
+        <button onClick={handleRefresh} className="bg-slate-900 hover:bg-slate-800 text-white px-4 py-2 rounded-lg text-xs font-bold flex items-center gap-2 transition-colors">
+            <RefreshCw size={14} /> ATUALIZAR DADOS
         </button>
       </div>
 
@@ -106,12 +110,12 @@ export default function SalesDashboard() {
                     <div className="text-3xl font-black text-slate-800 tracking-tight">{formatMoney(summary.total_vendas)}</div>
                 </div>
                 <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm relative overflow-hidden">
-                    <div className="flex justify-between items-start mb-4"><span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Projeção</span><div className="p-2 bg-purple-100 text-purple-600 rounded-lg"><TrendingUp size={16}/></div></div>
-                    <div className="text-3xl font-black text-slate-800 tracking-tight text-purple-600">{formatMoney(summary.total_vendas * 1.1)}</div>
+                    <div className="flex justify-between items-start mb-4"><span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Peças</span><div className="p-2 bg-purple-100 text-purple-600 rounded-lg"><ShoppingBag size={16}/></div></div>
+                    <div className="text-3xl font-black text-slate-800 tracking-tight">{summary.total_pecas}</div>
                 </div>
                 <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm relative overflow-hidden">
-                    <div className="flex justify-between items-start mb-4"><span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Volume (Peças)</span><div className="p-2 bg-blue-100 text-blue-600 rounded-lg"><ShoppingBag size={16}/></div></div>
-                    <div className="text-3xl font-black text-slate-800 tracking-tight">{summary.total_pecas}</div>
+                    <div className="flex justify-between items-start mb-4"><span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Ticket Médio</span><div className="p-2 bg-blue-100 text-blue-600 rounded-lg"><BarChart3 size={16}/></div></div>
+                    <div className="text-3xl font-black text-slate-800 tracking-tight">{formatMoney(summary.ticket_medio)}</div>
                 </div>
             </div>
 
@@ -124,7 +128,7 @@ export default function SalesDashboard() {
                         <h3 className="font-black text-slate-800 uppercase text-sm">Ranking de Lojas</h3>
                     </div>
                     <div className="space-y-3">
-                        {storeRanking.length === 0 ? <p className="text-xs text-slate-400">Sem dados...</p> : storeRanking.map((loja, i) => (
+                        {storeRanking.length === 0 ? <p className="text-xs text-slate-400">Carregando...</p> : storeRanking.map((loja, i) => (
                             <div key={i} className="flex items-center justify-between p-2 hover:bg-slate-50 rounded-lg">
                                 <div className="flex items-center gap-3">
                                     <span className="w-6 h-6 flex items-center justify-center bg-slate-100 text-slate-600 text-[10px] font-black rounded">{i+1}</span>
@@ -157,14 +161,13 @@ export default function SalesDashboard() {
             </div>
 
             {/* GRÁFICO (NO FINAL) */}
-            <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-6">
+            <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-6" style={{ minHeight: '300px' }}>
                 <div className="flex items-center gap-2 mb-6 border-b border-slate-100 pb-4">
-                    {/* ✅ CORREÇÃO APLICADA: Usando BarChart3 (ícone) */}
                     <div className="p-2 bg-indigo-50 text-indigo-600 rounded-lg"><BarChart3 size={18}/></div>
                     <h3 className="font-black text-slate-800 uppercase text-sm">Evolução de Vendas</h3>
                 </div>
-                <div className="h-64">
-                    {chartData.length > 0 ? (
+                <div className="h-64 w-full">
+                    {chartData && chartData.length > 0 ? (
                         <ResponsiveContainer width="100%" height="100%">
                             <AreaChart data={chartData}>
                                 <defs>
@@ -181,7 +184,9 @@ export default function SalesDashboard() {
                             </AreaChart>
                         </ResponsiveContainer>
                     ) : (
-                        <div className="flex h-full items-center justify-center text-slate-400 text-xs">Carregando gráfico...</div>
+                        <div className="flex h-full items-center justify-center text-slate-400 text-xs italic">
+                            Gráfico aguardando dados...
+                        </div>
                     )}
                 </div>
             </div>

@@ -578,27 +578,26 @@ app.get('/bi/chart', async (req, res) => {
 
 
 // --- ROTA: RANKING / KPI VENDEDORES (CORREÇÃO FINAL) ---
+// --- ROTA: RANKING / KPI VENDEDORES (CORREÇÃO FINAL) ---
 app.get('/bi/ranking', async (req, res) => {
-    // Verifica se o banco existe
     if (!fs.existsSync(GLOBAL_DB_PATH)) return res.json([]);
-    
     const db = new sqlite3.Database(GLOBAL_DB_PATH);
 
-    // AQUI ESTAVA O ERRO: Trocamos 'FROM Vendedor' por 'FROM vendedores_kpi'
+    // ✅ CORREÇÃO: Lendo da tabela correta 'vendedores_kpi'
     const sql = `
         SELECT 
             vendedor as nome,
             loja,
             regiao,
-            fat_atual as total,          -- O Site espera 'total', o Banco tem 'fat_atual'
-            fat_anterior as fat_anterior,
+            fat_atual as total,          -- O Site espera 'total'
+            fat_anterior,
             crescimento,
             pa,
             ticket,
             qtd,
             pct_seguro
-        FROM vendedores_kpi              -- ✅ Tabela correta (onde o Python salvou)
-        WHERE fat_atual > 0              -- Esconde quem está zerado
+        FROM vendedores_kpi              -- ✅ Tabela onde o Python salvou os dados
+        WHERE fat_atual > 0
         ORDER BY fat_atual DESC
     `;
 
