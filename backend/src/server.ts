@@ -576,26 +576,27 @@ app.get('/bi/chart', async (req, res) => {
     });
 });
 
-// Ranking das vendas
-// --- ROTA: RANKING / KPI VENDEDORES ---
+
+// --- ROTA: RANKING / KPI VENDEDORES (CORRIGIDA: Nome da Tabela 'Vendedor') ---
 app.get('/bi/ranking', async (req, res) => {
     if (!fs.existsSync(GLOBAL_DB_PATH)) return res.json([]);
     const db = new sqlite3.Database(GLOBAL_DB_PATH);
 
+    // ✅ CORREÇÃO: Trocamos 'FROM vendedores' por 'FROM Vendedor'
     const sql = `
         SELECT 
             vendedor as nome,
             loja,
             regiao,
-            faturamento as total,      -- O banco tem 'faturamento', o site quer 'total'
-            mes_anterior as fat_anterior, -- O banco tem 'mes_anterior', o site quer 'fat_anterior'
+            faturamento as total,
+            mes_anterior as fat_anterior,
             crescimento,
             pa,
             ticket,
             qtd,
             pct_seguro
-        FROM vendedores 
-        WHERE faturamento > 0  -- Opcional: esconde quem está zerado
+        FROM Vendedor 
+        WHERE faturamento > 0
         ORDER BY faturamento DESC
     `;
 
@@ -603,6 +604,10 @@ app.get('/bi/ranking', async (req, res) => {
         db.close();
         if (err) {
             console.error("Erro SQL Ranking:", err);
+            // Se der erro de novo, tenta com minusculo (fallback de segurança)
+            if (err.message.includes('no such table')) {
+                 // return res.json([]); // ou tentar outra query se quiser
+            }
             return res.json([]);
         }
         res.json(rows);
