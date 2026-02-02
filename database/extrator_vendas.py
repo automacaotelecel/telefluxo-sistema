@@ -49,6 +49,21 @@ LOJAS_MAP = {
     "12309173001066": "CD TAGUATINGA",
 }
 
+# ✅ [NOVO] LISTA DE CORREÇÃO MANUAL (BLINDAGEM)
+# Garante que nomes errados do Excel virem nomes certos do Sistema
+CORRECAO_NOMES = {
+    "UBERABA": "UBERABA SHOPPING",
+    "UBERLÂNDIA": "UBERLÂNDIA SHOPPING",
+    "UBERLANDIA": "UBERLÂNDIA SHOPPING",
+    "CNB SHOPPING": "CONJUNTO NACIONAL",
+    "CNB QUIOSQUE": "CONJUNTO NACIONAL QUIOSQUE",
+    "QQ TAGUATINGA SHOPPING": "TAGUATINGA SHOPPING QQ",
+    "ESTOQUE CD": "CD TAGUATINGA",
+    "CD": "CD TAGUATINGA",
+    "PASSEIO DAS ÁGUAS": "PASSEIO DAS AGUAS",
+    "TERRACO SHOPPING": "TERRAÇO SHOPPING",
+    "PARK": "PARK SHOPPING"
+}
 
 def norm(s: Any) -> str:
     s = "" if s is None else str(s)
@@ -82,6 +97,10 @@ def loja_para_cnpj(loja: Any) -> str | None:
     para CNPJ limpo, baseado no mapa.
     """
     t = norm(loja)
+    
+    # ✅ [CORREÇÃO 1] Verifica a lista manual primeiro
+    if t in CORRECAO_NOMES:
+        t = CORRECAO_NOMES[t]
 
     # Remove prefixos comuns
     for prefix in ["SAMSUNG - MRF - ", "SSG "]:
@@ -92,6 +111,26 @@ def loja_para_cnpj(loja: Any) -> str | None:
     t = ALIASES_N.get(t, t)
 
     return REVERSE_LOJAS.get(t)
+
+# ✅ [NOVO] FUNÇÃO DE LIMPEZA DE NOME
+def get_clean_store_name(raw_name: Any) -> str:
+    """Função Mestra para limpar nomes de lojas antes de salvar"""
+    nome_sujo = norm(raw_name)
+    
+    # 1. Verifica Correção Manual Direta (Mais confiável)
+    if nome_sujo in CORRECAO_NOMES:
+        return CORRECAO_NOMES[nome_sujo]
+    
+    # 2. Verifica se já é um nome oficial (ex: PARK SHOPPING)
+    if nome_sujo in REVERSE_LOJAS:
+        return LOJAS_MAP[REVERSE_LOJAS[nome_sujo]]
+        
+    # 3. Tenta via CNPJ (Fallback)
+    cnpj = loja_para_cnpj(nome_sujo)
+    if cnpj and cnpj in LOJAS_MAP:
+        return LOJAS_MAP[cnpj]
+        
+    return nome_sujo # Retorna o original se não achar nada
 
 
 def limpar_valores_json(dados: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -242,6 +281,7 @@ def integrar_vendas_geral():
         # -----------------------------------------------------------
 
         # Mapeamento de Loja -> CNPJ
+        # ✅ [CORREÇÃO 2] Usa a função que já tem a correção de nomes
         treated["cnpj_empresa"] = df[col_loja].map(loja_para_cnpj)
 
         # Família e Região
@@ -319,9 +359,23 @@ def integrar_kpi_vendedores():
     
     # 5. Monta o JSON Final
     output_list = []
+    
+    # Debug: Verificar lojas corrigidas
+    lojas_salvas = set()
+
     for _, row in df_final.iterrows():
         vendedor = str(row[col_vendedor]).strip().upper()
         if vendedor == "NAN" or vendedor == "NONE": continue
+
+        # --- AQUI É O PULO DO GATO: LIMPAR O NOME DA LOJA ---
+        # ✅ [CORREÇÃO 3] Usando a nova função blindada get_clean_store_name
+        nome_loja_sujo = str(row[col_loja])
+        nome_loja_limpo = get_clean_store_name(nome_loja_sujo)
+        
+        # Guarda para debug no console
+        if nome_loja_limpo != nome_loja_sujo.strip().upper():
+            lojas_salvas.add(f"{nome_loja_sujo} -> {nome_loja_limpo}")
+        # ----------------------------------------------------
 
         # Cálculos de KPI
         total = float(row["total_real"])
@@ -339,11 +393,11 @@ def integrar_kpi_vendedores():
         crescimento = ((total - anterior) / anterior) if anterior > 0 else 0
 
         output_list.append({
-            "loja": str(row[col_loja]).upper(),
+            "loja": nome_loja_limpo,     # ✅ AGORA SALVA O NOME LIMPO
             "vendedor": vendedor,
-            "fat_atual": total,          # ✅ CORRIGIDO: O servidor lê item.fat_atual
+            "fat_atual": total,          
             "tendencia": 0,
-            "fat_anterior": anterior,    # ✅ CORRIGIDO: O servidor lê item.fat_anterior
+            "fat_anterior": anterior,    
             "crescimento": crescimento,
             "pa": pa,
             "ticket": ticket,
@@ -354,6 +408,10 @@ def integrar_kpi_vendedores():
         })
 
     # Envia
+    print("🔎 DEBUG: Exemplos de lojas corrigidas:")
+    for l in list(lojas_salvas)[:5]: 
+        print(f"   {l}")
+
     print(f"📊 Processados {len(output_list)} vendedores com dados reais.")
     ok = enviar_dados_para_api("/api/sync/vendedores", output_list)
 
