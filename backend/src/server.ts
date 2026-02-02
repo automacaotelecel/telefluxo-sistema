@@ -518,21 +518,28 @@ const CORRECAO_NOMES_SERVER: Record<string, string> = {
 // ==========================================
 
 // Função Auxiliar: Descobre o CNPJ pelo Nome da Loja (Reverso)
-function getCnpjByName(storeName: string): string | null {
-    let cleanName = String(storeName).trim().toUpperCase();
-    
-    // ✅ 1. CORREÇÃO DE NOMES (Evita erro de digitação)
-    const nomeCorrigido = CORRECAO_NOMES_SERVER[cleanName];
-    if (nomeCorrigido) {
-        cleanName = nomeCorrigido;
-    }
 
-    // 2. Busca no mapa oficial
-    for (const [cnpj, name] of Object.entries(LOJAS_MAP_GLOBAL)) {
-        if (String(name).toUpperCase() === cleanName) return cnpj;
-    }
-    
-    return null;
+function normStore(s: any): string {
+  return String(s ?? "")
+    .replace(/\u00A0/g, " ")   // NBSP -> espaço normal
+    .replace(/\s+/g, " ")      // colapsa múltiplos espaços/tabs
+    .trim()
+    .toUpperCase();
+}
+
+function getCnpjByName(storeName: string): string | null {
+  let cleanName = normStore(storeName);
+
+  // 1) aplica correções (PARK -> PARK SHOPPING etc)
+  const nomeCorrigido = CORRECAO_NOMES_SERVER[cleanName];
+  if (nomeCorrigido) cleanName = normStore(nomeCorrigido);
+
+  // 2) busca no mapa oficial
+  for (const [cnpj, name] of Object.entries(LOJAS_MAP_GLOBAL)) {
+    if (normStore(name) === cleanName) return cnpj;
+  }
+
+  return null;
 }
 
 // O GUARDA-COSTAS INTELIGENTE
@@ -556,25 +563,21 @@ async function getSalesFilter(userId: string, tableType: 'vendas' | 'kpi'): Prom
         return "1=0"; 
     }
 
-    const rawStoreNames = user.allowedStores.split(',').map(s => s.trim());
-    
-    // ✅ TRADUÇÃO DE APELIDOS (Aqui a mágica acontece)
-    // Se o usuário tem "Park" cadastrado, transformamos em "PARK SHOPPING"
-    const correctedStoreNames = rawStoreNames.map(s => {
-        const upper = s.toUpperCase();
-        const corrigido = CORRECAO_NOMES_SERVER[upper];
-        
-        if (corrigido) {
-            console.log(`🔧 Filtro Ajustado: Usuário tem '${upper}', sistema usará '${corrigido}'`);
-            return corrigido;
-        }
-        return upper;
-    });
+    const rawStoreNames = user.allowedStores.split(',').map(s => normStore(s));
 
+    const correctedStoreNames = rawStoreNames.map(s => {
+    const corrigido = CORRECAO_NOMES_SERVER[s];
+        if (corrigido) {
+            console.log(`🔧 Filtro Ajustado: Usuário tem '${s}', sistema usará '${corrigido}'`);
+        return normStore(corrigido);
+    }
+        return s;
+    });
+    
     if (tableType === 'kpi') {
         // Tabela KPI usa NOME DA LOJA (Texto)
         const storesSql = correctedStoreNames.map(s => `'${s}'`).join(',');
-        return `loja IN (${storesSql})`;
+        return `UPPER(loja) IN (${storesSql})`;
     } else {
         // Tabela VENDAS usa CNPJ
         const cnpjs = correctedStoreNames.map(name => getCnpjByName(name)).filter((c): c is string => c !== null);
