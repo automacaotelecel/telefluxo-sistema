@@ -509,85 +509,94 @@ const CORRECAO_NOMES_SERVER: Record<string, string> = {
 
 
 // ==========================================
-// 🛡️ SISTEMA DE SEGURANÇA E FILTROS (FIX TS2322)
+// 🛡️ SISTEMA DE SEGURANÇA E FILTROS (VERSÃO FINAL BLINDADA)
 // ==========================================
+
+// 1. MAPA DE TRADUÇÃO (Mantenha o seu LOJAS_MAP_GLOBAL acima deste bloco)
+
+// 2. LISTA DE CORREÇÃO MANUAL
+const CORRECAO_NOMES_SERVER: Record<string, string> = {
+    "UBERABA": "UBERABA SHOPPING",
+    "UBERLÂNDIA": "UBERLÂNDIA SHOPPING",
+    "UBERLANDIA": "UBERLÂNDIA SHOPPING",
+    "CNB SHOPPING": "CONJUNTO NACIONAL",
+    "CNB QUIOSQUE": "CONJUNTO NACIONAL QUIOSQUE",
+    "QQ TAGUATINGA SHOPPING": "TAGUATINGA SHOPPING QQ",
+    "ESTOQUE CD": "CD TAGUATINGA",
+    "CD": "CD TAGUATINGA",
+    "PASSEIO DAS ÁGUAS": "PASSEIO DAS AGUAS",
+    "TERRACO SHOPPING": "TERRAÇO SHOPPING",
+    "PARK": "PARK SHOPPING",
+    "PARKSHOPPING": "PARK SHOPPING",
+    "PARK SHOPPING": "PARK SHOPPING"
+};
 
 // Função Auxiliar: Descobre o CNPJ pelo Nome da Loja
 function getCnpjByName(storeName: string): string | null {
     let cleanName = String(storeName).trim().toUpperCase();
     
-    // ✅ CORREÇÃO DO ERRO: Verifica e atribui com segurança
-    const correcao = CORRECAO_NOMES_SERVER[cleanName];
-    if (correcao) {
-        console.log(`🔄 Corrigindo busca: '${cleanName}' -> '${correcao}'`);
-        cleanName = correcao;
+    // ✅ CORREÇÃO DO ERRO DE TYPE (TS2322):
+    // Verifica se existe antes de atribuir
+    const nomeCorrigido = CORRECAO_NOMES_SERVER[cleanName];
+    if (nomeCorrigido) {
+        // console.log(`🔄 Corrigindo busca CNPJ: '${cleanName}' -> '${nomeCorrigido}'`);
+        cleanName = nomeCorrigido;
     }
 
-    // 2. Busca no mapa oficial
     for (const [cnpj, name] of Object.entries(LOJAS_MAP_GLOBAL)) {
         if (String(name).toUpperCase() === cleanName) return cnpj;
     }
     
-    console.warn(`⚠️ Aviso: A loja '${cleanName}' não foi encontrada no mapa de CNPJs.`);
     return null;
 }
 
 // O GUARDA-COSTAS INTELIGENTE
 async function getSalesFilter(userId: string, tableType: 'vendas' | 'kpi'): Promise<string> {
-    if (!userId || userId === 'undefined') {
-        console.log("⛔ Bloqueio: Usuário não identificado.");
-        return "1=0"; 
-    }
+    if (!userId || userId === 'undefined') return "1=0"; 
 
     const user = await prisma.user.findUnique({ where: { id: userId } });
-    if (!user) {
-        console.log(`⛔ Bloqueio: Usuário ${userId} não encontrado.`);
-        return "1=0"; 
-    }
+    if (!user) return "1=0"; 
 
-    console.log(`👤 ACESSO: ${user.name} | Cargo: ${user.role} | Lojas: [${user.allowedStores}]`);
+    console.log(`👤 LOGIN: ${user.name} | Lojas: [${user.allowedStores}]`);
 
-    // 3. DIRETORIA E ADM: ACESSO TOTAL
+    // 1. DIRETORIA E ADM: ACESSO TOTAL
     const superRoles = ['CEO', 'DIRETOR', 'ADM', 'ADMIN', 'GESTOR', 'SÓCIO', 'MASTER'];
     if (user.isAdmin || superRoles.includes(String(user.role).toUpperCase())) {
-        console.log("🟢 Acesso TOTAL liberado.");
         return "1=1"; 
     }
 
-    // 4. USUÁRIOS COMUNS
+    // 2. USUÁRIOS COMUNS
     if (!user.allowedStores || user.allowedStores.trim() === "") {
-        console.log("🔴 Bloqueio: Usuário sem lojas vinculadas.");
+        console.log("🔴 Bloqueio: Sem lojas vinculadas.");
         return "1=0"; 
     }
 
-    // Garante que é array de strings para evitar erro de tipagem
-    const rawStoreNames = user.allowedStores.split(',').map((s: string) => s.trim());
+    const rawStoreNames = user.allowedStores.split(',').map(s => s.trim());
     
-    // ✅ Aplica a correção de nomes TAMBÉM no filtro do usuário
-    const correctedStoreNames = rawStoreNames.map((s: string) => {
+    // ✅ TRADUÇÃO DE APELIDOS (CORREÇÃO DO ERRO TS)
+    const correctedStoreNames = rawStoreNames.map(s => {
         const upper = s.toUpperCase();
-        // O "|| upper" garante que nunca será undefined, resolvendo o erro
-        const corrigido = CORRECAO_NOMES_SERVER[upper] || upper;
-        if (corrigido !== upper) console.log(`🔧 Filtro Ajustado: ${upper} -> ${corrigido}`);
-        return corrigido;
+        const corrigido = CORRECAO_NOMES_SERVER[upper];
+        
+        if (corrigido) {
+            console.log(`🔧 Filtro Ajustado: Usuário tem '${upper}', sistema usará '${corrigido}'`);
+            return corrigido;
+        }
+        return upper;
     });
 
     if (tableType === 'kpi') {
-        // Tabela KPI usa NOME DA LOJA
-        const storesSql = correctedStoreNames.map((s: string) => `'${s}'`).join(',');
-        console.log(`🟡 Filtro KPI: loja IN (${storesSql})`);
+        const storesSql = correctedStoreNames.map(s => `'${s}'`).join(',');
         return `loja IN (${storesSql})`;
     } else {
-        // Tabela VENDAS usa CNPJ
-        const cnpjs = correctedStoreNames.map((name: string) => getCnpjByName(name)).filter((c: string | null) => c !== null);
+        const cnpjs = correctedStoreNames.map(name => getCnpjByName(name)).filter((c): c is string => c !== null);
         
         if (cnpjs.length === 0) {
-            console.log("🔴 Bloqueio: Nenhuma loja encontrada no mapa de CNPJs.");
+            console.log("🔴 Bloqueio: Lojas não encontradas no mapa de CNPJ.");
             return "1=0";
         }
         
-        const cnpjsSql = cnpjs.map((c: string | null) => `'${c}'`).join(',');
-        console.log(`🟡 Filtro VENDAS: cnpj_empresa IN (${cnpjsSql})`);
+        const cnpjsSql = cnpjs.map(c => `'${c}'`).join(',');
         return `cnpj_empresa IN (${cnpjsSql})`;
     }
 }
