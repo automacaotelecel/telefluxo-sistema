@@ -577,37 +577,35 @@ app.get('/bi/chart', async (req, res) => {
 });
 
 
-// --- ROTA: RANKING / KPI VENDEDORES (CORRIGIDA: Nome da Tabela 'Vendedor') ---
+// --- ROTA: RANKING / KPI VENDEDORES (CORREÇÃO FINAL) ---
 app.get('/bi/ranking', async (req, res) => {
+    // Verifica se o banco existe
     if (!fs.existsSync(GLOBAL_DB_PATH)) return res.json([]);
+    
     const db = new sqlite3.Database(GLOBAL_DB_PATH);
 
-    // ✅ CORREÇÃO: Trocamos 'FROM vendedores' por 'FROM Vendedor'
+    // AQUI ESTAVA O ERRO: Trocamos 'FROM Vendedor' por 'FROM vendedores_kpi'
     const sql = `
         SELECT 
             vendedor as nome,
             loja,
             regiao,
-            faturamento as total,
-            mes_anterior as fat_anterior,
+            fat_atual as total,          -- O Site espera 'total', o Banco tem 'fat_atual'
+            fat_anterior as fat_anterior,
             crescimento,
             pa,
             ticket,
             qtd,
             pct_seguro
-        FROM Vendedor 
-        WHERE faturamento > 0
-        ORDER BY faturamento DESC
+        FROM vendedores_kpi              -- ✅ Tabela correta (onde o Python salvou)
+        WHERE fat_atual > 0              -- Esconde quem está zerado
+        ORDER BY fat_atual DESC
     `;
 
     db.all(sql, [], (err, rows) => {
         db.close();
         if (err) {
             console.error("Erro SQL Ranking:", err);
-            // Se der erro de novo, tenta com minusculo (fallback de segurança)
-            if (err.message.includes('no such table')) {
-                 // return res.json([]); // ou tentar outra query se quiser
-            }
             return res.json([]);
         }
         res.json(rows);
