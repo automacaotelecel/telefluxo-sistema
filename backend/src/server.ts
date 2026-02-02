@@ -576,26 +576,35 @@ app.get('/bi/chart', async (req, res) => {
     });
 });
 
-// --- ROTA: RANKING (QUEM VENDEU MAIS) ---
+// Ranking das vendas
 app.get('/bi/ranking', async (req, res) => {
-    if (!fs.existsSync(DB_PATH)) return res.json([]);
-    
-    const userId = String(req.query.userId || '');
-    const filterWhere = await getSalesFilter(userId);
+    if (!fs.existsSync(GLOBAL_DB_PATH)) return res.json([]);
+    const db = new sqlite3.Database(GLOBAL_DB_PATH);
 
-    const db = new sqlite3.Database(DB_PATH);
-    // Nota: O ranking geralmente é global, mas se quiser filtrar por loja do usuário, usamos o filtro.
-    // Se quiser mostrar o ranking GERAL mesmo para quem é de loja, remova o "WHERE ${filterWhere}" abaixo.
-    const sql = `SELECT NOME_VENDEDOR as nome, SUM(TOTAL_LIQUIDO) as total 
-                 FROM vendas 
-                 WHERE NOME_VENDEDOR IS NOT NULL AND ${filterWhere}
-                 GROUP BY NOME_VENDEDOR 
-                 ORDER BY total DESC LIMIT 5`;
+    // Seleciona as colunas exatas que o Python enviou
+    const sql = `
+        SELECT 
+            vendedor as nome,
+            loja,
+            regiao,
+            fat_atual as total,
+            fat_anterior,
+            crescimento,
+            pa,
+            ticket,
+            qtd,
+            pct_seguro
+        FROM vendedores 
+        ORDER BY fat_atual DESC
+    `;
 
     db.all(sql, [], (err, rows) => {
         db.close();
-        if (err) return res.json([]);
-        res.json(rows || []);
+        if (err) {
+            console.error("Erro ao ler KPIs:", err);
+            return res.json([]);
+        }
+        res.json(rows);
     });
 });
 

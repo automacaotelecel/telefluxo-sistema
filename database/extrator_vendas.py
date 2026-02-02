@@ -215,7 +215,9 @@ def integrar_vendas_geral():
     col_vendedor = "NOME_VENDEDOR"
     col_desc = "DESCRICAO"
     col_qtd = "QUANTIDADE" if "QUANTIDADE" in df.columns else "QTD REAL"
-    col_total = "TOTAL_LIQUIDO" if "TOTAL_LIQUIDO" in df.columns else "TOTAL REAL"
+    nome_coluna_s = df.columns[18] 
+    print(f"🎯 Usando coluna S para valor: {nome_coluna_s}")        
+    treated["total_liquido"] = pd.to_numeric(df.iloc[:, 18], errors="coerce").fillna(0)
     col_loja = "LOJA SISTEMA" if "LOJA SISTEMA" in df.columns else "NOME_FANTASIA"
     col_familia = "CATEGORIA REAL" if "CATEGORIA REAL" in df.columns else "CATEGORIA"
     col_regiao = "REGIAO"
