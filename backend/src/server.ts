@@ -538,52 +538,67 @@ function getCnpjByName(storeName: string): string | null {
   return null;
 }
 
-// O GUARDA-COSTAS INTELIGENTE
+// ==========================================
+// 🛡️ SISTEMA DE SEGURANÇA E FILTROS (VERSÃO DEBUG)
+// ==========================================
+
 async function getSalesFilter(userId: string, tableType: 'vendas' | 'kpi'): Promise<string> {
-    if (!userId || userId === 'undefined') return "1=0"; 
+    console.log(`\n🔍 [SECURITY CHECK] Validando acesso para UserID: "${userId}"`);
 
+    if (!userId || userId === 'undefined' || userId === 'null' || userId === '') {
+        console.warn("⛔ BLOQUEIO: UserID inválido ou não fornecido.");
+        return "1=0"; 
+    }
+
+    // Busca usuário no Prisma (Agora apontando para o mesmo DB)
     const user = await prisma.user.findUnique({ where: { id: userId } });
-    if (!user) return "1=0"; 
+    
+    if (!user) {
+        console.warn("⛔ BLOQUEIO: Usuário não encontrado no Banco de Dados.");
+        return "1=0"; 
+    }
 
-    console.log(`👤 LOGIN: ${user.name} | Cargo: ${user.role} | Lojas no cadastro: [${user.allowedStores}]`);
+    console.log(`👤 USUÁRIO: ${user.name} | CARGO: ${user.role}`);
 
     // 1. DIRETORIA E ADM: ACESSO TOTAL
     const superRoles = ['CEO', 'DIRETOR', 'ADM', 'ADMIN', 'GESTOR', 'SÓCIO', 'MASTER'];
     if (user.isAdmin || superRoles.includes(String(user.role).toUpperCase())) {
+        console.log("✅ ACESSO LIBERADO: Super Usuário/Admin.");
         return "1=1"; 
     }
 
-    // 2. USUÁRIOS COMUNS
+    // 2. USUÁRIOS COMUNS (VENDEDORES/GERENTES)
     if (!user.allowedStores || user.allowedStores.trim() === "") {
-        console.log("🔴 Bloqueio: Sem lojas vinculadas.");
+        console.warn("⛔ BLOQUEIO: Usuário não tem lojas vinculadas no cadastro.");
         return "1=0"; 
     }
 
     const rawStoreNames = user.allowedStores.split(',').map(s => normStore(s));
+    console.log(`🏢 Lojas Permitidas (Cadastro):`, rawStoreNames);
 
     const correctedStoreNames = rawStoreNames.map(s => {
-    const corrigido = CORRECAO_NOMES_SERVER[s];
-        if (corrigido) {
-            console.log(`🔧 Filtro Ajustado: Usuário tem '${s}', sistema usará '${corrigido}'`);
-        return normStore(corrigido);
-    }
-        return s;
+        const corrigido = CORRECAO_NOMES_SERVER[s];
+        return corrigido ? normStore(corrigido) : s;
     });
     
     if (tableType === 'kpi') {
         // Tabela KPI usa NOME DA LOJA (Texto)
+        // BLINDAGEM: Garante que as aspas estão certas
         const storesSql = correctedStoreNames.map(s => `'${s}'`).join(',');
+        console.log(`🛡️ Filtro SQL (KPI): UPPER(loja) IN (${storesSql})`);
         return `UPPER(loja) IN (${storesSql})`;
     } else {
         // Tabela VENDAS usa CNPJ
         const cnpjs = correctedStoreNames.map(name => getCnpjByName(name)).filter((c): c is string => c !== null);
         
         if (cnpjs.length === 0) {
-            console.log("🔴 Bloqueio: Lojas não encontradas no mapa de CNPJ.");
+            console.error("🔴 ERRO CRÍTICO: Nenhuma das lojas do usuário foi encontrada no Mapa de CNPJ.");
+            console.log("Dica: Verifique a grafia em LOJAS_MAP_GLOBAL no server.ts");
             return "1=0";
         }
         
         const cnpjsSql = cnpjs.map(c => `'${c}'`).join(',');
+        console.log(`🛡️ Filtro SQL (Vendas): cnpj_empresa IN (${cnpjsSql})`);
         return `cnpj_empresa IN (${cnpjsSql})`;
     }
 }
@@ -612,27 +627,36 @@ app.get('/sales', async (req, res) => {
   }
 });
 
-
-// --- ROTA: RESUMO (CARDS) ---
+// ATUALIZE A ROTA BI SUMMARY PARA TRATAR NULL CORRETAMENTE
 app.get('/bi/summary', async (req, res) => {
     if (!fs.existsSync(GLOBAL_DB_PATH)) return res.json({ total_vendas: 0, total_pecas: 0, ticket_medio: 0 });
     
     const userId = String(req.query.userId || '');
-    // SEGURANÇA: Filtra por CNPJ
     const filterWhere = await getSalesFilter(userId, 'vendas'); 
 
     const db = new sqlite3.Database(GLOBAL_DB_PATH);
-    const sql = `SELECT SUM(TOTAL_LIQUIDO) as total_vendas, SUM(QUANTIDADE) as total_pecas, COUNT(*) as qtd_notas
+    const sql = `SELECT 
+                    COALESCE(SUM(TOTAL_LIQUIDO), 0) as total_vendas, 
+                    COALESCE(SUM(QUANTIDADE), 0) as total_pecas, 
+                    COUNT(*) as qtd_notas
                  FROM vendas 
-                 WHERE ${filterWhere}`; // <--- Filtro aplicado aqui
+                 WHERE ${filterWhere}`;
 
     db.get(sql, [], (err, row: any) => {
         db.close();
-        if (err) return res.json({ total_vendas: 0, total_pecas: 0, ticket_medio: 0 });
+        if (err) {
+            console.error("Erro SQL Summary:", err);
+            return res.json({ total_vendas: 0, total_pecas: 0, ticket_medio: 0 });
+        }
+        
         const total = row?.total_vendas || 0;
         const pecas = row?.total_pecas || 0;
-        const notas = row?.qtd_notas || 1;
-        res.json({ total_vendas: total, total_pecas: pecas, ticket_medio: total / notas });
+        const notas = row?.qtd_notas || 1; // Evita divisão por zero
+        
+        // Se notas for 0 (nenhuma venda), ticket é 0
+        const ticket = notas > 0 ? total / notas : 0;
+
+        res.json({ total_vendas: total, total_pecas: pecas, ticket_medio: ticket });
     });
 });
 

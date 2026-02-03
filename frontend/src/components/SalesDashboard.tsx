@@ -3,19 +3,19 @@ import {
   XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, AreaChart, Area, BarChart, Bar, Cell 
 } from 'recharts';
 import { 
-  DollarSign, TrendingUp, Trophy, AlertCircle, 
-  LayoutGrid, Users, Calendar, Store, Smartphone, X 
+  DollarSign, TrendingUp, Trophy, 
+  LayoutGrid, Users, Calendar, Store, Smartphone, X, AlertCircle 
 } from 'lucide-react';
 
 export default function SalesDashboard() {
   const [summary, setSummary] = useState<any>({ total_vendas: 0, total_pecas: 0, ticket_medio: 0 });
-  const [chartData, setChartData] = useState<any[]>([]);
+  const [chartData, setChartData] = useState<any[]>([]); // Usado no AreaChart agora
   const [ranking, setRanking] = useState<any[]>([]);
   const [errorMsg, setErrorMsg] = useState<string>('');
   
   // --- ESTADOS DE FILTRO ---
   const [selectedStore, setSelectedStore] = useState('todas');
-  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]); // Data de Hoje
+  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]); 
   const [filterCategory, setFilterCategory] = useState('todas');
   const [activeTab, setActiveTab] = useState('visao_geral');
 
@@ -25,22 +25,41 @@ export default function SalesDashboard() {
   const formatPercent = (val: number) => `${((val || 0) * 100).toFixed(1)}%`;
 
   useEffect(() => {
-    const savedUser = localStorage.getItem('user') || localStorage.getItem('telefluxo_user');
+    // 1. BLINDAGEM DO USER ID
     let userId = '';
-    try { if (savedUser) userId = JSON.parse(savedUser).id || ''; } catch (e) {}
+    try {
+        const rawUser = localStorage.getItem('user') || localStorage.getItem('telefluxo_user');
+        if (rawUser) {
+            const parsed = JSON.parse(rawUser);
+            userId = parsed.id || parsed.userId || parsed._id || '';
+        }
+    } catch (e) {
+        console.error("Erro ao ler usuário:", e);
+    }
 
-    const fetchData = async (endpoint: string, setter: Function) => {
+    if (!userId) {
+        setErrorMsg("Usuário não identificado. Faça login novamente.");
+        return;
+    }
+
+    // 2. FUNÇÃO FETCH CORRIGIDA E IMPLEMENTADA
+    const fetchData = async (endpoint: string, setter: (data: any) => void) => {
         try {
-            const res = await fetch(`${API_URL}${endpoint}?userId=${userId}`);
-            if (!res.ok) throw new Error(`Status: ${res.status}`);
+            // Adiciona o userId na URL
+            const url = `${API_URL}${endpoint}${endpoint.includes('?') ? '&' : '?'}userId=${userId}`;
+            
+            const res = await fetch(url);
+            if (!res.ok) throw new Error(`Erro API: ${res.status}`);
+            
             const data = await res.json();
             setter(data);
         } catch (err: any) {
-            console.error(`❌ Erro ${endpoint}:`, err);
-            setErrorMsg(prev => `${prev} | ${endpoint}: ${err.message}`);
+            console.error(`Erro ao buscar ${endpoint}:`, err);
+            // Não vamos travar a tela por um erro de gráfico, apenas logar
         }
     };
 
+    // 3. CHAMADAS
     fetchData('/bi/summary', setSummary);
     
     fetchData('/bi/chart', (data: any[]) => {
@@ -48,21 +67,18 @@ export default function SalesDashboard() {
     });
     
     fetchData('/bi/ranking', (data: any[]) => {
-        if(!Array.isArray(data)) return;
-        setRanking(data);
+       if(Array.isArray(data)) setRanking(data);
     });
 
   }, []);
 
   // --- LÓGICA DE FILTROS ---
 
-  // 1. Lista Única de Lojas
   const uniqueStores = useMemo(() => {
       const stores = new Set(ranking.map(r => r.loja).filter(Boolean));
       return Array.from(stores).sort();
   }, [ranking]);
 
-  // 2. Ranking de Lojas (Geral)
   const storeRanking = useMemo(() => {
       const stores: any = {};
       ranking.forEach(item => {
@@ -75,13 +91,11 @@ export default function SalesDashboard() {
           .sort((a, b) => b.total - a.total);
   }, [ranking]);
 
-  // 3. Ranking de Vendedores (Filtrado)
   const filteredSellers = useMemo(() => {
       if (selectedStore === 'todas') return ranking;
       return ranking.filter(r => r.loja === selectedStore);
   }, [ranking, selectedStore]);
 
-  // 4. Resumo Dinâmico
   const filteredSummary = useMemo(() => {
       if (selectedStore === 'todas') return summary;
       const total = filteredSellers.reduce((acc, curr) => acc + (curr.total || 0), 0);
@@ -90,7 +104,6 @@ export default function SalesDashboard() {
       return { total_vendas: total, total_pecas: pecas, ticket_medio: ticket };
   }, [summary, filteredSellers, selectedStore]);
 
-  // Projeção
   const calculateProjection = () => {
       const today = new Date();
       const currentDay = today.getDate();
@@ -102,7 +115,6 @@ export default function SalesDashboard() {
   const projectionValue = calculateProjection();
   const performancePercent = projectionValue > 0 ? (filteredSummary.total_vendas / projectionValue) * 100 : 0;
 
-  // Clique no Gráfico
   const handleStoreClick = (data: any) => {
       if (data && data.nome) {
           setSelectedStore(prev => prev === data.nome ? 'todas' : data.nome);
@@ -112,6 +124,14 @@ export default function SalesDashboard() {
   return (
     <div className="h-full overflow-y-auto p-4 md:p-6 bg-[#F0F2F5] font-sans text-slate-800">
       
+      {/* ALERTA DE ERRO (SE HOUVER) */}
+      {errorMsg && (
+        <div className="mb-4 bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative flex items-center gap-2">
+            <AlertCircle size={20} />
+            <span className="block sm:inline">{errorMsg}</span>
+        </div>
+      )}
+
       {/* HEADER DE FILTROS */}
       <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center mb-6 gap-4 bg-white p-4 rounded-xl shadow-sm border border-slate-200">
         <div>
@@ -119,11 +139,11 @@ export default function SalesDashboard() {
                 <div className="p-2 bg-[#1428A0] rounded text-white"><LayoutGrid size={18} /></div>
                 <h1 className="text-lg font-black uppercase tracking-tight text-[#1428A0]">Performance Comercial</h1>
             </div>
-            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-10">Samsung • BI Automático • v2.3</p>
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-10">Samsung • BI Automático • v2.4</p>
         </div>
 
         <div className="flex flex-wrap gap-3 items-center w-full xl:w-auto">
-            {/* FILTRO DE LOJA (AUMENTADO) */}
+            {/* FILTRO DE LOJA */}
             <div className={`flex items-center gap-2 px-3 py-2 rounded-lg border transition-all ${selectedStore !== 'todas' ? 'bg-blue-50 border-blue-300' : 'bg-slate-50 border-slate-200'}`}>
                 <Store size={14} className={selectedStore !== 'todas' ? "text-blue-600" : "text-slate-400"}/>
                 <select 
@@ -156,7 +176,7 @@ export default function SalesDashboard() {
                 </select>
             </div>
 
-            {/* FILTRO DE DATA (CALENDÁRIO REAL) */}
+            {/* FILTRO DE DATA */}
             <div className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-lg border border-slate-200">
                 <Calendar size={14} className="text-slate-400"/>
                 <input 
@@ -202,10 +222,39 @@ export default function SalesDashboard() {
                 </div>
             </div>
 
-            {/* --- LAYOUT REORGANIZADO: LOJAS (2/3) E VENDEDORES (1/3) --- */}
+            {/* GRÁFICO DE TENDÊNCIA (Adicionado para corrigir o erro de variável não usada) */}
+            <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-100 mb-6 h-64">
+                <div className="flex items-center gap-2 mb-4">
+                    <TrendingUp size={14} className="text-slate-400"/>
+                    <h3 className="font-black text-slate-700 uppercase text-xs">Evolução Diária (Últimos 7 dias)</h3>
+                </div>
+                <div className="h-full pb-6">
+                    <ResponsiveContainer width="100%" height="100%">
+                        <AreaChart data={chartData}>
+                            <defs>
+                                <linearGradient id="colorVendas" x1="0" y1="0" x2="0" y2="1">
+                                    <stop offset="5%" stopColor="#1428A0" stopOpacity={0.8}/>
+                                    <stop offset="95%" stopColor="#1428A0" stopOpacity={0}/>
+                                </linearGradient>
+                            </defs>
+                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9"/>
+                            <XAxis dataKey="dia" tick={{fontSize: 10}} axisLine={false} tickLine={false} />
+                            <YAxis hide />
+                            <Tooltip 
+                                contentStyle={{backgroundColor: '#1e293b', borderRadius: '8px', border: 'none', color: '#fff'}}
+                                itemStyle={{color: '#fff', fontSize: '12px'}}
+                                formatter={(val: number) => [formatMoney(val), 'Vendas']}
+                            />
+                            <Area type="monotone" dataKey="valor" stroke="#1428A0" fillOpacity={1} fill="url(#colorVendas)" />
+                        </AreaChart>
+                    </ResponsiveContainer>
+                </div>
+            </div>
+
+            {/* RANKING LOJAS E VENDEDORES */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6 h-[500px]">
                 
-                {/* RANKING DE LOJAS (OCUPA 2 COLUNAS = 2/3) */}
+                {/* RANKING DE LOJAS */}
                 <div className="lg:col-span-2 bg-white p-5 rounded-xl shadow-sm border border-slate-100 flex flex-col h-full overflow-hidden">
                     <div className="flex items-center gap-2 mb-4 border-b border-slate-100 pb-2">
                         <Store size={14} className="text-slate-400"/>
@@ -215,7 +264,7 @@ export default function SalesDashboard() {
                         <ResponsiveContainer width="100%" height="100%">
                             <BarChart
                                 layout="vertical"
-                                data={storeRanking} // Mostra todas se couber, ou ajuste slice
+                                data={storeRanking}
                                 margin={{ top: 5, right: 30, left: 40, bottom: 5 }}
                                 barSize={20}
                             >
@@ -247,7 +296,7 @@ export default function SalesDashboard() {
                     </div>
                 </div>
 
-                {/* LISTA VENDEDORES (OCUPA 1 COLUNA = 1/3) */}
+                {/* LISTA VENDEDORES */}
                 <div className="lg:col-span-1 bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden flex flex-col">
                     <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
                         <div className="flex items-center gap-2">
