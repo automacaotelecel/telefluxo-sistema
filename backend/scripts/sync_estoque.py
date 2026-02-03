@@ -1,5 +1,5 @@
 # ===========================================
-# 📦 SINCRONIZADOR DE ESTOQUE v6.0 (FUSÃO PERFEITA)
+# 📦 SINCRONIZADOR DE ESTOQUE v7.0 (INJEÇÃO DIRETA NO BANCO)
 # ===========================================
 
 import requests
@@ -11,9 +11,11 @@ import os
 import sys
 import time
 import json
+import sqlite3 # Adicionado para conexão direta
+import uuid    # Adicionado para gerar IDs únicos
 
 # --- CONFIGURAÇÃO ---
-API_ENDPOINT = "http://localhost:3000/stock/sync"
+# API_ENDPOINT = "http://localhost:3000/stock/sync" # (Não vamos mais usar a API para evitar erro de rota)
 
 # === CREDENCIAIS MICROVIX ===
 USUARIO = "linx_export"
@@ -21,7 +23,7 @@ SENHA   = "linx_export"
 CHAVE   = "2618f2b2-8f1d-4502-8321-342dc2cd1470"
 URL     = "https://webapi.microvix.com.br/1.0/api/integracao"
 
-# CNPJ PRINCIPAL PARA O CONTEXTO DO CATÁLOGO (Usando o primeiro da lista)
+# CNPJ PRINCIPAL PARA O CONTEXTO DO CATÁLOGO
 CNPJ_CONTEXTO = "12309173001309" 
 
 headers = {"Content-Type": "application/xml; charset=utf-8", "Accept": "application/xml"}
@@ -72,10 +74,9 @@ def to_float(series):
     ).fillna(0)
 
 # ===========================================
-# 1. EXTRAÇÃO DE CADASTRO (LÓGICA DO SEU CÓDIGO)
+# 1. EXTRAÇÃO DE CADASTRO
 # ===========================================
 def chamar_api_catalogo(dt_ini, dt_fim):
-    # AQUI ESTAVA O ERRO: Faltava o cnpjEmp! Agora adicionei.
     xml = f"""<?xml version="1.0" encoding="utf-8"?>
     <LinxMicrovix>
       <Authentication user="{USUARIO}" password="{SENHA}" />
@@ -108,54 +109,37 @@ def chamar_api_catalogo(dt_ini, dt_fim):
         return None
 
 def baixar_intervalo_recursivo(dt_ini, dt_fim):
-    """ Lógica recursiva: Se lotar (>4900), divide o tempo ao meio """
     df = chamar_api_catalogo(dt_ini, dt_fim)
     if df is None: return pd.DataFrame()
 
     qtd = len(df)
-    
-    # Se bateu no teto (API limita em 5000), divide ao meio
     if qtd >= 4900: 
-        # Converte para datetime para calcular o meio
         dt_ini_dt = datetime.combine(dt_ini, datetime.min.time()) if isinstance(dt_ini, datetime) else datetime.strptime(str(dt_ini), "%Y-%m-%d")
         dt_fim_dt = datetime.combine(dt_fim, datetime.min.time()) if isinstance(dt_fim, datetime) else datetime.strptime(str(dt_fim), "%Y-%m-%d")
-        
-        # Calcula meio
         meio_dt = dt_ini_dt + (dt_fim_dt - dt_ini_dt) / 2
         meio = meio_dt.date()
-        
         log(f"🔁 Dividindo intervalo cheio: {dt_ini} -> {meio} -> {dt_fim}")
-        
         df1 = baixar_intervalo_recursivo(dt_ini, meio)
         df2 = baixar_intervalo_recursivo(meio, dt_fim)
         return pd.concat([df1, df2], ignore_index=True)
     
-    # Se não lotou, retorna o que achou
     if qtd > 0:
         log(f"   📅 {dt_ini} a {dt_fim}: {qtd} produtos.")
-        
     return df
 
 def extrair_catalogo_completo():
     log("📚 Iniciando download do catálogo (Lógica Recursiva)...")
-    
-    # Data de corte segura (2015 para cá é suficiente para produtos ativos, ou use 2000 se quiser tudo)
     inicio = datetime(2015, 1, 1).date() 
     fim = datetime.now().date()
-    
     df = baixar_intervalo_recursivo(inicio, fim)
     
-    if df.empty:
-        return pd.DataFrame()
-        
+    if df.empty: return pd.DataFrame()
     df.columns = [c.lower() for c in df.columns]
     
-    # Remove duplicatas (mantendo a versão mais recente do produto)
     if "cod_produto" in df.columns:
         df["cod_produto"] = pd.to_numeric(df["cod_produto"], errors="coerce")
         df = df.drop_duplicates(subset=["cod_produto"], keep='last')
     
-    # Mapeamento
     df["NOME_REAL"] = None
     for c in ["nome_produto", "descricao_basica", "nome", "desc_produto"]:
         if c in df.columns:
@@ -172,8 +156,6 @@ def extrair_catalogo_completo():
             break
 
     df.rename(columns={"cod_produto": "CODIGO_PRODUTO"}, inplace=True)
-    
-    # Garante colunas finais
     final_cols = ["CODIGO_PRODUTO", "NOME_REAL", "REF_REAL", "CAT_REAL"]
     for c in final_cols:
         if c not in df.columns: df[c] = "-"
@@ -181,7 +163,7 @@ def extrair_catalogo_completo():
     return df[final_cols]
 
 # ===========================================
-# 2. EXTRAÇÃO DE ESTOQUE (MANTIDO O QUE JÁ FUNCIONAVA)
+# 2. EXTRAÇÃO DE ESTOQUE
 # ===========================================
 def chamar_api_detalhes(parametros):
     params_xml = "".join([f'<Parameter id="{k}">{v}</Parameter>' for k,v in parametros.items()])
@@ -207,7 +189,6 @@ def chamar_api_detalhes(parametros):
 def extrair_estoque(cnpj):
     hoje = datetime.now().date()
     mov_ini = hoje - timedelta(days=JANELA_DIAS_MOV)
-    
     dfs = []
     ts = 0
     teve_retorno = False
@@ -216,7 +197,6 @@ def extrair_estoque(cnpj):
         params = {"cnpjEmp": cnpj, "data_mov_ini": iso(mov_ini), "data_mov_fim": iso(hoje), "timestamp": str(ts)}
         df = chamar_api_detalhes(params)
         if df.empty: break
-        
         teve_retorno = True
         df.columns = [c.lower() for c in df.columns]
         dfs.append(df)
@@ -249,18 +229,92 @@ def extrair_estoque(cnpj):
     return base
 
 # ===========================================
+# 3. SALVAR DIRETO NO SQLITE (NOVO)
+# ===========================================
+def salvar_no_sqlite_direto(dataframe):
+    # Calcula o caminho absoluto para prisma/database/samsung_vendas.db
+    # Assume que o script está em /backend/scripts/
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    db_path = os.path.join(base_dir, '..', 'prisma', 'database', 'samsung_vendas.db')
+    
+    log(f"📍 Conectando diretamente ao banco: {db_path}")
+    
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        
+        # Garante que a tabela Stock existe (Schema do Prisma)
+        # Atenção: O Prisma usa nomes específicos e tipos. Vamos garantir que bata.
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS Stock (
+                id TEXT PRIMARY KEY,
+                cnpj TEXT NOT NULL,
+                storeName TEXT NOT NULL,
+                productCode TEXT NOT NULL,
+                reference TEXT,
+                description TEXT NOT NULL,
+                category TEXT,
+                quantity REAL NOT NULL,
+                costPrice REAL NOT NULL,
+                salePrice REAL,
+                averageCost REAL,
+                updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # Limpa o estoque antigo para atualizar tudo
+        cursor.execute("DELETE FROM Stock")
+        log("🗑️ Estoque antigo limpo no banco.")
+        
+        # Prepara os dados para inserção
+        rows_to_insert = []
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        count = 0
+        for _, row in dataframe.iterrows():
+            if row.get("QUANTIDADE", 0) != 0: # Salva apenas o que tem movimento/estoque
+                count += 1
+                rows_to_insert.append((
+                    str(uuid.uuid4()),                  # id
+                    str(row["CNPJ_ORIGEM"]),            # cnpj
+                    str(row["NOME_FANTASIA"]),          # storeName
+                    str(row["CODIGO_PRODUTO"]),         # productCode
+                    str(row.get("REFERENCIA", "-")),    # reference
+                    str(row.get("DESCRICAO", "S/D")),   # description
+                    str(row.get("CATEGORIA", "GERAL")), # category
+                    float(row.get("QUANTIDADE", 0)),    # quantity
+                    float(row.get("PRECO_CUSTO", 0)),   # costPrice
+                    float(row.get("PRECO_VENDA", 0)),   # salePrice
+                    float(row.get("CUSTO_MEDIO", 0)),   # averageCost
+                    now_str                             # updatedAt
+                ))
+        
+        # Executa insert em massa (muito mais rápido)
+        cursor.executemany('''
+            INSERT INTO Stock (id, cnpj, storeName, productCode, reference, description, category, quantity, costPrice, salePrice, averageCost, updatedAt)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', rows_to_insert)
+        
+        conn.commit()
+        log(f"💾 {count} itens inseridos com sucesso no arquivo samsung_vendas.db!")
+        conn.close()
+        return True
+
+    except Exception as e:
+        log(f"❌ ERRO CRÍTICO AO SALVAR NO SQLITE: {e}")
+        return False
+
+# ===========================================
 # ▶ EXECUÇÃO PRINCIPAL
 # ===========================================
 def main():
-    log("🚀 Iniciando Sincronização v6.0 (Fusão Completa)...")
+    log("🚀 Iniciando Sincronização v7.0 (Direct DB Injection)...")
 
     # 1. Catálogo
     catalogo = extrair_catalogo_completo()
-    
     if catalogo.empty:
         log("⚠️ ERRO: Catálogo vazio. Verifique se o CNPJ de contexto está correto.")
         return 
-        
     log(f"✅ Catálogo OK: {len(catalogo)} produtos carregados.")
 
     # 2. Estoque
@@ -278,14 +332,11 @@ def main():
 
     # 3. Cruzamento
     log("🔄 Unificando dados...")
-    
-    # Normaliza chaves para o merge (inteiro para evitar problema de string '01' vs '1')
     df_final["CODIGO_PRODUTO"] = pd.to_numeric(df_final["CODIGO_PRODUTO"], errors="coerce")
     catalogo["CODIGO_PRODUTO"] = pd.to_numeric(catalogo["CODIGO_PRODUTO"], errors="coerce")
     
     df_final = df_final.merge(catalogo, on="CODIGO_PRODUTO", how="left")
     
-    # Preenchimento
     df_final["DESCRICAO"] = df_final["NOME_REAL"].fillna("PRODUTO S/ CADASTRO")
     df_final["REFERENCIA"] = df_final["REF_REAL"].fillna("-")
     df_final["CATEGORIA"] = df_final["CAT_REAL"].fillna("GERAL")
@@ -293,26 +344,9 @@ def main():
     for col in ["QUANTIDADE", "PRECO_CUSTO", "PRECO_VENDA", "CUSTO_MEDIO"]:
         df_final[col] = to_float(df_final.get(col, 0))
 
-    # 4. Envio
-    log("📡 Enviando para o TeleFluxo...")
-    records = df_final.to_dict(orient="records")
-    clean_records = []
-    for row in records:
-        clean_row = {}
-        for k, v in row.items():
-            if pd.isna(v): clean_row[k] = 0 if "PRECO" in k or "QUANTIDADE" in k else ""
-            else: clean_row[k] = v
-        
-        if clean_row.get("QUANTIDADE", 0) > 0:
-            clean_records.append(clean_row)
-
-    try:
-        log(f"📦 Enviando {len(clean_records)} itens...")
-        r = requests.post(API_ENDPOINT, json=clean_records)
-        if r.status_code in [200, 201]: log("✅ SUCESSO! Sistema atualizado.")
-        else: log(f"⚠️ Erro envio: {r.status_code} - {r.text}")
-    except Exception as e:
-        log(f"❌ Erro conexão: {e}")
+    # 4. SALVAMENTO DIRETO (SUBSTITUI O ENVIO API)
+    log("💾 Gravando diretamente no Banco Unificado...")
+    salvar_no_sqlite_direto(df_final)
 
 if __name__ == "__main__":
     main()
