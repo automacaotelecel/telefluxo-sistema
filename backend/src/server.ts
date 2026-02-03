@@ -1481,6 +1481,44 @@ app.post('/api/sync/vendedores', async (req, res) => {
 
 // --- FIM DO BLOCO DE SINCRONIZAÇÃO ---
 
+// ==========================================
+// ROTA FALTANTE: LISTAR LOJAS PARA CADASTRO
+// ==========================================
+app.get('/external-stores', async (req, res) => {
+    // Se o banco estiver vazio (deploy novo), retorna a lista fixa do código
+    if (!fs.existsSync(GLOBAL_DB_PATH)) { 
+        return res.json(Object.values(LOJAS_MAP_GLOBAL).sort()); 
+    }
+
+    const db = new sqlite3.Database(GLOBAL_DB_PATH);
+    const sql = `SELECT DISTINCT CNPJ_EMPRESA as cnpj FROM vendas WHERE CNPJ_EMPRESA IS NOT NULL`;
+
+    db.all(sql, [], (err, rows: any[]) => {
+        db.close();
+        
+        // Se der erro ou não tiver vendas ainda, usa a lista fixa (Backup Seguro)
+        if (err || !rows || rows.length === 0) {
+            return res.json(Object.values(LOJAS_MAP_GLOBAL).sort());
+        }
+
+        // Tenta pegar do banco, mas se falhar, garante com a lista global
+        const storeNames = rows.map((r: any) => {
+            const cleanCnpj = String(r.cnpj).replace(/\D/g, '').trim();
+            return LOJAS_MAP_GLOBAL[cleanCnpj] || null;
+        });
+
+        const uniqueStores = [...new Set(storeNames.filter((name: any) => name !== null))];
+        uniqueStores.sort();
+
+        // Se a lista do banco vier vazia, manda a completa
+        if (uniqueStores.length === 0) {
+            return res.json(Object.values(LOJAS_MAP_GLOBAL).sort());
+        }
+
+        res.json(uniqueStores);
+    });
+});
+
 // Define a porta: Usa a do Render (process.env.PORT) ou a 3000 se for local
 const PORT = process.env.PORT || 3000;
 
