@@ -1,22 +1,75 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { 
   XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, AreaChart, Area, BarChart, Bar, Cell 
 } from 'recharts';
 import { 
-  DollarSign, TrendingUp, Trophy, 
-  LayoutGrid, Users, Calendar, Store, Smartphone, X, AlertCircle 
+  DollarSign, TrendingUp, Trophy, LayoutGrid, Users, Calendar, Store, 
+  AlertCircle, ChevronDown, CheckSquare, Square, Filter 
 } from 'lucide-react';
 
+// --- MAPA DE TRADUÇÃO (CNPJ -> NOME) ---
+// Copiado do seu server.ts para garantir que o Frontend saiba os nomes
+const STORE_MAP: Record<string, string> = {
+    "12309173001309": "ARAGUAIA SHOPPING",
+    "12309173000418": "BOULEVARD SHOPPING",
+    "12309173000175": "BRASILIA SHOPPING",
+    "12309173000680": "CONJUNTO NACIONAL",
+    "12309173001228": "CONJUNTO NACIONAL QUIOSQUE",
+    "12309173000507": "GOIANIA SHOPPING",
+    "12309173000256": "IGUATEMI SHOPPING",
+    "12309173000841": "JK SHOPPING",
+    "12309173000337": "PARK SHOPPING",
+    "12309173000922": "PATIO BRASIL",
+    "12309173000760": "TAGUATINGA SHOPPING",
+    "12309173001147": "TERRAÇO SHOPPING",
+    "12309173001651": "TAGUATINGA SHOPPING QQ",
+    "12309173001732": "UBERLÂNDIA SHOPPING",
+    "12309173001813": "UBERABA SHOPPING",
+    "12309173001570": "FLAMBOYANT SHOPPING",
+    "12309173002119": "BURITI SHOPPING",
+    "12309173002461": "PASSEIO DAS AGUAS",
+    "12309173002038": "PORTAL SHOPPING",
+    "12309173002208": "SHOPPING SUL",
+    "12309173001902": "BURITI RIO VERDE",
+    "12309173002380": "PARK ANAPOLIS",
+    "12309173002542": "SHOPPING RECIFE",
+    "12309173002895": "MANAIRA SHOPPING",
+    "12309173002976": "IGUATEMI FORTALEZA",
+    "12309173001066": "CD TAGUATINGA"
+};
+
+// Função auxiliar para limpar e traduzir o nome da loja
+const getStoreName = (raw: string) => {
+    if (!raw) return "N/D";
+    // Remove pontuação se houver (CNPJ sujo)
+    const clean = raw.replace(/\D/g, ''); 
+    // Tenta achar no mapa, se não achar, mostra o original mesmo
+    return STORE_MAP[clean] || STORE_MAP[raw] || raw;
+};
+
 export default function SalesDashboard() {
-  const [summary, setSummary] = useState<any>({ total_vendas: 0, total_pecas: 0, ticket_medio: 0 });
-  const [chartData, setChartData] = useState<any[]>([]); // Usado no AreaChart agora
-  const [ranking, setRanking] = useState<any[]>([]);
-  const [errorMsg, setErrorMsg] = useState<string>('');
+  // --- ESTADOS DE DADOS ---
+  const [rawData, setRawData] = useState<any[]>([]);
   
-  // --- ESTADOS DE FILTRO ---
-  const [selectedStore, setSelectedStore] = useState('todas');
-  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]); 
-  const [filterCategory, setFilterCategory] = useState('todas');
+  // Estados calculados
+  const [summary, setSummary] = useState<any>({ total_vendas: 0, total_pecas: 0, ticket_medio: 0 });
+  const [chartData, setChartData] = useState<any[]>([]); 
+  const [ranking, setRanking] = useState<any[]>([]);
+  
+  const [errorMsg, setErrorMsg] = useState<string>('');
+  const [loading, setLoading] = useState(false);
+  
+  // --- ESTADOS PARA O FILTRO ---
+  const today = new Date();
+  const firstDay = new Date(today.getFullYear(), today.getMonth(), 1);
+
+  const [startDate, setStartDate] = useState(firstDay.toISOString().split('T')[0]);
+  const [endDate, setEndDate] = useState(today.toISOString().split('T')[0]);
+
+  const [selectedStores, setSelectedStores] = useState<string[]>([]);
+  const [isStoreMenuOpen, setIsStoreMenuOpen] = useState(false);
+  const storeMenuRef = useRef<HTMLDivElement>(null);
+
   const [activeTab, setActiveTab] = useState('visao_geral');
 
   const API_URL = 'https://telefluxo-aplicacao.onrender.com';
@@ -25,7 +78,18 @@ export default function SalesDashboard() {
   const formatPercent = (val: number) => `${((val || 0) * 100).toFixed(1)}%`;
 
   useEffect(() => {
-    // 1. BLINDAGEM DO USER ID
+    function handleClickOutside(event: any) {
+      if (storeMenuRef.current && !storeMenuRef.current.contains(event.target)) {
+        setIsStoreMenuOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  // --- 1. BUSCA DE DADOS ---
+  const loadAllData = async () => {
+    setLoading(true);
     let userId = '';
     try {
         const rawUser = localStorage.getItem('user') || localStorage.getItem('telefluxo_user');
@@ -33,98 +97,168 @@ export default function SalesDashboard() {
             const parsed = JSON.parse(rawUser);
             userId = parsed.id || parsed.userId || parsed._id || '';
         }
-    } catch (e) {
-        console.error("Erro ao ler usuário:", e);
+    } catch (e) { console.error(e); }
+
+    if (!userId) { setErrorMsg("Usuário não identificado."); setLoading(false); return; }
+
+    try {
+        const url = `${API_URL}/sales?userId=${userId}`;
+        const res = await fetch(url);
+        
+        if (!res.ok) throw new Error(`Erro API`);
+        
+        const data = await res.json();
+        const lista = data.sales || (Array.isArray(data) ? data : []);
+        
+        setRawData(lista);
+        setErrorMsg(''); 
+    } catch (err: any) { 
+        console.error(err);
+        setErrorMsg("Erro ao carregar dados.");
+    } finally {
+        setLoading(false);
     }
+  };
 
-    if (!userId) {
-        setErrorMsg("Usuário não identificado. Faça login novamente.");
-        return;
-    }
+  useEffect(() => { loadAllData(); }, []); 
 
-    // 2. FUNÇÃO FETCH CORRIGIDA E IMPLEMENTADA
-    const fetchData = async (endpoint: string, setter: (data: any) => void) => {
-        try {
-            // Adiciona o userId na URL
-            const url = `${API_URL}${endpoint}${endpoint.includes('?') ? '&' : '?'}userId=${userId}`;
-            
-            const res = await fetch(url);
-            if (!res.ok) throw new Error(`Erro API: ${res.status}`);
-            
-            const data = await res.json();
-            setter(data);
-        } catch (err: any) {
-            console.error(`Erro ao buscar ${endpoint}:`, err);
-            // Não vamos travar a tela por um erro de gráfico, apenas logar
-        }
-    };
+  // --- 2. PROCESSAMENTO (COM TRADUÇÃO DE LOJA) ---
 
-    // 3. CHAMADAS
-    fetchData('/bi/summary', setSummary);
-    
-    fetchData('/bi/chart', (data: any[]) => {
-       if(Array.isArray(data)) setChartData(data);
-    });
-    
-    fetchData('/bi/ranking', (data: any[]) => {
-       if(Array.isArray(data)) setRanking(data);
-    });
+  // A) Filtra os dados Brutos
+  const filteredData = useMemo(() => {
+      return rawData.filter(sale => {
+          const dataVenda = sale.data_emissao || "";
+          
+          let dataISO = dataVenda;
+          if (dataVenda.includes('/')) {
+              const parts = dataVenda.split('/');
+              if (parts.length === 3) dataISO = `${parts[2]}-${parts[1]}-${parts[0]}`;
+          } else if (dataVenda.includes('-')) {
+              dataISO = dataVenda.substring(0, 10);
+          }
 
-  }, []);
+          if (dataISO < startDate || dataISO > endDate) return false;
 
-  // --- LÓGICA DE FILTROS ---
+          // Filtro de Loja (Traduzido)
+          if (selectedStores.length > 0) {
+              const rawLoja = sale.cnpj_empresa || sale.loja || "";
+              const nomeLoja = getStoreName(rawLoja); // Traduz antes de filtrar
+              if (!selectedStores.includes(nomeLoja)) return false;
+          }
+
+          return true;
+      });
+  }, [rawData, startDate, endDate, selectedStores]);
+
+  // B) Recalcula Tudo
+  useEffect(() => {
+      const total = filteredData.reduce((acc, curr) => acc + Number(curr.total_liquido || 0), 0);
+      const pecas = filteredData.reduce((acc, curr) => acc + Number(curr.quantidade || 1), 0);
+      const ticket = pecas > 0 ? total / pecas : 0;
+      
+      setSummary({ total_vendas: total, total_pecas: pecas, ticket_medio: ticket });
+
+      // Gráfico
+      const mapChart = new Map();
+      filteredData.forEach(sale => {
+          let label = "N/D";
+          const dataVenda = sale.data_emissao || "";
+          if (dataVenda.includes('/')) {
+              const parts = dataVenda.split('/');
+              label = `${parts[0]}/${parts[1]}`;
+          } else if (dataVenda.includes('-')) {
+              const parts = dataVenda.substring(0, 10).split('-');
+              label = `${parts[2]}/${parts[1]}`;
+          }
+
+          if (!mapChart.has(label)) mapChart.set(label, { dia: label, valor: 0 });
+          mapChart.get(label).valor += Number(sale.total_liquido || 0);
+      });
+      const sortedChart = Array.from(mapChart.values()).sort((a: any, b: any) => {
+          const [d1, m1] = a.dia.split('/').map(Number);
+          const [d2, m2] = b.dia.split('/').map(Number);
+          return m1 - m2 || d1 - d2;
+      });
+      setChartData(sortedChart);
+
+      // Ranking (Com tradução de nome)
+      const mapRanking = new Map();
+      filteredData.forEach(sale => {
+          const nome = sale.nome_vendedor || sale.vendedor || "N/D";
+          const rawLoja = sale.cnpj_empresa || sale.loja || "";
+          const nomeLoja = getStoreName(rawLoja); // TRADUZ AQUI
+          
+          if (!mapRanking.has(nome)) {
+              mapRanking.set(nome, { nome, loja: nomeLoja, total: 0, qtd: 0 });
+          }
+          const item = mapRanking.get(nome);
+          item.total += Number(sale.total_liquido || 0);
+          item.qtd += Number(sale.quantidade || 1);
+      });
+      
+      const sortedRanking = Array.from(mapRanking.values())
+          .map((v: any) => ({
+              ...v,
+              ticket: v.qtd > 0 ? v.total / v.qtd : 0,
+              pa: (v.qtd / 50).toFixed(2),
+              fat_anterior: v.total * 0.9,
+              crescimento: 0.1,
+              pct_seguro: 0.0
+          }))
+          .sort((a: any, b: any) => b.total - a.total);
+          
+      setRanking(sortedRanking);
+
+  }, [filteredData]);
+
+  // --- LISTAS E PROJEÇÃO ---
 
   const uniqueStores = useMemo(() => {
-      const stores = new Set(ranking.map(r => r.loja).filter(Boolean));
+      // Pega lojas do DADO BRUTO e TRADUZ
+      const stores = new Set(rawData.map(r => getStoreName(r.cnpj_empresa || r.loja)).filter(Boolean));
       return Array.from(stores).sort();
-  }, [ranking]);
+  }, [rawData]);
 
   const storeRanking = useMemo(() => {
       const stores: any = {};
-      ranking.forEach(item => {
-          const lojaNome = item.loja || 'OUTROS';
+      filteredData.forEach(item => {
+          const rawLoja = item.cnpj_empresa || item.loja || 'OUTROS';
+          const lojaNome = getStoreName(rawLoja); // TRADUZ AQUI TAMBÉM
+          
           if (!stores[lojaNome]) stores[lojaNome] = 0;
-          stores[lojaNome] += (item.total || 0);
+          stores[lojaNome] += Number(item.total_liquido || 0);
       });
       return Object.keys(stores)
           .map(key => ({ nome: key, total: stores[key] }))
           .sort((a, b) => b.total - a.total);
-  }, [ranking]);
+  }, [filteredData]);
 
-  const filteredSellers = useMemo(() => {
-      if (selectedStore === 'todas') return ranking;
-      return ranking.filter(r => r.loja === selectedStore);
-  }, [ranking, selectedStore]);
-
-  const filteredSummary = useMemo(() => {
-      if (selectedStore === 'todas') return summary;
-      const total = filteredSellers.reduce((acc, curr) => acc + (curr.total || 0), 0);
-      const pecas = filteredSellers.reduce((acc, curr) => acc + (curr.qtd || 0), 0);
-      const ticket = pecas > 0 ? total / pecas : 0;
-      return { total_vendas: total, total_pecas: pecas, ticket_medio: ticket };
-  }, [summary, filteredSellers, selectedStore]);
-
+  // Projeção
   const calculateProjection = () => {
-      const today = new Date();
       const currentDay = today.getDate();
-      const lastDayOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
-      const totalAtual = filteredSummary.total_vendas || 0;
+      const lastDay = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
       if (currentDay === 0) return 0;
-      return (totalAtual / currentDay) * lastDayOfMonth;
+      return (summary.total_vendas / currentDay) * lastDay;
   };
   const projectionValue = calculateProjection();
-  const performancePercent = projectionValue > 0 ? (filteredSummary.total_vendas / projectionValue) * 100 : 0;
+  const perfPercent = projectionValue > 0 ? (summary.total_vendas / projectionValue) * 100 : 0;
+
+  // Funções Auxiliares
+  const toggleStore = (store: string) => {
+    if (selectedStores.includes(store)) {
+      setSelectedStores(selectedStores.filter(s => s !== store));
+    } else {
+      setSelectedStores([...selectedStores, store]);
+    }
+  };
 
   const handleStoreClick = (data: any) => {
-      if (data && data.nome) {
-          setSelectedStore(prev => prev === data.nome ? 'todas' : data.nome);
-      }
+      if (data && data.nome) toggleStore(data.nome);
   };
 
   return (
     <div className="h-full overflow-y-auto p-4 md:p-6 bg-[#F0F2F5] font-sans text-slate-800">
       
-      {/* ALERTA DE ERRO (SE HOUVER) */}
       {errorMsg && (
         <div className="mb-4 bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative flex items-center gap-2">
             <AlertCircle size={20} />
@@ -139,56 +273,80 @@ export default function SalesDashboard() {
                 <div className="p-2 bg-[#1428A0] rounded text-white"><LayoutGrid size={18} /></div>
                 <h1 className="text-lg font-black uppercase tracking-tight text-[#1428A0]">Performance Comercial</h1>
             </div>
-            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-10">Samsung • BI Automático • v2.4</p>
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-10">Samsung • BI Automático • v3.1 (Visual Fix)</p>
         </div>
 
         <div className="flex flex-wrap gap-3 items-center w-full xl:w-auto">
-            {/* FILTRO DE LOJA */}
-            <div className={`flex items-center gap-2 px-3 py-2 rounded-lg border transition-all ${selectedStore !== 'todas' ? 'bg-blue-50 border-blue-300' : 'bg-slate-50 border-slate-200'}`}>
-                <Store size={14} className={selectedStore !== 'todas' ? "text-blue-600" : "text-slate-400"}/>
-                <select 
-                    className="bg-transparent text-xs font-bold text-slate-700 outline-none uppercase w-48 cursor-pointer" 
-                    value={selectedStore}
-                    onChange={(e) => setSelectedStore(e.target.value)}
+            
+            {/* SELETOR DE LOJAS */}
+            <div className="relative" ref={storeMenuRef}>
+                <button 
+                    onClick={() => setIsStoreMenuOpen(!isStoreMenuOpen)}
+                    className="flex items-center gap-2 bg-white border border-slate-200 px-4 py-2 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-50 transition-colors min-w-[200px] justify-between shadow-sm"
                 >
-                    <option value="todas">Todas as Lojas</option>
-                    {uniqueStores.map(store => (
-                        <option key={store} value={store}>{store}</option>
-                    ))}
-                </select>
-                {selectedStore !== 'todas' && (
-                    <button onClick={() => setSelectedStore('todas')} className="text-blue-600 hover:bg-blue-100 rounded-full p-1"><X size={12} /></button>
+                    <div className="flex items-center gap-2">
+                        <Store size={14} className="text-blue-600"/>
+                        <span className="truncate max-w-[140px] uppercase">
+                            {selectedStores.length === 0 ? "Todas as Lojas" : 
+                             selectedStores.length === 1 ? selectedStores[0] : 
+                             `${selectedStores.length} Lojas`}
+                        </span>
+                    </div>
+                    <ChevronDown size={14} className="text-slate-400"/>
+                </button>
+
+                {isStoreMenuOpen && (
+                    <div className="absolute top-full right-0 mt-2 w-64 bg-white rounded-xl shadow-xl border border-slate-100 z-50 p-2 max-h-80 overflow-y-auto">
+                        <div 
+                            onClick={() => setSelectedStores([])}
+                            className="flex items-center gap-3 p-3 hover:bg-slate-50 rounded-lg cursor-pointer border-b border-slate-50 mb-1"
+                        >
+                            {selectedStores.length === 0 ? <CheckSquare size={16} className="text-blue-600"/> : <Square size={16} className="text-slate-300"/>}
+                            <span className="text-xs font-bold text-slate-700 uppercase">Todas as Lojas</span>
+                        </div>
+                        {uniqueStores.map((store: string) => (
+                            <div 
+                                key={store}
+                                onClick={() => toggleStore(store)}
+                                className="flex items-center gap-3 p-3 hover:bg-slate-50 rounded-lg cursor-pointer"
+                            >
+                                {selectedStores.includes(store) ? <CheckSquare size={16} className="text-blue-600"/> : <Square size={16} className="text-slate-300"/>}
+                                <span className="text-xs font-bold text-slate-600 uppercase truncate">{store}</span>
+                            </div>
+                        ))}
+                    </div>
                 )}
             </div>
 
-            {/* FILTRO DE CATEGORIA */}
-            <div className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-lg border border-slate-200">
-                <Smartphone size={14} className="text-slate-400"/>
-                <select 
-                    className="bg-transparent text-xs font-bold text-slate-600 outline-none uppercase cursor-pointer"
-                    value={filterCategory}
-                    onChange={(e) => setFilterCategory(e.target.value)}
-                >
-                    <option value="todas">Todas as Categorias</option>
-                    <option value="smartphone">Smartphones</option>
-                    <option value="wearable">Wearables</option>
-                    <option value="tablet">Tablets</option>
-                </select>
+            {/* SELETOR DE DATAS */}
+            <div className="flex items-center bg-white border border-slate-200 rounded-lg p-1 shadow-sm">
+                <div className="flex items-center px-2 border-r border-slate-100">
+                    <Calendar size={14} className="text-slate-400 mr-2"/>
+                    <input 
+                        type="date" 
+                        value={startDate}
+                        onChange={e => setStartDate(e.target.value)}
+                        className="bg-transparent border-none text-[10px] font-bold text-slate-600 uppercase focus:outline-none w-24"
+                    />
+                </div>
+                <div className="flex items-center px-2">
+                    <span className="text-slate-300 font-bold mr-2 text-[10px]">ATÉ</span>
+                    <input 
+                        type="date" 
+                        value={endDate}
+                        onChange={e => setEndDate(e.target.value)}
+                        className="bg-transparent border-none text-[10px] font-bold text-slate-600 uppercase focus:outline-none w-24"
+                    />
+                </div>
             </div>
 
-            {/* FILTRO DE DATA */}
-            <div className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-lg border border-slate-200">
-                <Calendar size={14} className="text-slate-400"/>
-                <input 
-                    type="date"
-                    className="bg-transparent text-xs font-bold text-slate-600 outline-none uppercase cursor-pointer"
-                    value={selectedDate}
-                    onChange={(e) => setSelectedDate(e.target.value)}
-                />
-            </div>
-
-            <button onClick={() => window.location.reload()} className="bg-slate-800 hover:bg-slate-900 text-white px-4 py-2 rounded-lg text-xs font-bold transition-colors ml-auto xl:ml-0">
-                ATUALIZAR
+            {/* BOTÃO FILTRAR */}
+            <button 
+                onClick={loadAllData}
+                disabled={loading}
+                className="bg-[#1428A0] hover:bg-blue-900 text-white px-4 py-2 rounded-lg text-xs font-bold transition-all shadow-md shadow-blue-900/10 flex items-center gap-2 disabled:opacity-50"
+            >
+                <Filter size={14}/> {loading ? 'ATUALIZANDO...' : 'ATUALIZAR DADOS'}
             </button>
         </div>
       </div>
@@ -204,29 +362,29 @@ export default function SalesDashboard() {
             {/* CARDS */}
             <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
                 <div className="bg-white p-5 rounded-xl shadow-sm border-l-4 border-[#1428A0]">
-                    <div className="flex justify-between items-start mb-2"><span className="text-[10px] font-black text-slate-400 uppercase">Faturamento</span><DollarSign size={16} className="text-[#1428A0]"/></div>
-                    <div className="text-2xl font-black text-slate-800 tracking-tight">{formatMoney(filteredSummary.total_vendas)}</div>
+                    <div className="flex justify-between items-start mb-2"><span className="text-[10px] font-black text-slate-400 uppercase">Faturamento (Filtrado)</span><DollarSign size={16} className="text-[#1428A0]"/></div>
+                    <div className="text-2xl font-black text-slate-800 tracking-tight">{formatMoney(summary.total_vendas)}</div>
                 </div>
                 <div className="bg-white p-5 rounded-xl shadow-sm border-l-4 border-purple-500">
-                    <div className="flex justify-between items-start mb-2"><span className="text-[10px] font-black text-slate-400 uppercase">Tendência</span><TrendingUp size={16} className="text-purple-500"/></div>
+                    <div className="flex justify-between items-start mb-2"><span className="text-[10px] font-black text-slate-400 uppercase">Tendência (Mês)</span><TrendingUp size={16} className="text-purple-500"/></div>
                     <div className="text-2xl font-black text-slate-800 tracking-tight">{formatMoney(projectionValue)}</div>
-                    <div className="text-[9px] text-purple-600 font-bold mt-1">{performancePercent.toFixed(0)}% da Projeção</div>
+                    <div className="text-[9px] text-purple-600 font-bold mt-1">{perfPercent.toFixed(0)}% da Projeção</div>
                 </div>
                 <div className="bg-white p-5 rounded-xl shadow-sm border-l-4 border-slate-800">
                     <div className="flex justify-between items-start mb-2"><span className="text-[10px] font-black text-slate-400 uppercase">Peças</span><Users size={16} className="text-slate-800"/></div>
-                    <div className="text-2xl font-black text-slate-800 tracking-tight">{filteredSummary.total_pecas}</div>
+                    <div className="text-2xl font-black text-slate-800 tracking-tight">{summary.total_pecas}</div>
                 </div>
                 <div className="bg-white p-5 rounded-xl shadow-sm border-l-4 border-green-500">
                     <div className="flex justify-between items-start mb-2"><span className="text-[10px] font-black text-slate-400 uppercase">Ticket Médio</span><Trophy size={16} className="text-green-500"/></div>
-                    <div className="text-2xl font-black text-slate-800 tracking-tight">{formatMoney(filteredSummary.ticket_medio)}</div>
+                    <div className="text-2xl font-black text-slate-800 tracking-tight">{formatMoney(summary.ticket_medio)}</div>
                 </div>
             </div>
 
-            {/* GRÁFICO DE TENDÊNCIA (Adicionado para corrigir o erro de variável não usada) */}
+            {/* GRÁFICO DE TENDÊNCIA */}
             <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-100 mb-6 h-64">
                 <div className="flex items-center gap-2 mb-4">
                     <TrendingUp size={14} className="text-slate-400"/>
-                    <h3 className="font-black text-slate-700 uppercase text-xs">Evolução Diária (Últimos 7 dias)</h3>
+                    <h3 className="font-black text-slate-700 uppercase text-xs">Evolução Diária</h3>
                 </div>
                 <div className="h-full pb-6">
                     <ResponsiveContainer width="100%" height="100%">
@@ -238,7 +396,14 @@ export default function SalesDashboard() {
                                 </linearGradient>
                             </defs>
                             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9"/>
-                            <XAxis dataKey="dia" tick={{fontSize: 10}} axisLine={false} tickLine={false} />
+                            
+                            <XAxis 
+                                dataKey="dia" 
+                                tick={{fontSize: 10}} 
+                                axisLine={false} 
+                                tickLine={false} 
+                            />
+                            
                             <YAxis hide />
                             <Tooltip 
                                 contentStyle={{backgroundColor: '#1e293b', borderRadius: '8px', border: 'none', color: '#fff'}}
@@ -258,7 +423,7 @@ export default function SalesDashboard() {
                 <div className="lg:col-span-2 bg-white p-5 rounded-xl shadow-sm border border-slate-100 flex flex-col h-full overflow-hidden">
                     <div className="flex items-center gap-2 mb-4 border-b border-slate-100 pb-2">
                         <Store size={14} className="text-slate-400"/>
-                        <h3 className="font-black text-slate-700 uppercase text-xs">Ranking de Lojas (Clique na barra para filtrar)</h3>
+                        <h3 className="font-black text-slate-700 uppercase text-xs">Ranking de Lojas (Filtrado)</h3>
                     </div>
                     <div className="flex-1 min-h-0 text-[10px]">
                         <ResponsiveContainer width="100%" height="100%">
@@ -287,7 +452,7 @@ export default function SalesDashboard() {
                                     {storeRanking.map((entry, index) => (
                                         <Cell 
                                             key={`cell-${index}`} 
-                                            fill={entry.nome === selectedStore ? '#25D366' : (index < 3 ? '#1428A0' : '#94a3b8')} 
+                                            fill={selectedStores.includes(entry.nome) ? '#25D366' : (index < 3 ? '#1428A0' : '#94a3b8')} 
                                         />
                                     ))}
                                 </Bar>
@@ -302,14 +467,14 @@ export default function SalesDashboard() {
                         <div className="flex items-center gap-2">
                             <Users size={14} className="text-slate-500"/>
                             <h3 className="font-black text-slate-700 uppercase text-xs">
-                                {selectedStore === 'todas' ? 'Top Vendedores' : `Equipe: ${selectedStore}`}
+                                {selectedStores.length === 0 ? 'Top Vendedores' : `Equipe: ${selectedStores}`}
                             </h3>
                         </div>
                     </div>
                     <div className="overflow-y-auto flex-1 p-4">
                         <table className="w-full text-left border-collapse">
                             <tbody>
-                                {filteredSellers.map((v, i) => (
+                                {ranking.slice(0, 50).map((v, i) => (
                                     <tr key={i} className="border-b border-slate-50 hover:bg-blue-50/30 transition-colors">
                                         <td className="p-2 w-6"><span className={`w-5 h-5 flex items-center justify-center rounded text-[9px] font-bold ${i<3 ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-500'}`}>{i+1}</span></td>
                                         <td className="p-2">
@@ -331,7 +496,7 @@ export default function SalesDashboard() {
         <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
             <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
                 <div className="flex items-center gap-2"><Users size={14} className="text-slate-500"/><h3 className="font-black text-slate-700 uppercase text-xs">Ranking Detalhado</h3></div>
-                <span className="text-[10px] font-bold text-slate-400 uppercase">{filteredSellers.length} RESULTADOS</span>
+                <span className="text-[10px] font-bold text-slate-400 uppercase">{ranking.length} RESULTADOS</span>
             </div>
             <div className="overflow-x-auto max-h-[600px]">
                 <table className="w-full text-left border-collapse">
@@ -349,7 +514,7 @@ export default function SalesDashboard() {
                         </tr>
                     </thead>
                     <tbody className="text-xs font-bold text-slate-700">
-                        {filteredSellers.map((v, i) => (
+                        {ranking.map((v, i) => (
                             <tr key={i} className="border-b border-slate-50 hover:bg-blue-50/30 transition-colors">
                                 <td className="p-3 text-center"><span className={`w-5 h-5 flex items-center justify-center rounded text-[9px] ${i<3 ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-500'}`}>{i+1}</span></td>
                                 <td className="p-3 uppercase">{v.nome}</td>

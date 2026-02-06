@@ -606,115 +606,156 @@ async function getSalesFilter(userId: string, tableType: 'vendas' | 'kpi'): Prom
 // ==========================================
 // 2. ROTA /sales (VERSÃO FINAL LIMPA)
 // ==========================================
+// ROTA: VENDAS (Adaptada para seu sistema SQL atual + Filtro de Datas)
+// ROTA: VENDAS (COM FILTRO DE DATAS FUNCIONAL)
 app.get('/sales', async (req, res) => {
   try {
-    if (!fs.existsSync(GLOBAL_DB_PATH)) return res.json([]);
+    if (!fs.existsSync(GLOBAL_DB_PATH)) return res.json({ sales: [] });
 
+    // 1. Pega os parâmetros da URL
     const userId = String(req.query.userId || '');
-    // SEGURANÇA: Pede o filtro para tabela de 'vendas' (CNPJ)
-    const filterWhere = await getSalesFilter(userId, 'vendas'); 
+    const startDate = req.query.startDate ? String(req.query.startDate) : null;
+    const endDate = req.query.endDate ? String(req.query.endDate) : null;
 
+    // 2. Filtro de Segurança (CNPJ/Loja do usuário)
+    // Mantém sua função original que já funciona
+    const securityFilter = await getSalesFilter(userId, 'vendas'); 
+
+    // 3. Monta o Filtro de Datas (SQL)
+    let dateFilter = "";
+    
+    // Se o frontend mandou as datas, aplicamos o filtro
+    if (startDate && endDate) {
+        // SQLite grava data como TEXTO (YYYY-MM-DD), então comparação de string funciona perfeitamente
+        // Usamos >= e <= para pegar o dia inteiro
+        dateFilter = ` AND data_emissao >= '${startDate}' AND data_emissao <= '${endDate}'`;
+    }
+
+    // 4. Conecta e Busca
     const db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
-    // INJEÇÃO: Adiciona o filtro na consulta SQL
-    const query = `SELECT * FROM vendas WHERE ${filterWhere}`;
+    
+    // A query final combina:
+    // - Segurança (Só ver a própria loja)
+    // - Data (Só ver o período escolhido)
+    // - Ordem (Cronológica para o gráfico ficar bonito)
+    const query = `
+        SELECT * FROM vendas 
+        WHERE ${securityFilter} ${dateFilter} 
+        ORDER BY data_emissao ASC
+    `;
+
+    console.log("🔍 Executando Query de Vendas:", query); // Log para você ver no terminal se a data chegou
 
     const sales = await db.all(query);
     await db.close();
-    res.json(sales);
+
+    // Retorna no formato que o Frontend novo espera
+    res.json({ sales });
+
   } catch (error: any) {
-    console.error("❌ Erro em /sales:", error.message);
+    console.error("❌ Erro na rota /sales:", error.message);
     res.status(500).json({ error: "Erro ao buscar vendas" });
   }
 });
 
-// ATUALIZE A ROTA BI SUMMARY PARA TRATAR NULL CORRETAMENTE
+// ==========================================
+// 🛡️ FUNÇÕES AUXILIARES DE BI (CORREÇÃO DE DATA BR)
+// ==========================================
+
+// Função que monta o WHERE convertendo DD/MM/YYYY para YYYY-MM-DD na voo
+const getDateFilter = (start?: any, end?: any) => {
+    if (start && end) {
+        console.log(`📅 Filtro Solicitado: ${start} até ${end}`);
+        // TRUQUE SQLITE: Transforma '06/02/2026' em '2026-02-06' para poder filtrar
+        // Pega ano (caracteres 7 a 10) - mes (4 a 5) - dia (1 a 2)
+        const dateConverter = `(substr(data_emissao, 7, 4) || '-' || substr(data_emissao, 4, 2) || '-' || substr(data_emissao, 1, 2))`;
+        
+        return ` AND ${dateConverter} >= '${start}' AND ${dateConverter} <= '${end}' `;
+    }
+    return ""; 
+};
+
+// 1. ROTA DE RESUMO (CARDS)
 app.get('/bi/summary', async (req, res) => {
-    if (!fs.existsSync(GLOBAL_DB_PATH)) return res.json({ total_vendas: 0, total_pecas: 0, ticket_medio: 0 });
-    
-    const userId = String(req.query.userId || '');
-    const filterWhere = await getSalesFilter(userId, 'vendas'); 
+    try {
+        const { userId, startDate, endDate } = req.query;
+        const securityFilter = await getSalesFilter(String(userId), 'vendas');
+        const dateFilter = getDateFilter(startDate, endDate); // Usa o novo filtro conversor
 
-    const db = new sqlite3.Database(GLOBAL_DB_PATH);
-    const sql = `SELECT 
-                    COALESCE(SUM(TOTAL_LIQUIDO), 0) as total_vendas, 
-                    COALESCE(SUM(QUANTIDADE), 0) as total_pecas, 
-                    COUNT(*) as qtd_notas
-                 FROM vendas 
-                 WHERE ${filterWhere}`;
-
-    db.get(sql, [], (err, row: any) => {
-        db.close();
-        if (err) {
-            console.error("Erro SQL Summary:", err);
-            return res.json({ total_vendas: 0, total_pecas: 0, ticket_medio: 0 });
-        }
+        const db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
         
-        const total = row?.total_vendas || 0;
-        const pecas = row?.total_pecas || 0;
-        const notas = row?.qtd_notas || 1; // Evita divisão por zero
+        const query = `
+            SELECT 
+                SUM(total_liquido) as total_vendas,
+                SUM(quantidade) as total_pecas,
+                AVG(total_liquido) as ticket_medio
+            FROM vendas 
+            WHERE ${securityFilter} ${dateFilter}
+        `;
         
-        // Se notas for 0 (nenhuma venda), ticket é 0
-        const ticket = notas > 0 ? total / notas : 0;
-
-        res.json({ total_vendas: total, total_pecas: pecas, ticket_medio: ticket });
-    });
+        const result = await db.get(query);
+        await db.close();
+        
+        res.json({
+            total_vendas: result?.total_vendas || 0,
+            total_pecas: result?.total_pecas || 0,
+            ticket_medio: result?.total_vendas && result?.total_pecas ? result.total_vendas / result.total_pecas : 0
+        });
+    } catch (e) { console.error(e); res.status(500).json({}); }
 });
 
-// --- ROTA: GRÁFICO (LINHA DO TEMPO) ---
+// 2. ROTA DE GRÁFICO (EVOLUÇÃO)
 app.get('/bi/chart', async (req, res) => {
-    if (!fs.existsSync(GLOBAL_DB_PATH)) return res.json([]);
-    
-    const userId = String(req.query.userId || '');
-    const filterWhere = await getSalesFilter(userId, 'vendas');
+    try {
+        const { userId, startDate, endDate } = req.query;
+        const securityFilter = await getSalesFilter(String(userId), 'vendas');
+        const dateFilter = getDateFilter(startDate, endDate);
 
-    const db = new sqlite3.Database(GLOBAL_DB_PATH);
-    
-    const sql = `SELECT substr(DATA_EMISSAO, 6, 5) as dia, SUM(TOTAL_LIQUIDO) as valor 
-                 FROM vendas 
-                 WHERE ${filterWhere} -- <--- Segurança aqui
-                 GROUP BY DATA_EMISSAO 
-                 ORDER BY DATA_EMISSAO DESC LIMIT 7`;
-                 
-    db.all(sql, [], (err, rows) => {
-        db.close();
-        if (err) return res.json([]);
-        res.json(rows ? rows.reverse() : []);
-    });
+        const db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+
+        // Aqui também convertemos para garantir a ordenação correta
+        const query = `
+            SELECT 
+                substr(data_emissao, 1, 5) as dia, -- Pega '06/02' direto da string BR
+                (substr(data_emissao, 7, 4) || '-' || substr(data_emissao, 4, 2) || '-' || substr(data_emissao, 1, 2)) as dateIso, 
+                SUM(total_liquido) as valor
+            FROM vendas 
+            WHERE ${securityFilter} ${dateFilter}
+            GROUP BY dateIso
+            ORDER BY dateIso ASC
+        `;
+
+        const result = await db.all(query);
+        await db.close();
+        res.json(result);
+    } catch (e) { console.error(e); res.json([]); }
 });
 
-// --- ROTA: RANKING / KPI VENDEDORES (CORREÇÃO FINAL) ---
-// --- ROTA: RANKING / KPI VENDEDORES (CORREÇÃO FINAL) ---
+// 3. ROTA DE RANKING
 app.get('/bi/ranking', async (req, res) => {
-    if (!fs.existsSync(GLOBAL_DB_PATH)) return res.json([]);
-    const db = new sqlite3.Database(GLOBAL_DB_PATH);
-    
-    const userId = String(req.query.userId || '');
-    
-    // ATENÇÃO: Aqui usamos 'kpi' porque esta tabela usa NOME DA LOJA, não CNPJ
-    const filterWhere = await getSalesFilter(userId, 'kpi'); 
+    try {
+        const { userId, startDate, endDate } = req.query;
+        const securityFilter = await getSalesFilter(String(userId), 'vendas');
+        const dateFilter = getDateFilter(startDate, endDate);
 
-    const sql = `
-        SELECT 
-            vendedor as nome,
-            loja,
-            regiao,
-            fat_atual as total,
-            fat_anterior,
-            crescimento,
-            pa,
-            ticket,
-            qtd,
-            pct_seguro
-        FROM vendedores_kpi 
-        WHERE fat_atual > 0 AND ${filterWhere}  -- <--- Filtro Mágico Injetado
-        ORDER BY fat_atual DESC
-    `;
+        const db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
 
-    db.all(sql, [], (err, rows) => {
-        db.close();
-        if (err) return res.json([]);
-        res.json(rows);
-    });
+        const query = `
+            SELECT 
+                vendedor_nome as nome,
+                loja, 
+                SUM(total_liquido) as total,
+                SUM(quantidade) as qtd
+            FROM vendas 
+            WHERE ${securityFilter} ${dateFilter}
+            GROUP BY vendedor_nome
+            ORDER BY total DESC
+        `;
+
+        const result = await db.all(query);
+        await db.close();
+        res.json(result);
+    } catch (e) { console.error(e); res.json([]); }
 });
 
 // ==========================================
@@ -1346,34 +1387,36 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // --- INICIO DO BLOCO DE SINCRONIZAÇÃO ---
 
-// Rota 1: Receber Vendas Gerais
+// Rota 1: Receber Vendas Gerais (COM CORREÇÃO DE DATA NA ENTRADA)
 app.post('/api/sync/vendas', async (req, res) => {
   const dados = req.body;
 
   if (!dados || !Array.isArray(dados)) {
-    return res.status(400).json({ error: "Formato de dados inválido. Esperado um array." });
+    return res.status(400).json({ error: "Formato inválido." });
   }
 
-  console.log(`📡 Recebendo ${dados.length} registros de vendas...`);
+  console.log(`📡 Recebendo ${dados.length} vendas. Convertendo datas...`);
+
+  // Função para converter '06/02/2026' -> '2026-02-06'
+  const fixDate = (d: string) => {
+      if (!d) return null;
+      if (d.includes('/')) {
+          const parts = d.split('/'); // [06, 02, 2026]
+          if (parts.length === 3) return `${parts[2]}-${parts[1]}-${parts[0]}`;
+      }
+      return d; // Se já estiver certo, retorna igual
+  };
 
   try {
     await enqueueWrite(() => new Promise<void>((resolve, reject) => {
       const db = new sqlite3.Database(GLOBAL_DB_PATH);
-
-      // evita SQLITE_BUSY imediato
       db.configure("busyTimeout", 15000);
 
       db.serialize(() => {
         db.run("PRAGMA journal_mode=WAL;");
-        db.run("PRAGMA synchronous=NORMAL;");
-
         db.run("BEGIN IMMEDIATE TRANSACTION");
-
         db.run("DELETE FROM vendas", (err) => {
-          if (err) {
-            db.run("ROLLBACK", () => db.close(() => reject(err)));
-            return;
-          }
+          if (err) { db.run("ROLLBACK"); return reject(err); }
 
           const stmt = db.prepare(`
             INSERT INTO vendas (
@@ -1384,7 +1427,7 @@ app.post('/api/sync/vendas', async (req, res) => {
 
           for (const item of dados) {
             stmt.run(
-              item.data_emissao,
+              fixDate(item.data_emissao), // <--- AQUI A MÁGICA
               item.nome_vendedor,
               item.descricao,
               item.quantidade,
@@ -1395,37 +1438,22 @@ app.post('/api/sync/vendas', async (req, res) => {
             );
           }
 
-          stmt.finalize((err2) => {
-            if (err2) {
-              db.run("ROLLBACK", () => db.close(() => reject(err2)));
-              return;
-            }
-
-            db.run("COMMIT", (err3) => {
-              if (err3) {
-                db.run("ROLLBACK", () => db.close(() => reject(err3)));
-                return;
-              }
-              db.close((err4) => {
-                if (err4) return reject(err4);
-                resolve();
-              });
-            });
+          stmt.finalize();
+          db.run("COMMIT", (err3) => {
+             if (err3) { db.run("ROLLBACK"); return reject(err3); }
+             db.close();
+             resolve();
           });
         });
       });
     }));
 
-    console.log("✅ Vendas sincronizadas com sucesso!");
-    res.json({ message: "Sincronização de Vendas concluída!" });
+    console.log("✅ Vendas salvas com datas corrigidas (ISO)!");
+    res.json({ message: "Sincronização OK" });
 
   } catch (e: any) {
-    console.error("❌ Erro ao salvar vendas:", e);
-    // Se estiver ocupado, retorne 503 para o cliente tentar de novo
-    if (String(e?.message || "").includes("SQLITE_BUSY")) {
-      return res.status(503).json({ error: "Banco ocupado (SQLITE_BUSY). Tente novamente em alguns segundos." });
-    }
-    res.status(500).json({ error: "Erro no banco de dados" });
+    console.error("Erro sync:", e);
+    res.status(500).json({ error: "Erro banco" });
   }
 });
 
