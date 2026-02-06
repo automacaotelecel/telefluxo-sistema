@@ -7,8 +7,7 @@ import {
   AlertCircle, ChevronDown, CheckSquare, Square, Filter 
 } from 'lucide-react';
 
-// --- MAPA DE TRADUÇÃO (CNPJ -> NOME) ---
-// Copiado do seu server.ts para garantir que o Frontend saiba os nomes
+// --- 1. MAPA DE TRADUÇÃO (Adicionado para corrigir os CNPJs) ---
 const STORE_MAP: Record<string, string> = {
     "12309173001309": "ARAGUAIA SHOPPING",
     "12309173000418": "BOULEVARD SHOPPING",
@@ -38,20 +37,17 @@ const STORE_MAP: Record<string, string> = {
     "12309173001066": "CD TAGUATINGA"
 };
 
-// Função auxiliar para limpar e traduzir o nome da loja
 const getStoreName = (raw: string) => {
     if (!raw) return "N/D";
-    // Remove pontuação se houver (CNPJ sujo)
     const clean = raw.replace(/\D/g, ''); 
-    // Tenta achar no mapa, se não achar, mostra o original mesmo
     return STORE_MAP[clean] || STORE_MAP[raw] || raw;
 };
 
 export default function SalesDashboard() {
-  // --- ESTADOS DE DADOS ---
+  // Dados Brutos (Segura todas as vendas do mês)
   const [rawData, setRawData] = useState<any[]>([]);
   
-  // Estados calculados
+  // Estados Calculados (O que aparece na tela)
   const [summary, setSummary] = useState<any>({ total_vendas: 0, total_pecas: 0, ticket_medio: 0 });
   const [chartData, setChartData] = useState<any[]>([]); 
   const [ranking, setRanking] = useState<any[]>([]);
@@ -66,10 +62,12 @@ export default function SalesDashboard() {
   const [startDate, setStartDate] = useState(firstDay.toISOString().split('T')[0]);
   const [endDate, setEndDate] = useState(today.toISOString().split('T')[0]);
 
+  // Filtros
   const [selectedStores, setSelectedStores] = useState<string[]>([]);
   const [isStoreMenuOpen, setIsStoreMenuOpen] = useState(false);
   const storeMenuRef = useRef<HTMLDivElement>(null);
 
+  // Abas
   const [activeTab, setActiveTab] = useState('visao_geral');
 
   const API_URL = 'https://telefluxo-aplicacao.onrender.com';
@@ -77,6 +75,7 @@ export default function SalesDashboard() {
   const formatMoney = (val: number) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val || 0);
   const formatPercent = (val: number) => `${((val || 0) * 100).toFixed(1)}%`;
 
+  // Fecha menu ao clicar fora
   useEffect(() => {
     function handleClickOutside(event: any) {
       if (storeMenuRef.current && !storeMenuRef.current.contains(event.target)) {
@@ -87,7 +86,7 @@ export default function SalesDashboard() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  // --- 1. BUSCA DE DADOS ---
+  // --- 2. BUSCA DE DADOS (Aqui está o segredo: Pega TUDO e filtra DEPOIS) ---
   const loadAllData = async () => {
     setLoading(true);
     let userId = '';
@@ -102,6 +101,7 @@ export default function SalesDashboard() {
     if (!userId) { setErrorMsg("Usuário não identificado."); setLoading(false); return; }
 
     try {
+        // NÃO mandamos data para o backend. Trazemos tudo para não zerar.
         const url = `${API_URL}/sales?userId=${userId}`;
         const res = await fetch(url);
         
@@ -110,7 +110,7 @@ export default function SalesDashboard() {
         const data = await res.json();
         const lista = data.sales || (Array.isArray(data) ? data : []);
         
-        setRawData(lista);
+        setRawData(lista); // Salva no estado bruto
         setErrorMsg(''); 
     } catch (err: any) { 
         console.error(err);
@@ -122,27 +122,30 @@ export default function SalesDashboard() {
 
   useEffect(() => { loadAllData(); }, []); 
 
-  // --- 2. PROCESSAMENTO (COM TRADUÇÃO DE LOJA) ---
+  // --- 3. PROCESSAMENTO (O Cérebro que filtra data e traduz loja) ---
 
-  // A) Filtra os dados Brutos
+  // A) Filtra os dados Brutos (Data + Loja)
   const filteredData = useMemo(() => {
       return rawData.filter(sale => {
-          const dataVenda = sale.data_emissao || "";
+          const dataVenda = sale.data_emissao || ""; // Vem como '06/02/2026' ou '2026-02-06'
           
+          // Lógica universal para entender a data
           let dataISO = dataVenda;
           if (dataVenda.includes('/')) {
               const parts = dataVenda.split('/');
+              // Se for DD/MM/YYYY transforma em YYYY-MM-DD para o filtro funcionar
               if (parts.length === 3) dataISO = `${parts[2]}-${parts[1]}-${parts[0]}`;
           } else if (dataVenda.includes('-')) {
               dataISO = dataVenda.substring(0, 10);
           }
 
+          // Filtro de Data
           if (dataISO < startDate || dataISO > endDate) return false;
 
-          // Filtro de Loja (Traduzido)
+          // Filtro de Loja (Com tradução)
           if (selectedStores.length > 0) {
               const rawLoja = sale.cnpj_empresa || sale.loja || "";
-              const nomeLoja = getStoreName(rawLoja); // Traduz antes de filtrar
+              const nomeLoja = getStoreName(rawLoja);
               if (!selectedStores.includes(nomeLoja)) return false;
           }
 
@@ -150,30 +153,33 @@ export default function SalesDashboard() {
       });
   }, [rawData, startDate, endDate, selectedStores]);
 
-  // B) Recalcula Tudo
+  // B) Recalcula Cards, Gráfico e Ranking quando o filtro muda
   useEffect(() => {
+      // 1. Cards (Resumo)
       const total = filteredData.reduce((acc, curr) => acc + Number(curr.total_liquido || 0), 0);
       const pecas = filteredData.reduce((acc, curr) => acc + Number(curr.quantidade || 1), 0);
       const ticket = pecas > 0 ? total / pecas : 0;
       
       setSummary({ total_vendas: total, total_pecas: pecas, ticket_medio: ticket });
 
-      // Gráfico
+      // 2. Gráfico
       const mapChart = new Map();
       filteredData.forEach(sale => {
           let label = "N/D";
           const dataVenda = sale.data_emissao || "";
+          
           if (dataVenda.includes('/')) {
               const parts = dataVenda.split('/');
-              label = `${parts[0]}/${parts[1]}`;
+              label = `${parts[0]}/${parts[1]}`; // DD/MM
           } else if (dataVenda.includes('-')) {
               const parts = dataVenda.substring(0, 10).split('-');
-              label = `${parts[2]}/${parts[1]}`;
+              label = `${parts[2]}/${parts[1]}`; // DD/MM
           }
 
           if (!mapChart.has(label)) mapChart.set(label, { dia: label, valor: 0 });
           mapChart.get(label).valor += Number(sale.total_liquido || 0);
       });
+      // Ordena cronologicamente
       const sortedChart = Array.from(mapChart.values()).sort((a: any, b: any) => {
           const [d1, m1] = a.dia.split('/').map(Number);
           const [d2, m2] = b.dia.split('/').map(Number);
@@ -181,12 +187,12 @@ export default function SalesDashboard() {
       });
       setChartData(sortedChart);
 
-      // Ranking (Com tradução de nome)
+      // 3. Ranking Vendedores
       const mapRanking = new Map();
       filteredData.forEach(sale => {
           const nome = sale.nome_vendedor || sale.vendedor || "N/D";
           const rawLoja = sale.cnpj_empresa || sale.loja || "";
-          const nomeLoja = getStoreName(rawLoja); // TRADUZ AQUI
+          const nomeLoja = getStoreName(rawLoja); // Traduz para exibir bonito
           
           if (!mapRanking.has(nome)) {
               mapRanking.set(nome, { nome, loja: nomeLoja, total: 0, qtd: 0 });
@@ -211,7 +217,7 @@ export default function SalesDashboard() {
 
   }, [filteredData]);
 
-  // --- LISTAS E PROJEÇÃO ---
+  // --- LISTAS PARA O MENU (Dropdown) ---
 
   const uniqueStores = useMemo(() => {
       // Pega lojas do DADO BRUTO e TRADUZ
@@ -223,7 +229,7 @@ export default function SalesDashboard() {
       const stores: any = {};
       filteredData.forEach(item => {
           const rawLoja = item.cnpj_empresa || item.loja || 'OUTROS';
-          const lojaNome = getStoreName(rawLoja); // TRADUZ AQUI TAMBÉM
+          const lojaNome = getStoreName(rawLoja);
           
           if (!stores[lojaNome]) stores[lojaNome] = 0;
           stores[lojaNome] += Number(item.total_liquido || 0);
@@ -243,7 +249,7 @@ export default function SalesDashboard() {
   const projectionValue = calculateProjection();
   const perfPercent = projectionValue > 0 ? (summary.total_vendas / projectionValue) * 100 : 0;
 
-  // Funções Auxiliares
+  // Funções Auxiliares UI
   const toggleStore = (store: string) => {
     if (selectedStores.includes(store)) {
       setSelectedStores(selectedStores.filter(s => s !== store));
@@ -273,7 +279,7 @@ export default function SalesDashboard() {
                 <div className="p-2 bg-[#1428A0] rounded text-white"><LayoutGrid size={18} /></div>
                 <h1 className="text-lg font-black uppercase tracking-tight text-[#1428A0]">Performance Comercial</h1>
             </div>
-            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-10">Samsung • BI Automático • v3.1 (Visual Fix)</p>
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-10">Samsung • BI Automático • v3.2</p>
         </div>
 
         <div className="flex flex-wrap gap-3 items-center w-full xl:w-auto">
@@ -340,13 +346,13 @@ export default function SalesDashboard() {
                 </div>
             </div>
 
-            {/* BOTÃO FILTRAR */}
+            {/* BOTÃO ATUALIZAR */}
             <button 
                 onClick={loadAllData}
                 disabled={loading}
                 className="bg-[#1428A0] hover:bg-blue-900 text-white px-4 py-2 rounded-lg text-xs font-bold transition-all shadow-md shadow-blue-900/10 flex items-center gap-2 disabled:opacity-50"
             >
-                <Filter size={14}/> {loading ? 'ATUALIZANDO...' : 'ATUALIZAR DADOS'}
+                <Filter size={14}/> {loading ? 'CARREGANDO...' : 'ATUALIZAR DADOS'}
             </button>
         </div>
       </div>
