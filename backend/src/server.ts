@@ -1543,6 +1543,49 @@ app.get('/external-stores', async (req, res) => {
     });
 });
 
+// ROTA: TABELA DE PREÇOS (COM TRADUÇÃO DE CATEGORIA)
+app.get('/price-table', async (req, res) => {
+    try {
+        const { category } = req.query;
+        
+        const whereClause: any = {};
+
+        // --- AQUI ESTÁ A CORREÇÃO MÁGICA ---
+        if (category) {
+             const cat = String(category);
+             
+             if (cat === 'Aparelhos') {
+                 whereClause.category = 'Tabela Aparelhos';
+             } 
+             else if (cat === 'Obsoletos') {
+                 whereClause.category = 'Tabela Obsoletos';
+             } 
+             else if (cat === 'Acessorios') {
+                 // O Python salva como "Tabela Acessorios" (sem acento no código python)
+                 whereClause.category = 'Tabela Acessorios'; 
+             }
+             else {
+                 // Caso venha algo diferente, tenta buscar direto
+                 whereClause.category = cat;
+             }
+        }
+        // ------------------------------------
+        
+        const prices = await prisma.priceTable.findMany({
+            where: whereClause,
+            orderBy: [
+                { highlight: 'desc' }, // Destaques primeiro
+                { model: 'asc' }       // Ordem alfabética
+            ]
+        });
+        
+        res.json(prices);
+    } catch (e) {
+        console.error("Erro rota price-table:", e);
+        res.status(500).json({ error: "Erro ao buscar preços" });
+    }
+});
+
 // Define a porta: Usa a do Render (process.env.PORT) ou a 3000 se for local
 const PORT = process.env.PORT || 3000;
 

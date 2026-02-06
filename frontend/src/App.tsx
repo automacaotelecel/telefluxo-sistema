@@ -14,12 +14,14 @@ import Home from "./components/home";
 import DeptBulletin from "./components/DeptBulletin";
 import FinanceModule from "./components/FinanceModule"; 
 import StockModule from "./components/StockModule"; 
+import PriceTablePage from './components/PriceTablePage';
 import { 
   FileText, CheckCircle, LayoutDashboard, Users, LogOut, 
   Calendar, BarChart3, ChevronDown, ChevronRight, Circle, Plus,
   TrendingUp, Home as HomeIcon, MessageSquare, DollarSign,
-  Package, Menu, X 
+  Package, Menu, X, Tag // <--- ADICIONE O "Tag" AQUI
 } from 'lucide-react';
+
 
 function App() {
   const [user, setUser] = useState<any>(null);
@@ -204,6 +206,17 @@ function App() {
               </div>
           )}
 
+          {/* --- NOVO BOTÃO AQUI --- */}
+          {/* Usamos a mesma permissão de vendas (canViewSales) ou você pode criar uma específica */}
+          {canViewSales && (
+            <div 
+              onClick={() => handleNavigate('price_table')} 
+              className={`p-3 rounded-xl cursor-pointer flex items-center gap-3 font-bold text-sm transition-all ${currentView === 'price_table' ? 'bg-indigo-500 text-white shadow-lg' : 'text-slate-400 hover:bg-slate-800'}`}
+            >
+              <Tag size={18} /> Tabelas de Preço
+            </div>
+          )}
+
           <div onClick={() => handleNavigate('agenda')} className={`p-3 rounded-xl cursor-pointer flex items-center gap-3 font-bold text-sm transition-all ${currentView === 'agenda' ? 'bg-orange-600 text-white shadow-lg' : 'text-slate-400 hover:bg-slate-800'}`}>
             <Calendar size={18} /> Agenda Pessoal
           </div>
@@ -272,8 +285,10 @@ function App() {
             ) : currentView === 'manager_dash' ? (
                 <ManagerDashboard currentUser={user} />
             ) : currentView === 'sales_dash' ? (
-                // 🔴 CORREÇÃO 2: Agora carregamos o componente NOVO e CORRETO
-                <SalesDashboard />
+                   <SalesDashboard />
+                   // --- NOVA CONDIÇÃO AQUI ---
+            ) : currentView === 'price_table' ? (
+                <PriceTablePage />
             ) : currentView === 'team' ? (
                 <div className="flex-1 p-4 md:p-8 overflow-y-auto">
                     <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">

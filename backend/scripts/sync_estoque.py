@@ -1,5 +1,5 @@
 # ===========================================
-# 📦 SINCRONIZADOR DE ESTOQUE v7.0 (INJEÇÃO DIRETA NO BANCO)
+# 📦 SINCRONIZADOR DE ESTOQUE v7.0 (DIRETO NO SQLITE dev.db)
 # ===========================================
 
 import requests
@@ -15,7 +15,7 @@ import sqlite3 # Adicionado para conexão direta
 import uuid    # Adicionado para gerar IDs únicos
 
 # --- CONFIGURAÇÃO ---
-# API_ENDPOINT = "http://localhost:3000/stock/sync" # (Não vamos mais usar a API para evitar erro de rota)
+# A URL foi removida pois vamos gravar direto no arquivo
 
 # === CREDENCIAIS MICROVIX ===
 USUARIO = "linx_export"
@@ -229,13 +229,14 @@ def extrair_estoque(cnpj):
     return base
 
 # ===========================================
-# 3. SALVAR DIRETO NO SQLITE (NOVO)
+# 3. SALVAR DIRETO NO SQLITE (dev.db)
 # ===========================================
 def salvar_no_sqlite_direto(dataframe):
-    # Calcula o caminho absoluto para prisma/database/samsung_vendas.db
-    # Assume que o script está em /backend/scripts/
+    # Calcula o caminho absoluto para prisma/dev.db
+    # O script está em backend/scripts/
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    db_path = os.path.join(base_dir, '..', 'prisma', 'database', 'samsung_vendas.db')
+    # Sobe para backend/ e entra em prisma/dev.db
+    db_path = os.path.join(base_dir, '..', 'prisma', 'dev.db')
     
     log(f"📍 Conectando diretamente ao banco: {db_path}")
     
@@ -244,7 +245,6 @@ def salvar_no_sqlite_direto(dataframe):
         cursor = conn.cursor()
         
         # Garante que a tabela Stock existe (Schema do Prisma)
-        # Atenção: O Prisma usa nomes específicos e tipos. Vamos garantir que bata.
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS Stock (
                 id TEXT PRIMARY KEY,
@@ -262,7 +262,7 @@ def salvar_no_sqlite_direto(dataframe):
             )
         ''')
         
-        # Limpa o estoque antigo para atualizar tudo
+        # Limpa o estoque antigo
         cursor.execute("DELETE FROM Stock")
         log("🗑️ Estoque antigo limpo no banco.")
         
@@ -289,14 +289,14 @@ def salvar_no_sqlite_direto(dataframe):
                     now_str                             # updatedAt
                 ))
         
-        # Executa insert em massa (muito mais rápido)
+        # Executa insert em massa
         cursor.executemany('''
             INSERT INTO Stock (id, cnpj, storeName, productCode, reference, description, category, quantity, costPrice, salePrice, averageCost, updatedAt)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', rows_to_insert)
         
         conn.commit()
-        log(f"💾 {count} itens inseridos com sucesso no arquivo samsung_vendas.db!")
+        log(f"💾 {count} itens inseridos com sucesso no arquivo dev.db!")
         conn.close()
         return True
 
