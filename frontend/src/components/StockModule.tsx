@@ -2,71 +2,41 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Package, Search, Box, Store, 
   TrendingUp, AlertCircle, LayoutGrid, List as ListIcon,
-  Smartphone, Tag, Filter, MapPin, X, Download, ChevronRight, ArrowLeft, ShoppingBag, RefreshCw, Truck, ArrowRight
+  Smartphone, Tag, Filter, MapPin, X, Download, ChevronRight, ArrowLeft, ShoppingBag, RefreshCw, Truck, ArrowRight, ShoppingCart, Calendar, Bug
 } from 'lucide-react';
 
 // --- 1. CONFIGURAÇÕES E MAPAS ---
 
 const STORE_REGIONS: Record<string, string> = {
-  "ARAGUAIA SHOPPING": "GOIÁS",
-  "BOULEVARD SHOPPING": "DF",
-  "BRASILIA SHOPPING": "DF",
-  "CONJUNTO NACIONAL": "DF",
-  "CONJUNTO NACIONAL QUIOSQUE": "DF",
-  "GOIANIA SHOPPING": "GOIÁS",
-  "IGUATEMI SHOPPING": "DF",
-  "JK SHOPPING": "DF",
-  "PARK SHOPPING": "DF",
-  "PATIO BRASIL": "DF",
-  "TAGUATINGA SHOPPING": "DF",
-  "TERRAÇO SHOPPING": "DF",
-  "TAGUATINGA SHOPPING QQ": "DF",
-  "UBERLÂNDIA SHOPPING": "MINAS GERAIS",
-  "UBERABA SHOPPING": "MINAS GERAIS",
-  "FLAMBOYANT SHOPPING": "GOIÁS",
-  "BURITI SHOPPING": "GOIÁS",
-  "PASSEIO DAS AGUAS": "GOIÁS",
-  "PORTAL SHOPPING": "GOIÁS",
-  "SHOPPING SUL": "GOIÁS",
-  "BURITI RIO VERDE": "GOIÁS",
-  "PARK ANAPOLIS": "GOIÁS",
-  "SHOPPING RECIFE": "NORDESTE",
-  "MANAIRA SHOPPING": "NORDESTE",
-  "IGUATEMI FORTALEZA": "NORDESTE",
+  "ARAGUAIA SHOPPING": "GOIÁS", "BOULEVARD SHOPPING": "DF", "BRASILIA SHOPPING": "DF",
+  "CONJUNTO NACIONAL": "DF", "CONJUNTO NACIONAL QUIOSQUE": "DF", "GOIANIA SHOPPING": "GOIÁS",
+  "IGUATEMI SHOPPING": "DF", "JK SHOPPING": "DF", "PARK SHOPPING": "DF",
+  "PATIO BRASIL": "DF", "TAGUATINGA SHOPPING": "DF", "TERRAÇO SHOPPING": "DF",
+  "TAGUATINGA SHOPPING QQ": "DF", "UBERLÂNDIA SHOPPING": "MINAS GERAIS",
+  "UBERABA SHOPPING": "MINAS GERAIS", "FLAMBOYANT SHOPPING": "GOIÁS",
+  "BURITI SHOPPING": "GOIÁS", "PASSEIO DAS AGUAS": "GOIÁS", "PORTAL SHOPPING": "GOIÁS",
+  "SHOPPING SUL": "GOIÁS", "BURITI RIO VERDE": "GOIÁS", "PARK ANAPOLIS": "GOIÁS",
+  "SHOPPING RECIFE": "NORDESTE", "MANAIRA SHOPPING": "NORDESTE", "IGUATEMI FORTALEZA": "NORDESTE",
   "CD TAGUATINGA": "CD"
 };
 
 const CNPJ_MAP: Record<string, string> = {
-    "12309173001309": "ARAGUAIA SHOPPING",
-    "12309173000418": "BOULEVARD SHOPPING",
-    "12309173000175": "BRASILIA SHOPPING",
-    "12309173000680": "CONJUNTO NACIONAL",
-    "12309173001228": "CONJUNTO NACIONAL QUIOSQUE",
-    "12309173000507": "GOIANIA SHOPPING",
-    "12309173000256": "IGUATEMI SHOPPING",
-    "12309173000841": "JK SHOPPING",
-    "12309173000337": "PARK SHOPPING",
-    "12309173000922": "PATIO BRASIL",
-    "12309173000760": "TAGUATINGA SHOPPING",
-    "12309173001147": "TERRAÇO SHOPPING",
-    "12309173001651": "TAGUATINGA SHOPPING QQ",
-    "12309173001732": "UBERLÂNDIA SHOPPING",
-    "12309173001813": "UBERABA SHOPPING",
-    "12309173001570": "FLAMBOYANT SHOPPING",
-    "12309173002119": "BURITI SHOPPING",
-    "12309173002461": "PASSEIO DAS AGUAS",
-    "12309173002038": "PORTAL SHOPPING",
-    "12309173002208": "SHOPPING SUL",
-    "12309173001902": "BURITI RIO VERDE",
-    "12309173002380": "PARK ANAPOLIS",
-    "12309173002542": "SHOPPING RECIFE",
-    "12309173002895": "MANAIRA SHOPPING",
-    "12309173002976": "IGUATEMI FORTALEZA",
-    "12309173001066": "CD TAGUATINGA"
+    "12309173001309": "ARAGUAIA SHOPPING", "12309173000418": "BOULEVARD SHOPPING",
+    "12309173000175": "BRASILIA SHOPPING", "12309173000680": "CONJUNTO NACIONAL",
+    "12309173001228": "CONJUNTO NACIONAL QUIOSQUE", "12309173000507": "GOIANIA SHOPPING",
+    "12309173000256": "IGUATEMI SHOPPING", "12309173000841": "JK SHOPPING",
+    "12309173000337": "PARK SHOPPING", "12309173000922": "PATIO BRASIL",
+    "12309173000760": "TAGUATINGA SHOPPING", "12309173001147": "TERRAÇO SHOPPING",
+    "12309173001651": "TAGUATINGA SHOPPING QQ", "12309173001732": "UBERLÂNDIA SHOPPING",
+    "12309173001813": "UBERABA SHOPPING", "12309173001570": "FLAMBOYANT SHOPPING",
+    "12309173002119": "BURITI SHOPPING", "12309173002461": "PASSEIO DAS AGUAS",
+    "12309173002038": "PORTAL SHOPPING", "12309173002208": "SHOPPING SUL",
+    "12309173001902": "BURITI RIO VERDE", "12309173002380": "PARK ANAPOLIS",
+    "12309173002542": "SHOPPING RECIFE", "12309173002895": "MANAIRA SHOPPING",
+    "12309173002976": "IGUATEMI FORTALEZA", "12309173001066": "CD TAGUATINGA"
 };
 
 const normalizeStr = (str: string) => str.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
-
 const getStoreNameFromCNPJ = (raw: string) => {
     if (!raw) return "";
     const clean = raw.replace(/\D/g, ''); 
@@ -76,15 +46,17 @@ const getStoreNameFromCNPJ = (raw: string) => {
 export default function StockModule() {
   const [stockData, setStockData] = useState<any[]>([]);
   const [salesData, setSalesData] = useState<any[]>([]); 
+  const [purchaseData, setPurchaseData] = useState<any[]>([]); 
   const [loading, setLoading] = useState(false);
   
-  // Modos de Visualização: 'stock' (Padrão) | 'redistribution' (Remanejamento)
-  const [moduleMode, setModuleMode] = useState<'stock' | 'redistribution'>('stock');
+  // ESTADO NOVO: CONTROLE DE DEBUG
+  const [showDebug, setShowDebug] = useState(false);
+
+  const [moduleMode, setModuleMode] = useState<'stock' | 'redistribution' | 'purchases'>('stock');
 
   const [filter, setFilter] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('TODAS');
   const [regionFilter, setRegionFilter] = useState('TODAS');
-  
   const [expandedStore, setExpandedStore] = useState<string | null>(null); 
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
 
@@ -93,10 +65,20 @@ export default function StockModule() {
   const loadData = async () => {
     setLoading(true);
     try {
+      // 1. Estoque
       const resStock = await fetch(`${API_URL}/stock`);
       const jsonStock = await resStock.json();
       if(Array.isArray(jsonStock)) setStockData(jsonStock);
 
+      // 2. Compras
+      try {
+          const resPurchases = await fetch(`${API_URL}/purchases`);
+          const jsonPurchases = await resPurchases.json();
+          console.log("📦 Compras Recebidas do Banco:", jsonPurchases);
+          if(Array.isArray(jsonPurchases)) setPurchaseData(jsonPurchases);
+      } catch(e) { console.warn("Erro ao carregar compras", e); }
+
+      // 3. Vendas
       let userId = '';
       try {
           const rawUser = localStorage.getItem('user') || localStorage.getItem('telefluxo_user');
@@ -119,15 +101,13 @@ export default function StockModule() {
     if(!confirm("Isso vai conectar na Microvix e atualizar o estoque. Pode levar alguns minutos. Continuar?")) return;
     setLoading(true);
     try {
-      const res = await fetch(`${API_URL}/stock/refresh`, { method: 'POST' });
-      const json = await res.json();
-      if (res.ok) { alert("Sucesso! " + json.message); loadData(); } 
-      else { alert("Erro: " + json.error); }
+      await fetch(`${API_URL}/stock/refresh`, { method: 'POST' });
+      loadData();
     } catch (error) { alert("Erro de conexão."); } 
     finally { setLoading(false); }
   };
 
-  // --- MAPA DE VENDAS ---
+  // --- MAPAS AUXILIARES ---
   const salesMap = useMemo(() => {
       const map: Record<string, number> = {};
       salesData.forEach(sale => {
@@ -141,124 +121,134 @@ export default function StockModule() {
       return map;
   }, [salesData]);
 
-  // --- HELPER DE GIRO ---
+  const purchasesMap = useMemo(() => {
+      const map: Record<string, any> = {};
+      purchaseData.forEach(p => {
+          // Normalização da Região para evitar problemas de acentos ou nomes diferentes
+          const rawRegiao = (p.regiao || "OUTROS").toUpperCase();
+          const key = `${rawRegiao}|${normalizeStr(p.descricao)}`;
+          
+          if (!map[key]) map[key] = { total: 0, details: [] };
+          map[key].total += p.qtd_total;
+          
+          let prev = {};
+          try { prev = JSON.parse(p.previsao_info); } catch(e) {}
+          map[key].details.push(prev);
+      });
+      return map;
+  }, [purchaseData]);
+
   const getProductSales = (storeName: string, description: string) => {
       const key = `${storeName.trim().toUpperCase()}|${normalizeStr(description)}`;
       return salesMap[key] || 0;
   };
 
-  // --- ALGORITMO DE REMANEJAMENTO INTELIGENTE ---
+  const getIncomingStock = (region: string, description: string) => {
+      // Normalização da região para o Match
+      const key = `${region.toUpperCase()}|${normalizeStr(description)}`;
+      return purchasesMap[key] || null;
+  };
+
+  // --- ALGORITMOS ---
+  
   const redistributionSuggestions = useMemo(() => {
-      if (stockData.length === 0) return [];
-
+      if (stockData.length === 0) return { moves: [], buys: [] };
       const suggestions: any[] = [];
-      const purchases: any[] = [];
-
-      // 1. Agrupar produtos por Região + Nome
-      // Ex: { "DF|GALAXY S23": { stores: [ {name: 'PARK', qty: 5, sales: 2}, ... ] } }
+      const purchasesSug: any[] = [];
       const productGroups: Record<string, any> = {};
 
       stockData.forEach(item => {
           const region = STORE_REGIONS[item.storeName] || "OUTROS";
-          if (regionFilter !== 'TODAS' && region !== regionFilter) return; // Aplica filtro de região
+          if (regionFilter !== 'TODAS' && region !== regionFilter) return;
 
           const key = `${region}|${item.description}|${item.productCode}`;
-          
           if (!productGroups[key]) {
               productGroups[key] = {
-                  description: item.description,
-                  productCode: item.productCode,
-                  region: region,
-                  category: item.category,
-                  totalStock: 0,
-                  totalSales: 0,
-                  stores: []
+                  description: item.description, productCode: item.productCode, region: region, category: item.category,
+                  totalStock: 0, totalSales: 0, stores: []
               };
           }
-
           const sales = getProductSales(item.storeName, item.description);
           productGroups[key].totalStock += Number(item.quantity);
           productGroups[key].totalSales += sales;
-          
-          productGroups[key].stores.push({
-              storeName: item.storeName,
-              qty: Number(item.quantity),
-              sales: sales,
-              score: sales - Number(item.quantity) // Positivo = Vende mais que tem (Necessidade), Negativo = Tem mais que vende (Sobra)
-          });
+          productGroups[key].stores.push({ storeName: item.storeName, qty: Number(item.quantity), sales: sales });
       });
 
-      // 2. Analisar cada produto na região para sugerir movimentos
       Object.values(productGroups).forEach((prod: any) => {
-          // Ordena lojas: Quem precisa mais primeiro vs Quem tem sobra
           const donors = prod.stores.filter((s: any) => s.qty > 3 && s.sales < s.qty).sort((a:any, b:any) => b.qty - a.qty);
           const receivers = prod.stores.filter((s: any) => s.qty < 2 && s.sales > 2).sort((a:any, b:any) => b.sales - a.sales);
 
-          // Lógica de "Compra" (Ruptura Geral)
-          // Se a venda total na região for muito maior que o estoque total, sugere compra
-          if (prod.totalSales > prod.totalStock + 5) {
-              purchases.push({
-                  type: 'purchase',
-                  product: prod.description,
-                  region: prod.region,
-                  category: prod.category,
-                  gap: prod.totalSales - prod.totalStock,
-                  insight: `Região ${prod.region} com ruptura. Vendas: ${prod.totalSales} | Estoque: ${prod.totalStock}`
-              });
+          const incoming = getIncomingStock(prod.region, prod.description);
+          const incomingQty = incoming ? incoming.total : 0;
+
+          const gap = prod.totalSales - prod.totalStock;
+          if (gap > 5) {
+              if (incomingQty >= gap) {
+                  // Tem incoming suficiente
+              } else {
+                  purchasesSug.push({
+                      type: 'purchase', product: prod.description, region: prod.region, category: prod.category,
+                      gap: gap - incomingQty,
+                      insight: `Vendas: ${prod.totalSales} | Estoque: ${prod.totalStock} | Chegando: ${incomingQty}`
+                  });
+              }
           }
 
-          // Lógica de "Remanejamento" (Robin Hood)
           if (donors.length > 0 && receivers.length > 0) {
-              let donorIndex = 0;
-              let receiverIndex = 0;
-
-              while (donorIndex < donors.length && receiverIndex < receivers.length) {
-                  const donor = donors[donorIndex];
-                  const receiver = receivers[receiverIndex];
-
-                  // Quantidade sugerida para mover (O que o doador pode dar, até deixar o receptor com 3)
-                  const canGive = donor.qty - 2; // Deixa reserva de 2
-                  const need = 3 - receiver.qty; // Meta de 3
-                  
+              let dIdx = 0; let rIdx = 0;
+              while (dIdx < donors.length && rIdx < receivers.length) {
+                  const donor = donors[dIdx]; const receiver = receivers[rIdx];
+                  const canGive = donor.qty - 2;
+                  const need = 3 - receiver.qty;
                   const moveQty = Math.min(canGive, need);
 
                   if (moveQty > 0) {
                       suggestions.push({
-                          type: 'move',
-                          product: prod.description,
-                          from: donor.storeName,
-                          to: receiver.storeName,
-                          qty: moveQty,
-                          region: prod.region,
-                          reason: `Loja ${donor.storeName} tem ${donor.qty} (baixo giro) e ${receiver.storeName} vendeu ${receiver.sales} (estoque crítico).`
+                          type: 'move', product: prod.description, from: donor.storeName, to: receiver.storeName,
+                          qty: moveQty, region: prod.region,
+                          reason: `Loja ${donor.storeName} tem sobra (${donor.qty}) e ${receiver.storeName} tem giro (${receiver.sales}).`
                       });
-                      
-                      // Atualiza virtuais para continuar o loop
-                      donor.qty -= moveQty;
-                      receiver.qty += moveQty;
+                      donor.qty -= moveQty; receiver.qty += moveQty;
                   }
-
-                  if (donor.qty <= 3) donorIndex++;
-                  if (receiver.qty >= 3) receiverIndex++;
+                  if (donor.qty <= 3) dIdx++;
+                  if (receiver.qty >= 3) rIdx++;
               }
           }
       });
+      return { moves: suggestions, buys: purchasesSug };
+  }, [stockData, salesData, regionFilter, purchaseData]);
 
-      return { moves: suggestions, buys: purchases };
-  }, [stockData, salesData, regionFilter]); // Recalcula se mudar a região
+  // --- AGRUPAMENTO DE COMPRAS (CORRIGIDO) ---
+  const groupedPurchases = useMemo(() => {
+      const groups: Record<string, any[]> = {};
+      
+      purchaseData.forEach(p => {
+          // Fallback: Se não tiver região na planilha, joga em "OUTROS"
+          const regiao = (p.regiao || "OUTROS").toUpperCase();
+          
+          if (regionFilter !== 'TODAS' && regiao !== regionFilter) return;
+          
+          if (!groups[regiao]) groups[regiao] = [];
+          groups[regiao].push(p);
+      });
+      return groups;
+  }, [purchaseData, regionFilter]);
 
-  // --- FILTRAGEM PADRÃO (VISÃO DE ESTOQUE) ---
   const filteredData = useMemo(() => {
     return stockData.filter(item => {
       const itemRegion = STORE_REGIONS[item.storeName] || "OUTROS";
-      const matchesSearch = ((item.description || '').toLowerCase().includes(filter.toLowerCase()) || (item.reference || '').toLowerCase().includes(filter.toLowerCase()) || (item.productCode || '').toString().includes(filter));
+      const matchesSearch = ((item.description || '').toLowerCase().includes(filter.toLowerCase()) || (item.productCode || '').toString().includes(filter));
       const matchesCategory = categoryFilter === 'TODAS' || (item.category || 'GERAL') === categoryFilter;
       const matchesRegion = regionFilter === 'TODAS' || itemRegion === regionFilter;
       return matchesSearch && matchesCategory && matchesRegion;
     });
   }, [stockData, filter, categoryFilter, regionFilter]);
 
-  // --- AGRUPAMENTO PADRÃO ---
+  const currentStoreProducts = useMemo(() => {
+      if (!expandedStore) return [];
+      return filteredData.filter(i => i.storeName === expandedStore);
+  }, [filteredData, expandedStore]);
+
   const groupedStores = useMemo(() => {
     const groups: Record<string, any[]> = {}; 
     const storeStats: Record<string, any> = {};
@@ -280,18 +270,19 @@ export default function StockModule() {
     return sortedGroups;
   }, [filteredData]);
 
-  const currentStoreProducts = useMemo(() => {
-      if (!expandedStore) return [];
-      return filteredData.filter(i => i.storeName === expandedStore);
-  }, [filteredData, expandedStore]);
-
   const uniqueCategories = useMemo(() => Array.from(new Set(stockData.map(i => i.category || 'GERAL'))).sort(), [stockData]);
   const uniqueRegions = useMemo(() => Array.from(new Set(Object.values(STORE_REGIONS))).sort(), []);
+  
   const getStoreTotalSales = (storeName: string) => {
-      // Calcula na hora para garantir precisão
       const sales = salesData.filter(s => getStoreNameFromCNPJ(s.cnpj_empresa || s.loja) === storeName);
       return sales.reduce((acc, s) => acc + Number(s.quantidade), 0);
   };
+
+  // --- LISTA ÚNICA DE REGIÕES QUE TÊM COMPRAS (PARA O FILTRO) ---
+  const purchaseRegions = useMemo(() => {
+      const regs = new Set(purchaseData.map(p => (p.regiao || "OUTROS").toUpperCase()));
+      return Array.from(regs).sort();
+  }, [purchaseData]);
 
   const handleExport = () => {
     const dataToExport = expandedStore ? currentStoreProducts : filteredData;
@@ -320,31 +311,28 @@ export default function StockModule() {
                     </button>
                 ) : (
                     <div className="p-2.5 bg-indigo-600 rounded-xl text-white shadow-md shadow-indigo-200">
-                        {moduleMode === 'stock' ? <Box size={20} /> : <Truck size={20}/>}
+                        {moduleMode === 'stock' ? <Box size={20} /> : moduleMode === 'redistribution' ? <Truck size={20}/> : <ShoppingCart size={20}/>}
                     </div>
                 )}
                 <div>
                     <h1 className="text-xl md:text-2xl font-black uppercase tracking-tight text-slate-800">
-                        {moduleMode === 'stock' ? (expandedStore || "Visão Estratégica de Estoque") : "Central de Remanejamento"}
+                        {moduleMode === 'stock' ? (expandedStore || "Visão Estratégica de Estoque") : moduleMode === 'redistribution' ? "Central de Remanejamento" : "Controle de Compras (Incoming)"}
                     </h1>
                     <div className="flex items-center gap-2">
                         <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                            {moduleMode === 'stock' ? "Controle Físico & Financeiro" : "Inteligência Artificial de Distribuição"}
+                            {moduleMode === 'stock' ? "Físico & Giro" : moduleMode === 'redistribution' ? "Inteligência de Distribuição" : "Gestão de Pedidos em Aberto"}
                         </p>
-                        {salesData.length > 0 && <span className="text-[9px] font-bold bg-green-50 text-green-600 px-1.5 rounded border border-green-100">{salesData.length} vendas analisadas</span>}
+                        {moduleMode === 'purchases' && purchaseData.length > 0 && <span className="text-[9px] font-bold bg-blue-50 text-blue-600 px-1.5 rounded border border-blue-100">{purchaseData.length} itens aguardando</span>}
                     </div>
                 </div>
             </div>
 
             <div className="flex gap-2">
-                {/* BOTÃO DE MODO (ALTERNAR TELAS) */}
-                <button 
-                    onClick={() => setModuleMode(moduleMode === 'stock' ? 'redistribution' : 'stock')}
-                    className={`px-4 py-2 rounded-xl text-xs font-bold uppercase transition-all shadow-md flex items-center gap-2 ${moduleMode === 'stock' ? 'bg-white border border-indigo-100 text-indigo-600 hover:bg-indigo-50' : 'bg-indigo-600 text-white hover:bg-indigo-700'}`}
-                >
-                    {moduleMode === 'stock' ? <><Truck size={16}/> Sugerir Remanejamento</> : <><Box size={16}/> Voltar ao Estoque</>}
-                </button>
-
+                <div className="flex bg-slate-100 p-1 rounded-xl">
+                    <button onClick={() => setModuleMode('stock')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all ${moduleMode === 'stock' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-indigo-500'}`}>Estoque</button>
+                    <button onClick={() => setModuleMode('redistribution')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all ${moduleMode === 'redistribution' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-indigo-500'}`}>Remanejamento</button>
+                    <button onClick={() => setModuleMode('purchases')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all ${moduleMode === 'purchases' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-indigo-500'}`}>Compras</button>
+                </div>
                 <button onClick={handleSync} disabled={loading} className={`px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold uppercase transition-all shadow-md flex items-center gap-2 ${loading ? 'opacity-50' : ''}`}>
                     {loading ? <RefreshCw size={14} className="animate-spin"/> : 'Sync'}
                 </button>
@@ -352,106 +340,138 @@ export default function StockModule() {
             </div>
         </div>
 
-        {/* ================= TELA DE REMANEJAMENTO ================= */}
-        {moduleMode === 'redistribution' && (
-            <div className="space-y-8 animate-fadeIn">
-                
-                <div className="bg-gradient-to-r from-indigo-900 to-indigo-800 p-6 rounded-2xl text-white shadow-lg">
-                    <h2 className="text-lg font-black uppercase mb-2">Painel de Oportunidades</h2>
-                    <p className="text-sm opacity-80 max-w-3xl">
-                        O sistema analisou o estoque atual versus as vendas do último período. 
-                        Abaixo estão sugestões para equilibrar o estoque entre lojas da mesma região (evitando ruptura) e sugestões de compra para itens em falta geral.
-                    </p>
-                    <div className="mt-4 flex gap-4">
-                        <div className="bg-white/10 px-4 py-2 rounded-lg backdrop-blur-sm">
-                            <span className="block text-2xl font-bold">{redistributionSuggestions.moves.length}</span>
-                            <span className="text-[10px] uppercase font-bold opacity-70">Transferências Sugeridas</span>
-                        </div>
-                        <div className="bg-white/10 px-4 py-2 rounded-lg backdrop-blur-sm">
-                            <span className="block text-2xl font-bold">{redistributionSuggestions.buys.length}</span>
-                            <span className="text-[10px] uppercase font-bold opacity-70">Sugestões de Compra</span>
-                        </div>
+        {/* ================= MÓDULO DE COMPRAS (COM DEBUG) ================= */}
+        {moduleMode === 'purchases' && (
+            <div className="space-y-6 animate-fadeIn">
+                <div className="flex justify-between items-center bg-white p-4 rounded-xl border border-slate-200">
+                    <div className="flex items-center gap-2">
+                        <MapPin className="text-indigo-600" size={20}/>
+                        <span className="text-sm font-bold text-slate-700 uppercase">Filtrar Região:</span>
+                        <select value={regionFilter} onChange={e => setRegionFilter(e.target.value)} className="bg-white border border-slate-200 text-slate-600 text-xs font-bold uppercase px-3 py-2 rounded-lg outline-none cursor-pointer hover:border-indigo-300">
+                            <option value="TODAS">Todas as Regiões</option>
+                            {purchaseRegions.map(r => <option key={r} value={r}>{r}</option>)}
+                        </select>
+                    </div>
+                    <div className="text-right">
+                        <span className="text-2xl font-black text-slate-800">{purchaseData.filter(p => regionFilter === 'TODAS' || (p.regiao||'OUTROS').toUpperCase() === regionFilter).reduce((acc, curr) => acc + curr.qtd_total, 0)}</span>
+                        <span className="block text-[9px] font-bold text-slate-400 uppercase">Peças a receber</span>
                     </div>
                 </div>
 
-                {/* FILTRO DE REGIÃO PARA REMANEJAMENTO */}
-                <div className="flex items-center gap-2">
-                    <MapPin className="text-indigo-600" size={20}/>
-                    <span className="text-sm font-bold text-slate-700 uppercase">Filtrar Região do Remanejamento:</span>
-                    <select value={regionFilter} onChange={e => setRegionFilter(e.target.value)} className="bg-white border border-slate-200 text-slate-600 text-xs font-bold uppercase px-3 py-2 rounded-lg outline-none cursor-pointer hover:border-indigo-300">
-                        <option value="TODAS">Todas as Regiões</option>
-                        {uniqueRegions.map(r => <option key={r} value={r}>{r}</option>)}
-                    </select>
+                {/* BOTÃO DE DIAGNÓSTICO (APARECE SE NÃO TIVER DADOS OU POR OPÇÃO) */}
+                {purchaseData.length === 0 && (
+                    <div className="bg-red-50 p-4 rounded-xl border border-red-200 text-center">
+                        <p className="text-red-800 font-bold mb-2">⚠️ LISTA VAZIA - DIAGNÓSTICO</p>
+                        <button onClick={() => setShowDebug(!showDebug)} className="bg-red-600 text-white px-4 py-2 rounded-lg text-xs font-bold uppercase flex items-center gap-2 mx-auto">
+                            <Bug size={16}/> VER DADOS DO SERVIDOR
+                        </button>
+                        {showDebug && (
+                            <div className="mt-4 text-left bg-slate-900 text-green-400 p-4 rounded-xl text-xs overflow-auto max-h-60">
+                                <p className="mb-2 text-white border-b border-white/20 pb-1">DADOS RECEBIDOS DO BACKEND:</p>
+                                <pre>{JSON.stringify(purchaseData, null, 2)}</pre>
+                            </div>
+                        )}
+                    </div>
+                )}
+
+                {Object.keys(groupedPurchases).length > 0 ? Object.entries(groupedPurchases).map(([region, items]) => (
+                    <div key={region} className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                        <div className="bg-slate-50 px-6 py-3 border-b border-slate-200 flex justify-between items-center">
+                            <h3 className="font-black text-slate-700 uppercase flex items-center gap-2"><MapPin size={16}/> {region}</h3>
+                            <span className="text-xs font-bold bg-indigo-100 text-indigo-700 px-3 py-1 rounded-full">{items.reduce((acc, i)=>acc+i.qtd_total, 0)} un</span>
+                        </div>
+                        <div className="divide-y divide-slate-100">
+                            {items.map((item: any, idx: number) => {
+                                let prev = {};
+                                try { prev = JSON.parse(item.previsao_info || '{}'); } catch(e) {}
+                                
+                                return (
+                                    <div key={idx} className="p-4 flex flex-col md:flex-row justify-between items-center gap-4 hover:bg-slate-50 transition-colors">
+                                        <div className="flex-1">
+                                            <h4 className="text-sm font-bold text-slate-800 uppercase">{item.descricao}</h4>
+                                            {Object.keys(prev).length > 0 && (
+                                                <div className="flex flex-wrap gap-2 mt-2">
+                                                    {Object.entries(prev).map(([week, qtd]) => (
+                                                        <span key={week} className="text-[10px] font-bold bg-green-50 text-green-700 border border-green-100 px-2 py-1 rounded uppercase flex items-center gap-1">
+                                                            <Calendar size={10} /> {week}: {String(qtd)} un
+                                                        </span>
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </div>
+                                        <div className="text-right min-w-[80px]">
+                                            <span className="block text-2xl font-black text-slate-700">{item.qtd_total}</span>
+                                            <span className="text-[8px] font-bold text-slate-400 uppercase">Total Geral</span>
+                                        </div>
+                                    </div>
+                                )
+                            })}
+                        </div>
+                    </div>
+                )) : (
+                    purchaseData.length > 0 && (
+                        <div className="p-20 text-center text-slate-400 font-bold uppercase text-sm bg-white rounded-2xl border border-dashed">
+                            Filtro atual ocultou todos os {purchaseData.length} itens. Tente mudar a região.
+                        </div>
+                    )
+                )}
+            </div>
+        )}
+
+        {/* ================= MÓDULO REMANEJAMENTO ================= */}
+        {moduleMode === 'redistribution' && (
+            <div className="space-y-8 animate-fadeIn">
+                <div className="bg-gradient-to-r from-indigo-900 to-indigo-800 p-6 rounded-2xl text-white shadow-lg flex justify-between items-center">
+                    <div>
+                        <h2 className="text-lg font-black uppercase mb-1">Painel de Oportunidades</h2>
+                        <p className="text-xs opacity-70">Otimização baseada em Estoque Local vs Vendas Recentes vs Compras Futuras.</p>
+                    </div>
+                    <div className="flex gap-4 text-center">
+                        <div>
+                            <span className="block text-2xl font-bold">{redistributionSuggestions.moves.length}</span>
+                            <span className="text-[9px] uppercase opacity-70">Moves</span>
+                        </div>
+                        <div>
+                            <span className="block text-2xl font-bold">{redistributionSuggestions.buys.length}</span>
+                            <span className="text-[9px] uppercase opacity-70">Buys</span>
+                        </div>
+                    </div>
                 </div>
 
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                    {/* COLUNA 1: TRANSFERÊNCIAS */}
                     <div className="space-y-4">
-                        <h3 className="flex items-center gap-2 text-indigo-700 font-black uppercase text-sm border-b border-indigo-100 pb-2">
-                            <Truck size={18}/> Transferências Internas (Mesma Região)
-                        </h3>
-                        {redistributionSuggestions.moves.length > 0 ? (
-                            redistributionSuggestions.moves.slice(0, 50).map((move: any, idx: number) => (
-                                <div key={idx} className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col gap-3 relative overflow-hidden group hover:border-indigo-300 transition-all">
-                                    <div className="absolute top-0 right-0 bg-indigo-50 text-indigo-600 text-[9px] font-bold px-2 py-1 rounded-bl-lg uppercase">{move.region}</div>
-                                    
-                                    <div>
-                                        <h4 className="text-xs font-black text-slate-800 uppercase line-clamp-1">{move.product}</h4>
-                                        <p className="text-[10px] text-slate-400 mt-1">{move.reason}</p>
-                                    </div>
-
-                                    <div className="flex items-center justify-between bg-slate-50 p-3 rounded-lg border border-slate-100">
-                                        <div className="text-center">
-                                            <p className="text-[9px] font-bold text-red-400 uppercase mb-1">Origem (Sobra)</p>
-                                            <p className="text-xs font-black text-slate-700 truncate max-w-[100px]">{move.from}</p>
-                                        </div>
-                                        <div className="flex flex-col items-center px-4">
-                                            <span className="text-xs font-black text-indigo-600 bg-indigo-100 px-2 py-1 rounded-full mb-1">{move.qty} un</span>
-                                            <ArrowRight size={14} className="text-indigo-300"/>
-                                        </div>
-                                        <div className="text-center">
-                                            <p className="text-[9px] font-bold text-green-500 uppercase mb-1">Destino (Falta)</p>
-                                            <p className="text-xs font-black text-slate-700 truncate max-w-[100px]">{move.to}</p>
-                                        </div>
-                                    </div>
+                        <h3 className="flex items-center gap-2 text-indigo-700 font-black uppercase text-sm border-b border-indigo-100 pb-2"><Truck size={18}/> Transferências</h3>
+                        {redistributionSuggestions.moves.map((move: any, idx: number) => (
+                            <div key={idx} className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col gap-3 relative group">
+                                <div className="absolute top-0 right-0 bg-indigo-50 text-indigo-600 text-[9px] font-bold px-2 py-1 rounded-bl-lg uppercase">{move.region}</div>
+                                <h4 className="text-xs font-black text-slate-800 uppercase pr-8">{move.product}</h4>
+                                <div className="flex items-center justify-between bg-slate-50 p-3 rounded-lg border border-slate-100">
+                                    <div className="text-center"><p className="text-[9px] font-bold text-red-400 uppercase">Origem</p><p className="text-xs font-black text-slate-700">{move.from}</p></div>
+                                    <div className="flex flex-col items-center"><span className="text-xs font-black text-indigo-600 bg-indigo-100 px-2 py-1 rounded-full">{move.qty} un</span><ArrowRight size={14} className="text-indigo-300 mt-1"/></div>
+                                    <div className="text-center"><p className="text-[9px] font-bold text-green-500 uppercase">Destino</p><p className="text-xs font-black text-slate-700">{move.to}</p></div>
                                 </div>
-                            ))
-                        ) : (
-                            <div className="p-10 text-center text-slate-400 bg-white rounded-xl border border-dashed text-xs font-bold uppercase">Nenhuma oportunidade de remanejamento encontrada nesta região.</div>
-                        )}
+                            </div>
+                        ))}
                     </div>
-
-                    {/* COLUNA 2: COMPRAS */}
+                    
                     <div className="space-y-4">
-                        <h3 className="flex items-center gap-2 text-green-700 font-black uppercase text-sm border-b border-green-100 pb-2">
-                            <ShoppingBag size={18}/> Sugestões de Compra (Ruptura Geral)
-                        </h3>
-                        {redistributionSuggestions.buys.length > 0 ? (
-                            redistributionSuggestions.buys.slice(0, 50).map((buy: any, idx: number) => (
-                                <div key={idx} className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex justify-between items-center gap-4 hover:border-green-300 transition-all">
-                                    <div>
-                                        <div className="flex gap-2 mb-1">
-                                            <span className="text-[9px] font-bold bg-green-50 text-green-600 px-1.5 py-0.5 rounded uppercase">{buy.region}</span>
-                                            <span className="text-[9px] font-bold bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded uppercase">{buy.category}</span>
-                                        </div>
-                                        <h4 className="text-xs font-black text-slate-800 uppercase line-clamp-1">{buy.product}</h4>
-                                        <p className="text-[10px] text-slate-400 mt-1">{buy.insight}</p>
-                                    </div>
-                                    <div className="text-center min-w-[60px]">
-                                        <p className="text-[9px] font-bold text-slate-400 uppercase">Comprar</p>
-                                        <p className="text-xl font-black text-green-600">+{buy.gap}</p>
-                                    </div>
+                        <h3 className="flex items-center gap-2 text-green-700 font-black uppercase text-sm border-b border-green-100 pb-2"><ShoppingBag size={18}/> Sugestões de Compra</h3>
+                        {redistributionSuggestions.buys.map((buy: any, idx: number) => (
+                            <div key={idx} className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex justify-between items-center gap-4">
+                                <div>
+                                    <div className="flex gap-2 mb-1"><span className="text-[9px] font-bold bg-green-50 text-green-600 px-1.5 py-0.5 rounded uppercase">{buy.region}</span></div>
+                                    <h4 className="text-xs font-black text-slate-800 uppercase">{buy.product}</h4>
+                                    <p className="text-[10px] text-slate-400 mt-1">{buy.insight}</p>
                                 </div>
-                            ))
-                        ) : (
-                            <div className="p-10 text-center text-slate-400 bg-white rounded-xl border border-dashed text-xs font-bold uppercase">Estoque saudável. Nenhuma compra urgente necessária.</div>
-                        )}
+                                <div className="text-center"><p className="text-[9px] font-bold text-slate-400 uppercase">Comprar</p><p className="text-xl font-black text-green-600">+{buy.gap}</p></div>
+                            </div>
+                        ))}
                     </div>
                 </div>
             </div>
         )}
 
-        {/* ================= TELA DE ESTOQUE (PADRÃO) ================= */}
+        {/* ================= MÓDULO ESTOQUE (CLÁSSICO) ================= */}
         {moduleMode === 'stock' && (
             <>
             {!expandedStore && (
