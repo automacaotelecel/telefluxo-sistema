@@ -1614,6 +1614,45 @@ app.get('/price-table', async (req, res) => {
     }
 });
 
+// --- 2. ROTA PARA COMPRAS - ESTOQUE (SYNC) ---
+app.post('/api/sync/compras', async (req, res) => {
+    try {
+        const { compras } = req.body;
+        if (!compras || !Array.isArray(compras)) return res.status(400).json({ error: "Dados inválidos" });
+
+        const db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+        
+        await db.run('DELETE FROM compras'); // Limpa anterior para atualizar
+        
+        const stmt = await db.prepare('INSERT INTO compras (descricao, regiao, qtd_total, previsao_info) VALUES (?, ?, ?, ?)');
+        
+        for (const c of compras) {
+            await stmt.run(c.descricao, c.regiao, c.qtd, JSON.stringify(c.previsao));
+        }
+        
+        await stmt.finalize();
+        await db.close();
+        
+        console.log(`📦 ${compras.length} compras sincronizadas.`);
+        res.json({ message: "Compras atualizadas com sucesso!" });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ error: "Erro ao salvar compras" });
+    }
+});
+
+// --- 3. ROTA DE LEITURA (FRONTEND) ---
+app.get('/purchases', async (req, res) => {
+    try {
+        const db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+        const compras = await db.all('SELECT * FROM compras');
+        await db.close();
+        res.json(compras);
+    } catch (error) {
+        res.status(500).json({ error: "Erro ao buscar compras" });
+    }
+});
+
 // Define a porta: Usa a do Render (process.env.PORT) ou a 3000 se for local
 const PORT = process.env.PORT || 3000;
 
