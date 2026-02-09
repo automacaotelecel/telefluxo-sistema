@@ -1614,54 +1614,71 @@ app.get('/price-table', async (req, res) => {
     }
 });
 
-// ROTA: RECEBER COMPRAS (DO PYTHON) - VERSÃO BLINDADA
+// ==========================================
+// MÓDULO DE COMPRAS (VERSÃO CORRIGIDA E SIMPLIFICADA)
+// ==========================================
+
+// 1. Rota de Escrita (Sync) - Sem WAL, Sem Transações complexas
 app.post('/api/sync/compras', async (req, res) => {
+    let dbConn;
     try {
         const { compras } = req.body;
         if (!compras || !Array.isArray(compras)) return res.status(400).json({ error: "Dados inválidos" });
 
-        const dbConn = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+        // Abre conexão direta
+        dbConn = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
         
-        // 1. GARANTE QUE A TABELA EXISTE (Correção do erro)
-        await dbConn.exec(`
-            CREATE TABLE IF NOT EXISTS compras (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                descricao TEXT,
-                regiao TEXT,
-                qtd_total INTEGER,
-                previsao_info TEXT,
-                data_atualizacao DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        `);
+        // Garante tabela
+        await dbConn.exec(`CREATE TABLE IF NOT EXISTS compras (id INTEGER PRIMARY KEY AUTOINCREMENT, descricao TEXT, regiao TEXT, qtd_total INTEGER, previsao_info TEXT, data_atualizacao DATETIME DEFAULT CURRENT_TIMESTAMP)`);
 
-        // 2. Limpa dados antigos
+        // Limpa tudo
         await dbConn.run('DELETE FROM compras'); 
         
-        // 3. Insere os novos (Usando transação para ser rápido)
-        await dbConn.run('BEGIN TRANSACTION');
-        
+        // Prepara inserção
         const stmt = await dbConn.prepare('INSERT INTO compras (descricao, regiao, qtd_total, previsao_info) VALUES (?, ?, ?, ?)');
         
+        let inseridos = 0;
         for (const c of compras) {
-            // Garante que os dados não venham undefined
-            const desc = c.descricao || "ITEM DESCONHECIDO";
+            const desc = c.descricao || "N/D";
             const reg = c.regiao || "OUTROS";
             const qtd = Number(c.qtd) || 0;
             const prev = JSON.stringify(c.previsao || {});
-
+            
             await stmt.run(desc, reg, qtd, prev);
+            inseridos++;
         }
         
         await stmt.finalize();
-        await dbConn.run('COMMIT');
-        await dbConn.close();
         
-        console.log(`📦 ${compras.length} compras sincronizadas com sucesso.`);
-        res.json({ message: "Compras atualizadas com sucesso!" });
+        // VERIFICAÇÃO FINAL (O "Dedo-Duro")
+        const count = await dbConn.get('SELECT count(*) as total FROM compras');
+        
+        await dbConn.close(); // Fecha para garantir gravação no disco
+        
+        console.log(`📦 Sincronização finalizada. Itens no banco: ${count.total}`);
+        
+        res.json({ 
+            message: "Sincronização concluída", 
+            enviados: compras.length, 
+            gravados: count.total // O Python vai mostrar isso
+        });
 
     } catch (error: any) {
-        console.error("❌ Erro grave no sync de compras:", error);
-        res.status(500).json({ error: "Erro ao salvar compras: " + error.message });
+        console.error("❌ Erro no backend:", error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// 2. Rota de Leitura (Frontend)
+app.get('/purchases', async (req, res) => {
+    try {
+        // Abre conexão nova para garantir leitura atualizada
+        const dbConn = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+        const compras = await dbConn.all('SELECT * FROM compras');
+        await dbConn.close();
+        res.json(compras);
+    } catch (error) {
+        res.status(500).json({ error: "Erro ao ler compras" });
     }
 });
 

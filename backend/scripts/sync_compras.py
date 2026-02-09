@@ -2,62 +2,76 @@ import pandas as pd
 import requests
 import json
 
-# URL DA PLANILHA (Formato CSV para download direto)
+# URL DA PLANILHA
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1_iMiIIZ1zpEbDq-KCzb_RaiyosS5zUeQCmHZyYXT_B0/export?format=csv"
+# URL DE PRODUÇÃO
 API_URL = "https://telefluxo-aplicacao.onrender.com/api/sync/compras"
 
-print("🚀 Iniciando Sincronização de Compras...")
+print("🚀 Iniciando Sincronização (Modo Auditor)...")
 
 try:
-    # Lê a planilha direto do Google
     df = pd.read_csv(SHEET_URL)
     
-    # Limpeza básica
-    df = df.dropna(subset=['Description']) # Remove linhas vazias
+    # Mapeamento por Posição (G=6, O=14)
+    IDX_DESC = 6 
+    IDX_QTD = 14
     
+    # Tenta achar coluna de região dinamicamente
+    col_region = next((c for c in df.columns if 'regi' in c.lower()), df.columns[2])
+    print(f"📍 Lendo região da coluna: {col_region}")
+
     compras_formatadas = []
-    
+
     for index, row in df.iterrows():
         try:
-            # 1. Identificar colunas dinâmicas de Previsão
-            # A lógica: Pegar tudo entre 'Valor da NF' e 'Total Geral'
-            cols = df.columns.tolist()
-            start_idx = cols.index('Valor da NF') + 1
-            end_idx = cols.index('Total Geral')
+            vals = row.values
+            desc = str(vals[IDX_DESC]).strip().upper()
+            reg = str(row[col_region]).strip().upper()
             
-            previsao_cols = cols[start_idx:end_idx]
-            
-            # Monta o objeto de previsão apenas com o que tem valor > 0
-            previsao_info = {}
-            for col in previsao_cols:
-                val = str(row[col]).strip()
-                if val and val != 'nan' and val != '0':
-                    previsao_info[col] = int(float(val))
-            
-            # 2. Montar objeto final
-            item = {
-                "descricao": str(row['Description']).strip().upper(),
-                "regiao": str(row['Region']).strip().upper(),
-                "qtd": int(row['Total Geral']) if pd.notna(row['Total Geral']) else 0,
-                "previsao": previsao_info
-            }
-            
-            if item['qtd'] > 0:
-                compras_formatadas.append(item)
-                
-        except Exception as e:
-            print(f"⚠️ Erro na linha {index}: {e}")
-            continue
+            # Limpa quantidade
+            qtd_str = str(vals[IDX_QTD]).replace('.', '').replace(',', '.')
+            try: qtd = int(float(qtd_str))
+            except: qtd = 0
 
-    print(f"📦 Encontrados {len(compras_formatadas)} itens em pedido de compra.")
+            if qtd > 0 and desc != 'NAN' and desc != '':
+                # Pega Previsão (Colunas W..)
+                previsao = {}
+                for col in df.columns:
+                    if str(col).upper().startswith('W'):
+                        try:
+                            val = float(row[col])
+                            if val > 0: previsao[col] = int(val)
+                        except: pass
+                
+                compras_formatadas.append({
+                    "descricao": desc,
+                    "regiao": reg,
+                    "qtd": qtd,
+                    "previsao": previsao
+                })
+        except: continue
+
+    print(f"📦 Payload preparado com {len(compras_formatadas)} itens.")
     
-    # Enviar para a API
-    response = requests.post(API_URL, json={"compras": compras_formatadas})
-    
-    if response.status_code == 200:
-        print("✅ Sucesso! Compras enviadas para o sistema.")
+    if len(compras_formatadas) > 0:
+        print("📡 Enviando para o servidor...")
+        r = requests.post(API_URL, json={"compras": compras_formatadas})
+        
+        if r.status_code == 200:
+            resp = r.json()
+            print(f"\n✅ RESPOSTA DO SERVIDOR:")
+            print(f"   Mensagem: {resp.get('message')}")
+            print(f"   Itens Recebidos: {resp.get('enviados')}")
+            print(f"   ITENS GRAVADOS NO BANCO: {resp.get('gravados')}")
+            
+            if resp.get('gravados') == 0:
+                print("🚨 ALERTA: O servidor recebeu mas NÃO gravou nada!")
+            else:
+                print("🎉 SUCESSO REAL! Os dados estão no banco.")
+        else:
+            print(f"❌ Erro {r.status_code}: {r.text}")
     else:
-        print(f"❌ Erro na API: {response.text}")
+        print("⚠️ Planilha vazia ou ilegível.")
 
 except Exception as e:
     print(f"❌ Erro fatal: {e}")
