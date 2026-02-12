@@ -3,20 +3,23 @@ import requests
 import os
 import re
 from typing import List, Dict, Any
-
-# ✅ ADICIONADO
+import sqlite3
+from datetime import datetime
 import time
+
+# SALVAR O BANCO DE DADOS (CÓPIA LOCAL)
+DB_COPIA_DIR = r"C:\Users\Usuario\Desktop\TeleFluxo_Instalador\database"
+DB_COPIA_PATH = os.path.join(DB_COPIA_DIR, "samsung_vendas.db")
 
 # --- CONFIGURAÇÕES ---
 CAMINHO_EXCEL = r"C:\Users\Usuario\Desktop\BI AUTOMATICO\BI_SAMSUNG\Vendas_Diarias_2.0.xlsm"
 URL_BACKEND = "https://telefluxo-aplicacao.onrender.com"
-
 TIMEOUT = (10, 180)  # (conexão, resposta) em segundos
 
-# ✅ ADICIONADO: política de retry
+# ✅ política de retry
 RETRY_STATUS = {502, 503, 504}
-MAX_RETRIES = 6  # aumentei para aguentar Render/lock (não remove nada, só adiciona)
-BASE_WAIT_SECONDS = 8  # backoff base
+MAX_RETRIES = 6
+BASE_WAIT_SECONDS = 8
 
 
 # ===== MAPA DE LOJAS (CNPJ -> NOME) =====
@@ -49,8 +52,7 @@ LOJAS_MAP = {
     "12309173001066": "CD TAGUATINGA",
 }
 
-# ✅ [NOVO] LISTA DE CORREÇÃO MANUAL (BLINDAGEM)
-# Garante que nomes errados do Excel virem nomes certos do Sistema
+# ✅ LISTA DE CORREÇÃO MANUAL (BLINDAGEM)
 CORRECAO_NOMES = {
     "UBERABA": "UBERABA SHOPPING",
     "UBERLÂNDIA": "UBERLÂNDIA SHOPPING",
@@ -70,7 +72,6 @@ def norm(s: Any) -> str:
     s = s.strip().upper()
     s = re.sub(r"\s+", " ", s)
     return s
-
 
 # Reverse map: NOME -> CNPJ
 REVERSE_LOJAS = {norm(nome): cnpj for cnpj, nome in LOJAS_MAP.items()}
@@ -92,13 +93,9 @@ ALIASES_N = {norm(k): norm(v) for k, v in ALIASES.items()}
 
 
 def loja_para_cnpj(loja: Any) -> str | None:
-    """
-    Converte o nome da loja vindo do Excel (LOJA SISTEMA / NOME_FANTASIA)
-    para CNPJ limpo, baseado no mapa.
-    """
     t = norm(loja)
-    
-    # ✅ [CORREÇÃO 1] Verifica a lista manual primeiro
+
+    # Correção manual primeiro
     if t in CORRECAO_NOMES:
         t = CORRECAO_NOMES[t]
 
@@ -112,37 +109,33 @@ def loja_para_cnpj(loja: Any) -> str | None:
 
     return REVERSE_LOJAS.get(t)
 
-# ✅ [NOVO] FUNÇÃO DE LIMPEZA DE NOME
+
 def get_clean_store_name(raw_name: Any) -> str:
     """Função Mestra para limpar nomes de lojas antes de salvar"""
     nome_sujo = norm(raw_name)
-    
-    # 1. Verifica Correção Manual Direta (Mais confiável)
+
+    # 1) Correção Manual Direta
     if nome_sujo in CORRECAO_NOMES:
         return CORRECAO_NOMES[nome_sujo]
-    
-    # 2. Verifica se já é um nome oficial (ex: PARK SHOPPING)
+
+    # 2) Já é nome oficial
     if nome_sujo in REVERSE_LOJAS:
         return LOJAS_MAP[REVERSE_LOJAS[nome_sujo]]
-        
-    # 3. Tenta via CNPJ (Fallback)
+
+    # 3) Fallback via CNPJ
     cnpj = loja_para_cnpj(nome_sujo)
     if cnpj and cnpj in LOJAS_MAP:
         return LOJAS_MAP[cnpj]
-        
-    return nome_sujo # Retorna o original se não achar nada
+
+    return nome_sujo
 
 
 def limpar_valores_json(dados: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Converte NaN/NaT para None."""
     cleaned = []
     for row in dados:
         new_row = {}
         for k, v in row.items():
-            if pd.isna(v):
-                new_row[k] = None
-            else:
-                new_row[k] = v
+            new_row[k] = None if pd.isna(v) else v
         cleaned.append(new_row)
     return cleaned
 
@@ -162,14 +155,12 @@ def enviar_dados_para_api(endpoint: str, dados: List[Dict[str, Any]]) -> bool:
 
     print(f"📡 Enviando {len(dados)} registros para: {url}...")
 
-    # ✅ ADICIONADO: retry com backoff para TIMEOUT/502/503/504/SQLITE_BUSY
     headers = {"Content-Type": "application/json"}
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             response = requests.post(url, json=dados, headers=headers, timeout=TIMEOUT)
 
-            # ✅ Sucesso: qualquer 2xx
             if 200 <= response.status_code < 300:
                 try:
                     payload = response.json()
@@ -179,7 +170,6 @@ def enviar_dados_para_api(endpoint: str, dados: List[Dict[str, Any]]) -> bool:
                 print(f"✅ Sucesso ({response.status_code}) - {msg}")
                 return True
 
-            # ✅ Se vier 502/503/504, tenta novamente
             if response.status_code in RETRY_STATUS:
                 wait = BASE_WAIT_SECONDS * attempt
                 print(
@@ -189,7 +179,6 @@ def enviar_dados_para_api(endpoint: str, dados: List[Dict[str, Any]]) -> bool:
                 time.sleep(wait)
                 continue
 
-            # ✅ Se o backend devolver SQLITE_BUSY em texto (caso você trate e devolva mensagem)
             if "SQLITE_BUSY" in (response.text or "") or "database is locked" in (response.text or ""):
                 wait = BASE_WAIT_SECONDS * attempt
                 print(
@@ -199,7 +188,6 @@ def enviar_dados_para_api(endpoint: str, dados: List[Dict[str, Any]]) -> bool:
                 time.sleep(wait)
                 continue
 
-            # ❌ Falha definitiva (outros status)
             print(f"❌ Falha ({response.status_code}) - {response.text[:800]}")
             return False
 
@@ -229,8 +217,153 @@ def enviar_dados_para_api(endpoint: str, dados: List[Dict[str, Any]]) -> bool:
     return False
 
 
+# =========================
+# CÓPIA LOCAL SQLITE
+# =========================
+def _sqlite_connect(db_path: str) -> sqlite3.Connection:
+    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    con = sqlite3.connect(db_path)
+    con.execute("PRAGMA journal_mode=WAL;")
+    con.execute("PRAGMA synchronous=NORMAL;")
+    con.execute("PRAGMA busy_timeout=15000;")
+    return con
+
+
+def criar_tabelas_copia(db_path: str) -> None:
+    con = _sqlite_connect(db_path)
+    try:
+        cur = con.cursor()
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS vendas (
+            data_emissao   TEXT,
+            nome_vendedor  TEXT,
+            descricao      TEXT,
+            quantidade     REAL,
+            total_liquido  REAL,
+            cnpj_empresa   TEXT,
+            familia        TEXT,
+            regiao         TEXT
+        )
+        """)
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS vendedores (
+            loja          TEXT,
+            vendedor      TEXT,
+            fat_atual     REAL,
+            tendencia     REAL,
+            fat_anterior  REAL,
+            crescimento   REAL,
+            pa            REAL,
+            ticket        REAL,
+            qtd           REAL,
+            regiao        TEXT,
+            pct_seguro    REAL,
+            seguros       REAL
+        )
+        """)
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS _sync_meta (
+            chave TEXT PRIMARY KEY,
+            valor TEXT
+        )
+        """)
+
+        con.commit()
+    finally:
+        con.close()
+
+
+def salvar_copia_vendas(dados_vendas: List[Dict[str, Any]], db_path: str = DB_COPIA_PATH) -> None:
+    criar_tabelas_copia(db_path)
+
+    con = _sqlite_connect(db_path)
+    try:
+        cur = con.cursor()
+        cur.execute("DELETE FROM vendas")
+
+        rows = []
+        for r in dados_vendas:
+            rows.append((
+                r.get("data_emissao"),
+                r.get("nome_vendedor"),
+                r.get("descricao"),
+                r.get("quantidade") if r.get("quantidade") is not None else 0,
+                r.get("total_liquido") if r.get("total_liquido") is not None else 0,
+                r.get("cnpj_empresa"),
+                r.get("familia"),
+                r.get("regiao"),
+            ))
+
+        cur.executemany("""
+            INSERT INTO vendas (
+                data_emissao, nome_vendedor, descricao, quantidade,
+                total_liquido, cnpj_empresa, familia, regiao
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, rows)
+
+        cur.execute("""
+            INSERT INTO _sync_meta (chave, valor)
+            VALUES ('vendas_last_write', ?)
+            ON CONFLICT(chave) DO UPDATE SET valor=excluded.valor
+        """, (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),))
+
+        con.commit()
+        print(f"💾 Cópia local salva (vendas): {db_path} | Registros: {len(rows)}")
+    finally:
+        con.close()
+
+
+def salvar_copia_vendedores(dados_vendedores: List[Dict[str, Any]], db_path: str = DB_COPIA_PATH) -> None:
+    criar_tabelas_copia(db_path)
+
+    con = _sqlite_connect(db_path)
+    try:
+        cur = con.cursor()
+        cur.execute("DELETE FROM vendedores")
+
+        rows = []
+        for r in dados_vendedores:
+            rows.append((
+                r.get("loja"),
+                r.get("vendedor"),
+                r.get("fat_atual") if r.get("fat_atual") is not None else 0,
+                r.get("tendencia") if r.get("tendencia") is not None else 0,
+                r.get("fat_anterior") if r.get("fat_anterior") is not None else 0,
+                r.get("crescimento") if r.get("crescimento") is not None else 0,
+                r.get("pa") if r.get("pa") is not None else 0,
+                r.get("ticket") if r.get("ticket") is not None else 0,
+                r.get("qtd") if r.get("qtd") is not None else 0,
+                r.get("regiao"),
+                r.get("pct_seguro") if r.get("pct_seguro") is not None else 0,
+                r.get("seguros") if r.get("seguros") is not None else 0,
+            ))
+
+        cur.executemany("""
+            INSERT INTO vendedores (
+                loja, vendedor, fat_atual, tendencia, fat_anterior,
+                crescimento, pa, ticket, qtd, regiao, pct_seguro, seguros
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, rows)
+
+        cur.execute("""
+            INSERT INTO _sync_meta (chave, valor)
+            VALUES ('vendedores_last_write', ?)
+            ON CONFLICT(chave) DO UPDATE SET valor=excluded.valor
+        """, (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),))
+
+        con.commit()
+        print(f"💾 Cópia local salva (vendedores): {db_path} | Registros: {len(rows)}")
+    finally:
+        con.close()
+
+
+# =========================
+# INTEGRAÇÕES
+# =========================
 def integrar_vendas_geral():
-    # Verifica se arquivo existe
     if not os.path.exists(CAMINHO_EXCEL):
         print("❌ Arquivo Excel não encontrado.")
         return False
@@ -244,55 +377,39 @@ def integrar_vendas_geral():
 
     print(f"📌 Linhas lidas (bruto): {len(df)}")
 
-    # Remove canceladas
     if "CANCELADO" in df.columns:
         df = df[df["CANCELADO"].astype(str).str.strip().str.upper() == "N"].copy()
         print(f"📌 Linhas após remover canceladas: {len(df)}")
 
-    # Definição das colunas (apenas para referência, pois vamos forçar a S)
     col_data = "DATA_EMISSAO"
     col_vendedor = "NOME_VENDEDOR"
     col_desc = "DESCRICAO"
-    col_qtd = "QUANTIDADE" if "QUANTIDADE" in df.columns else "QTD REAL"
+    col_qtd = col_qtd = "QTD REAL" if "QTD REAL" in df.columns else "QUANTIDADE"
     col_loja = "LOJA SISTEMA" if "LOJA SISTEMA" in df.columns else "NOME_FANTASIA"
     col_familia = "CATEGORIA REAL" if "CATEGORIA REAL" in df.columns else "CATEGORIA"
     col_regiao = "REGIAO"
 
     try:
-        # 1. CRIA A TABELA PRIMEIRO (Isso resolve o seu erro)
         treated = pd.DataFrame()
 
-        # 2. PREENCHE AS COLUNAS PADRÃO
         treated["data_emissao"] = pd.to_datetime(df[col_data], dayfirst=True, errors="coerce")
         treated = treated.dropna(subset=["data_emissao"])
         treated["data_emissao"] = treated["data_emissao"].dt.strftime("%Y-%m-%d")
 
         treated["nome_vendedor"] = df[col_vendedor].astype(str).str.strip().str.upper()
         treated["descricao"] = df[col_desc].astype(str).str.strip().str.upper()
-        
-        # Quantidade
+
         treated["quantidade"] = pd.to_numeric(df[col_qtd], errors="coerce").fillna(0)
 
-        # -----------------------------------------------------------
-        # 🎯 AQUI ESTÁ A CORREÇÃO: COLUNA S (Índice 18)
-        # -----------------------------------------------------------
-        print(f"🎯 Usando coluna S (índice 18) para VALOR REAL...")
+        print("🎯 Usando coluna S (índice 18) para VALOR REAL...")
         treated["total_liquido"] = pd.to_numeric(df.iloc[:, 18], errors="coerce").fillna(0)
-        # -----------------------------------------------------------
 
-        # Mapeamento de Loja -> CNPJ
-        # ✅ [CORREÇÃO 2] Usa a função que já tem a correção de nomes
         treated["cnpj_empresa"] = df[col_loja].map(loja_para_cnpj)
-
-        # Família e Região
         treated["familia"] = df[col_familia].astype(str).str.strip().str.upper()
         treated["regiao"] = df[col_regiao].astype(str).str.strip().str.upper()
 
-        # Filtra linhas inválidas
         treated = treated.dropna(subset=["cnpj_empresa"])
-        treated = treated[
-            (treated["total_liquido"] > 0.01) | (treated["quantidade"] > 0.001)
-        ].copy()
+        treated = treated[(treated["total_liquido"] > 0.01) | (treated["quantidade"] > 0.001)].copy()
 
         print(f"✅ Linhas prontas para enviar: {len(treated)}")
 
@@ -300,13 +417,17 @@ def integrar_vendas_geral():
         print(f"❌ Erro tratamento VENDAS: {e}")
         return False
 
-    # Envia para a API
     dados_json = treated.to_dict(orient="records")
+
+    # ✅ primeiro salva cópia local (o que vai pro sistema)
+    salvar_copia_vendas(dados_json)
+
+    # ✅ envia apenas 1 vez
     ok = enviar_dados_para_api("/api/sync/vendas", dados_json)
 
     if ok:
         print("✅ Vendas enviadas e sincronizadas com sucesso.")
-        time.sleep(5) # Pausa de segurança
+        time.sleep(5)
         return True
     else:
         print("❌ Falha ao enviar vendas.")
@@ -315,104 +436,130 @@ def integrar_vendas_geral():
 
 def integrar_kpi_vendedores():
     print("🏆 Calculando KPIs Reais (A partir da aba VENDAS)...")
-    
-    # 1. Carrega as duas abas
+
+    # 1) Carrega as duas abas
     try:
         df_vendas = pd.read_excel(CAMINHO_EXCEL, sheet_name="VENDAS", engine="openpyxl")
-        df_meta = pd.read_excel(CAMINHO_EXCEL, sheet_name="API VENDEDORES", engine="openpyxl")
+        df_meta   = pd.read_excel(CAMINHO_EXCEL, sheet_name="API VENDEDORES", engine="openpyxl")
     except Exception as e:
         print(f"❌ Erro leitura Excel: {e}")
         return False
 
-    # 2. Prepara a base de Vendas (Raw Data)
-    # Garante que estamos lendo a Coluna S (Total Real) e Qtd Real
+    # 2) Base de vendas
     col_vendedor = "NOME_VENDEDOR"
     col_loja = "LOJA SISTEMA" if "LOJA SISTEMA" in df_vendas.columns else "NOME_FANTASIA"
-    
-    # Limpeza básica
-    df_vendas = df_vendas[df_vendas["CANCELADO"].astype(str).str.upper() == "N"].copy()
-    
-    # Força conversão numérica
-    df_vendas["total_real"] = pd.to_numeric(df_vendas.iloc[:, 18], errors="coerce").fillna(0) # Coluna S
-    df_vendas["qtd_real"] = pd.to_numeric(df_vendas["QTD REAL"], errors="coerce").fillna(0)
-    
-    # Agrupa por Vendedor para ter os Números Reais
-    # Conta NF distintas para Ticket Médio e PA
-    kpi_real = df_vendas.groupby(col_vendedor).agg({
-        "total_real": "sum",
-        "qtd_real": "sum",
-        col_loja: "first", # Pega a loja do vendedor
-        "NOTA_FISCAL": pd.Series.nunique, # Conta notas únicas para PA/Ticket
-        "REGIAO": "first"
-    }).reset_index()
 
-    # 3. Prepara a base de Metas/Anterior (Do Excel API VENDEDORES)
-    # Vamos pegar apenas o que não conseguimos calcular: Fat Anterior e % Crescimento Estimado
+    if "CANCELADO" in df_vendas.columns:
+        df_vendas = df_vendas[df_vendas["CANCELADO"].astype(str).str.strip().str.upper() == "N"].copy()
+
+    # total real = coluna S (índice 18)
+    df_vendas["total_real"] = pd.to_numeric(df_vendas.iloc[:, 18], errors="coerce").fillna(0)
+
+    # qtd_real
+    if "QTD REAL" in df_vendas.columns:
+        df_vendas["qtd_real"] = pd.to_numeric(df_vendas["QTD REAL"], errors="coerce").fillna(0)
+    elif "QUANTIDADE" in df_vendas.columns:
+        df_vendas["qtd_real"] = pd.to_numeric(df_vendas["QUANTIDADE"], errors="coerce").fillna(0)
+    else:
+        df_vendas["qtd_real"] = 0
+
+    # valida colunas essenciais
+    if "NOTA_FISCAL" not in df_vendas.columns:
+        print("❌ ERRO: Coluna NOTA_FISCAL não encontrada na aba VENDAS.")
+        return False
+    if "REGIAO" not in df_vendas.columns:
+        df_vendas["REGIAO"] = ""
+
+    # 3) Agrupa KPI real por vendedor
+    kpi_real = (
+        df_vendas.groupby(col_vendedor)
+        .agg({
+            "total_real": "sum",
+            "qtd_real": "sum",
+            col_loja: "first",
+            "NOTA_FISCAL": pd.Series.nunique,
+            "REGIAO": "first"
+        })
+        .reset_index()
+    )
+
+    # 4) Metas/histórico (API VENDEDORES)
+    # --- CORREÇÃO AQUI: Lendo as colunas que faltavam ---
     df_meta_clean = pd.DataFrame()
-    df_meta_clean["vendedor"] = df_meta.iloc[:, 1].astype(str).str.strip().str.upper() # Col B
-    df_meta_clean["fat_anterior"] = pd.to_numeric(df_meta.iloc[:, 4], errors="coerce").fillna(0) # Col E
-    df_meta_clean["pct_seguro"] = pd.to_numeric(df_meta.iloc[:, 18], errors="coerce").fillna(0) # Col S (% Seguro)
+    df_meta_clean["vendedor"] = df_meta.iloc[:, 1].astype(str).str.strip().str.upper()  # Col B (Nome)
+    
+    # Col C (Índice 2) -> TENDENCIA MÊS
+    df_meta_clean["tendencia"] = pd.to_numeric(df_meta.iloc[:, 2], errors="coerce").fillna(0) 
+    
+    # Col E (Índice 4) -> MÊS ANTERIOR
+    df_meta_clean["fat_anterior"] = pd.to_numeric(df_meta.iloc[:, 4], errors="coerce").fillna(0) 
+    
+    # Col J (Índice 9) -> SEGUROS (Valor Financeiro R$)
+    df_meta_clean["valor_seguros"] = pd.to_numeric(df_meta.iloc[:, 9], errors="coerce").fillna(0)
 
-    # 4. Cruza as informações (Merge)
-    # Usa os dados calculados (Real) e complementa com o Excel (Meta/Anterior)
+    # Col S (Índice 18) -> % SEGURO
+    df_meta_clean["pct_seguro"] = pd.to_numeric(df_meta.iloc[:, 18], errors="coerce").fillna(0) 
+
+    # 5) Merge
     df_final = pd.merge(kpi_real, df_meta_clean, left_on=col_vendedor, right_on="vendedor", how="left")
-    
-    # 5. Monta o JSON Final
+
+    # 6) Monta JSON
     output_list = []
-    
-    # Debug: Verificar lojas corrigidas
     lojas_salvas = set()
 
     for _, row in df_final.iterrows():
         vendedor = str(row[col_vendedor]).strip().upper()
-        if vendedor == "NAN" or vendedor == "NONE": continue
+        if vendedor in ("NAN", "NONE", ""):
+            continue
 
-        # --- AQUI É O PULO DO GATO: LIMPAR O NOME DA LOJA ---
-        # ✅ [CORREÇÃO 3] Usando a nova função blindada get_clean_store_name
-        nome_loja_sujo = str(row[col_loja])
+        nome_loja_sujo = "" if pd.isna(row[col_loja]) else str(row[col_loja])
         nome_loja_limpo = get_clean_store_name(nome_loja_sujo)
-        
-        # Guarda para debug no console
-        if nome_loja_limpo != nome_loja_sujo.strip().upper():
-            lojas_salvas.add(f"{nome_loja_sujo} -> {nome_loja_limpo}")
-        # ----------------------------------------------------
 
-        # Cálculos de KPI
-        total = float(row["total_real"])
-        qtd = int(row["qtd_real"])
-        num_nf = int(row["NOTA_FISCAL"]) if row["NOTA_FISCAL"] > 0 else 1
+        if norm(nome_loja_limpo) != norm(nome_loja_sujo):
+            lojas_salvas.add(f"{nome_loja_sujo} -> {nome_loja_limpo}")
+
+        total = float(row["total_real"]) if not pd.isna(row["total_real"]) else 0.0
+        qtd = float(row["qtd_real"]) if not pd.isna(row["qtd_real"]) else 0.0
+        num_nf = int(row["NOTA_FISCAL"]) if not pd.isna(row["NOTA_FISCAL"]) and int(row["NOTA_FISCAL"]) > 0 else 1
+
+        ticket = total / num_nf if num_nf > 0 else 0.0
+        pa = qtd / num_nf if num_nf > 0 else 0.0
+
+        anterior = float(row["fat_anterior"]) if not pd.isna(row["fat_anterior"]) else 0.0
+        crescimento = ((total - anterior) / anterior) if anterior > 0 else 0.0
+
+        regiao = "" if pd.isna(row["REGIAO"]) else str(row["REGIAO"]).strip().upper()
         
-        # Ticket Médio e PA Calculados na hora (Mais confiável que o Excel)
-        ticket = total / num_nf if num_nf > 0 else 0
-        pa = qtd / num_nf if num_nf > 0 else 0
-        
-        # Dados Históricos (do Excel)
-        anterior = float(row["fat_anterior"]) if not pd.isna(row["fat_anterior"]) else 0
-        
-        # Cálculo de Crescimento vs Mês Anterior
-        crescimento = ((total - anterior) / anterior) if anterior > 0 else 0
+        # Pega os valores lidos do Excel
+        pct_seguro = float(row["pct_seguro"]) if not pd.isna(row["pct_seguro"]) else 0.0
+        tendencia_val = float(row["tendencia"]) if not pd.isna(row["tendencia"]) else 0.0
+        seguros_val = float(row["valor_seguros"]) if not pd.isna(row["valor_seguros"]) else 0.0
 
         output_list.append({
-            "loja": nome_loja_limpo,     # ✅ AGORA SALVA O NOME LIMPO
+            "loja": nome_loja_limpo,
             "vendedor": vendedor,
-            "fat_atual": total,          
-            "tendencia": 0,
-            "fat_anterior": anterior,    
+            "fat_atual": total,
+            "tendencia": tendencia_val, # AGORA USA O VALOR DO EXCEL
+            "fat_anterior": anterior,
             "crescimento": crescimento,
             "pa": pa,
             "ticket": ticket,
             "qtd": qtd,
-            "regiao": str(row["REGIAO"]).upper(),
-            "pct_seguro": float(row["pct_seguro"]),
-            "seguros": 0
+            "regiao": regiao,
+            "pct_seguro": pct_seguro,
+            "seguros": seguros_val      # AGORA USA O VALOR DO EXCEL
         })
 
-    # Envia
     print("🔎 DEBUG: Exemplos de lojas corrigidas:")
-    for l in list(lojas_salvas)[:5]: 
+    for l in list(lojas_salvas)[:5]:
         print(f"   {l}")
 
     print(f"📊 Processados {len(output_list)} vendedores com dados reais.")
+
+    # ✅ salva cópia local do que vai para o sistema
+    salvar_copia_vendedores(output_list)
+
+    # ✅ envia para API
     ok = enviar_dados_para_api("/api/sync/vendedores", output_list)
 
     if ok:
@@ -427,7 +574,6 @@ if __name__ == "__main__":
     if not URL_BACKEND.startswith("http"):
         print("❌ ERRO: URL_BACKEND inválida.")
     else:
-        # ✅ ADICIONADO: só envia KPI se vendas estiver OK
         ok_vendas = integrar_vendas_geral()
         if ok_vendas:
             integrar_kpi_vendedores()

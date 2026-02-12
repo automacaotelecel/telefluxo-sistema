@@ -604,10 +604,8 @@ async function getSalesFilter(userId: string, tableType: 'vendas' | 'kpi'): Prom
 }
 
 // ==========================================
-// 2. ROTA /sales (VERSÃO FINAL LIMPA)
+// 2. ROTA /sales (VERSÃO FINAL LIMPA) -- ROTA DE VENDAS
 // ==========================================
-// ROTA: VENDAS (Adaptada para seu sistema SQL atual + Filtro de Datas)
-// ROTA: VENDAS (COM FILTRO DE DATAS FUNCIONAL)
 app.get('/sales', async (req, res) => {
   try {
     if (!fs.existsSync(GLOBAL_DB_PATH)) return res.json({ sales: [] });
@@ -1679,6 +1677,45 @@ app.get('/purchases', async (req, res) => {
         res.json(compras);
     } catch (error) {
         res.status(500).json({ error: "Erro ao ler compras" });
+    }
+});
+// --- ROTA DE FLUXO (VERSÃO INTELIGENTE/DETETIVE) ---
+// Define o caminho do banco
+const BESTFLOW_DB_PATH = process.env.RENDER 
+    ? '/var/data/bestflow.db' 
+    : path.join(__dirname, '../../database/bestflow.db');
+
+app.get('/api/bestflow', async (req, res) => {
+    try {
+        // 1. Abre a conexão com o banco
+        const dbConn = await open({ 
+            filename: BESTFLOW_DB_PATH, 
+            driver: sqlite3.Database 
+        });
+        
+        // 2. MODO DETETIVE: Descobre qual é o nome da tabela que está lá dentro
+        // (Isso evita erro caso o Python tenha salvo como "Planilha1", "Sheet1" ou "fluxo")
+        const tables = await dbConn.all("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'");
+        
+        if (tables.length === 0) {
+            console.error("ERRO: O arquivo bestflow.db existe, mas não tem tabelas dentro.");
+            await dbConn.close();
+            return res.json([]);
+        }
+
+        const tableName = tables[0].name; // Pega a primeira tabela que encontrar
+        console.log(`--> Sucesso! Lendo dados da tabela: '${tableName}'`);
+
+        // 3. Lê os dados dessa tabela dinâmica
+        const dados = await dbConn.all(`SELECT * FROM "${tableName}"`); 
+        
+        await dbConn.close();
+        res.json(dados);
+
+    } catch (error) {
+        console.error("Erro CRÍTICO no Bestflow:", error);
+        // Retorna array vazio para não travar o frontend
+        res.status(500).json([]);
     }
 });
 
