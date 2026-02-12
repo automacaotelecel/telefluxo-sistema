@@ -4,10 +4,9 @@ import {
 } from 'recharts';
 import { 
   DollarSign, TrendingUp, Trophy, LayoutGrid, Users, Calendar, Store, 
-  AlertCircle, ChevronDown, CheckSquare, Square, Filter, Footprints, MousePointerClick, ArrowRightLeft, Package, Award, RefreshCw 
+  AlertCircle, ChevronDown, CheckSquare, Square, Filter, Footprints, MousePointerClick, ArrowRightLeft
 } from 'lucide-react';
 
-// --- 1. MAPA DE TRADUÇÃO ---
 const STORE_MAP: Record<string, string> = {
     "12309173001309": "ARAGUAIA SHOPPING",
     "12309173000418": "BOULEVARD SHOPPING",
@@ -43,7 +42,6 @@ const getStoreName = (raw: string) => {
     return STORE_MAP[clean] || STORE_MAP[raw] || raw;
 };
 
-// Para aparecerem os numeros de vendas das lojas
 const formatMoneyShort = (val: number) => {
     if (val >= 1000000) return `R$ ${(val / 1000000).toFixed(1)}M`;
     if (val >= 1000) return `R$ ${(val / 1000).toFixed(0)}k`;
@@ -51,12 +49,12 @@ const formatMoneyShort = (val: number) => {
 }
 
 export default function SalesDashboard() {
-  // Dados Brutos
   const [rawData, setRawData] = useState<any[]>([]);
-  const [flowRawData, setFlowRawData] = useState<any[]>([]); // DADOS DE FLUXO BRUTOS
-  const [stockRawData, setStockRawData] = useState<any[]>([]); // DADOS DE ESTOQUE
+  const [flowRawData, setFlowRawData] = useState<any[]>([]);
+  const [stockRawData, setStockRawData] = useState<any[]>([]);
+  // NOVO: Estado para armazenar os KPIs (Tendência e Seguros)
+  const [kpiData, setKpiData] = useState<any[]>([]); 
   
-  // Estados Calculados
   const [summary, setSummary] = useState<any>({ total_vendas: 0, total_pecas: 0, ticket_medio: 0 });
   const [chartData, setChartData] = useState<any[]>([]); 
   const [ranking, setRanking] = useState<any[]>([]);
@@ -65,22 +63,18 @@ export default function SalesDashboard() {
   const [errorMsg, setErrorMsg] = useState<string>('');
   const [loading, setLoading] = useState(false);
   
-  // --- ESTADOS PARA O FILTRO ---
   const today = new Date();
   const firstDay = new Date(today.getFullYear(), today.getMonth(), 1);
 
   const [startDate, setStartDate] = useState(firstDay.toISOString().split('T')[0]);
   const [endDate, setEndDate] = useState(today.toISOString().split('T')[0]);
 
-  // Filtros
   const [selectedStores, setSelectedStores] = useState<string[]>([]);
   const [isStoreMenuOpen, setIsStoreMenuOpen] = useState(false);
   const storeMenuRef = useRef<HTMLDivElement>(null);
 
-  // Abas
   const [activeTab, setActiveTab] = useState('visao_geral');
 
-  // URL AUTOMÁTICA (Localhost ou Produção)
   const API_URL = window.location.hostname === 'localhost' 
     ? 'http://localhost:3000' 
     : 'https://telefluxo-aplicacao.onrender.com';
@@ -88,7 +82,6 @@ export default function SalesDashboard() {
   const formatMoney = (val: number) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val || 0);
   const formatPercent = (val: number) => `${((val || 0) * 100).toFixed(1)}%`;
 
-  // Fecha menu ao clicar fora
   useEffect(() => {
     function handleClickOutside(event: any) {
       if (storeMenuRef.current && !storeMenuRef.current.contains(event.target)) {
@@ -99,7 +92,6 @@ export default function SalesDashboard() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  // --- 2. BUSCA DE DADOS ---
   const loadAllData = async () => {
     setLoading(true);
     let userId = '';
@@ -114,23 +106,23 @@ export default function SalesDashboard() {
     if (!userId) { setErrorMsg("Usuário não identificado."); setLoading(false); return; }
 
     try {
-        // 1. Busca Vendas
+        // 1. Vendas
         const resSales = await fetch(`${API_URL}/sales?userId=${userId}`);
         if (resSales.ok) {
             const data = await resSales.json();
             setRawData(data.sales || (Array.isArray(data) ? data : []));
         }
 
-        // 2. Busca Fluxo (BestFlow)
+        // 2. Fluxo (BestFlow)
         try {
             const resFlow = await fetch(`${API_URL}/api/bestflow`);
             if (resFlow.ok) {
                 const dataFlow = await resFlow.json();
                 setFlowRawData(Array.isArray(dataFlow) ? dataFlow : []);
             }
-        } catch (e) { console.warn("Erro ao buscar fluxo", e); }
+        } catch (e) { console.warn("Erro fluxo", e); }
 
-        // 3. Busca Estoque
+        // 3. Estoque
         try {
             const resStock = await fetch(`${API_URL}/stock`);
             if (resStock.ok) {
@@ -138,6 +130,15 @@ export default function SalesDashboard() {
                 setStockRawData(Array.isArray(dataStock) ? dataStock : []);
             }
         } catch(e) { console.warn("Erro estoque", e); }
+
+        // 4. NOVO: KPIs de Vendedores (Tendência, Seguros)
+        try {
+            const resKpi = await fetch(`${API_URL}/api/kpi-vendedores`);
+            if (resKpi.ok) {
+                const dataKpi = await resKpi.json();
+                setKpiData(Array.isArray(dataKpi) ? dataKpi : []);
+            }
+        } catch (e) { console.warn("Erro KPI", e); }
 
         setErrorMsg(''); 
     } catch (err: any) { 
@@ -150,7 +151,6 @@ export default function SalesDashboard() {
 
   useEffect(() => { loadAllData(); }, []); 
 
-  // --- 3. PROCESSAMENTO VENDAS ---
   const filteredData = useMemo(() => {
       return rawData.filter(sale => {
           const dataVenda = sale.data_emissao || "";
@@ -173,9 +173,7 @@ export default function SalesDashboard() {
       });
   }, [rawData, startDate, endDate, selectedStores]);
 
-  // --- 4. PROCESSAMENTO FLUXO (AGRUPADO POR LOJA) ---
   const groupedFlowData = useMemo(() => {
-      // 1. Filtra primeiro
       const filtered = flowRawData.filter(item => {
           const dataItem = item.data || "";
           let dataISO = dataItem.substring(0, 10); 
@@ -189,9 +187,7 @@ export default function SalesDashboard() {
           return true;
       });
 
-      // 2. Agrupa por Loja (Soma tudo)
       const groups: Record<string, any> = {};
-
       filtered.forEach(item => {
           const nomeLoja = getStoreName(item.loja);
           if (!groups[nomeLoja]) {
@@ -202,7 +198,6 @@ export default function SalesDashboard() {
           groups[nomeLoja].valor += Number(item.valor_vendido || 0);
       });
 
-      // 3. Calcula conversão final e converte para array
       return Object.values(groups).map((g: any) => ({
           ...g,
           conversao: g.entradas > 0 ? g.qtd / g.entradas : 0
@@ -210,8 +205,6 @@ export default function SalesDashboard() {
 
   }, [flowRawData, startDate, endDate, selectedStores]);
 
-
-  // B) Recalcula Cards Vendas e Gráficos
   useEffect(() => {
       const total = filteredData.reduce((acc, curr) => acc + Number(curr.total_liquido || 0), 0);
       const pecas = filteredData.reduce((acc, curr) => acc + Number(curr.quantidade || 1), 0);
@@ -252,11 +245,10 @@ export default function SalesDashboard() {
 
       const sortedRanking = Array.from(mapRanking.values())
         .map((v: any) => {
-            // Busca o registro no rawData que possui os campos de KPI preenchidos (para não pegar linha zerada do Excel)
-            const kpi = rawData.find(r => 
-                (r.vendedor === v.nome || r.nome_vendedor === v.nome) && 
-                (Number(r.tendencia) > 0 || Number(r.seguros) > 0 || Number(r.pct_seguro) > 0)
-            ) || rawData.find(r => (r.vendedor === v.nome || r.nome_vendedor === v.nome));
+            // PROCURA NOS KPIs (kpiData) E NÃO EM VENDAS (rawData)
+            const kpi = kpiData.find(k => 
+                (k.vendedor || "").trim().toUpperCase() === v.nome.trim().toUpperCase()
+            );
 
             const totalVendedor = v.total || 0;
             const anterior = Number(kpi?.fat_anterior || 0);
@@ -268,7 +260,7 @@ export default function SalesDashboard() {
                 pct_seguro: Number(kpi?.pct_seguro || 0),
                 fat_anterior: anterior,
                 crescimento: anterior > 0 ? (totalVendedor - anterior) / anterior : 0,
-                pa: kpi?.pa || (v.qtd / 10).toFixed(2), 
+                pa: kpi?.pa || (v.qtd / 50).toFixed(2), 
                 ticket: v.qtd > 0 ? totalVendedor / v.qtd : 0,
             };
         })
@@ -289,9 +281,8 @@ export default function SalesDashboard() {
       }).sort((a:any, b:any) => b.qtd - a.qtd);
       setProductRanking(sortedProd);
 
-  }, [filteredData, stockRawData, rawData]);
+  }, [filteredData, stockRawData, kpiData]); // ADICIONADO kpiData NAS DEPENDÊNCIAS
 
-  // --- LISTAS PARA O MENU ---
   const uniqueStores = useMemo(() => {
       const stores = new Set(rawData.map(r => getStoreName(r.cnpj_empresa || r.loja)).filter(Boolean));
       return Array.from(stores).sort();
@@ -345,7 +336,7 @@ export default function SalesDashboard() {
                 <div className="p-2 bg-[#1428A0] rounded text-white"><LayoutGrid size={18} /></div>
                 <h1 className="text-lg font-black uppercase tracking-tight text-[#1428A0]">Performance Comercial</h1>
             </div>
-            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-10">Samsung • BI Automático • v3.5</p>
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-10">Samsung • BI Automático • v3.6</p>
         </div>
 
         <div className="flex flex-wrap gap-3 items-center w-full xl:w-auto">
@@ -398,7 +389,6 @@ export default function SalesDashboard() {
         </div>
       </div>
 
-      {/* ABAS */}
       <div className="flex gap-2 mb-6">
           <button onClick={() => setActiveTab('visao_geral')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all ${activeTab === 'visao_geral' ? 'bg-[#1428A0] text-white shadow-md' : 'bg-white text-slate-500 hover:bg-slate-50'}`}>Visão Geral</button>
           <button onClick={() => setActiveTab('vendedores')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all ${activeTab === 'vendedores' ? 'bg-[#1428A0] text-white shadow-md' : 'bg-white text-slate-500 hover:bg-slate-50'}`}>Vendedores</button>
@@ -613,7 +603,6 @@ export default function SalesDashboard() {
                             {groupedFlowData.map((item: any, idx: number) => {
                                 const conversao = Number(item.conversao) || 0;
                                 const barColor = conversao < 0.05 ? 'bg-red-500' : conversao < 0.10 ? 'bg-amber-400' : 'bg-emerald-500';
-                                
                                 return (
                                     <tr key={idx} className="hover:bg-slate-50 transition-colors">
                                         <td className="p-4 font-bold text-indigo-900">{item.loja}</td>

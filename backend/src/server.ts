@@ -11,53 +11,76 @@ import bcrypt from 'bcryptjs';
 import sqlite3 from 'sqlite3';
 import path from 'path';
 
+// --- CONFIGURAÇÃO CENTRALIZADA DE CAMINHOS (CORREÇÃO) ---
 const ROOT_DIR = process.cwd(); 
-const GLOBAL_DB_PATH = path.join(ROOT_DIR, 'database', 'samsung_vendas.db');
-// Cria a pasta automaticamente se não existir
-if (!fs.existsSync(path.join(ROOT_DIR, 'database'))) {
-    try { fs.mkdirSync(path.join(ROOT_DIR, 'database')); } catch(e) {}
+
+// Define a pasta do banco (Render vs Local)
+const DATABASE_DIR = process.env.RENDER 
+    ? path.join(__dirname, '../../database') 
+    : path.join(ROOT_DIR, 'database');
+
+// Garante que a pasta existe
+if (!fs.existsSync(DATABASE_DIR)) {
+    try { fs.mkdirSync(DATABASE_DIR, { recursive: true }); } catch(e) {}
 }
+
+// DEFINIÇÃO DAS VARIÁVEIS DE CAMINHO (AQUI ESTAVA O ERRO)
+const GLOBAL_DB_PATH = path.join(DATABASE_DIR, 'samsung_vendas.db');
+const SAMSUNG_DB_PATH = GLOBAL_DB_PATH; // Cria um "apelido" para funcionar nas rotas novas e antigas
+const BESTFLOW_DB_PATH = path.join(DATABASE_DIR, 'bestflow.db');
+
+console.log("📂 Banco Vendas:", GLOBAL_DB_PATH);
+console.log("📂 Banco BestFlow:", BESTFLOW_DB_PATH);
+
 // ----------------------------------------------------
+// INICIALIZAÇÃO DAS TABELAS (MANTIDA)
 const dbInit = new sqlite3.Database(GLOBAL_DB_PATH);
 dbInit.serialize(() => {
-    // 1. Cria tabela de Vendas se não existir
+    // 1. Cria tabela de Vendas
     dbInit.run(`
         CREATE TABLE IF NOT EXISTS vendas (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            data_emissao TEXT,
-            nome_vendedor TEXT,
-            descricao TEXT,
-            quantidade REAL,
-            total_liquido REAL,
-            cnpj_empresa TEXT,
-            familia TEXT,
-            regiao TEXT
+            data_emissao TEXT, nome_vendedor TEXT, descricao TEXT,
+            quantidade REAL, total_liquido REAL, cnpj_empresa TEXT,
+            familia TEXT, regiao TEXT
         )
     `);
 
-    //2. Cria tabela de KPIs se não existir
+    // 2. Cria tabela de KPIs
     dbInit.run(`
         CREATE TABLE IF NOT EXISTS vendedores_kpi (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            loja TEXT,
-            vendedor TEXT,
-            fat_atual REAL,
-            tendencia REAL,
-            fat_anterior REAL,
-            crescimento REAL,
-            seguros REAL,
-            pa REAL,
-            qtd REAL,
-            ticket REAL,
-            regiao TEXT,
-            pct_seguro REAL
+            loja TEXT, vendedor TEXT, fat_atual REAL, tendencia REAL,
+            fat_anterior REAL, crescimento REAL, seguros REAL, pa REAL,
+            qtd REAL, ticket REAL, regiao TEXT, pct_seguro REAL
         )
     `);
-        console.log("📦 Tabelas do Banco de Dados Garantidas!");
-})
+    
+    // 3. (IMPORTANTE) Cria a tabela 'vendedores' se o Python usar esse nome simples
+    // Isso garante que se o script Python salvar como "vendedores", o sistema lê
+    dbInit.run(`
+        CREATE TABLE IF NOT EXISTS vendedores (
+            loja TEXT, vendedor TEXT, fat_atual REAL, tendencia REAL,
+            fat_anterior REAL, crescimento REAL, pa REAL, ticket REAL,
+            qtd REAL, regiao TEXT, pct_seguro REAL, seguros REAL
+        )
+    `);
+    
+    console.log("📦 Tabelas do Banco de Dados Garantidas!");
+});
 
 const app = express();
 const prisma = new PrismaClient();
+app.use(cors());
+app.use(express.json());
+
+// Garante que a pasta existe
+if (!fs.existsSync(DATABASE_DIR)) {
+    try { fs.mkdirSync(DATABASE_DIR, { recursive: true }); } catch(e) {}
+}
+
+console.log("📂 Banco Vendas:", GLOBAL_DB_PATH);
+console.log("📂 Banco BestFlow:", BESTFLOW_DB_PATH);
 
 // ✅ FILA GLOBAL DE ESCRITA (MUTEX SQLITE)
 // ==========================================
@@ -1679,43 +1702,127 @@ app.get('/purchases', async (req, res) => {
         res.status(500).json({ error: "Erro ao ler compras" });
     }
 });
-// --- ROTA DE FLUXO (VERSÃO INTELIGENTE/DETETIVE) ---
-// Define o caminho do banco
-const BESTFLOW_DB_PATH = process.env.RENDER 
-    ? '/var/data/bestflow.db' 
-    : path.join(__dirname, '../../database/bestflow.db');
 
 app.get('/api/bestflow', async (req, res) => {
     try {
-        // 1. Abre a conexão com o banco
-        const dbConn = await open({ 
-            filename: BESTFLOW_DB_PATH, 
-            driver: sqlite3.Database 
-        });
+        const dbConn = await open({ filename: BESTFLOW_DB_PATH, driver: sqlite3.Database });
         
-        // 2. MODO DETETIVE: Descobre qual é o nome da tabela que está lá dentro
-        // (Isso evita erro caso o Python tenha salvo como "Planilha1", "Sheet1" ou "fluxo")
-        const tables = await dbConn.all("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'");
+        // Verifica se a tabela 'resumo_diario' existe (o Python cria com esse nome)
+        const tables = await dbConn.all("SELECT name FROM sqlite_master WHERE type='table' AND name='resumo_diario'");
         
         if (tables.length === 0) {
-            console.error("ERRO: O arquivo bestflow.db existe, mas não tem tabelas dentro.");
             await dbConn.close();
-            return res.json([]);
+            return res.json([]); 
         }
 
-        const tableName = tables[0].name; // Pega a primeira tabela que encontrar
-        console.log(`--> Sucesso! Lendo dados da tabela: '${tableName}'`);
-
-        // 3. Lê os dados dessa tabela dinâmica
-        const dados = await dbConn.all(`SELECT * FROM "${tableName}"`); 
-        
+        const dados = await dbConn.all("SELECT * FROM resumo_diario");
         await dbConn.close();
         res.json(dados);
-
     } catch (error) {
-        console.error("Erro CRÍTICO no Bestflow:", error);
-        // Retorna array vazio para não travar o frontend
-        res.status(500).json([]);
+        console.error("Erro Bestflow:", error);
+        res.json([]);
+    }
+});
+// --- ROTA DE KPIS (TENDÊNCIA, SEGUROS) ---
+app.get('/api/kpi-vendedores', async (req, res) => {
+    try {
+        const db = await open({ filename: SAMSUNG_DB_PATH, driver: sqlite3.Database });
+        
+        // Tenta ler da tabela 'vendedores_kpi' (padrão do sistema novo)
+        let kpis = [];
+        try {
+            kpis = await db.all("SELECT * FROM vendedores_kpi");
+        } catch (e) {
+            // Se falhar, tenta ler da tabela 'vendedores' (padrão do script Python antigo)
+            kpis = await db.all("SELECT * FROM vendedores");
+        }
+        
+        await db.close();
+        res.json(kpis);
+    } catch (error) {
+        console.error("Erro KPI:", error);
+        res.json([]);
+    }
+});
+
+// --- ROTAS DE SINCRONIZAÇÃO (RECEBEM DADOS DO PYTHON) ---
+
+// 1. Recebe BESTFLOW (Fluxo)
+app.post('/api/sync/bestflow', async (req, res) => {
+    try {
+        const dados = req.body;
+        if (!Array.isArray(dados)) return res.status(400).json({ error: "Dados inválidos" });
+
+        const db = await open({ filename: BESTFLOW_DB_PATH, driver: sqlite3.Database });
+        await db.exec(`
+            CREATE TABLE IF NOT EXISTS resumo_diario (
+                data TEXT, cnpj14 TEXT, loja TEXT, entradas INTEGER, saidas INTEGER,
+                qtd_vendida INTEGER, valor_vendido REAL, conversao REAL,
+                PRIMARY KEY (data, cnpj14)
+            )
+        `);
+
+        await db.exec("BEGIN TRANSACTION");
+        const stmt = await db.prepare(`
+            INSERT OR REPLACE INTO resumo_diario (data, cnpj14, loja, entradas, saidas, qtd_vendida, valor_vendido, conversao)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+
+        for (const row of dados) {
+            await stmt.run(row.data, row.cnpj14, row.loja, row.entradas, row.saidas, row.qtd_vendida, row.valor_vendido, row.conversao);
+        }
+        await stmt.finalize();
+        await db.exec("COMMIT");
+        await db.close();
+        
+        console.log(`✅ Bestflow Sync: ${dados.length} registros.`);
+        res.json({ success: true });
+    } catch (e: any) {
+        console.error("Erro sync Bestflow:", e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// 2. Recebe VENDEDORES (KPIs)
+app.post('/api/sync/vendedores', async (req, res) => {
+    try {
+        const dados = req.body;
+        // Salva no banco de VENDAS (samsung_vendas.db)
+        const db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+        
+        await db.exec("BEGIN TRANSACTION");
+        // Limpa a tabela antiga para atualizar os KPIs do mês
+        await db.exec("DELETE FROM vendedores_kpi"); 
+        
+        // Garante que a tabela existe com a estrutura certa
+        await db.exec(`
+            CREATE TABLE IF NOT EXISTS vendedores_kpi (
+                loja TEXT, vendedor TEXT, fat_atual REAL, tendencia REAL,
+                fat_anterior REAL, crescimento REAL, seguros REAL, pa REAL, 
+                qtd REAL, ticket REAL, regiao TEXT, pct_seguro REAL
+            )
+        `);
+
+        const stmt = await db.prepare(`
+            INSERT INTO vendedores_kpi (loja, vendedor, fat_atual, tendencia, fat_anterior, crescimento, seguros, pa, qtd, ticket, regiao, pct_seguro)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+
+        for (const r of dados) {
+            await stmt.run(
+                r.loja, r.vendedor, r.fat_atual, r.tendencia, r.fat_anterior,
+                r.crescimento, r.seguros, r.pa, r.qtd, r.ticket, r.regiao, r.pct_seguro
+            );
+        }
+        await stmt.finalize();
+        await db.exec("COMMIT");
+        await db.close();
+
+        console.log(`✅ KPIs Sync: ${dados.length} vendedores.`);
+        res.json({ success: true });
+    } catch (e: any) {
+        console.error("Erro sync Vendedores:", e);
+        res.status(500).json({ error: e.message });
     }
 });
 

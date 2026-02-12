@@ -17,12 +17,23 @@ DS_SENHA = os.getenv("BESTFLOW_SENHA", "424DAsp2LZ@c")
 
 TIMEOUT = 60
 
-# ✅ caminho fixo e nome do DB
-DB_DIR = r"C:\Users\Usuario\Desktop\TeleFluxo_Instalador\database"
-DB_PATH = os.path.join(DB_DIR, "bestflow.db")
+# ============================================================
+# ✅ CONFIGURAÇÃO DE CAMINHOS (UNIVERSAL: PC E RENDER)
+# ============================================================
+# Identifica onde este arquivo python está rodando
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# ✅ DB de vendas (SOMENTE LEITURA - NÃO ALTERAR EM HIPÓTESE ALGUMA)
+# Se a pasta 'database' existir ao lado do script, usa ela. Se não, usa a própria pasta.
+if os.path.exists(os.path.join(BASE_DIR, "database")):
+    DB_DIR = os.path.join(BASE_DIR, "database")
+else:
+    DB_DIR = BASE_DIR
+
+DB_PATH = os.path.join(DB_DIR, "bestflow.db")
 SAMSUNG_VENDAS_DB_PATH = os.path.join(DB_DIR, "samsung_vendas.db")
+
+print(f"📂 Diretório de Banco: {DB_DIR}")
+print(f"📂 Caminho Bestflow: {DB_PATH}")
 
 # ✅ config tabela/colunas do samsung_vendas.db
 TBL_VENDAS = "vendas"
@@ -354,6 +365,7 @@ def aplicar_vendas_no_bestflow(bestflow_db_path: str, samsung_db_path: str) -> i
 # MAIN
 # ============================================================
 def main():
+    # Cria a pasta database se ela nao existir
     os.makedirs(DB_DIR, exist_ok=True)
 
     # ✅ sobrescreve o arquivo bestflow.db se já existir
@@ -361,9 +373,8 @@ def main():
         try:
             os.remove(DB_PATH)
         except PermissionError as e:
-            raise PermissionError(
-                f"Não consegui sobrescrever o banco porque ele está em uso: {DB_PATH}"
-            ) from e
+            # Em servidores, as vezes nao da pra remover, entao tentamos rodar por cima
+            print(f"⚠️ Aviso: Arquivo em uso, farei update sem remover: {DB_PATH}")
 
     dt_ini, dt_fim = periodo_mes_atual_ptbr()
     print(f"--- ✅ BESTFLOW (API) -> bestflow.db (mês atual) ---")
@@ -371,11 +382,12 @@ def main():
     print(f"Destino DB: {DB_PATH}")
 
     xml_text = fetch_xml(dt_ini, dt_fim)
-    with open("bestflow_return.xml", "w", encoding="utf-8") as f:
-        f.write(xml_text)
+    
+    # Comentei essa linha abaixo para evitar erro de permissão no Render
+    # with open("bestflow_return.xml", "w", encoding="utf-8") as f: f.write(xml_text)
 
     if "<CONTAGEM" not in (xml_text or ""):
-        print("⚠️ Sem <CONTAGEM> no retorno. Veja bestflow_return.xml")
+        print("⚠️ Sem <CONTAGEM> no retorno.")
         return
 
     df = parse_contagem(xml_text)
