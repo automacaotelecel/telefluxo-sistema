@@ -667,10 +667,12 @@ app.get('/sales', async (req, res) => {
 
     console.log("🔍 Executando Query de Vendas:", query); // Log para você ver no terminal se a data chegou
 
-    const sales = await db.all(query);
+    const salesRaw = await db.all(query);
     await db.close();
-
-    // Retorna no formato que o Frontend novo espera
+    
+    // APLICA A CORREÇÃO AQUI
+    const sales = normalizeKeys(salesRaw);
+    
     res.json({ sales });
 
   } catch (error: any) {
@@ -1712,9 +1714,8 @@ app.get('/api/kpi-vendedores', async (req, res) => {
             // Se falhar, tenta ler da tabela 'vendedores' (padrão do script Python antigo)
             kpis = await db.all("SELECT * FROM vendedores");
         }
-        
         await db.close();
-        res.json(kpis);
+        res.json(normalizeKeys(kpis));
     } catch (error) {
         console.error("Erro KPI:", error);
         res.json([]);
@@ -1827,6 +1828,18 @@ app.get('/api/debug', async (req, res) => {
         res.json({ erro: e.message });
     }
 });
+
+// --- FUNÇÃO AUXILIAR PARA CORRIGIR MAIÚSCULAS/MINÚSCULAS ---
+const normalizeKeys = (rows: any[]) => {
+    if (!rows || !Array.isArray(rows)) return [];
+    return rows.map((row: any) => {
+        const newRow: any = {};
+        Object.keys(row).forEach(key => {
+            newRow[key.toLowerCase()] = row[key];
+        });
+        return newRow;
+    });
+};
 
 // Define a porta: Usa a do Render (process.env.PORT) ou a 3000 se for local
 const PORT = process.env.PORT || 3000;
