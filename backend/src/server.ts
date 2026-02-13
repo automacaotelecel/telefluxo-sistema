@@ -686,12 +686,9 @@ app.get('/sales', async (req, res) => {
 // Função que monta o WHERE convertendo DD/MM/YYYY para YYYY-MM-DD na voo
 const getDateFilter = (start?: any, end?: any) => {
     if (start && end) {
-        console.log(`📅 Filtro Solicitado: ${start} até ${end}`);
-        // TRUQUE SQLITE: Transforma '06/02/2026' em '2026-02-06' para poder filtrar
-        // Pega ano (caracteres 7 a 10) - mes (4 a 5) - dia (1 a 2)
-        const dateConverter = `(substr(data_emissao, 7, 4) || '-' || substr(data_emissao, 4, 2) || '-' || substr(data_emissao, 1, 2))`;
-        
-        return ` AND ${dateConverter} >= '${start}' AND ${dateConverter} <= '${end}' `;
+        // Como o Python já salva como YYYY-MM-DD, não precisamos converter nada!
+        // Apenas comparamos a coluna data_emissao direto.
+        return ` AND data_emissao >= '${start}' AND data_emissao <= '${end}' `;
     }
     return ""; 
 };
