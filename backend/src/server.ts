@@ -1408,74 +1408,53 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // --- INICIO DO BLOCO DE SINCRONIZAÇÃO ---
 
-// Rota 1: Receber Vendas Gerais (COM CORREÇÃO DE DATA NA ENTRADA)
+// Rota 1: Receber Vendas Gerais (COM SUPORTE A LOTES)
 app.post('/api/sync/vendas', async (req, res) => {
   const dados = req.body;
+  // LÊ O PARÂMETRO DA URL: Se reset=false, NÃO apaga o banco (apenas adiciona)
+  // Se não vier nada na URL, o padrão é true (apaga tudo para garantir limpeza)
+  const shouldReset = req.query.reset !== 'false'; 
 
-  if (!dados || !Array.isArray(dados)) {
-    return res.status(400).json({ error: "Formato inválido." });
-  }
+  if (!dados || !Array.isArray(dados)) return res.status(400).json({ error: "Formato inválido." });
 
-  console.log(`📡 Recebendo ${dados.length} vendas. Convertendo datas...`);
-
-  // Função para converter '06/02/2026' -> '2026-02-06'
   const fixDate = (d: string) => {
       if (!d) return null;
       if (d.includes('/')) {
-          const parts = d.split('/'); // [06, 02, 2026]
+          const parts = d.split('/'); 
           if (parts.length === 3) return `${parts[2]}-${parts[1]}-${parts[0]}`;
       }
-      return d; // Se já estiver certo, retorna igual
+      return d; 
   };
 
   try {
     await enqueueWrite(() => new Promise<void>((resolve, reject) => {
       const db = new sqlite3.Database(GLOBAL_DB_PATH);
       db.configure("busyTimeout", 15000);
-
       db.serialize(() => {
         db.run("PRAGMA journal_mode=WAL;");
         db.run("BEGIN IMMEDIATE TRANSACTION");
-        db.run("DELETE FROM vendas", (err) => {
+
+        // LÓGICA INTELIGENTE: Só deleta se for o primeiro lote (shouldReset = true)
+        const preQuery = shouldReset ? "DELETE FROM vendas" : "SELECT 1"; 
+        
+        db.run(preQuery, (err) => {
           if (err) { db.run("ROLLBACK"); return reject(err); }
-
-          const stmt = db.prepare(`
-            INSERT INTO vendas (
-              data_emissao, nome_vendedor, descricao, quantidade,
-              total_liquido, cnpj_empresa, familia, regiao
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-          `);
-
+          
+          const stmt = db.prepare(`INSERT INTO vendas (data_emissao, nome_vendedor, descricao, quantidade, total_liquido, cnpj_empresa, familia, regiao) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
           for (const item of dados) {
-            stmt.run(
-              fixDate(item.data_emissao), // <--- AQUI A MÁGICA
-              item.nome_vendedor,
-              item.descricao,
-              item.quantidade,
-              item.total_liquido,
-              item.cnpj_empresa,
-              item.familia,
-              item.regiao
-            );
+            stmt.run(fixDate(item.data_emissao), item.nome_vendedor, item.descricao, item.quantidade, item.total_liquido, item.cnpj_empresa, item.familia, item.regiao);
           }
-
           stmt.finalize();
           db.run("COMMIT", (err3) => {
              if (err3) { db.run("ROLLBACK"); return reject(err3); }
-             db.close();
-             resolve();
+             db.close(); resolve();
           });
         });
       });
     }));
-
-    console.log("✅ Vendas salvas com datas corrigidas (ISO)!");
-    res.json({ message: "Sincronização OK" });
-
-  } catch (e: any) {
-    console.error("Erro sync:", e);
-    res.status(500).json({ error: "Erro banco" });
-  }
+    // Avisa o Python se limpou ou só adicionou
+    res.json({ message: `Sincronização OK (Reset: ${shouldReset})` });
+  } catch (e: any) { res.status(500).json({ error: "Erro banco" }); }
 });
 
 

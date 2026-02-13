@@ -141,8 +141,6 @@ def limpar_valores_json(dados: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def enviar_dados_para_api(endpoint: str, dados: List[Dict[str, Any]]) -> bool:
-    url = f"{URL_BACKEND}{endpoint}"
-
     if not isinstance(dados, list):
         print("❌ ERRO: dados não é uma lista.")
         return False
@@ -152,69 +150,59 @@ def enviar_dados_para_api(endpoint: str, dados: List[Dict[str, Any]]) -> bool:
         return True
 
     dados = limpar_valores_json(dados)
-
-    print(f"📡 Enviando {len(dados)} registros para: {url}...")
+    
+    # --- LÓGICA DE LOTES (BATCHING) ---
+    BATCH_SIZE = 1000 # Envia de 1000 em 1000 para não estourar o limite 413
+    total_lotes = (len(dados) // BATCH_SIZE) + 1
+    
+    print(f"📡 Preparando envio de {len(dados)} registros em {total_lotes} lotes...")
 
     headers = {"Content-Type": "application/json"}
 
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            response = requests.post(url, json=dados, headers=headers, timeout=TIMEOUT)
+    for i in range(0, len(dados), BATCH_SIZE):
+        lote = dados[i : i + BATCH_SIZE]
+        lote_num = (i // BATCH_SIZE) + 1
+        
+        # O PULO DO GATO: 
+        # Se for o primeiro lote (i=0), manda ?reset=true (Servidor apaga o banco). 
+        # Nos seguintes, manda ?reset=false (Servidor só adiciona).
+        param_reset = "true" if i == 0 else "false"
+        url_lote = f"{URL_BACKEND}{endpoint}?reset={param_reset}"
 
-            if 200 <= response.status_code < 300:
-                try:
-                    payload = response.json()
-                    msg = payload.get("message") if isinstance(payload, dict) else payload
-                except Exception:
-                    msg = response.text[:300]
-                print(f"✅ Sucesso ({response.status_code}) - {msg}")
-                return True
+        print(f"   📦 Enviando Lote {lote_num}/{total_lotes} ({len(lote)} itens)...")
 
-            if response.status_code in RETRY_STATUS:
-                wait = BASE_WAIT_SECONDS * attempt
-                print(
-                    f"⚠️ Servidor instável/ocupado ({response.status_code}). "
-                    f"Tentando novamente em {wait}s... (tentativa {attempt}/{MAX_RETRIES})"
-                )
-                time.sleep(wait)
-                continue
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                response = requests.post(url_lote, json=lote, headers=headers, timeout=TIMEOUT)
+                
+                if 200 <= response.status_code < 300:
+                    # Sucesso no lote, sai do loop de tentativas e vai para o próximo lote
+                    break 
+                
+                if response.status_code == 413:
+                    print("   ❌ ERRO 413: O pacote ainda está muito grande. Diminua o BATCH_SIZE no código.")
+                    return False
 
-            if "SQLITE_BUSY" in (response.text or "") or "database is locked" in (response.text or ""):
-                wait = BASE_WAIT_SECONDS * attempt
-                print(
-                    f"⚠️ Banco ocupado (SQLITE_BUSY). "
-                    f"Tentando novamente em {wait}s... (tentativa {attempt}/{MAX_RETRIES})"
-                )
-                time.sleep(wait)
-                continue
+                # Se for erro 502/503 (Deploy acontecendo) ou Banco Ocupado, espera e tenta de novo
+                if response.status_code in RETRY_STATUS or "SQLITE_BUSY" in response.text:
+                    wait_time = BASE_WAIT_SECONDS * attempt
+                    print(f"      ⏳ Servidor ocupado ({response.status_code})... Aguardando {wait_time}s")
+                    time.sleep(wait_time)
+                    continue
+                
+                print(f"   ❌ Erro Fatal no Lote {lote_num}: {response.status_code} - {response.text[:200]}")
+                return False 
 
-            print(f"❌ Falha ({response.status_code}) - {response.text[:800]}")
+            except Exception as e:
+                print(f"   ⚠️ Erro conexão Lote {lote_num}: {e}")
+                time.sleep(BASE_WAIT_SECONDS * attempt)
+        else:
+            # Se o loop de tentativas acabar sem sucesso (else do for)
+            print(f"   ❌ Falha fatal no Lote {lote_num} após todas tentativas.")
             return False
 
-        except requests.exceptions.Timeout:
-            wait = BASE_WAIT_SECONDS * attempt
-            print(
-                f"⚠️ Timeout: o servidor demorou para responder. "
-                f"Tentando novamente em {wait}s... (tentativa {attempt}/{MAX_RETRIES})"
-            )
-            time.sleep(wait)
-            continue
-
-        except requests.exceptions.ConnectionError as e:
-            wait = BASE_WAIT_SECONDS * attempt
-            print(
-                f"⚠️ Erro de conexão: {e}. "
-                f"Tentando novamente em {wait}s... (tentativa {attempt}/{MAX_RETRIES})"
-            )
-            time.sleep(wait)
-            continue
-
-        except Exception as e:
-            print(f"❌ Erro inesperado: {e}")
-            return False
-
-    print("❌ Falha: excedeu o número de tentativas.")
-    return False
+    print("✅ Todos os lotes enviados com sucesso!")
+    return True
 
 
 # =========================
