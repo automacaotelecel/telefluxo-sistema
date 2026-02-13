@@ -177,7 +177,7 @@ def enviar_dados_para_api(endpoint: str, dados: List[Dict[str, Any]]) -> bool:
     
     # --- LÓGICA DE LOTES (BATCHING) ---
     # Reduzido para 500 para garantir que não estoure o limite do servidor
-    BATCH_SIZE = 500
+    BATCH_SIZE = 100
     total_lotes = (len(dados) // BATCH_SIZE) + 1
     
     print(f"📡 Preparando envio de {len(dados)} registros em {total_lotes} lotes...")
