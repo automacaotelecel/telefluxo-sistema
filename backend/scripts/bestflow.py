@@ -24,10 +24,7 @@ TIMEOUT = 60
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Se a pasta 'database' existir ao lado do script, usa ela. Se não, usa a própria pasta.
-if os.path.exists(os.path.join(BASE_DIR, "database")):
-    DB_DIR = os.path.join(BASE_DIR, "database")
-else:
-    DB_DIR = BASE_DIR
+DB_DIR = r"C:\Users\Usuario\Desktop\TeleFluxo_Instalador\database"
 
 DB_PATH = os.path.join(DB_DIR, "bestflow.db")
 SAMSUNG_VENDAS_DB_PATH = os.path.join(DB_DIR, "samsung_vendas.db")

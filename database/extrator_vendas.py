@@ -7,13 +7,33 @@ import sqlite3
 from datetime import datetime
 import time
 
+# ============================================================
+# ✅ CONFIGURAÇÃO DE URL AUTOMÁTICA (HÍBRIDA)
+# ============================================================
+def get_backend_url():
+    """
+    Tenta conectar no localhost. Se conseguir, usa LOCAL.
+    Se falhar (servidor local desligado), usa PRODUÇÃO.
+    """
+    local_url = "http://localhost:3000"
+    prod_url = "https://telefluxo-aplicacao.onrender.com"
+    
+    print("🔍 Detectando ambiente...")
+    try:
+        requests.get(local_url, timeout=1)
+        print(f"🏠 Servidor Local encontrado! Usando: {local_url}")
+        return local_url
+    except:
+        print(f"☁️ Servidor Local offline. Usando PRODUÇÃO: {prod_url}")
+        return prod_url
+
 # SALVAR O BANCO DE DADOS (CÓPIA LOCAL)
 DB_COPIA_DIR = r"C:\Users\Usuario\Desktop\TeleFluxo_Instalador\database"
 DB_COPIA_PATH = os.path.join(DB_COPIA_DIR, "samsung_vendas.db")
 
 # --- CONFIGURAÇÕES ---
 CAMINHO_EXCEL = r"C:\Users\Usuario\Desktop\BI AUTOMATICO\BI_SAMSUNG\Vendas_Diarias_2.0.xlsm"
-URL_BACKEND = "https://telefluxo-aplicacao.onrender.com"
+URL_BACKEND = get_backend_url() # Usa a função automática
 TIMEOUT = (10, 180)  # (conexão, resposta) em segundos
 
 # ✅ política de retry
@@ -135,11 +155,15 @@ def limpar_valores_json(dados: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     for row in dados:
         new_row = {}
         for k, v in row.items():
+            # JSON não aceita NaN, converte para None (null)
             new_row[k] = None if pd.isna(v) else v
         cleaned.append(new_row)
     return cleaned
 
 
+# ============================================================
+# ✅ FUNÇÃO DE ENVIO EM LOTES (CORRIGIDA PARA ERRO 413)
+# ============================================================
 def enviar_dados_para_api(endpoint: str, dados: List[Dict[str, Any]]) -> bool:
     if not isinstance(dados, list):
         print("❌ ERRO: dados não é uma lista.")
@@ -152,7 +176,8 @@ def enviar_dados_para_api(endpoint: str, dados: List[Dict[str, Any]]) -> bool:
     dados = limpar_valores_json(dados)
     
     # --- LÓGICA DE LOTES (BATCHING) ---
-    BATCH_SIZE = 1000 # Envia de 1000 em 1000 para não estourar o limite 413
+    # Reduzido para 500 para garantir que não estoure o limite do servidor
+    BATCH_SIZE = 500
     total_lotes = (len(dados) // BATCH_SIZE) + 1
     
     print(f"📡 Preparando envio de {len(dados)} registros em {total_lotes} lotes...")
@@ -559,8 +584,9 @@ def integrar_kpi_vendedores():
 
 
 if __name__ == "__main__":
-    if not URL_BACKEND.startswith("http"):
-        print("❌ ERRO: URL_BACKEND inválida.")
+    # Verifica se a URL foi gerada corretamente (não deve ser None)
+    if not URL_BACKEND:
+        print("❌ ERRO FATAL: Não foi possível definir a URL do backend.")
     else:
         ok_vendas = integrar_vendas_geral()
         if ok_vendas:
