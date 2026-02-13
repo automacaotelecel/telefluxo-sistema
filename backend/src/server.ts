@@ -1802,6 +1802,32 @@ app.post('/api/sync/vendedores', async (req, res) => {
     }
 });
 
+// --- ROTA DE RAIO-X (DEBUG) ---
+app.get('/api/debug', async (req, res) => {
+    try {
+        const db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+        
+        // Conta quantos registros existem de verdade
+        const totalVendas = await db.get("SELECT count(*) as total FROM vendas");
+        const totalKPI = await db.get("SELECT count(*) as total FROM vendedores_kpi");
+        
+        // Pega as 3 primeiras vendas para conferir a data
+        const amostra = await db.all("SELECT data_emissao, total_liquido FROM vendas LIMIT 3");
+
+        await db.close();
+
+        res.json({
+            status: "Online",
+            banco_vendas_existe: fs.existsSync(GLOBAL_DB_PATH),
+            total_linhas_vendas: totalVendas?.total || 0,
+            total_linhas_kpi: totalKPI?.total || 0,
+            exemplo_datas_no_banco: amostra
+        });
+    } catch (e: any) {
+        res.json({ erro: e.message });
+    }
+});
+
 // Define a porta: Usa a do Render (process.env.PORT) ou a 3000 se for local
 const PORT = process.env.PORT || 3000;
 
