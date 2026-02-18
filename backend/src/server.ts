@@ -65,7 +65,40 @@ dbInit.serialize(() => {
             qtd REAL, regiao TEXT, pct_seguro REAL, seguros REAL
         )
     `);
+
+    // ... (código existente da tabela vendedores) ...
+    dbInit.run(`
+        CREATE TABLE IF NOT EXISTS vendedores (
+            loja TEXT, vendedor TEXT, fat_atual REAL, tendencia REAL,
+            fat_anterior REAL, crescimento REAL, pa REAL, ticket REAL,
+            qtd REAL, regiao TEXT, pct_seguro REAL, seguros REAL
+        )
+    `);
     
+    // --- [NOVO] TABELAS PARA ESTOQUE X VENDAS ---
+    
+    // 4. Tabela de Inputs Manuais (Faturado, Sugestão, Pedido)
+    dbInit.run(`
+        CREATE TABLE IF NOT EXISTS sugestao_compras_manual (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            modelo TEXT,
+            regiao_aba TEXT, -- Ex: 'DF_GO', 'MG', 'NE'
+            faturado INTEGER DEFAULT 0,
+            sugestao_coordenador INTEGER DEFAULT 0,
+            pedido_rufino INTEGER DEFAULT 0,
+            UNIQUE(modelo, regiao_aba)
+        )
+    `);
+
+    // 5. Tabela de Compras Pendentes (Vem do Google Sheets futuramente)
+    dbInit.run(`
+        CREATE TABLE IF NOT EXISTS compras_pendentes (
+            modelo TEXT PRIMARY KEY,
+            quantidade_pendente INTEGER DEFAULT 0
+        )
+    `);
+    // ---------------------------------------------
+
     console.log("📦 Tabelas do Banco de Dados Garantidas!");
 });
 
@@ -1840,6 +1873,356 @@ const normalizeKeys = (rows: any[]) => {
         return newRow;
     });
 };
+
+// ==========================================
+// 🚀 MÓDULO ESTOQUE X VENDAS (VERSÃO FINAL: FILTRO NA MEMÓRIA)
+// ==========================================
+
+app.get('/api/estoque-vendas', async (req, res) => {
+    const { regiao_aba, start, end, category } = req.query;
+    
+    console.log(`\n🔎 [DEBUG] Iniciando Estoque x Vendas`);
+    console.log(`👉 Filtros: Região=${regiao_aba}, Categoria=${category}`);
+
+    // 1. CONFIGURAÇÃO DE FILTROS DE REGIÃO (SQL para Vendas e Keywords para Estoque)
+    let filtroVendasSQL = "";
+    let keywordsEstoque: string[] = []; 
+
+    switch (regiao_aba) {
+        case 'DF_GO':
+            // Pega DF e GO (Vendas)
+            filtroVendasSQL = "('DISTRITO FEDERAL', 'GOIAS', 'GOIÁS', 'BRASILIA', 'GO', 'DF')";
+            // Palavras-chave para identificar lojas no Estoque
+            keywordsEstoque = ['BRASILIA', 'TAGUATINGA', 'CONJUNTO', 'PARK', 'JK', 'IGUATEMI', 'BOULEVARD', 'TERRACO', 'PATIO', 'GOIANIA', 'FLAMBOYANT', 'PASSEIO', 'BURITI SHOPPING', 'PORTAL'];
+            break;
+
+        case 'MG': // Uberlândia e Uberaba
+            filtroVendasSQL = "('MINAS GERAIS', 'MG', 'UBERLANDIA', 'UBERABA')";
+            keywordsEstoque = ['UBERLANDIA', 'UBERABA'];
+            break;
+
+        case 'RV': // Rio Verde (Separado de GO)
+            filtroVendasSQL = "('RIO VERDE')";
+            keywordsEstoque = ['RIO VERDE']; 
+            break;
+
+        case 'REC': // Recife
+            filtroVendasSQL = "('PERNAMBUCO', 'RECIFE', 'PE')";
+            keywordsEstoque = ['RECIFE'];
+            break;
+
+        case 'JPA': // João Pessoa
+            filtroVendasSQL = "('PARAIBA', 'JOAO PESSOA', 'PB')";
+            keywordsEstoque = ['JOAO PESSOA', 'MANAIRA'];
+            break;
+
+        case 'FOR': // Fortaleza
+            filtroVendasSQL = "('CEARA', 'FORTALEZA', 'CE')";
+            keywordsEstoque = ['FORTALEZA', 'IGUATEMI FORTALEZA'];
+            break;
+
+        default:
+            filtroVendasSQL = "('DISTRITO FEDERAL')"; 
+            keywordsEstoque = ['BRASILIA'];
+    }
+
+    try {
+        const db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+        
+        // 2. Busca TODAS as Vendas da região (sem filtrar categoria aqui para não perder dados por nome diferente)
+        const vendas = await db.all(`
+            SELECT 
+                UPPER(descricao) as modelo, 
+                SUM(quantidade) as qtd_venda,
+                SUM(CASE WHEN regiao IN ('GOIAS', 'GOIÁS', 'GO') THEN quantidade ELSE 0 END) as qtd_venda_go
+            FROM vendas 
+            WHERE regiao IN ${filtroVendasSQL}
+            AND data_emissao >= '${start}' AND data_emissao <= '${end}'
+            GROUP BY UPPER(descricao)
+        `);
+
+        // Busca Inputs Manuais e Pendentes
+        const manuais = await db.all(`SELECT * FROM sugestao_compras_manual WHERE regiao_aba = '${regiao_aba}'`);
+        const pendentes = await db.all(`SELECT * FROM compras_pendentes`);
+        
+        await db.close();
+
+        // 3. Busca TODO o Estoque (Puxamos tudo para filtrar no código com segurança)
+        const estoqueRaw = await prisma.stock.findMany();
+        
+        console.log(`📦 Estoque Total Carregado do Banco: ${estoqueRaw.length} itens.`);
+
+        // --- LÓGICA DE FILTRAGEM NA MEMÓRIA (INFALÍVEL) ---
+        
+        const categoriaAlvo = category && category !== 'TODAS' 
+            ? String(category).toUpperCase().trim() 
+            : null;
+
+        const modelosPermitidos = new Set<string>(); // Lista VIP de modelos desta categoria
+        const estoqueMap = new Map();
+        
+        estoqueRaw.forEach((item: any) => {
+            // A. Normalização para comparação segura
+            const itemCategoria = String(item.category || "").toUpperCase().trim();
+            const storeName = String(item.storeName || "").toUpperCase();
+
+            // B. FILTRO DE CATEGORIA: Se tiver filtro E for diferente, ignora este item
+            if (categoriaAlvo && itemCategoria !== categoriaAlvo) {
+                return; 
+            }
+
+            // Se chegou aqui, o item pertence à categoria escolhida!
+            const mod = String(item.description).toUpperCase().trim();
+            
+            // Adiciona na Lista VIP (Isso permite mostrar a venda depois, mesmo se o estoque for 0 na loja)
+            modelosPermitidos.add(mod);
+
+            // C. FILTRO DE REGIÃO DO ESTOQUE
+            // Verifica se a loja pertence à aba atual
+            const pertenceRegiao = keywordsEstoque.some(key => storeName.includes(key));
+            
+            // Exceção: Não deixar Rio Verde entrar na aba DF_GO
+            if (regiao_aba === 'DF_GO' && storeName.includes('RIO VERDE')) return;
+
+            if (pertenceRegiao) {
+                if (!estoqueMap.has(mod)) estoqueMap.set(mod, { total: 0, go: 0 });
+                
+                const qtd = Number(item.quantity) || 0;
+                const entry = estoqueMap.get(mod);
+                entry.total += qtd;
+
+                // Lógica específica para separar GOIÁS dentro da aba DF_GO
+                if (regiao_aba === 'DF_GO' && (storeName.includes('GOIANIA') || storeName.includes('BURITI') || storeName.includes('FLAMBOYANT') || storeName.includes('PASSEIO'))) {
+                    if (!storeName.includes('RIO VERDE')) entry.go += qtd;
+                }
+            }
+        });
+
+        console.log(`✅ Modelos únicos encontrados na categoria ${category}: ${modelosPermitidos.size}`);
+
+        // 4. MERGE FINAL (CRUZAMENTO DE DADOS)
+        const map = new Map();
+        
+        const initModel = (m: string) => {
+            if (!m) return null;
+            const key = m.trim().toUpperCase();
+
+            // 🔥 FILTRO FINAL: 
+            // Se estamos filtrando por categoria, só criamos a linha se o modelo existir na lista de modelos do estoque.
+            // Isso evita mostrar "Capa de Celular" quando filtrei "Smartphone".
+            if (categoriaAlvo && !modelosPermitidos.has(key)) {
+                return null;
+            }
+
+            if (!map.has(key)) map.set(key, { modelo: key, venda: 0, estoque: 0, venda_go: 0, estoque_go: 0, pendente: 0, faturado: 0, sugestao: 0, pedido: 0 });
+            return map.get(key);
+        }
+
+        // Processa Vendas
+        vendas.forEach((v: any) => {
+            const item = initModel(v.modelo);
+            if (item) {
+                item.venda = v.qtd_venda || 0;
+                if (regiao_aba === 'DF_GO') item.venda_go = v.qtd_venda_go || 0;
+            }
+        });
+
+        // Processa Estoque (Do mapa já filtrado acima)
+        for (const [modelo, dados] of estoqueMap.entries()) {
+            const item = initModel(modelo);
+            if (item) {
+                item.estoque = dados.total;
+                item.estoque_go = dados.go;
+            }
+        }
+
+        // Processa Manuais
+        manuais.forEach((m: any) => {
+            const item = initModel(m.modelo);
+            if (item) {
+                item.faturado = m.faturado;
+                item.sugestao = m.sugestao_coordenador;
+                item.pedido = m.pedido_rufino;
+            }
+        });
+        
+        // Processa Pendentes
+        pendentes.forEach((p: any) => {
+             const item = initModel(p.modelo);
+             if (item) item.pendente = p.quantidade_pendente;
+        });
+
+        // Retorna apenas linhas com movimento
+        const resultado = Array.from(map.values()).filter(i => i.venda > 0 || i.estoque > 0);
+        
+        console.log(`🚀 Enviando ${resultado.length} linhas para o Frontend.`);
+        res.json(resultado);
+
+    } catch (e: any) {
+        console.error("Erro Fatal na API:", e);
+        res.status(500).json({ error: e.message, fallback: [] });
+    }
+});
+
+// Rota para listar Categorias do Estoque (para o filtro)
+app.get('/api/categories', async (req, res) => {
+    try {
+        // Busca categorias distintas usando Prisma
+        const categories = await prisma.stock.findMany({
+            select: { category: true },
+            distinct: ['category'],
+            orderBy: { category: 'asc' }
+        });
+        
+        // Retorna apenas a lista de nomes limpa
+        const list = categories
+            .map(c => String(c.category || "").toUpperCase().trim())
+            .filter(c => c !== "");
+            
+        // Remove duplicatas extras caso existam diferenças deespaço
+        const uniqueList = [...new Set(list)];
+        
+        res.json(uniqueList);
+    } catch (e) {
+        res.json([]);
+    }
+});
+
+// ==========================================
+// 🛒 ROTA DE SINCRONIZAÇÃO DE COMPRAS (PENDENTES)
+// ==========================================
+app.post('/api/sync/compras-pendentes', async (req, res) => {
+    const dados = req.body;
+
+    // Validação básica
+    if (!Array.isArray(dados)) {
+        return res.status(400).json({ error: "Formato inválido. Envie uma lista." });
+    }
+
+    try {
+        const db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+        
+        // Inicia Transação (Segurança)
+        await db.exec("BEGIN TRANSACTION");
+        
+        // 1. Limpa a tabela anterior
+        await db.exec("DELETE FROM compras_pendentes");
+
+        // 2. Prepara a inserção otimizada
+        const stmt = await db.prepare(`
+            INSERT INTO compras_pendentes (modelo, quantidade_pendente) 
+            VALUES (?, ?)
+        `);
+
+        for (const item of dados) {
+            const modelo = String(item.modelo || "").toUpperCase().trim();
+            const qtd = Number(item.quantidade_pendente) || 0;
+
+            if (modelo && qtd > 0) {
+                await stmt.run(modelo, qtd);
+            }
+        }
+
+        await stmt.finalize();
+        await db.exec("COMMIT");
+        await db.close();
+
+        console.log(`📦 Compras Pendentes Sincronizadas: ${dados.length} modelos.`);
+        res.json({ success: true });
+
+    } catch (e: any) {
+        console.error("Erro Sync Compras:", e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ==========================================
+// 📦 MÓDULO MALOTE (DISTRIBUIÇÃO INTELIGENTE CD)
+// ==========================================
+app.get('/api/malote', async (req, res) => {
+    try {
+        const db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+        
+        // 1. Busca Vendas dos últimos 30 dias para cálculo do VMD
+        const vendas30d = await db.all(`
+            SELECT 
+                UPPER(descricao) as modelo, 
+                cnpj_empresa,
+                SUM(quantidade) as qtd_venda
+            FROM vendas 
+            WHERE data_emissao >= date('now', '-30 days')
+            GROUP BY UPPER(descricao), cnpj_empresa
+        `);
+
+        // 2. Busca Estoque Atual via Prisma
+        const estoqueRaw = await prisma.stock.findMany();
+        
+        // 3. Organização dos dados
+        const cdName = "CD TAGUATINGA";
+        const modelData: any = {};
+
+        // Inicializa estrutura
+        estoqueRaw.forEach((item: any) => {
+            const mod = String(item.description).toUpperCase().trim();
+            if (!modelData[mod]) {
+                modelData[mod] = { modelo: mod, estoqueCD: 0, lojas: [], totalNecessidade: 0 };
+            }
+            
+            if (item.storeName.toUpperCase().includes(cdName)) {
+                modelData[mod].estoqueCD += Number(item.quantity) || 0;
+            } else {
+                modelData[mod].lojas.push({
+                    loja: item.storeName,
+                    estoqueAtual: Number(item.quantity) || 0,
+                    venda30d: 0,
+                    vmd: 0,
+                    necessidade: 0,
+                    sugestaoEnvio: 0
+                });
+            }
+        });
+
+        // Cruza com vendas para calcular VMD e Necessidade
+        vendas30d.forEach((v: any) => {
+            const mod = v.modelo;
+            if (modelData[mod]) {
+                const loja = modelData[mod].lojas.find((l:any) => getCnpjByName(l.loja) === v.cnpj_empresa);
+                if (loja) {
+                    loja.venda30d = v.qtd_venda;
+                    loja.vmd = v.qtd_venda / 30;
+                    // Fórmula: (VMD * 15 dias) - Estoque Atual
+                    const nec = Math.ceil((loja.vmd * 15) - loja.estoqueAtual);
+                    loja.necessidade = nec > 0 ? nec : 0;
+                    modelData[mod].totalNecessidade += loja.necessidade;
+                }
+            }
+        });
+
+        // 4. LÓGICA DE DISTRIBUIÇÃO (PRIORIDADE QUEM VENDE MAIS)
+        Object.values(modelData).forEach((item: any) => {
+            let saldoCD = item.estoqueCD;
+            // Ordena lojas pela venda 30d (descendente)
+            item.lojas.sort((a: any, b: any) => b.venda30d - a.venda30d);
+
+            item.lojas.forEach((loja: any) => {
+                if (saldoCD > 0 && loja.necessidade > 0) {
+                    const enviar = Math.min(saldoCD, loja.necessidade);
+                    loja.sugestaoEnvio = enviar;
+                    saldoCD -= enviar;
+                }
+            });
+
+            // Sugestão de Compra para o CD
+            // Se o CD zerou OU não supre a necessidade total
+            item.sugestaoCompra = Math.max(0, item.totalNecessidade - item.estoqueCD);
+        });
+
+        await db.close();
+        res.json(Object.values(modelData).filter((m:any) => m.totalNecessidade > 0 || m.estoqueCD > 0));
+    } catch (e: any) {
+        res.status(500).json({ error: e.message });
+    }
+});
 
 // Define a porta: Usa a do Render (process.env.PORT) ou a 3000 se for local
 const PORT = process.env.PORT || 3000;

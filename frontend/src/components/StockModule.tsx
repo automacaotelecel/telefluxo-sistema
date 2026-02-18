@@ -47,13 +47,10 @@ export default function StockModule() {
   const [stockData, setStockData] = useState<any[]>([]);
   const [salesData, setSalesData] = useState<any[]>([]); 
   const [purchaseData, setPurchaseData] = useState<any[]>([]); 
+  const [maloteData, setMaloteData] = useState<any[]>([]);
+  const [moduleMode, setModuleMode] = useState<'stock' | 'malote' | 'redistribution' | 'purchases'>('stock');
   const [loading, setLoading] = useState(false);
-  
-  // ESTADO NOVO: CONTROLE DE DEBUG
   const [showDebug, setShowDebug] = useState(false);
-
-  const [moduleMode, setModuleMode] = useState<'stock' | 'redistribution' | 'purchases'>('stock');
-
   const [filter, setFilter] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('TODAS');
   const [regionFilter, setRegionFilter] = useState('TODAS');
@@ -74,15 +71,24 @@ export default function StockModule() {
       try {
           const resPurchases = await fetch(`${API_URL}/purchases`);
           const jsonPurchases = await resPurchases.json();
-          console.log("📦 Compras Recebidas do Banco:", jsonPurchases);
           if(Array.isArray(jsonPurchases)) setPurchaseData(jsonPurchases);
       } catch(e) { console.warn("Erro ao carregar compras", e); }
 
-      // 3. Vendas
+      // 3. Malote (ADICIONADO)
+      try {
+          const resMalote = await fetch(`${API_URL}/api/malote`);
+          const jsonMalote = await resMalote.json();
+          if(Array.isArray(jsonMalote)) setMaloteData(jsonMalote); // Agora a função existe!
+      } catch(e) { console.warn("Erro ao carregar malote", e); }
+
+      // 4. Vendas
       let userId = '';
       try {
           const rawUser = localStorage.getItem('user') || localStorage.getItem('telefluxo_user');
-          if (rawUser) userId = JSON.parse(rawUser).id || JSON.parse(rawUser).userId;
+          if (rawUser) {
+              const parsed = JSON.parse(rawUser);
+              userId = parsed.id || parsed.userId;
+          }
       } catch(e) {}
 
       if (userId) {
@@ -91,8 +97,11 @@ export default function StockModule() {
           const salesList = jsonSales.sales || (Array.isArray(jsonSales) ? jsonSales : []);
           setSalesData(salesList);
       }
-    } catch (error) { console.error(error); } 
-    finally { setLoading(false); }
+    } catch (error) { 
+        console.error("Erro geral no loadData:", error); 
+    } finally { 
+        setLoading(false); 
+    }
   };
 
   useEffect(() => { loadData(); }, []);
@@ -330,6 +339,7 @@ export default function StockModule() {
             <div className="flex gap-2">
                 <div className="flex bg-slate-100 p-1 rounded-xl">
                     <button onClick={() => setModuleMode('stock')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all ${moduleMode === 'stock' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-indigo-500'}`}>Estoque</button>
+                    <button onClick={() => setModuleMode('malote')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all ${moduleMode === 'malote' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-indigo-500'}`}>Malote</button>
                     <button onClick={() => setModuleMode('redistribution')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all ${moduleMode === 'redistribution' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-indigo-500'}`}>Remanejamento</button>
                     <button onClick={() => setModuleMode('purchases')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all ${moduleMode === 'purchases' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-indigo-500'}`}>Compras</button>
                 </div>
@@ -469,8 +479,77 @@ export default function StockModule() {
                     </div>
                 </div>
             </div>
-        )}
+)}
+        {/* ================= MÓDULO MALOTE (DISTRIBUIÇÃO CD) ================= */}
+        {moduleMode === 'malote' && (
+            <div className="space-y-6 animate-fadeIn">
+                <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+                    <div className="flex justify-between items-end mb-6">
+                        <div>
+                            <h2 className="text-lg font-black uppercase text-slate-800">Abastecimento Inteligente</h2>
+                            <p className="text-xs text-slate-400">Saída: CD TAGUATINGA | Objetivo: 15 dias de cobertura</p>
+                        </div>
+                        <div className="text-right">
+                            <p className="text-[10px] font-bold text-slate-400 uppercase">Sugestão total de envio</p>
+                            <p className="text-2xl font-black text-indigo-600">
+                                {maloteData.reduce((acc, item) => {
+                                    const somaLoja = item.lojas?.reduce((sum, loja) => sum + (loja.sugestaoEnvio || 0), 0) || 0;
+                                    return acc + somaLoja;
+                                }, 0)} un
+                            </p>
+                        </div>
+                    </div>
 
+                    <div className="overflow-x-auto">
+                        <table className="min-w-full">
+                            <thead>
+                                <tr className="border-b border-slate-100">
+                                    <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase">Modelo</th>
+                                    <th className="px-4 py-3 text-center text-[10px] font-black text-slate-400 uppercase bg-blue-50/50">Estoque CD</th>
+                                    <th className="px-4 py-3 text-center text-[10px] font-black text-slate-400 uppercase">Nec. Lojas</th>
+                                    <th className="px-4 py-3 text-center text-[10px] font-black text-indigo-600 uppercase bg-indigo-50/50">Sug. Envio</th>
+                                    <th className="px-4 py-3 text-center text-[10px] font-black text-red-500 uppercase">Sug. Compra</th>
+                                    <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase">Destinos</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-50">
+                                {maloteData.map((item, idx) => {
+                                            // Cálculo correto da soma de envio para a coluna "Sug. Envio"
+                                            const totalEnvio = item.lojas?.reduce((acc, l) => acc + l.sugestaoEnvio, 0) || 0;
+                                            return (
+                                        <tr key={idx} className="hover:bg-slate-50/80 transition-colors group">
+                                            <td className="px-4 py-4 text-xs font-bold text-slate-700 uppercase">{item.modelo}</td>
+                                            <td className="px-4 py-4 text-center text-sm font-black text-blue-700 bg-blue-50/30">{item.estoqueCD}</td>
+                                            <td className="px-4 py-4 text-center text-xs font-bold text-slate-400">{item.totalNecessidade}</td>
+                                            <td className={`px-4 py-4 text-center text-sm font-black bg-indigo-50/30 ${totalEnvio > 0 ? 'text-indigo-600' : 'text-slate-300'}`}>
+                                                {totalEnvio > 0 ? `+${totalEnvio}` : '0'}
+                                            </td>
+                                            <td className="px-4 py-4 text-center">
+                                                {item.sugestaoCompra > 0 ? (
+                                                    <span className="text-[10px] font-black bg-red-50 text-red-600 px-2 py-1 rounded">COMPRAR {item.sugestaoCompra}</span>
+                                                ) : (
+                                                    <span className="text-slate-300">-</span>
+                                                )}
+                                            </td>
+                                            <td className="px-4 py-4">
+                                                <div className="flex justify-end gap-1 flex-wrap max-w-[300px] ml-auto">
+                                                    {item.lojas?.filter(l => l.sugestaoEnvio > 0).map((l, lidx) => (
+                                                        <div key={lidx} title={l.loja} className="text-[9px] font-bold bg-white border border-slate-200 px-1.5 py-0.5 rounded shadow-sm">
+                                                            {l.loja.split(' ')[0]} <span className="text-indigo-600">({l.sugestaoEnvio})</span>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        )}
+        
         {/* ================= MÓDULO ESTOQUE (CLÁSSICO) ================= */}
         {moduleMode === 'stock' && (
             <>

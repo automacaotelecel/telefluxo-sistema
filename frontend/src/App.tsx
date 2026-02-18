@@ -15,6 +15,7 @@ import DeptBulletin from "./components/DeptBulletin";
 import FinanceModule from "./components/FinanceModule"; 
 import StockModule from "./components/StockModule"; 
 import PriceTablePage from './components/PriceTablePage';
+import { EstoqueVendas } from './components/EstoqueVendas';
 import { 
   FileText, CheckCircle, LayoutDashboard, Users, LogOut, 
   Calendar, BarChart3, ChevronDown, ChevronRight, Circle, Plus,
@@ -33,7 +34,7 @@ function App() {
   
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
-  const [expanded, setExpanded] = useState({ general: false, mine: true, info: false });
+  const [expanded, setExpanded] = useState({ general: false, mine: true, info: false, stock: false });
 
   useEffect(() => {
     const savedUser = localStorage.getItem('telefluxo_user');
@@ -192,11 +193,40 @@ function App() {
           )}
 
           {canViewStock && (
-            <div 
-              onClick={() => handleNavigate('stock')} 
-              className={`p-3 rounded-xl cursor-pointer flex items-center gap-3 font-bold text-sm transition-all ${currentView === 'stock' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:bg-slate-800'}`}
-            >
-              <Package size={18} /> Controle de Estoque
+            <div>
+              {/* O PAI (Botão Principal com Seta) */}
+              <div 
+                onClick={() => setExpanded({...expanded, stock: !expanded.stock})} 
+                className={`p-3 rounded-xl cursor-pointer flex items-center justify-between transition-all ${currentView === 'stock' || currentView === 'estoque_vendas' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:bg-slate-800'}`}
+              >
+                <div className="flex gap-3 items-center font-bold text-sm">
+                  <Package size={18} /> Controle de Estoque
+                </div>
+                {expanded.stock ? <ChevronDown size={14}/> : <ChevronRight size={14}/>}
+              </div>
+
+              {/* OS FILHOS (Submenus) */}
+              {expanded.stock && (
+                <div className="mt-1 space-y-1">
+                  
+                  {/* Item 1: Visão Geral (Estoque antigo) */}
+                  <div 
+                    onClick={() => handleNavigate('stock')} 
+                    className={`pl-12 pr-4 py-2 cursor-pointer flex items-center gap-2 text-[11px] font-black uppercase tracking-tighter transition-all hover:text-white ${currentView === 'stock' ? 'text-orange-500' : 'text-slate-500'}`}
+                  >
+                    <Circle size={6} fill={currentView === 'stock' ? "currentColor" : "transparent"} /> Visão Geral
+                  </div>
+
+                  {/* Item 2: Estoque x Vendas (Novo) */}
+                  <div 
+                    onClick={() => handleNavigate('estoque_vendas')} 
+                    className={`pl-12 pr-4 py-2 cursor-pointer flex items-center gap-2 text-[11px] font-black uppercase tracking-tighter transition-all hover:text-white ${currentView === 'estoque_vendas' ? 'text-orange-500' : 'text-slate-500'}`}
+                  >
+                    <Circle size={6} fill={currentView === 'estoque_vendas' ? "currentColor" : "transparent"} /> Estoque x Vendas
+                  </div>
+
+                </div>
+              )}
             </div>
           )}
 
@@ -287,6 +317,8 @@ function App() {
             ) : currentView === 'sales_dash' ? (
                    <SalesDashboard />
                    // --- NOVA CONDIÇÃO AQUI ---
+            ) : currentView === 'estoque_vendas' ? (
+                <EstoqueVendas />
             ) : currentView === 'price_table' ? (
                 <PriceTablePage />
             ) : currentView === 'team' ? (
