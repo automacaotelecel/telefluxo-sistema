@@ -180,7 +180,9 @@ export function EstoqueVendas() {
                 
                 const precisaPedir = row.venda >= row.estoque;
                 const obsTexto = precisaPedir ? "FAZER PEDIDO" : "-";
-                const obsClass = precisaPedir ? "bg-yellow-300 text-yellow-900 font-bold border-yellow-400" : "text-slate-400";
+                const obsClass = precisaPedir 
+                    ? "bg-yellow-100 text-yellow-700 text-[9px] font-black px-2 py-0.5 rounded-full border border-yellow-200 uppercase" 
+                    : "text-slate-400";
 
                 return (
                     <tr key={i} className={`hover:bg-slate-50 transition-colors`}>

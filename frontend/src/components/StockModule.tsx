@@ -56,6 +56,9 @@ export default function StockModule() {
   const [regionFilter, setRegionFilter] = useState('TODAS');
   const [expandedStore, setExpandedStore] = useState<string | null>(null); 
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
+  const [maloteSearch, setMaloteSearch] = useState('');
+  const [maloteCategory, setMaloteCategory] = useState('TODAS');
+  const [maloteViewMode, setMaloteViewMode] = useState<'table' | 'cards'>('table');
 
   const API_URL = 'https://telefluxo-aplicacao.onrender.com';
 
@@ -480,94 +483,141 @@ export default function StockModule() {
                 </div>
             </div>
 )}
-        {/* ================= MÓDULO MALOTE (DISTRIBUIÇÃO CD) ================= */}
+        {/* ================= MÓDULO MALOTE ================= */}
         {moduleMode === 'malote' && (
             <div className="space-y-6 animate-fadeIn">
                 <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-                    <div className="flex justify-between items-end mb-6">
+                    
+                    {/* BARRA DE FILTROS DO MALOTE */}
+                    <div className="flex flex-col md:flex-row justify-between items-center gap-4 mb-8">
+                        <div className="flex flex-1 gap-2 w-full">
+                            <div className="relative flex-1 max-w-sm">
+                                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                                <input 
+                                    type="text" 
+                                    placeholder="Pesquisar modelo no malote..." 
+                                    value={maloteSearch}
+                                    onChange={(e) => setMaloteSearch(e.target.value)}
+                                    className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold uppercase outline-none focus:ring-2 focus:ring-indigo-500"
+                                />
+                            </div>
+                            <select 
+                                value={maloteCategory}
+                                onChange={(e) => setMaloteCategory(e.target.value)}
+                                className="bg-slate-50 border border-slate-200 text-slate-600 text-[10px] font-black uppercase px-4 py-2 rounded-xl outline-none cursor-pointer hover:bg-slate-100"
+                            >
+                                <option value="TODAS">Todas as Categorias</option>
+                                {uniqueCategories.map(c => <option key={c} value={c}>{c}</option>)}
+                            </select>
+                        </div>
+
+                        <div className="flex bg-slate-100 p-1 rounded-xl">
+                            <button 
+                                onClick={() => setMaloteViewMode('table')}
+                                className={`p-2 rounded-lg transition-all ${maloteViewMode === 'table' ? 'bg-white shadow text-indigo-600' : 'text-slate-400'}`}
+                            >
+                                <ListIcon size={18} />
+                            </button>
+                            <button 
+                                onClick={() => setMaloteViewMode('cards')}
+                                className={`p-2 rounded-lg transition-all ${maloteViewMode === 'cards' ? 'bg-white shadow text-indigo-600' : 'text-slate-400'}`}
+                            >
+                                <LayoutGrid size={18} />
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* RESUMO NO TOPO */}
+                    <div className="flex justify-between items-end mb-6 border-b border-slate-50 pb-6">
                         <div>
-                            <h2 className="text-lg font-black uppercase text-slate-800">Abastecimento Inteligente</h2>
-                            <p className="text-xs text-slate-400">Saída: CD TAGUATINGA | Objetivo: 15 dias de cobertura</p>
+                            <h2 className="text-lg font-black uppercase text-slate-800">Abastecimento CD Taguatinga</h2>
+                            <p className="text-xs text-slate-400">Saída Centralizada | Objetivo: 15 dias de cobertura</p>
                         </div>
                         <div className="text-right">
-                            <p className="text-[10px] font-bold text-slate-400 uppercase">Sugestão total de envio</p>
-                            <p className="text-2xl font-black text-indigo-600">
-                                {maloteData.reduce((acc, item) => {
-                                    const somaLoja = item.lojas?.reduce((sum, loja) => sum + (loja.sugestaoEnvio || 0), 0) || 0;
-                                    return acc + somaLoja;
-                                }, 0)} un
+                            <p className="text-[10px] font-bold text-slate-400 uppercase">Total a Despachar</p>
+                            <p className="text-3xl font-black text-indigo-600">
+                                {maloteData
+                                .filter(item => (maloteCategory === 'TODAS' || item.category === maloteCategory) && item.modelo.toLowerCase().includes(maloteSearch.toLowerCase()))
+                                .reduce((acc, item) => acc + (item.lojas?.reduce((sum, l) => sum + (l.sugestaoEnvio || 0), 0) || 0), 0)} un
                             </p>
                         </div>
                     </div>
 
-                    <div className="overflow-x-auto">
-                        <table className="min-w-full">
-                            <thead>
-                                <tr className="border-b border-slate-100">
-                                    <th className="px-4 py-3 text-left text-[10px] font-black text-slate-400 uppercase">Modelo</th>
-                                    <th className="px-4 py-3 text-center text-[10px] font-black text-slate-400 uppercase bg-blue-50/50">Estoque CD</th>
-                                    <th className="px-4 py-3 text-center text-[10px] font-black text-slate-400 uppercase">Nec. Lojas</th>
-                                    <th className="px-4 py-3 text-center text-[10px] font-black text-indigo-600 uppercase bg-indigo-50/50">Sug. Envio</th>
-                                    <th className="px-4 py-3 text-center text-[10px] font-black text-red-500 uppercase">Sug. Compra</th>
-                                    <th className="px-4 py-3 text-right text-[10px] font-black text-slate-400 uppercase">Destinos</th>
-                                </tr>
-                            </thead>
+                    {/* CONTEÚDO DINÂMICO: TABELA OU CARDS */}
+                    {maloteViewMode === 'table' ? (
+                        <div className="overflow-x-auto">
+                            {/* ... (Mantenha sua estrutura de table aqui, mas use o filtro no map abaixo) ... */}
                             <tbody className="divide-y divide-slate-50">
-                                {maloteData.map((item, idx) => {
-                                            // Cálculo correto da soma de envio para a coluna "Sug. Envio"
-                                            const totalEnvio = item.lojas?.reduce((acc, l) => acc + l.sugestaoEnvio, 0) || 0;
-                                            return (
-                                        <tr key={idx} className="hover:bg-slate-50/80 transition-colors group">
-                                            <td className="px-4 py-4 text-xs font-bold text-slate-700 uppercase">{item.modelo}</td>
-                                            <td className="px-4 py-4 text-center text-sm font-black text-blue-700 bg-blue-50/30">{item.estoqueCD}</td>
-                                            <td className="px-4 py-4 text-center text-xs font-bold text-slate-400">{item.totalNecessidade}</td>
-                                            <td className={`px-4 py-4 text-center text-sm font-black bg-indigo-50/30 ${totalEnvio > 0 ? 'text-indigo-600' : 'text-slate-300'}`}>
-                                                {totalEnvio > 0 ? `+${totalEnvio}` : '0'}
-                                            </td>
-                                            <td className="px-4 py-4 text-center">
-                                                {item.sugestaoCompra > 0 ? (
-                                                    <span className="text-[10px] font-black bg-red-50 text-red-600 px-2 py-1 rounded">COMPRAR {item.sugestaoCompra}</span>
-                                                ) : (
-                                                    <span className="text-slate-300">-</span>
-                                                )}
-                                            </td>
-                                            <td className="px-4 py-4">
-                                                <div className="flex justify-end gap-1 flex-wrap max-w-[300px] ml-auto">
-                                                    {item.lojas?.filter(l => l.sugestaoEnvio > 0).map((l, lidx) => (
-                                                        <div key={lidx} title={l.loja} className="text-[9px] font-bold bg-white border border-slate-200 px-1.5 py-0.5 rounded shadow-sm">
-                                                            {l.loja.split(' ')[0]} <span className="text-indigo-600">({l.sugestaoEnvio})</span>
-                                                        </div>
-                                                    ))}
-                                                </div>
-                                            </td>
-                                        </tr>
-                                    );
-                                })}
+                                {maloteData
+                                    .filter(item => (maloteCategory === 'TODAS' || item.category === maloteCategory) && item.modelo.toLowerCase().includes(maloteSearch.toLowerCase()))
+                                    .map((item, idx) => {
+                                        const totalEnvio = item.lojas?.reduce((acc, l) => acc + (l.sugestaoEnvio || 0), 0) || 0;
+                                        return (
+                                            // ... seu <tr> existente corrigido ...
+                                        );
+                                    })
+                                }
                             </tbody>
-                        </table>
-                    </div>
+                        </div>
+                    ) : (
+                        /* VISÃO EM CARDS (ESTILO REMANEJAMENTO) */
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                            {maloteData
+                                .filter(item => (maloteCategory === 'TODAS' || item.category === maloteCategory) && item.modelo.toLowerCase().includes(maloteSearch.toLowerCase()))
+                                .map((item, idx) => (
+                                    item.lojas?.filter(l => l.sugestaoEnvio > 0).map((loja, lidx) => (
+                                        <div key={`${idx}-${lidx}`} className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition-all relative overflow-hidden group">
+                                            <div className="absolute top-0 right-0 bg-indigo-50 text-indigo-600 text-[9px] font-black px-3 py-1 rounded-bl-xl uppercase tracking-tighter">
+                                                CD Taguatinga
+                                            </div>
+                                            <h4 className="text-xs font-black text-slate-800 uppercase mb-3 pr-20">{item.modelo}</h4>
+                                            
+                                            <div className="flex items-center justify-between bg-slate-50 p-4 rounded-xl border border-slate-100">
+                                                <div className="text-center flex-1">
+                                                    <p className="text-[8px] font-black text-slate-400 uppercase mb-1">Origem</p>
+                                                    <p className="text-[10px] font-black text-slate-700 uppercase">CD TAGUATINGA</p>
+                                                </div>
+                                                
+                                                <div className="flex flex-col items-center px-4">
+                                                    <span className="text-xs font-black text-indigo-600 bg-indigo-100 px-3 py-1 rounded-full mb-1">
+                                                        {loja.sugestaoEnvio} un
+                                                    </span>
+                                                    <ArrowRight size={14} className="text-indigo-300 animate-pulse" />
+                                                </div>
+
+                                                <div className="text-center flex-1">
+                                                    <p className="text-[8px] font-black text-slate-400 uppercase mb-1">Destino</p>
+                                                    <p className="text-[10px] font-black text-green-600 uppercase">{loja.loja}</p>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ))
+                                ))
+                            }
+                        </div>
+                    )}
                 </div>
             </div>
         )}
-        
-        {/* ================= MÓDULO ESTOQUE (CLÁSSICO) ================= */}
-        {moduleMode === 'stock' && (
-            <>
-            {!expandedStore && (
-                <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
-                    <select value={regionFilter} onChange={e => setRegionFilter(e.target.value)} className="bg-white border border-slate-200 text-slate-600 text-xs font-bold uppercase px-3 py-2 rounded-lg outline-none cursor-pointer hover:border-indigo-300">
-                        <option value="TODAS">Todas as Regiões</option>
-                        {uniqueRegions.map(r => <option key={r} value={r}>{r}</option>)}
-                    </select>
-                    <select value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)} className="bg-white border border-slate-200 text-slate-600 text-xs font-bold uppercase px-3 py-2 rounded-lg outline-none cursor-pointer hover:border-indigo-300">
-                        <option value="TODAS">Todas as Categorias</option>
-                        {uniqueCategories.map(c => <option key={c} value={c}>{c}</option>)}
-                    </select>
-                    {(regionFilter !== 'TODAS' || categoryFilter !== 'TODAS') && (
-                        <button onClick={() => {setRegionFilter('TODAS'); setCategoryFilter('TODAS')}} className="text-red-500 text-xs font-bold px-2 hover:bg-red-50 rounded">LIMPAR</button>
+                
+                {/* ================= MÓDULO ESTOQUE (CLÁSSICO) ================= */}
+                {moduleMode === 'stock' && (
+                    <>
+                    {!expandedStore && (
+                        <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
+                            <select value={regionFilter} onChange={e => setRegionFilter(e.target.value)} className="bg-white border border-slate-200 text-slate-600 text-xs font-bold uppercase px-3 py-2 rounded-lg outline-none cursor-pointer hover:border-indigo-300">
+                                <option value="TODAS">Todas as Regiões</option>
+                                {uniqueRegions.map(r => <option key={r} value={r}>{r}</option>)}
+                            </select>
+                            <select value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)} className="bg-white border border-slate-200 text-slate-600 text-xs font-bold uppercase px-3 py-2 rounded-lg outline-none cursor-pointer hover:border-indigo-300">
+                                <option value="TODAS">Todas as Categorias</option>
+                                {uniqueCategories.map(c => <option key={c} value={c}>{c}</option>)}
+                            </select>
+                            {(regionFilter !== 'TODAS' || categoryFilter !== 'TODAS') && (
+                                <button onClick={() => {setRegionFilter('TODAS'); setCategoryFilter('TODAS')}} className="text-red-500 text-xs font-bold px-2 hover:bg-red-50 rounded">LIMPAR</button>
+                            )}
+                        </div>
                     )}
-                </div>
-            )}
 
             {expandedStore ? (
                 /* MICRO VIEW */
