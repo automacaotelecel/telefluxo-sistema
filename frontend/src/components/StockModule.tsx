@@ -544,23 +544,43 @@ export default function StockModule() {
                     </div>
 
                     {/* CONTEÚDO DINÂMICO: TABELA OU CARDS */}
-                    {maloteViewMode === 'table' ? (
-                        <div className="overflow-x-auto">
-                            {/* ... (Mantenha sua estrutura de table aqui, mas use o filtro no map abaixo) ... */}
-                            <tbody className="divide-y divide-slate-50">
-                                {maloteData
-                                    .filter(item => (maloteCategory === 'TODAS' || item.category === maloteCategory) && item.modelo.toLowerCase().includes(maloteSearch.toLowerCase()))
-                                    .map((item, idx) => {
-                                        const totalEnvio = item.lojas?.reduce((acc, l) => acc + (l.sugestaoEnvio || 0), 0) || 0;
-                                        return (
-                                            // ... seu <tr> existente corrigido ...
-                                        );
-                                    })
-                                }
-                            </tbody>
-                        </div>
-                    ) : (
-                        /* VISÃO EM CARDS (ESTILO REMANEJAMENTO) */
+                        {maloteViewMode === 'table' ? (
+                            <div className="overflow-x-auto">
+                                <table className="w-full text-left"> {/* Adicionada tag table */}
+                                    <thead className="bg-slate-50 text-[10px] font-black uppercase text-slate-400">
+                                        <tr>
+                                            <th className="px-4 py-3">Modelo</th>
+                                            <th className="px-4 py-3">Total Envio</th>
+                                            <th className="px-4 py-3 text-right">Ações</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-slate-50">
+                                        {maloteData
+                                            .filter(item => (maloteCategory === 'TODAS' || item.category === maloteCategory) && item.modelo.toLowerCase().includes(maloteSearch.toLowerCase()))
+                                            .map((item, idx) => {
+                                                const totalEnvio = item.lojas?.reduce((acc, l) => acc + (l.sugestaoEnvio || 0), 0) || 0;
+                                                return (
+                                                    <tr key={idx} className="hover:bg-slate-50/50 transition-colors">
+                                                        <td className="px-4 py-3 text-xs font-bold text-slate-700 uppercase">{item.modelo}</td>
+                                                        <td className="px-4 py-3">
+                                                            <span className="bg-indigo-50 text-indigo-600 px-2 py-1 rounded-md text-[10px] font-black">
+                                                                {totalEnvio} un
+                                                            </span>
+                                                        </td>
+                                                        <td className="px-4 py-3 text-right">
+                                                            <button className="text-slate-400 hover:text-indigo-600 transition-colors">
+                                                                <ChevronRight size={16} />
+                                                            </button>
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            })
+                                        }
+                                    </tbody>
+                                </table> {/* Fechada tag table */}
+                            </div>
+                        ) : (
+                            
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                             {maloteData
                                 .filter(item => (maloteCategory === 'TODAS' || item.category === maloteCategory) && item.modelo.toLowerCase().includes(maloteSearch.toLowerCase()))
