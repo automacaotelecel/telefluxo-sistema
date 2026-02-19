@@ -7,7 +7,6 @@ import NewTaskModal from "./components/NewTaskModal";
 import Login from "./components/Login";
 import Agenda from "./components/Agenda"; 
 import ManagerDashboard from "./components/ManagerDashboard"; 
-// 🔴 CORREÇÃO 1: Importando o Dashboard NOVO (SalesDashboard) em vez do SalesModule antigo
 import SalesDashboard from "./components/SalesDashboard"; 
 import NotificationBell from "./components/NotificationBell";
 import Home from "./components/home";
@@ -16,11 +15,12 @@ import FinanceModule from "./components/FinanceModule";
 import StockModule from "./components/StockModule"; 
 import PriceTablePage from './components/PriceTablePage';
 import { EstoqueVendas } from './components/EstoqueVendas';
+import EstoqueInteligente from './components/EstoqueInteligente'; // <--- IMPORTADO AQUI
 import { 
   FileText, CheckCircle, LayoutDashboard, Users, LogOut, 
   Calendar, BarChart3, ChevronDown, ChevronRight, Circle, Plus,
   TrendingUp, Home as HomeIcon, MessageSquare, DollarSign,
-  Package, Menu, X, Tag // <--- ADICIONE O "Tag" AQUI
+  Package, Menu, X, Tag
 } from 'lucide-react';
 
 
@@ -197,7 +197,7 @@ function App() {
               {/* O PAI (Botão Principal com Seta) */}
               <div 
                 onClick={() => setExpanded({...expanded, stock: !expanded.stock})} 
-                className={`p-3 rounded-xl cursor-pointer flex items-center justify-between transition-all ${currentView === 'stock' || currentView === 'estoque_vendas' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:bg-slate-800'}`}
+                className={`p-3 rounded-xl cursor-pointer flex items-center justify-between transition-all ${['stock', 'estoque_vendas', 'estoque_inteligente'].includes(currentView) ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:bg-slate-800'}`}
               >
                 <div className="flex gap-3 items-center font-bold text-sm">
                   <Package size={18} /> Controle de Estoque
@@ -223,6 +223,14 @@ function App() {
                     className={`pl-12 pr-4 py-2 cursor-pointer flex items-center gap-2 text-[11px] font-black uppercase tracking-tighter transition-all hover:text-white ${currentView === 'estoque_vendas' ? 'text-orange-500' : 'text-slate-500'}`}
                   >
                     <Circle size={6} fill={currentView === 'estoque_vendas' ? "currentColor" : "transparent"} /> Estoque x Vendas
+                  </div>
+
+                  {/* Item 3: Estoque Inteligente (NOVO!) */}
+                  <div 
+                    onClick={() => handleNavigate('estoque_inteligente')} 
+                    className={`pl-12 pr-4 py-2 cursor-pointer flex items-center gap-2 text-[11px] font-black uppercase tracking-tighter transition-all hover:text-white ${currentView === 'estoque_inteligente' ? 'text-orange-500' : 'text-slate-500'}`}
+                  >
+                    <Circle size={6} fill={currentView === 'estoque_inteligente' ? "currentColor" : "transparent"} /> Estoque Inteligente
                   </div>
 
                 </div>
@@ -316,9 +324,10 @@ function App() {
                 <ManagerDashboard currentUser={user} />
             ) : currentView === 'sales_dash' ? (
                    <SalesDashboard />
-                   // --- NOVA CONDIÇÃO AQUI ---
             ) : currentView === 'estoque_vendas' ? (
                 <EstoqueVendas />
+            ) : currentView === 'estoque_inteligente' ? ( // --- NOVA CONDIÇÃO ADICIONADA ---
+                <EstoqueInteligente />
             ) : currentView === 'price_table' ? (
                 <PriceTablePage />
             ) : currentView === 'team' ? (
