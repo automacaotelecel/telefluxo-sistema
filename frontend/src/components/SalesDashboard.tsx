@@ -4,7 +4,7 @@ import {
 } from 'recharts';
 import { 
   DollarSign, TrendingUp, Trophy, LayoutGrid, Users, Calendar, Store, 
-  AlertCircle, ChevronDown, CheckSquare, Square, Filter, Footprints, MousePointerClick, ArrowRightLeft
+  AlertCircle, ChevronDown, CheckSquare, Square, Filter, Footprints, MousePointerClick, ArrowRightLeft, Layers
 } from 'lucide-react';
 
 const STORE_MAP: Record<string, string> = {
@@ -52,7 +52,6 @@ export default function SalesDashboard() {
   const [rawData, setRawData] = useState<any[]>([]);
   const [flowRawData, setFlowRawData] = useState<any[]>([]);
   const [stockRawData, setStockRawData] = useState<any[]>([]);
-  // NOVO: Estado para armazenar os KPIs (Tendência e Seguros)
   const [kpiData, setKpiData] = useState<any[]>([]); 
   
   const [summary, setSummary] = useState<any>({ total_vendas: 0, total_pecas: 0, ticket_medio: 0 });
@@ -72,6 +71,9 @@ export default function SalesDashboard() {
   const [selectedStores, setSelectedStores] = useState<string[]>([]);
   const [isStoreMenuOpen, setIsStoreMenuOpen] = useState(false);
   const storeMenuRef = useRef<HTMLDivElement>(null);
+
+  // NOVO: Estado para a Categoria
+  const [categoryFilter, setCategoryFilter] = useState('TODAS');
 
   const [activeTab, setActiveTab] = useState('visao_geral');
 
@@ -106,14 +108,12 @@ export default function SalesDashboard() {
     if (!userId) { setErrorMsg("Usuário não identificado."); setLoading(false); return; }
 
     try {
-        // 1. Vendas
         const resSales = await fetch(`${API_URL}/sales?userId=${userId}`);
         if (resSales.ok) {
             const data = await resSales.json();
             setRawData(data.sales || (Array.isArray(data) ? data : []));
         }
 
-        // 2. Fluxo (BestFlow)
         try {
             const resFlow = await fetch(`${API_URL}/api/bestflow`);
             if (resFlow.ok) {
@@ -122,7 +122,6 @@ export default function SalesDashboard() {
             }
         } catch (e) { console.warn("Erro fluxo", e); }
 
-        // 3. Estoque
         try {
             const resStock = await fetch(`${API_URL}/stock`);
             if (resStock.ok) {
@@ -131,7 +130,6 @@ export default function SalesDashboard() {
             }
         } catch(e) { console.warn("Erro estoque", e); }
 
-        // 4. NOVO: KPIs de Vendedores (Tendência, Seguros)
         try {
             const resKpi = await fetch(`${API_URL}/api/kpi-vendedores`);
             if (resKpi.ok) {
@@ -151,6 +149,27 @@ export default function SalesDashboard() {
 
   useEffect(() => { loadAllData(); }, []); 
 
+  // --- MATEMÁTICA DE TENDÊNCIA CORRIGIDA ---
+  // Calcula quantos dias se passaram e quantos dias tem no mês para fazer a projeção correta
+  const { diasPassados, diasNoMes } = useMemo(() => {
+      const start = new Date(startDate);
+      const end = new Date(endDate);
+      // Ajuste de fuso horário para não dar erro de dia
+      start.setMinutes(start.getMinutes() + start.getTimezoneOffset());
+      end.setMinutes(end.getMinutes() + end.getTimezoneOffset());
+      
+      const passados = Math.max(1, Math.ceil((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1);
+      const noMes = new Date(end.getFullYear(), end.getMonth() + 1, 0).getDate();
+      
+      return { diasPassados: passados, diasNoMes: noMes };
+  }, [startDate, endDate]);
+
+  // Lista dinâmica de Categorias do BD
+  const uniqueCategories = useMemo(() => {
+      const cats = new Set(rawData.map(r => (r.categoria || r.grupo || 'OUTROS').toUpperCase()));
+      return Array.from(cats).sort();
+  }, [rawData]);
+
   const filteredData = useMemo(() => {
       return rawData.filter(sale => {
           const dataVenda = sale.data_emissao || "";
@@ -169,9 +188,16 @@ export default function SalesDashboard() {
               const nomeLoja = getStoreName(rawLoja);
               if (!selectedStores.includes(nomeLoja)) return false;
           }
+
+          // NOVO: Filtro de Categoria
+          if (categoryFilter !== 'TODAS') {
+              const cat = (sale.categoria || sale.grupo || 'OUTROS').toUpperCase();
+              if (cat !== categoryFilter) return false;
+          }
+
           return true;
       });
-  }, [rawData, startDate, endDate, selectedStores]);
+  }, [rawData, startDate, endDate, selectedStores, categoryFilter]);
 
   const groupedFlowData = useMemo(() => {
       const filtered = flowRawData.filter(item => {
@@ -245,17 +271,19 @@ export default function SalesDashboard() {
 
       const sortedRanking = Array.from(mapRanking.values())
         .map((v: any) => {
-            // PROCURA NOS KPIs (kpiData) E NÃO EM VENDAS (rawData)
             const kpi = kpiData.find(k => 
                 (k.vendedor || "").trim().toUpperCase() === v.nome.trim().toUpperCase()
             );
 
             const totalVendedor = v.total || 0;
             const anterior = Number(kpi?.fat_anterior || 0);
+            
+            // NOVO CÁLCULO DE TENDÊNCIA INDIVIDUAL
+            const tendenciaMatematica = (totalVendedor / diasPassados) * diasNoMes;
 
             return {
                 ...v,
-                tendencia: Number(kpi?.tendencia || 0),
+                tendencia: Math.max(tendenciaMatematica, totalVendedor), // Garante que nunca seja menor que o atual
                 seguros: Number(kpi?.seguros || 0),
                 pct_seguro: Number(kpi?.pct_seguro || 0),
                 fat_anterior: anterior,
@@ -281,7 +309,7 @@ export default function SalesDashboard() {
       }).sort((a:any, b:any) => b.qtd - a.qtd);
       setProductRanking(sortedProd);
 
-  }, [filteredData, stockRawData, kpiData]); // ADICIONADO kpiData NAS DEPENDÊNCIAS
+  }, [filteredData, stockRawData, kpiData, diasPassados, diasNoMes]); 
 
   const uniqueStores = useMemo(() => {
       const stores = new Set(rawData.map(r => getStoreName(r.cnpj_empresa || r.loja)).filter(Boolean));
@@ -301,9 +329,12 @@ export default function SalesDashboard() {
           .sort((a, b) => b.total - a.total);
   }, [filteredData]);
 
+  // NOVO CÁLCULO GERAL DE TENDÊNCIA
   const totalTendencia = useMemo(() => {
-    return ranking.reduce((acc, curr) => acc + Number(curr.tendencia || 0), 0);
-  }, [ranking]);
+      if (diasPassados === 0) return summary.total_vendas;
+      const projecao = (summary.total_vendas / diasPassados) * diasNoMes;
+      return Math.max(projecao, summary.total_vendas);
+  }, [summary.total_vendas, diasPassados, diasNoMes]);
 
   const toggleStore = (store: string) => {
     if (selectedStores.includes(store)) {
@@ -317,6 +348,7 @@ export default function SalesDashboard() {
       if (data && data.nome) toggleStore(data.nome);
   };
 
+  // Progresso do mês
   const perfPercent = totalTendencia > 0 ? (summary.total_vendas / totalTendencia) * 100 : 0;
 
   return (
@@ -334,12 +366,27 @@ export default function SalesDashboard() {
         <div>
             <div className="flex items-center gap-2 mb-1">
                 <div className="p-2 bg-[#1428A0] rounded text-white"><LayoutGrid size={18} /></div>
-                <h1 className="text-lg font-black uppercase tracking-tight text-[#1428A0]">Performance Comercial</h1>
+                <h1 className="text-lg font-black uppercase tracking-tight text-[#1428A0]">controle de vendas</h1>
             </div>
-            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-10">Samsung • BI Automático • v3.6</p>
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-10">Samsung
+            </p>
         </div>
 
         <div className="flex flex-wrap gap-3 items-center w-full xl:w-auto">
+            
+            {/* NOVO: FILTRO DE CATEGORIA */}
+            <div className="flex items-center bg-white border border-slate-200 px-3 py-2 rounded-lg gap-2 shadow-sm">
+                <Layers size={14} className="text-blue-600"/>
+                <select 
+                    value={categoryFilter} 
+                    onChange={e => setCategoryFilter(e.target.value)} 
+                    className="bg-transparent text-xs font-bold text-slate-600 uppercase outline-none cursor-pointer w-full md:w-auto"
+                >
+                    <option value="TODAS">Todas as Categorias</option>
+                    {uniqueCategories.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+            </div>
+
             <div className="relative" ref={storeMenuRef}>
                 <button 
                     onClick={() => setIsStoreMenuOpen(!isStoreMenuOpen)}
@@ -390,10 +437,10 @@ export default function SalesDashboard() {
       </div>
 
       <div className="flex gap-2 mb-6">
-          <button onClick={() => setActiveTab('visao_geral')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all ${activeTab === 'visao_geral' ? 'bg-[#1428A0] text-white shadow-md' : 'bg-white text-slate-500 hover:bg-slate-50'}`}>Visão Geral</button>
+          <button onClick={() => setActiveTab('visao_geral')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all ${activeTab === 'visao_geral' ? 'bg-[#1428A0] text-white shadow-md' : 'bg-white text-slate-500 hover:bg-slate-50'}`}>Visão Mensal</button>
           <button onClick={() => setActiveTab('vendedores')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all ${activeTab === 'vendedores' ? 'bg-[#1428A0] text-white shadow-md' : 'bg-white text-slate-500 hover:bg-slate-50'}`}>Vendedores</button>
           <button onClick={() => setActiveTab('fluxo')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all flex items-center gap-2 ${activeTab === 'fluxo' ? 'bg-[#1428A0] text-white shadow-md' : 'bg-white text-slate-500 hover:bg-slate-50'}`}>
-             <Footprints size={14}/> Fluxo (Beta)
+             <Footprints size={14}/> Fluxo / Bestflow (Beta)
           </button>
       </div>
 
@@ -405,9 +452,9 @@ export default function SalesDashboard() {
                     <div className="text-2xl font-black text-slate-800 tracking-tight">{formatMoney(summary.total_vendas)}</div>
                 </div>
                 <div className="bg-white p-5 rounded-xl shadow-sm border-l-4 border-purple-500">
-                    <div className="flex justify-between items-start mb-2"><span className="text-[10px] font-black text-slate-400 uppercase">Tendência (Mês)</span><TrendingUp size={16} className="text-purple-500"/></div>
+                    <div className="flex justify-between items-start mb-2"><span className="text-[10px] font-black text-slate-400 uppercase">Projeção Fim do Mês</span><TrendingUp size={16} className="text-purple-500"/></div>
                     <div className="text-2xl font-black text-slate-800 tracking-tight">{formatMoney(totalTendencia)}</div>
-                    <div className="text-[9px] text-purple-600 font-bold mt-1">{perfPercent.toFixed(1)}% da Projeção</div>
+                    <div className="text-[9px] text-purple-600 font-bold mt-1">{perfPercent.toFixed(1)}% do mês percorrido</div>
                 </div>
                 <div className="bg-white p-5 rounded-xl shadow-sm border-l-4 border-slate-800">
                     <div className="flex justify-between items-start mb-2"><span className="text-[10px] font-black text-slate-400 uppercase">Peças</span><Users size={16} className="text-slate-800"/></div>
@@ -456,7 +503,7 @@ export default function SalesDashboard() {
                             <BarChart layout="vertical" data={storeRanking} margin={{ top: 5, right: 80, left: 10, bottom: 5 }} barSize={15}>
                                 <CartesianGrid strokeDasharray="3 3" horizontal={true} vertical={false} stroke="#f1f5f9"/>
                                 <XAxis type="number" hide />
-                                <YAxis dataKey="nome" type="category" width={210} tick={{fontSize: 8, fontWeight: 800, fill: '#475569'}} interval={0} />                                    
+                                <YAxis dataKey="nome" type="category" width={210} tick={{fontSize: 8, fontWeight: 800, fill: '#475569'}} interval={0} />                                     
                                 <Tooltip cursor={{fill: '#f1f5f9'}} contentStyle={{backgroundColor: '#1e293b', borderRadius: '8px', border: 'none', color: '#fff', fontSize: '12px'}} formatter={(val: number) => [formatMoney(val), 'Faturamento']} />
                                 <Bar dataKey="total" radius={[0, 4, 4, 0]} onClick={handleStoreClick} style={{ cursor: 'pointer' }}>
                                     {storeRanking.map((entry, index) => (
@@ -513,7 +560,7 @@ export default function SalesDashboard() {
                             <th className="p-3">Vendedor</th>
                             <th className="p-3">Loja</th>
                             <th className="p-3 text-right text-[#1428A0]">Faturamento</th>
-                            <th className="p-3 text-right text-purple-600">Tendência</th>
+                            <th className="p-3 text-right text-purple-600">Projeção Fim do Mês</th>
                             <th className="p-3 text-right">Mês Anterior.</th>
                             <th className="p-3 text-right">Cresc.</th>
                             <th className="p-3 text-right text-emerald-600">Seguros (R$)</th>
