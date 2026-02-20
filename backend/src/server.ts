@@ -1462,15 +1462,10 @@ app.get('/sales_anuais', async (req, res) => {
       if (!fs.existsSync(GLOBAL_DB_PATH)) return res.json({ sales: [] });
   
       const userId = String(req.query.userId || '');
-      // Usa o mesmo filtro de segurança para não deixar vendedor ver loja dos outros
       const securityFilter = await getSalesFilter(userId, 'vendas'); 
   
       const db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
       
-      // --- A MÁGICA DO BI: A QUERY INTELIGENTE ---
-      // Em vez de tentar mandar 150.000 linhas pra memória RAM, pedimos pro SQLite somar tudo
-      // e devolver apenas os totais agrupados por Mês, Loja e Família.
-      // O volume de dados cai 99%, salvando a memória do Render!
       const query = `
           SELECT 
               substr(data_emissao, 1, 7) || '-01' as data_emissao, 
@@ -1485,6 +1480,10 @@ app.get('/sales_anuais', async (req, res) => {
       `;
       
       const salesRaw = await db.all(query);
+      
+      // 👇 AQUI ESTÁ O NOSSO OLHEIRO (DEBUG) 👇
+      console.log(`📊 [DEBUG ANUAL] O Banco achou ${salesRaw.length} linhas agrupadas para o usuário ${userId}`);
+      
       await db.close();
       
       const sales = normalizeKeys(salesRaw);
