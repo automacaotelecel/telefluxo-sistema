@@ -34,7 +34,7 @@ DB_COPIA_DIR = r"C:\Users\Usuario\Desktop\TeleFluxo_Instalador\database"
 # Alterado para samsung_vendas_anuais.db para não misturar com o diário
 DB_COPIA_PATH = os.path.join(DB_COPIA_DIR, "samsung_vendas_anuais.db")
 
-# Coloque aqui o caminho do Excel que contém a base histórica gigante
+# CAMINHO DO EXCEL
 CAMINHO_EXCEL = r"C:\Users\Usuario\Desktop\TeleFluxo_Instalador\database\vendas_anuais.xlsm" 
 URL_BACKEND = get_backend_url()
 TIMEOUT = (10, 180)  

@@ -47,7 +47,9 @@ export default function ComparativoAnual() {
   const storeMenuRef = useRef<HTMLDivElement>(null);
   const [categoryFilter, setCategoryFilter] = useState('TODAS');
 
-  const API_URL = 'http://localhost:3000'; // Ajuste para produção quando for subir
+  const API_URL = window.location.hostname === 'localhost' 
+    ? 'http://localhost:3000' 
+    : 'https://telefluxo-aplicacao.onrender.com';
 
   useEffect(() => {
     function handleClickOutside(event: any) {
