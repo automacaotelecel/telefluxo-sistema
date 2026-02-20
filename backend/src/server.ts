@@ -1455,18 +1455,35 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // ============================================================
-// ⚠️ [NOVO] ROTA DO HISTÓRICO ANUAL (Para o Comparativo Front-end)
+// ⚠️ [NOVO] ROTA DO HISTÓRICO ANUAL OTIMIZADA (GROUP BY)
 // ============================================================
 app.get('/sales_anuais', async (req, res) => {
     try {
       if (!fs.existsSync(GLOBAL_DB_PATH)) return res.json({ sales: [] });
   
       const userId = String(req.query.userId || '');
-      // Usa o mesmo filtro de segurança das vendas normais
+      // Usa o mesmo filtro de segurança para não deixar vendedor ver loja dos outros
       const securityFilter = await getSalesFilter(userId, 'vendas'); 
   
       const db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
-      const query = `SELECT * FROM vendas_anuais WHERE ${securityFilter} ORDER BY data_emissao ASC`;
+      
+      // --- A MÁGICA DO BI: A QUERY INTELIGENTE ---
+      // Em vez de tentar mandar 150.000 linhas pra memória RAM, pedimos pro SQLite somar tudo
+      // e devolver apenas os totais agrupados por Mês, Loja e Família.
+      // O volume de dados cai 99%, salvando a memória do Render!
+      const query = `
+          SELECT 
+              substr(data_emissao, 1, 7) || '-01' as data_emissao, 
+              cnpj_empresa,
+              familia,
+              SUM(total_liquido) as total_liquido,
+              SUM(quantidade) as quantidade
+          FROM vendas_anuais 
+          WHERE ${securityFilter} AND data_emissao IS NOT NULL
+          GROUP BY substr(data_emissao, 1, 7), cnpj_empresa, familia
+          ORDER BY data_emissao ASC
+      `;
+      
       const salesRaw = await db.all(query);
       await db.close();
       
