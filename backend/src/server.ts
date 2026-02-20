@@ -98,7 +98,23 @@ dbInit.serialize(() => {
         )
     `);
     // ---------------------------------------------
+    // --- [NOVO] TABELAS PARA HISTÓRICO ANUAL ---
+    dbInit.run(`
+        CREATE TABLE IF NOT EXISTS vendas_anuais (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            data_emissao TEXT, nome_vendedor TEXT, descricao TEXT,
+            quantidade REAL, total_liquido REAL, cnpj_empresa TEXT,
+            familia TEXT, regiao TEXT
+        )
+    `);
 
+    dbInit.run(`
+        CREATE TABLE IF NOT EXISTS vendedores_anuais (
+            loja TEXT, vendedor TEXT, fat_atual REAL, tendencia REAL,
+            fat_anterior REAL, crescimento REAL, pa REAL, ticket REAL,
+            qtd REAL, regiao TEXT, pct_seguro REAL, seguros REAL
+        )
+    `);
     console.log("📦 Tabelas do Banco de Dados Garantidas!");
 });
 
@@ -1438,8 +1454,30 @@ app.get('/sellers-kpi', async (req, res) => {
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-// --- INICIO DO BLOCO DE SINCRONIZAÇÃO ---
-
+// ============================================================
+// ⚠️ [NOVO] ROTA DO HISTÓRICO ANUAL (Para o Comparativo Front-end)
+// ============================================================
+app.get('/sales_anuais', async (req, res) => {
+    try {
+      if (!fs.existsSync(GLOBAL_DB_PATH)) return res.json({ sales: [] });
+  
+      const userId = String(req.query.userId || '');
+      // Usa o mesmo filtro de segurança das vendas normais
+      const securityFilter = await getSalesFilter(userId, 'vendas'); 
+  
+      const db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+      const query = `SELECT * FROM vendas_anuais WHERE ${securityFilter} ORDER BY data_emissao ASC`;
+      const salesRaw = await db.all(query);
+      await db.close();
+      
+      const sales = normalizeKeys(salesRaw);
+      res.json({ sales });
+    } catch (error: any) {
+      console.error("Erro /sales_anuais:", error);
+      res.status(500).json({ error: "Erro ao buscar histórico anual" });
+    }
+});
+//Rota de sincronização
 // Rota 1: Receber Vendas Gerais (COM SUPORTE A LOTES)
 app.post('/api/sync/vendas', async (req, res) => {
   const dados = req.body;
@@ -1563,6 +1601,93 @@ app.post('/api/sync/vendedores', async (req, res) => {
   }
 });
 
+// ============================================================
+// ⚠️ [NOVO] ROTAS DE SYNC ANUAL (Para o Python enviar os lotes)
+// ============================================================
+
+// 1. Recebe Lotes de Vendas Anuais
+app.post('/api/sync/vendas_anuais', async (req, res) => {
+    const dados = req.body;
+    const shouldReset = req.query.reset !== 'false'; 
+  
+    if (!dados || !Array.isArray(dados)) return res.status(400).json({ error: "Formato inválido." });
+  
+    const fixDate = (d: string) => {
+        if (!d) return null;
+        if (d.includes('/')) {
+            const parts = d.split('/'); 
+            if (parts.length === 3) return `${parts[2]}-${parts[1]}-${parts[0]}`;
+        }
+        return d; 
+    };
+  
+    try {
+      await enqueueWrite(() => new Promise<void>((resolve, reject) => {
+        const db = new sqlite3.Database(GLOBAL_DB_PATH);
+        db.configure("busyTimeout", 15000);
+        db.serialize(() => {
+          db.run("PRAGMA journal_mode=WAL;");
+          db.run("BEGIN IMMEDIATE TRANSACTION");
+  
+          const preQuery = shouldReset ? "DELETE FROM vendas_anuais" : "SELECT 1"; 
+          
+          db.run(preQuery, (err) => {
+            if (err) { db.run("ROLLBACK"); return reject(err); }
+            
+            const stmt = db.prepare(`INSERT INTO vendas_anuais (data_emissao, nome_vendedor, descricao, quantidade, total_liquido, cnpj_empresa, familia, regiao) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
+            for (const item of dados) {
+              stmt.run(fixDate(item.data_emissao), item.nome_vendedor, item.descricao, item.quantidade, item.total_liquido, item.cnpj_empresa, item.familia, item.regiao);
+            }
+            stmt.finalize();
+            db.run("COMMIT", (err3) => {
+                if (err3) { db.run("ROLLBACK"); return reject(err3); }
+                db.close(); resolve();
+            });
+          });
+        });
+      }));
+      res.json({ message: `Lote de Vendas Anuais Sincronizado (Reset: ${shouldReset})` });
+    } catch (e: any) { res.status(500).json({ error: "Erro banco anual" }); }
+});
+
+// 2. Recebe Lotes de KPI Anuais (Vendedores)
+app.post('/api/sync/vendedores_anuais', async (req, res) => {
+    const dados = req.body;
+    if (!dados || !Array.isArray(dados)) return res.status(400).json({ error: "Dados inválidos" });
+    try {
+      await enqueueWrite(() => new Promise<void>((resolve, reject) => {
+        const db = new sqlite3.Database(GLOBAL_DB_PATH);
+        db.configure("busyTimeout", 15000);
+        db.serialize(() => {
+          db.run("PRAGMA journal_mode=WAL;");
+          db.run("BEGIN IMMEDIATE TRANSACTION");
+          db.run("DELETE FROM vendedores_anuais", (err) => {
+            if (err) { db.run("ROLLBACK", () => db.close(() => reject(err))); return; }
+            const stmt = db.prepare(`
+              INSERT INTO vendedores_anuais (
+                loja, vendedor, fat_atual, tendencia, fat_anterior,
+                crescimento, pa, ticket, qtd, regiao, pct_seguro, seguros
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `);
+            for (const item of dados) {
+              stmt.run(
+                item.loja, item.vendedor, item.fat_atual, item.tendencia, item.fat_anterior,
+                item.crescimento, item.pa, item.ticket, item.qtd, item.regiao, item.pct_seguro, item.seguros
+              );
+            }
+            stmt.finalize((err2) => {
+              if (err2) { db.run("ROLLBACK", () => db.close(() => reject(err2))); return; }
+              db.run("COMMIT", (err3) => {
+                if (err3) { db.run("ROLLBACK", () => db.close(() => reject(err3))); return; }
+                db.close((err4) => { if (err4) return reject(err4); resolve(); });
+              });
+            });
+          });
+        });
+      }));
+      res.json({ message: "KPIs Anuais atualizados com sucesso!" });
+    } catch (e: any) { res.status(500).json({ error: "Erro banco KPI Anual" }); }
+});
 // --- FIM DO BLOCO DE SINCRONIZAÇÃO ---
 
 // ==========================================
