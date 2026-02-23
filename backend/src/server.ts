@@ -1455,14 +1455,20 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // ============================================================
-// ⚠️ [NOVO] ROTA DO HISTÓRICO ANUAL OTIMIZADA (GROUP BY)
+// ⚠️ ROTA DO HISTÓRICO ANUAL OTIMIZADA (COM LOGS DE DETETIVE)
 // ============================================================
 app.get('/sales_anuais', async (req, res) => {
     try {
-      if (!fs.existsSync(GLOBAL_DB_PATH)) return res.json({ sales: [] });
+      console.log(`\n🔎 [DEBUG ROTA ANUAL] Requisição recebida para userId: ${req.query.userId}`);
+      
+      if (!fs.existsSync(GLOBAL_DB_PATH)) {
+         console.log("❌ Banco de dados não encontrado no servidor.");
+         return res.json({ sales: [] });
+      }
   
       const userId = String(req.query.userId || '');
       const securityFilter = await getSalesFilter(userId, 'vendas'); 
+      console.log(`🛡️ Filtro de Segurança Aplicado: ${securityFilter}`);
   
       const db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
       
@@ -1480,19 +1486,45 @@ app.get('/sales_anuais', async (req, res) => {
       `;
       
       const salesRaw = await db.all(query);
-      
-      // 👇 AQUI ESTÁ O NOSSO OLHEIRO (DEBUG) 👇
-      console.log(`📊 [DEBUG ANUAL] O Banco achou ${salesRaw.length} linhas agrupadas para o usuário ${userId}`);
-      
+      console.log(`📊 O Banco encontrou ${salesRaw.length} linhas agregadas!`);
       await db.close();
       
       const sales = normalizeKeys(salesRaw);
       res.json({ sales });
     } catch (error: any) {
-      console.error("Erro /sales_anuais:", error);
+      console.error("❌ Erro /sales_anuais:", error);
       res.status(500).json({ error: "Erro ao buscar histórico anual" });
     }
 });
+
+// --- ROTA DE RAIO-X (DEBUG MELHORADO) ---
+app.get('/api/debug', async (req, res) => {
+    try {
+        const db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+        
+        const totalVendas = await db.get("SELECT count(*) as total FROM vendas");
+        const totalKPI = await db.get("SELECT count(*) as total FROM vendedores_kpi");
+        
+        // NOVO: Conta a tabela anual
+        let totalAnual: any = { total: 0 };
+        try { 
+            totalAnual = (await db.get("SELECT count(*) as total FROM vendas_anuais")) || { total: 0 }; 
+        } catch(e) {}
+        
+        await db.close();
+
+        res.json({
+            status: "Online",
+            banco_vendas_existe: fs.existsSync(GLOBAL_DB_PATH),
+            total_linhas_vendas: totalVendas?.total || 0,
+            total_linhas_kpi: totalKPI?.total || 0,
+            total_linhas_anuais: totalAnual?.total || 0
+        });
+    } catch (e: any) {
+        res.json({ erro: e.message });
+    }
+});
+
 //Rota de sincronização
 // Rota 1: Receber Vendas Gerais (COM SUPORTE A LOTES)
 app.post('/api/sync/vendas', async (req, res) => {
