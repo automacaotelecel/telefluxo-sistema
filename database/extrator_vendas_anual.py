@@ -116,6 +116,8 @@ def enviar_dados_para_api(endpoint: str, dados: List[Dict[str, Any]]) -> bool:
 
     dados = limpar_valores_json(dados)
     
+    # ⚠️ EQUILÍBRIO PERFEITO: 500 itens por pacote.
+    # Vai dar uns 300 lotes. Rápido, mas sem ser pesado demais.
     BATCH_SIZE = 100
     total_lotes = (len(dados) // BATCH_SIZE) + 1
     print(f"📡 Preparando envio de {len(dados)} registros em {total_lotes} lotes para {endpoint}...")
@@ -134,18 +136,35 @@ def enviar_dados_para_api(endpoint: str, dados: List[Dict[str, Any]]) -> bool:
         for attempt in range(1, MAX_RETRIES + 1):
             try:
                 response = requests.post(url_lote, json=lote, headers=headers, timeout=TIMEOUT)
-                if 200 <= response.status_code < 300: break 
-                if response.status_code == 413: return False
                 
+                # SUCESSO
+                if 200 <= response.status_code < 300: 
+                    time.sleep(0.5) # Dá meio segundo de respiro para o servidor
+                    break 
+                
+                # PACOTE MUITO GRANDE
+                if response.status_code == 413: 
+                    print(f"❌ ERRO 413: O pacote do Lote {lote_num} está muito pesado pro servidor.")
+                    return False
+                
+                # SERVIDOR OCUPADO
                 if response.status_code in RETRY_STATUS or "SQLITE_BUSY" in response.text:
+                    print(f"⚠️ Servidor ocupado (Tentativa {attempt}). Aguardando para tentar de novo...")
                     wait_time = BASE_WAIT_SECONDS * attempt
                     time.sleep(wait_time)
                     continue
+                
+                # QUALQUER OUTRO ERRO (Agora ele vai imprimir na tela!)
+                print(f"❌ ERRO FATAL no Lote {lote_num}: Código {response.status_code} -> {response.text}")
                 return False 
+
             except Exception as e:
+                print(f"⚠️ Falha de Conexão no Lote {lote_num} (Tentativa {attempt}): {e}")
                 time.sleep(BASE_WAIT_SECONDS * attempt)
         else:
+            print(f"❌ Desistindo do Lote {lote_num} após {MAX_RETRIES} tentativas.")
             return False
+            
     return True
 
 # ============================================================

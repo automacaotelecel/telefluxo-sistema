@@ -71,6 +71,10 @@ export default function ComparativoAnual() {
         const resAnnual = await fetch(`${API_URL}/sales_anuais?userId=${userId}`);
         if (resAnnual.ok) {
             const dataAnnual = await resAnnual.json();
+            
+            // LOG DE DIAGNÓSTICO (Não apague)
+            console.log("Recebido do Back-end (Exemplo da primeira linha):", dataAnnual.sales[0]); 
+            
             setAnnualRawData(dataAnnual.sales || (Array.isArray(dataAnnual) ? dataAnnual : []));
             setErrorMsg('');
         } else {
@@ -100,20 +104,9 @@ export default function ComparativoAnual() {
     else setSelectedStores([...selectedStores, store]);
   };
 
-  // --- MOTOR DE COMPARAÇÃO ---
+  // --- MOTOR DE COMPARAÇÃO BLINDADO ---
   const annualComparison = useMemo(() => {
-      const validSales = annualRawData.filter(sale => {
-          if (selectedStores.length > 0) {
-              const storeName = getStoreName(sale.cnpj_empresa || sale.loja);
-              if (!selectedStores.includes(storeName)) return false;
-          }
-          if (categoryFilter !== 'TODAS') {
-              const cat = (sale.categoria || sale.grupo || sale.familia || 'OUTROS').toUpperCase();
-              if (cat !== categoryFilter) return false;
-          }
-          return true;
-      });
-
+      
       const mesesNomes = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
       const monthlyData: Record<string, any> = {};
       
@@ -124,33 +117,63 @@ export default function ComparativoAnual() {
 
       const yearsSet = new Set<string>();
 
-      validSales.forEach(sale => {
-          const dataVenda = sale.data_emissao || "";
-          let ano = "", mes = "";
-          
-          if (dataVenda.includes('-')) {
-              [ano, mes] = dataVenda.substring(0, 7).split('-'); 
-          } else if (dataVenda.includes('/')) {
-              const parts = dataVenda.split('/');
-              if(parts.length === 3) { ano = parts[2]; mes = parts[1]; }
+      annualRawData.forEach(sale => {
+          // 1. APLICA OS FILTROS AQUI DENTRO PARA EVITAR ERROS
+          if (selectedStores.length > 0) {
+              const storeName = getStoreName(sale.cnpj_empresa || sale.loja);
+              if (!selectedStores.includes(storeName)) return; // Pula se não for da loja selecionada
+          }
+          if (categoryFilter !== 'TODAS') {
+              const cat = (sale.categoria || sale.grupo || sale.familia || 'OUTROS').toUpperCase();
+              if (cat !== categoryFilter) return; // Pula se não for da categoria selecionada
           }
 
+          // 2. EXTRAÇÃO DA DATA TOTALMENTE BLINDADA
+          let rawDate = String(sale.data_emissao || "").trim();
+          let ano = "";
+          let mes = "";
+
+          // Se vier "2024-02-01" ou "2024-02"
+          if (rawDate.includes('-')) {
+              const partes = rawDate.split('-');
+              ano = partes[0];
+              mes = partes[1];
+          } 
+          // Se vier "01/02/2024"
+          else if (rawDate.includes('/')) {
+              const partes = rawDate.split('/');
+              if (partes.length === 3) {
+                  ano = partes[2];
+                  mes = partes[1];
+              }
+          }
+
+          // 3. ATRIBUIÇÃO DOS VALORES
           if (ano && mes && monthlyData[mes]) {
-              if(Number(ano) > 2020) {
+              // Verifica se o ano é válido (maior que 2015)
+              if (Number(ano) >= 2015) {
                   yearsSet.add(ano);
-                  if (!monthlyData[mes][ano]) monthlyData[mes][ano] = 0;
-                  monthlyData[mes][ano] += Number(sale.total_liquido || 0);
+                  
+                  if (!monthlyData[mes][ano]) {
+                      monthlyData[mes][ano] = 0;
+                  }
+                  
+                  // Força a conversão para Float, pois o SQLite pode mandar como String
+                  monthlyData[mes][ano] += parseFloat(sale.total_liquido) || 0;
               }
           }
       });
 
       const years = Array.from(yearsSet).sort();
+      
+      // Define os anos atuais e passados para o gráfico
       const currentYear = years.length > 0 ? years[years.length - 1] : new Date().getFullYear().toString();
       const previousYear = years.length > 1 ? years[years.length - 2] : (Number(currentYear) - 1).toString();
 
       let totalCurrent = 0;
       let totalPrev = 0;
       
+      // 4. CONSTRÓI O ARRAY DO GRÁFICO
       const chartData = Object.values(monthlyData).map(d => {
           const valCurrent = d[currentYear] || 0;
           const valPrev = d[previousYear] || 0;
