@@ -17,6 +17,7 @@ import PriceTablePage from './components/PriceTablePage';
 import { EstoqueVendas } from './components/EstoqueVendas';
 import EstoqueInteligente from './components/EstoqueInteligente';
 import ComparativoAnual from './components/ComparativoAnual';
+import AuditoriaLojas from './components/AuditoriaLojas';
 import { 
   FileText, CheckCircle, LayoutDashboard, Users, LogOut, 
   Calendar, BarChart3, ChevronDown, ChevronRight, Circle, Plus,
@@ -197,7 +198,7 @@ function App() {
             <div>
               <div 
                 onClick={() => setExpanded({...expanded, stock: !expanded.stock})} 
-                className={`p-3 rounded-xl cursor-pointer flex items-center justify-between transition-all ${['stock', 'estoque_vendas', 'estoque_inteligente'].includes(currentView) ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:bg-slate-800'}`}
+                className={`p-3 rounded-xl cursor-pointer flex items-center justify-between transition-all ${['stock', 'estoque_vendas', 'estoque_inteligente', 'auditoria_lojas'].includes(currentView) ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:bg-slate-800'}`}
               >
                 <div className="flex gap-3 items-center font-bold text-sm">
                   <Package size={18} /> Controle de Estoque
@@ -227,8 +228,16 @@ function App() {
                   >
                     <Circle size={6} fill={currentView === 'estoque_inteligente' ? "currentColor" : "transparent"} /> Estoque Inteligente
                   </div>
+
+                  <div 
+                    onClick={() => handleNavigate('auditoria_lojas')} 
+                    className={`pl-12 pr-4 py-2 cursor-pointer flex items-center gap-2 text-[11px] font-black uppercase tracking-tighter transition-all hover:text-white ${currentView === 'auditoria_lojas' ? 'text-orange-500' : 'text-slate-500'}`}
+                  >
+                    <Circle size={6} fill={currentView === 'auditoria_lojas' ? "currentColor" : "transparent"} /> Auditoria Lojas
+                  </div>
                 </div>
               )}
+              
             </div>
           )}
 
@@ -349,6 +358,8 @@ function App() {
                 <EstoqueVendas />
             ) : currentView === 'estoque_inteligente' ? ( 
                 <EstoqueInteligente />
+            ) : currentView === 'auditoria_lojas' ? ( 
+                <AuditoriaLojas />
             ) : currentView === 'price_table' ? (
                 <PriceTablePage />
             ) : currentView === 'team' ? (

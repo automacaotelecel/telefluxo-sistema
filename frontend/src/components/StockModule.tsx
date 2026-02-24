@@ -352,18 +352,87 @@ export default function StockModule() {
       return Array.from(regs).sort();
   }, [purchaseData]);
 
+// --- EXPORTADOR INTELIGENTE (DOWNLOAD SELETIVO) ---
   const handleExport = () => {
-    const dataToExport = expandedStore ? currentStoreProducts : filteredData;
-    const headers = ["Loja", "Região", "Código", "Produto", "Categoria", "Qtd Estoque", "Qtd Vendida", "Custo Unit", "Total"];
-    const csvRows = dataToExport.map(item => {
-        const sold = getProductSales(item.storeName, item.description);
-        return [`"${item.storeName}"`, `"${STORE_REGIONS[item.storeName]}"`, `"${item.productCode}"`, `"${item.description}"`, `"${item.category}"`, String(item.quantity).replace('.',','), String(sold).replace('.',','), Number(item.costPrice).toFixed(2).replace('.',','), (item.quantity * item.costPrice).toFixed(2).replace('.',',')].join(';');
-    });
+    let headers: string[] = [];
+    let csvRows: string[] = [];
+    let fileName = "Relatorio.csv";
+
+    // 1. SE ESTIVER NA ABA DE ESTOQUE
+    if (moduleMode === 'stock') {
+        const dataToExport = expandedStore ? currentStoreProducts : filteredData;
+        headers = ["Loja", "Região", "Código", "Produto", "Categoria", "Qtd Estoque", "Qtd Vendida", "Custo Unit", "Total"];
+        csvRows = dataToExport.map(item => {
+            const sold = getProductSales(item.storeName, item.description);
+            return [`"${item.storeName}"`, `"${STORE_REGIONS[item.storeName] || 'OUTROS'}"`, `"${item.productCode}"`, `"${item.description}"`, `"${item.category || 'GERAL'}"`, String(item.quantity).replace('.',','), String(sold).replace('.',','), Number(item.costPrice).toFixed(2).replace('.',','), (item.quantity * item.costPrice).toFixed(2).replace('.',',')].join(';');
+        });
+        fileName = expandedStore ? `Estoque_${expandedStore}.csv` : `Estoque_Geral.csv`;
+    } 
+    
+    // 2. SE ESTIVER NA ABA DE MALOTE
+    else if (moduleMode === 'malote') {
+        headers = ["Produto", "Categoria", "Destino", "Estoque Atual (Loja)", "Giro (Loja)", "Qtd a Enviar (Malote)"];
+        
+        const filteredMalote = calculatedMalote.filter(item => 
+            (maloteCategory === 'TODAS' || item.category === maloteCategory) && 
+            item.modelo.toLowerCase().includes(maloteSearch.toLowerCase())
+        );
+
+        filteredMalote.forEach((prod: any) => {
+            prod.lojas.forEach((loja: any) => {
+                if (loja.sugestaoEnvio > 0) {
+                    csvRows.push([`"${prod.modelo}"`, `"${prod.category}"`, `"${loja.loja}"`, loja.estoqueAtual, Math.round(loja.vendaPeriodo), loja.sugestaoEnvio].join(';'));
+                }
+            });
+        });
+        fileName = `Malote_CD_Taguatinga.csv`;
+    }
+
+    // 3. SE ESTIVER NA ABA DE REMANEJAMENTO
+    else if (moduleMode === 'redistribution') {
+        headers = ["Tipo da Sugestão", "Produto", "Região", "Origem (Tirar de)", "Destino (Mandar para)", "Quantidade", "Motivo / Insight"];
+        
+        redistributionSuggestions.moves.forEach((move: any) => {
+            csvRows.push([`"Transferência"`, `"${move.product}"`, `"${move.region}"`, `"${move.from}"`, `"${move.to}"`, move.qty, `"${move.reason}"`].join(';'));
+        });
+
+        redistributionSuggestions.buys.forEach((buy: any) => {
+            csvRows.push([`"Sugestão Compra"`, `"${buy.product}"`, `"${buy.region}"`, `"-"`, `"-"`, buy.gap, `"${buy.insight}"`].join(';'));
+        });
+        fileName = `Remanejamento_Oportunidades.csv`;
+    }
+
+    // 4. SE ESTIVER NA ABA DE COMPRAS
+    else if (moduleMode === 'purchases') {
+        headers = ["Produto", "Região", "Total a Receber", "Previsão / Detalhes"];
+        
+        Object.entries(groupedPurchases).forEach(([region, items]) => {
+            items.forEach((item: any) => {
+                let prevInfo = "";
+                try {
+                    const prev = JSON.parse(item.previsao_info || '{}');
+                    prevInfo = Object.entries(prev).map(([week, qty]) => `${week}: ${qtd}`).join(' | ');
+                } catch(e) {}
+                
+                csvRows.push([`"${item.descricao}"`, `"${region}"`, item.qtd_total, `"${prevInfo}"`].join(';'));
+            });
+        });
+        fileName = `Pedidos_Compras_Abertos.csv`;
+    }
+
+    // Gera e faz o download do arquivo CSV
+    if (csvRows.length === 0) {
+        alert("Não há dados para exportar com os filtros atuais.");
+        return;
+    }
+
     const csvContent = "\uFEFF" + [headers.join(';'), ...csvRows].join('\n'); 
     const link = document.createElement('a');
     link.href = URL.createObjectURL(new Blob([csvContent], { type: 'text/csv;charset=utf-8;' }));
-    link.setAttribute('download', `Estoque.csv`);
-    document.body.appendChild(link); link.click(); document.body.removeChild(link);
+    link.setAttribute('download', fileName);
+    document.body.appendChild(link); 
+    link.click(); 
+    document.body.removeChild(link);
   };
 
   return (

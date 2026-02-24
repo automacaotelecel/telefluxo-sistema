@@ -116,9 +116,9 @@ def enviar_dados_para_api(endpoint: str, dados: List[Dict[str, Any]]) -> bool:
 
     dados = limpar_valores_json(dados)
     
-    # ⚠️ EQUILÍBRIO PERFEITO: 500 itens por pacote.
-    # Vai dar uns 300 lotes. Rápido, mas sem ser pesado demais.
-    BATCH_SIZE = 100
+    # ⚠️ EQUILÍBRIO DE OURO: 250 itens. 
+    # Reduz para uns 600 lotes (não afoga o servidor e passa na porta do Node)
+    BATCH_SIZE = 250
     total_lotes = (len(dados) // BATCH_SIZE) + 1
     print(f"📡 Preparando envio de {len(dados)} registros em {total_lotes} lotes para {endpoint}...")
 
@@ -139,7 +139,8 @@ def enviar_dados_para_api(endpoint: str, dados: List[Dict[str, Any]]) -> bool:
                 
                 # SUCESSO
                 if 200 <= response.status_code < 300: 
-                    time.sleep(0.5) # Dá meio segundo de respiro para o servidor
+                    # O SEGREDO ESTÁ AQUI: 1.5 segundos para o servidor "respirar" e limpar a memória RAM
+                    time.sleep(1.5) 
                     break 
                 
                 # PACOTE MUITO GRANDE
@@ -147,26 +148,23 @@ def enviar_dados_para_api(endpoint: str, dados: List[Dict[str, Any]]) -> bool:
                     print(f"❌ ERRO 413: O pacote do Lote {lote_num} está muito pesado pro servidor.")
                     return False
                 
-                # SERVIDOR OCUPADO
+                # SERVIDOR OCUPADO OU REINICIANDO (Inclui o erro 520 agora)
                 if response.status_code in RETRY_STATUS or "SQLITE_BUSY" in response.text:
-                    print(f"⚠️ Servidor ocupado (Tentativa {attempt}). Aguardando para tentar de novo...")
-                    wait_time = BASE_WAIT_SECONDS * attempt
-                    time.sleep(wait_time)
+                    print(f"⚠️ Servidor ocupado/reiniciando (Erro {response.status_code}). Pausa de 15s para ele se recduperar...")
+                    time.sleep(15) # Espera 15 segundos pro Render voltar à vida
                     continue
                 
-                # QUALQUER OUTRO ERRO (Agora ele vai imprimir na tela!)
                 print(f"❌ ERRO FATAL no Lote {lote_num}: Código {response.status_code} -> {response.text}")
                 return False 
 
             except Exception as e:
                 print(f"⚠️ Falha de Conexão no Lote {lote_num} (Tentativa {attempt}): {e}")
-                time.sleep(BASE_WAIT_SECONDS * attempt)
+                time.sleep(15) # Se a conexão cair, espera 15s e tenta de novo
         else:
             print(f"❌ Desistindo do Lote {lote_num} após {MAX_RETRIES} tentativas.")
             return False
             
     return True
-
 # ============================================================
 # ⚠️ ALTERAÇÃO 2: NOMES DAS TABELAS NO BANCO LOCAL
 # ============================================================
