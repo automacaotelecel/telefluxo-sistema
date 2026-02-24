@@ -23,9 +23,12 @@ export default function AuditoriaLojas() {
   const [auditResults, setAuditResults] = useState<any>(null);
   const [activeTab, setActiveTab] = useState<'bateu' | 'faltas' | 'sobras'>('faltas');
 
-  const API_URL = window.location.hostname === 'localhost' || window.location.hostname.includes('.')
+  // 👇 A CORREÇÃO BLINDADA ESTÁ AQUI 👇
+  const isLocal = window.location.hostname === 'localhost' || /^[0-9.]+$/.test(window.location.hostname);
+  const API_URL = isLocal 
     ? `http://${window.location.hostname}:3000` 
     : 'https://telefluxo-aplicacao.onrender.com';
+  // 👆 ================================= 👆
 
   const loadStock = async () => {
     setLoading(true);
