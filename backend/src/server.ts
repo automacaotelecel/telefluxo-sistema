@@ -1377,7 +1377,8 @@ app.post('/stock/sync', async (req, res) => {
               quantity: safeNum(item.QUANTIDADE),
               costPrice: safeNum(item.PRECO_CUSTO),
               salePrice: safeNum(item.PRECO_VENDA),
-              averageCost: safeNum(item.CUSTO_MEDIO)
+              averageCost: safeNum(item.CUSTO_MEDIO),
+              serial: String(item.SERIAL || "")
           };
       });
 

@@ -248,76 +248,26 @@ def extrair_seriais_loja(cnpj):
     return base
 
 # ===========================================
-# 4. SALVAR DIRETO NO SQLITE (dev.db)
+# 4. SALVAR NA NUVEM VIA API (PRODUÇÃO)
 # ===========================================
-def salvar_no_sqlite_direto(dataframe):
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    db_path = os.path.join(base_dir, '..', 'prisma', 'dev.db')
+def enviar_para_api(dataframe):
+    url_api = "https://telefluxo-aplicacao.onrender.com/stock/sync"
+    log(f"📡 Enviando {len(dataframe)} registros para a Produção ({url_api})...")
     
-    log(f"📍 Conectando diretamente ao banco: {db_path}")
+    # Previne erros de JSON substituindo NaN por None
+    dataframe = dataframe.where(pd.notnull(dataframe), None)
+    dados = dataframe.to_dict(orient="records")
     
+    headers = {"Content-Type": "application/json"}
     try:
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
-        
-        # ⚠️ TABELA ALTERADA PARA SUPORTAR IMEI (serial TEXT)
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS Stock (
-                id TEXT PRIMARY KEY,
-                cnpj TEXT NOT NULL,
-                storeName TEXT NOT NULL,
-                productCode TEXT NOT NULL,
-                reference TEXT,
-                description TEXT NOT NULL,
-                category TEXT,
-                quantity REAL NOT NULL,
-                costPrice REAL NOT NULL,
-                salePrice REAL,
-                averageCost REAL,
-                serial TEXT, 
-                updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        cursor.execute("DELETE FROM Stock")
-        log("🗑️ Estoque antigo limpo no banco.")
-        
-        rows_to_insert = []
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        count = 0
-        
-        for _, row in dataframe.iterrows():
-            if row.get("QUANTIDADE", 0) != 0: 
-                count += 1
-                rows_to_insert.append((
-                    str(uuid.uuid4()),                  # id
-                    str(row["CNPJ_ORIGEM"]),            # cnpj
-                    str(row["NOME_FANTASIA"]),          # storeName
-                    str(row["CODIGO_PRODUTO"]),         # productCode
-                    str(row.get("REFERENCIA", "-")),    # reference
-                    str(row.get("DESCRICAO", "S/D")),   # description
-                    str(row.get("CATEGORIA", "GERAL")), # category
-                    float(row.get("QUANTIDADE", 0)),    # quantity
-                    float(row.get("PRECO_CUSTO", 0)),   # costPrice
-                    float(row.get("PRECO_VENDA", 0)),   # salePrice
-                    float(row.get("CUSTO_MEDIO", 0)),   # averageCost
-                    str(row.get("SERIAL", "")),         # serial (IMEI Oculto/Exibido)
-                    now_str                             # updatedAt
-                ))
-        
-        cursor.executemany('''
-            INSERT INTO Stock (id, cnpj, storeName, productCode, reference, description, category, quantity, costPrice, salePrice, averageCost, serial, updatedAt)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', rows_to_insert)
-        
-        conn.commit()
-        log(f"💾 {count} itens inseridos com sucesso no arquivo dev.db!")
-        conn.close()
-        return True
-
+        response = requests.post(url_api, json=dados, headers=headers, timeout=300)
+        if 200 <= response.status_code < 300:
+            log("✅ Sucesso! Estoque e IMEIs atualizados na Produção.")
+        else:
+            log(f"❌ Erro na API (Código {response.status_code}): {response.text}")
     except Exception as e:
-        log(f"❌ ERRO CRÍTICO AO SALVAR NO SQLITE: {e}")
-        return False
+        log(f"❌ Falha de conexão com a Produção: {e}")
+    return True
 
 # ===========================================
 # ▶ EXECUÇÃO PRINCIPAL
@@ -406,8 +356,8 @@ def main():
     df_final = pd.DataFrame(linhas_expandidas)
 
     # 5. SALVAMENTO DIRETO 
-    log("💾 Gravando diretamente no Banco Unificado com Suporte a IMEI...")
-    salvar_no_sqlite_direto(df_final)
+    log("💾 Disparando dados com IMEIs para a API da Produção...")
+    enviar_para_api(df_final)
 
 if __name__ == "__main__":
     main()
