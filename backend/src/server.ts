@@ -1337,31 +1337,28 @@ app.get('/stock', async (req, res) => {
   }
 });
 
-// --- ROTA BLINDADA PARA O PYTHON ENVIAR OS DADOS ---
+// --- ROTA BLINDADA PARA O PYTHON ENVIAR OS DADOS (AGORA COM SUPORTE A LOTES) ---
 app.post('/stock/sync', async (req, res) => {
   const data = req.body; 
+  // A MÁGICA: Só apaga o banco se o Python avisar que é o primeiro lote
+  const shouldReset = req.query.reset !== 'false'; 
 
-  console.log("📦 Recebendo pacote de estoque...");
+  console.log(`📦 Recebendo lote de estoque... Resetar Banco: ${shouldReset}`);
 
   if (!Array.isArray(data)) {
-      console.error("❌ Erro: O corpo da requisição não é uma lista (Array).");
+      console.error("❌ Erro: O corpo da requisição não é uma lista.");
       return res.status(400).json({ error: "Formato inválido. Envie uma lista." });
   }
 
-  console.log(`📊 Quantidade de itens recebidos: ${data.length}`);
-  
-  // Log do primeiro item para debug (ver se os campos batem)
-  if (data.length > 0) {
-      console.log("🔎 Exemplo do primeiro item:", data[0]);
-  }
-
   try {
-      // 1. Limpa o estoque antigo
-      await prisma.stock.deleteMany();
+      // 1. Limpa o estoque antigo APENAS se for o primeiro lote
+      if (shouldReset) {
+          await prisma.stock.deleteMany();
+          console.log("🗑️ Banco de estoque limpo para iniciar nova carga.");
+      }
 
-      // 2. Prepara os dados com tratamento de erro (evita NaN e Null)
+      // 2. Prepara os dados
       const formattedData = data.map((item: any) => {
-          // Função auxiliar para garantir número válido
           const safeNum = (val: any) => {
               const parsed = Number(val);
               return isNaN(parsed) ? 0 : parsed;
@@ -1378,15 +1375,13 @@ app.post('/stock/sync', async (req, res) => {
               costPrice: safeNum(item.PRECO_CUSTO),
               salePrice: safeNum(item.PRECO_VENDA),
               averageCost: safeNum(item.CUSTO_MEDIO),
-              serial: String(item.SERIAL || "")
+              serial: String(item.SERIAL || "") // A gaveta do IMEI
           };
       });
 
-      // 3. Salva os novos (em lotes, para evitar travar se for muito grande)
-      // O Prisma aguenta createMany, mas vamos garantir.
+      // 3. Adiciona os itens deste lote no banco
       await prisma.stock.createMany({ data: formattedData });
       
-      console.log("✅ Estoque salvo com sucesso!");
       return res.json({ success: true, count: formattedData.length });
 
   } catch (error: any) {
