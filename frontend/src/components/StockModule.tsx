@@ -67,10 +67,26 @@ export default function StockModule() {
   const loadData = async () => {
     setLoading(true);
     try {
-      // 1. Estoque
+      // 1. Estoque (AGORA COM REAGRUPAMENTO AUTOMÁTICO)
       const resStock = await fetch(`${API_URL}/stock`);
       const jsonStock = await resStock.json();
-      if(Array.isArray(jsonStock)) setStockData(jsonStock);
+      
+      if(Array.isArray(jsonStock)) {
+          // A MÁGICA: Agrupa os IMEIs que foram separados no banco de volta num produto só!
+          const groupedStock: Record<string, any> = {};
+          
+          jsonStock.forEach((item: any) => {
+              const key = `${item.storeName}|${item.productCode}`; // Chave única por Loja e Produto
+              
+              if (!groupedStock[key]) {
+                  groupedStock[key] = { ...item, quantity: 0 }; // Copia o item e zera a qtd inicial
+              }
+              // Soma as quantidades (1 + 1 + 1...)
+              groupedStock[key].quantity += Number(item.quantity) || 0; 
+          });
+          
+          setStockData(Object.values(groupedStock));
+      }
 
       // 2. Compras
       try {
@@ -79,7 +95,7 @@ export default function StockModule() {
           if(Array.isArray(jsonPurchases)) setPurchaseData(jsonPurchases);
       } catch(e) { console.warn("Erro ao carregar compras", e); }
 
-      // 4. Vendas
+      // 3. Vendas
       let userId = '';
       try {
           const rawUser = localStorage.getItem('user') || localStorage.getItem('telefluxo_user');
@@ -89,7 +105,6 @@ export default function StockModule() {
           }
       } catch(e) {}
 
-      // Tenta buscar vendas sem filtro de usuário para pegar o geral
       const salesUrl = `${API_URL}/sales?userId=${userId}`; 
       const resSales = await fetch(salesUrl);
       const jsonSales = await resSales.json();
