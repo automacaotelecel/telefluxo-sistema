@@ -1410,6 +1410,22 @@ app.post('/stock/sync', async (req, res) => {
   }
 });
 
+// ==========================================
+// 📦 ROTA QUE O REACT USA PARA LER O ESTOQUE (FALTAVA ISSO)
+// ==========================================
+app.get('/stock', async (req, res) => {
+    try {
+        // Busca todo o estoque salvo pelo Python
+        const stock = await prisma.stock.findMany();
+        
+        // Retorna para o Frontend
+        res.json(stock);
+    } catch (error) {
+        console.error("Erro ao buscar estoque:", error);
+        res.status(500).json({ error: "Erro ao carregar estoque" });
+    }
+});
+
 // --- ROTA DE ANÁLISE (AGING DE ESTOQUE) ---
 app.get('/stock/analysis', async (req, res) => {
     try {
