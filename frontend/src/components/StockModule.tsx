@@ -63,7 +63,9 @@ export default function StockModule() {
   const [analysisStatusFilter, setAnalysisStatusFilter] = useState('TODOS');
   const [maloteViewMode, setMaloteViewMode] = useState<'table' | 'cards'>('table');
 
-  const API_URL = window.location.hostname === 'localhost' || window.location.hostname.includes('.')
+    // Regra blindada que sabe diferenciar IP local de Vercel
+  const isLocal = window.location.hostname === 'localhost' || /^[0-9.]+$/.test(window.location.hostname);
+  const API_URL = isLocal 
     ? `http://${window.location.hostname}:3000` 
     : 'https://telefluxo-aplicacao.onrender.com';
 
