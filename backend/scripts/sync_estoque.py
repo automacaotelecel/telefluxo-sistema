@@ -248,25 +248,49 @@ def extrair_seriais_loja(cnpj):
     return base
 
 # ===========================================
-# 4. SALVAR NA NUVEM VIA API (PRODUÇÃO)
+# 4. SALVAR NA NUVEM VIA API (EM LOTES)
 # ===========================================
 def enviar_para_api(dataframe):
-    url_api = "https://telefluxo-aplicacao.onrender.com/stock/sync"
-    log(f"📡 Enviando {len(dataframe)} registros para a Produção ({url_api})...")
+    base_url = "https://telefluxo-aplicacao.onrender.com/stock/sync"
     
-    # Previne erros de JSON substituindo NaN por None
+    # Previne erros de JSON
     dataframe = dataframe.where(pd.notnull(dataframe), None)
-    dados = dataframe.to_dict(orient="records")
+    dados_completos = dataframe.to_dict(orient="records")
     
+    # Divide os 18.000 itens em pacotes de 500 (Tamanho perfeito pro Render)
+    BATCH_SIZE = 100
+    total_lotes = (len(dados_completos) // BATCH_SIZE) + 1
+    log(f"📡 Preparando envio de {len(dados_completos)} registros em {total_lotes} lotes...")
+
     headers = {"Content-Type": "application/json"}
-    try:
-        response = requests.post(url_api, json=dados, headers=headers, timeout=300)
-        if 200 <= response.status_code < 300:
-            log("✅ Sucesso! Estoque e IMEIs atualizados na Produção.")
+
+    for i in range(0, len(dados_completos), BATCH_SIZE):
+        lote = dados_completos[i : i + BATCH_SIZE]
+        lote_num = (i // BATCH_SIZE) + 1
+        
+        # O primeiro lote apaga o banco, os outros apenas empilham os dados
+        param_reset = "true" if i == 0 else "false"
+        url_lote = f"{base_url}?reset={param_reset}"
+
+        log(f"   📦 Enviando Lote {lote_num}/{total_lotes}...")
+        
+        for attempt in range(1, 6): # Tenta até 5 vezes se o servidor piscar
+            try:
+                response = requests.post(url_lote, json=lote, headers=headers, timeout=120)
+                if 200 <= response.status_code < 300:
+                    time.sleep(0.5) # Dá um respiro de meio segundo para a memória do Render
+                    break
+                else:
+                    log(f"      ⚠️ Erro no Lote {lote_num} (Tentativa {attempt}): {response.status_code}")
+                    time.sleep(5)
+            except Exception as e:
+                log(f"      ⚠️ Falha de Conexão no Lote {lote_num} (Tentativa {attempt}): {e}")
+                time.sleep(5)
         else:
-            log(f"❌ Erro na API (Código {response.status_code}): {response.text}")
-    except Exception as e:
-        log(f"❌ Falha de conexão com a Produção: {e}")
+            log(f"❌ Desistindo do Lote {lote_num} após várias tentativas.")
+            return False
+            
+    log("✅ Sucesso Absoluto! Estoque e IMEIs atualizados na Produção.")
     return True
 
 # ===========================================

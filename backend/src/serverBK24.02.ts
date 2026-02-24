@@ -1327,25 +1327,41 @@ app.get('/finance', async (req, res) => {
   }
 });
 
-// --- ROTA BLINDADA PARA O PYTHON ENVIAR OS DADOS (COM SUPORTE A LOTES E AGING DE IMEI) ---
-// --- ROTA BLINDADA PARA O PYTHON ENVIAR OS DADOS (COM SUPORTE A LOTES E AGING DE IMEI) ---
+// Rota para listar o estoque
+app.get('/stock', async (req, res) => {
+  try {
+    const stock = await prisma.stock.findMany();
+    return res.json(stock); // <--- AQUI ERA O ERRO (Faltava o res.json)
+  } catch (error) {
+    return res.status(500).json({ error: "Erro ao buscar estoque" });
+  }
+});
+
+// --- ROTA BLINDADA PARA O PYTHON ENVIAR OS DADOS ---
 app.post('/stock/sync', async (req, res) => {
   const data = req.body; 
-  const shouldReset = req.query.reset !== 'false'; 
 
-  console.log(`📦 Recebendo lote de estoque... Resetar Banco: ${shouldReset}`);
+  console.log("📦 Recebendo pacote de estoque...");
 
   if (!Array.isArray(data)) {
+      console.error("❌ Erro: O corpo da requisição não é uma lista (Array).");
       return res.status(400).json({ error: "Formato inválido. Envie uma lista." });
   }
 
-  try {
-      if (shouldReset) {
-          await prisma.stock.deleteMany();
-          console.log("🗑️ Banco de estoque limpo para iniciar nova carga.");
-      }
+  console.log(`📊 Quantidade de itens recebidos: ${data.length}`);
+  
+  // Log do primeiro item para debug (ver se os campos batem)
+  if (data.length > 0) {
+      console.log("🔎 Exemplo do primeiro item:", data[0]);
+  }
 
+  try {
+      // 1. Limpa o estoque antigo
+      await prisma.stock.deleteMany();
+
+      // 2. Prepara os dados com tratamento de erro (evita NaN e Null)
       const formattedData = data.map((item: any) => {
+          // Função auxiliar para garantir número válido
           const safeNum = (val: any) => {
               const parsed = Number(val);
               return isNaN(parsed) ? 0 : parsed;
@@ -1361,47 +1377,15 @@ app.post('/stock/sync', async (req, res) => {
               quantity: safeNum(item.QUANTIDADE),
               costPrice: safeNum(item.PRECO_CUSTO),
               salePrice: safeNum(item.PRECO_VENDA),
-              averageCost: safeNum(item.CUSTO_MEDIO),
-              serial: String(item.SERIAL || "") 
+              averageCost: safeNum(item.CUSTO_MEDIO)
           };
       });
 
+      // 3. Salva os novos (em lotes, para evitar travar se for muito grande)
+      // O Prisma aguenta createMany, mas vamos garantir.
       await prisma.stock.createMany({ data: formattedData });
       
-      // =======================================================
-      // 4. INTELIGÊNCIA DE RASTREAMENTO DE IMEI (AJUSTADO PARA SEU SCHEMA)
-      // =======================================================
-      for (const item of formattedData) {
-          if (item.serial && item.serial.trim() !== '') {
-              const serialClean = item.serial.trim();
-              
-              const existing = await prisma.imeiHistory.findUnique({
-                  where: { serial: serialClean } // <-- Usando "serial" como no seu schema
-              });
-
-              if (!existing) {
-                  await prisma.imeiHistory.create({
-                      data: {
-                          serial: serialClean, // <-- Usando "serial"
-                          productCode: item.productCode,
-                          description: item.description,
-                          currentStore: item.storeName
-                      }
-                  });
-              } else if (existing.currentStore !== item.storeName) {
-                  await prisma.imeiHistory.update({
-                      where: { serial: serialClean }, // <-- Usando "serial"
-                      data: {
-                          currentStore: item.storeName,
-                          entryDateStore: new Date(), // <-- Usando "entryDateStore"
-                          transferCount: existing.transferCount + 1 
-                      }
-                  });
-              }
-          }
-      }
-      // =======================================================
-
+      console.log("✅ Estoque salvo com sucesso!");
       return res.json({ success: true, count: formattedData.length });
 
   } catch (error: any) {
@@ -1410,48 +1394,6 @@ app.post('/stock/sync', async (req, res) => {
   }
 });
 
-// --- ROTA DE ANÁLISE (AGING DE ESTOQUE) ---
-app.get('/stock/analysis', async (req, res) => {
-    try {
-        const currentStock = await prisma.stock.findMany({
-            where: { serial: { not: '' } } // <-- Removido o not: null para evitar o erro 1117
-        });
-
-        const histories = await prisma.imeiHistory.findMany();
-
-        const historyMap = new Map();
-        histories.forEach((h: any) => historyMap.set(h.serial, h)); // <-- Usando h.serial
-
-        const analysisData = currentStock.map((item: any) => {
-            const hist = historyMap.get(item.serial as string);
-            
-            const today = new Date();
-            const entryDate = hist ? new Date(hist.entryDateCompany) : today; // <-- Ajustado
-            const storeEntryDate = hist ? new Date(hist.entryDateStore) : today; // <-- Ajustado
-            
-            const msPerDay = 1000 * 3600 * 24;
-            const daysInCompany = Math.floor((today.getTime() - entryDate.getTime()) / msPerDay);
-            const daysInStore = Math.floor((today.getTime() - storeEntryDate.getTime()) / msPerDay);
-
-            return {
-                id: item.id,
-                storeName: item.storeName,
-                productCode: item.productCode,
-                description: item.description,
-                category: item.category,
-                serial: item.serial,
-                daysInCompany,
-                daysInStore,
-                transferCount: hist ? hist.transferCount : 0
-            };
-        });
-
-        res.json(analysisData);
-    } catch (error: any) {
-        console.error("Erro na rota de análise:", error);
-        res.status(500).json({ error: "Erro ao buscar análise de IMEI." });
-    }
-});
 // ROTA /sales (VERSÃO BLINDADA & DETETIVE)
 
 // 2. Rota para Atualizar (Dispara o Script Python)

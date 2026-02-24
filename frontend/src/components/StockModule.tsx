@@ -2,8 +2,9 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Package, Search, Box, Store, 
   TrendingUp, AlertCircle, LayoutGrid, List as ListIcon,
-  Smartphone, Tag, Filter, MapPin, X, Download, ChevronRight, ArrowLeft, ShoppingBag, RefreshCw, Truck, ArrowRight, ShoppingCart, Calendar, Bug
+  Smartphone, Tag, Filter, MapPin, X, Download, ChevronRight, ArrowLeft, ShoppingBag, RefreshCw, Truck, ArrowRight, ShoppingCart, Calendar, Bug, Activity, Clock, ArrowLeftRight
 } from 'lucide-react';
+import * as XLSX from 'xlsx';
 
 // --- 1. CONFIGURAÇÕES E MAPAS ---
 
@@ -47,10 +48,7 @@ export default function StockModule() {
   const [stockData, setStockData] = useState<any[]>([]);
   const [salesData, setSalesData] = useState<any[]>([]); 
   const [purchaseData, setPurchaseData] = useState<any[]>([]); 
-  
-  // REMOVIDO 'smart_attach' do tipo
-  const [moduleMode, setModuleMode] = useState<'stock' | 'malote' | 'redistribution' | 'purchases'>('stock');
-  
+  const [moduleMode, setModuleMode] = useState<'stock' | 'malote' | 'redistribution' | 'purchases' | 'analysis'>('stock');
   const [loading, setLoading] = useState(false);
   const [showDebug, setShowDebug] = useState(false);
   const [filter, setFilter] = useState('');
@@ -60,28 +58,31 @@ export default function StockModule() {
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
   const [maloteSearch, setMaloteSearch] = useState('');
   const [maloteCategory, setMaloteCategory] = useState('TODAS');
+  const [analysisData, setAnalysisData] = useState<any[]>([]);
+  const [analysisSearch, setAnalysisSearch] = useState('');
+  const [analysisStatusFilter, setAnalysisStatusFilter] = useState('TODOS');
   const [maloteViewMode, setMaloteViewMode] = useState<'table' | 'cards'>('table');
 
-  const API_URL = 'https://telefluxo-aplicacao.onrender.com';
+  const API_URL = window.location.hostname === 'localhost' || window.location.hostname.includes('.')
+    ? `http://${window.location.hostname}:3000` 
+    : 'https://telefluxo-aplicacao.onrender.com';
 
   const loadData = async () => {
     setLoading(true);
     try {
-      // 1. Estoque (AGORA COM REAGRUPAMENTO AUTOMÁTICO)
+      // 1. Estoque (AGORA COM REAGRUPAMENTO AUTOMÁTICO PARA VISÃO GERAL)
       const resStock = await fetch(`${API_URL}/stock`);
       const jsonStock = await resStock.json();
       
       if(Array.isArray(jsonStock)) {
-          // A MÁGICA: Agrupa os IMEIs que foram separados no banco de volta num produto só!
           const groupedStock: Record<string, any> = {};
           
           jsonStock.forEach((item: any) => {
-              const key = `${item.storeName}|${item.productCode}`; // Chave única por Loja e Produto
+              const key = `${item.storeName}|${item.productCode}`; 
               
               if (!groupedStock[key]) {
-                  groupedStock[key] = { ...item, quantity: 0 }; // Copia o item e zera a qtd inicial
+                  groupedStock[key] = { ...item, quantity: 0 }; 
               }
-              // Soma as quantidades (1 + 1 + 1...)
               groupedStock[key].quantity += Number(item.quantity) || 0; 
           });
           
@@ -105,6 +106,13 @@ export default function StockModule() {
           }
       } catch(e) {}
 
+      // 4. Análise de Estoque (O FILME DO IMEI)
+      try {
+          const resAnalysis = await fetch(`${API_URL}/stock/analysis`);
+          const jsonAnalysis = await resAnalysis.json();
+          if(Array.isArray(jsonAnalysis)) setAnalysisData(jsonAnalysis);
+      } catch(e) { console.warn("Erro ao carregar análise", e); }
+
       const salesUrl = `${API_URL}/sales?userId=${userId}`; 
       const resSales = await fetch(salesUrl);
       const jsonSales = await resSales.json();
@@ -119,16 +127,6 @@ export default function StockModule() {
   };
 
   useEffect(() => { loadData(); }, []);
-
-  const handleSync = async () => {
-    if(!confirm("Isso vai conectar na Microvix e atualizar o estoque. Pode levar alguns minutos. Continuar?")) return;
-    setLoading(true);
-    try {
-      await fetch(`${API_URL}/stock/refresh`, { method: 'POST' });
-      loadData();
-    } catch (error) { alert("Erro de conexão."); } 
-    finally { setLoading(false); }
-  };
 
   // --- MAPAS AUXILIARES ---
   const salesMap = useMemo(() => {
@@ -373,7 +371,6 @@ export default function StockModule() {
     let csvRows: string[] = [];
     let fileName = "Relatorio.csv";
 
-    // 1. SE ESTIVER NA ABA DE ESTOQUE
     if (moduleMode === 'stock') {
         const dataToExport = expandedStore ? currentStoreProducts : filteredData;
         headers = ["Loja", "Região", "Código", "Produto", "Categoria", "Qtd Estoque", "Qtd Vendida", "Custo Unit", "Total"];
@@ -383,16 +380,12 @@ export default function StockModule() {
         });
         fileName = expandedStore ? `Estoque_${expandedStore}.csv` : `Estoque_Geral.csv`;
     } 
-    
-    // 2. SE ESTIVER NA ABA DE MALOTE
     else if (moduleMode === 'malote') {
         headers = ["Produto", "Categoria", "Destino", "Estoque Atual (Loja)", "Giro (Loja)", "Qtd a Enviar (Malote)"];
-        
         const filteredMalote = calculatedMalote.filter(item => 
             (maloteCategory === 'TODAS' || item.category === maloteCategory) && 
             item.modelo.toLowerCase().includes(maloteSearch.toLowerCase())
         );
-
         filteredMalote.forEach((prod: any) => {
             prod.lojas.forEach((loja: any) => {
                 if (loja.sugestaoEnvio > 0) {
@@ -402,25 +395,18 @@ export default function StockModule() {
         });
         fileName = `Malote_CD_Taguatinga.csv`;
     }
-
-    // 3. SE ESTIVER NA ABA DE REMANEJAMENTO
     else if (moduleMode === 'redistribution') {
         headers = ["Tipo da Sugestão", "Produto", "Região", "Origem (Tirar de)", "Destino (Mandar para)", "Quantidade", "Motivo / Insight"];
-        
         redistributionSuggestions.moves.forEach((move: any) => {
             csvRows.push([`"Transferência"`, `"${move.product}"`, `"${move.region}"`, `"${move.from}"`, `"${move.to}"`, move.qty, `"${move.reason}"`].join(';'));
         });
-
         redistributionSuggestions.buys.forEach((buy: any) => {
             csvRows.push([`"Sugestão Compra"`, `"${buy.product}"`, `"${buy.region}"`, `"-"`, `"-"`, buy.gap, `"${buy.insight}"`].join(';'));
         });
         fileName = `Remanejamento_Oportunidades.csv`;
     }
-
-    // 4. SE ESTIVER NA ABA DE COMPRAS
     else if (moduleMode === 'purchases') {
         headers = ["Produto", "Região", "Total a Receber", "Previsão / Detalhes"];
-        
         Object.entries(groupedPurchases).forEach(([region, items]) => {
             items.forEach((item: any) => {
                 let prevInfo = "";
@@ -428,14 +414,12 @@ export default function StockModule() {
                     const prev = JSON.parse(item.previsao_info || '{}');
                     prevInfo = Object.entries(prev).map(([week, qty]) => `${week}: ${qtd}`).join(' | ');
                 } catch(e) {}
-                
                 csvRows.push([`"${item.descricao}"`, `"${region}"`, item.qtd_total, `"${prevInfo}"`].join(';'));
             });
         });
         fileName = `Pedidos_Compras_Abertos.csv`;
     }
 
-    // Gera e faz o download do arquivo CSV
     if (csvRows.length === 0) {
         alert("Não há dados para exportar com os filtros atuais.");
         return;
@@ -462,21 +446,27 @@ export default function StockModule() {
                         <ArrowLeft size={24}/>
                     </button>
                 ) : (
-                    <div className="p-2.5 bg-indigo-600 rounded-xl text-white shadow-md shadow-indigo-200">
+                    <div className={`p-2.5 rounded-xl text-white shadow-md ${moduleMode === 'analysis' ? 'bg-purple-600 shadow-purple-200' : 'bg-indigo-600 shadow-indigo-200'}`}>
                         {moduleMode === 'stock' ? <Box size={20} /> : 
-                         moduleMode === 'redistribution' ? <Truck size={20}/> : <ShoppingCart size={20}/>}
+                         moduleMode === 'redistribution' ? <Truck size={20}/> : 
+                         moduleMode === 'purchases' ? <ShoppingCart size={20}/> :
+                         moduleMode === 'analysis' ? <Activity size={20}/> : <ShoppingCart size={20}/>}
                     </div>
                 )}
                 <div>
                     <h1 className="text-xl md:text-2xl font-black uppercase tracking-tight text-slate-800">
                         {moduleMode === 'stock' ? (expandedStore || "Visão Estratégica de Estoque") : 
-                         moduleMode === 'redistribution' ? "Central de Remanejamento" : "Controle de Compras"}
+                         moduleMode === 'redistribution' ? "Central de Remanejamento" : 
+                         moduleMode === 'analysis' ? "Análise de Estoque" :
+                         "Controle de Compras"}
                     </h1>
                     <div className="flex items-center gap-2">
                         <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                            {moduleMode === 'stock' ? "Físico & Giro" : moduleMode === 'redistribution' ? "Inteligência de Distribuição" : "Gestão de Pedidos em Aberto"}
+                            {moduleMode === 'stock' ? "Físico & Giro" : 
+                             moduleMode === 'redistribution' ? "Inteligência de Distribuição" : 
+                             moduleMode === 'analysis' ? "Rastreabilidade por IMEI" :
+                             "Gestão de Pedidos em Aberto"}
                         </p>
-                        {moduleMode === 'purchases' && purchaseData.length > 0 && <span className="text-[9px] font-bold bg-blue-50 text-blue-600 px-1.5 rounded border border-blue-100">{purchaseData.length} itens aguardando</span>}
                     </div>
                 </div>
             </div>
@@ -488,12 +478,142 @@ export default function StockModule() {
                     <button onClick={() => setModuleMode('redistribution')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all ${moduleMode === 'redistribution' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-indigo-500'}`}>Remanejamento</button>
                     <button onClick={() => setModuleMode('purchases')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all ${moduleMode === 'purchases' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-indigo-500'}`}>Compras</button>
                 </div>
-                <button onClick={handleSync} disabled={loading} className={`px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold uppercase transition-all shadow-md flex items-center gap-2 ${loading ? 'opacity-50' : ''}`}>
-                    {loading ? <RefreshCw size={14} className="animate-spin"/> : 'Sync'}
+                
+                {/* O NOVO BOTÃO DE ANÁLISE SUBSTITUINDO O SYNC */}
+                <button 
+                    onClick={() => setModuleMode('analysis')} 
+                    className={`px-4 py-2 rounded-xl text-xs font-bold uppercase transition-all shadow-md flex items-center gap-2 ${moduleMode === 'analysis' ? 'bg-purple-700 text-white' : 'bg-purple-600 text-white hover:bg-purple-700'}`}
+                >
+                    <Activity size={14} /> Análise
                 </button>
+                
                 <button onClick={handleExport} className="p-2 bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 rounded-xl transition-all" title="Exportar Excel"><Download size={18}/></button>
             </div>
         </div>
+
+        {/* ================= MÓDULO DE ANÁLISE DE ESTOQUE (AGING) ================= */}
+        {moduleMode === 'analysis' && (
+            <div className="space-y-6 animate-fadeIn">
+                {/* Banner Educativo */}
+                <div className="bg-gradient-to-r from-purple-900 to-indigo-900 p-6 rounded-2xl text-white shadow-lg flex justify-between items-center relative overflow-hidden">
+                    <div className="absolute right-0 top-0 opacity-10">
+                        <Clock size={120} />
+                    </div>
+                    <div className="relative z-10 max-w-2xl">
+                        <h2 className="text-xl font-black uppercase mb-2 flex items-center gap-2"><Clock size={24}/> Aging de Estoque</h2>
+                        <p className="text-xs text-purple-100 opacity-90 leading-relaxed">
+                            Acompanhe a idade de cada aparelho e o histórico de transferências entre as lojas.
+                        </p>
+                    </div>
+                </div>
+
+                {/* Filtros da Análise */}
+                <div className="flex flex-col md:flex-row gap-3 bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                    <div className="relative flex-1">
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                        <input 
+                            type="text" 
+                            placeholder="BUSCAR POR IMEI, PRODUTO OU LOJA..." 
+                            value={analysisSearch}
+                            onChange={e => setAnalysisSearch(e.target.value)}
+                            className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold uppercase outline-none focus:ring-2 focus:ring-purple-500 transition-all"
+                        />
+                    </div>
+                    <select 
+                        value={analysisStatusFilter}
+                        onChange={e => setAnalysisStatusFilter(e.target.value)}
+                        className="bg-slate-50 border border-slate-200 text-slate-600 text-xs font-bold uppercase px-4 py-2.5 rounded-xl outline-none cursor-pointer"
+                    >
+                        <option value="TODOS">Status: Todos</option>
+                        <option value="CRITICO">Status: Crítico (+90 dias)</option>
+                        <option value="ATENCAO">Status: Atenção (30 a 90 dias)</option>
+                        <option value="NOVO">Status: Novo (Até 30 dias)</option>
+                    </select>
+                </div>
+
+                {/* Tabela de Dados Reais e Dinâmicos */}
+                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                    <div className="overflow-x-auto max-h-[600px] scrollbar-thin">
+                        <table className="w-full text-left border-collapse">
+                            <thead className="bg-slate-50 text-[10px] font-black uppercase text-slate-500 sticky top-0 z-10 shadow-sm">
+                                <tr>
+                                    <th className="p-4 whitespace-nowrap">Produto</th>
+                                    <th className="p-4 whitespace-nowrap">IMEI / Série</th>
+                                    <th className="p-4 whitespace-nowrap">Loja Atual</th>
+                                    <th className="p-4 text-center whitespace-nowrap">Dias na Empresa</th>
+                                    <th className="p-4 text-center whitespace-nowrap">Dias nesta Loja</th>
+                                    <th className="p-4 text-center whitespace-nowrap">Giro do Produto</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100 text-sm text-slate-600">
+                                {analysisData
+                                    .filter(item => {
+                                        const matchSearch = item.description.toLowerCase().includes(analysisSearch.toLowerCase()) || 
+                                                            String(item.serial).includes(analysisSearch) || 
+                                                            item.storeName.toLowerCase().includes(analysisSearch.toLowerCase());
+                                        if (!matchSearch) return false;
+
+                                        if (analysisStatusFilter === 'CRITICO') return item.daysInStore > 90;
+                                        if (analysisStatusFilter === 'ATENCAO') return item.daysInStore >= 30 && item.daysInStore <= 90;
+                                        if (analysisStatusFilter === 'NOVO') return item.daysInStore < 30;
+                                        return true;
+                                    })
+                                    .sort((a, b) => b.daysInStore - a.daysInStore) // Ordena do mais velho pro mais novo
+                                    .map((item, idx) => {
+                                        const isCritico = item.daysInStore > 90;
+                                        const isAtencao = item.daysInStore >= 30 && item.daysInStore <= 90;
+                                        
+                                        // Calcula o giro do produto na loja
+                                        const sales = getProductSales(item.storeName, item.description);
+                                        let giroLabel = "Sem Giro";
+                                        let giroColor = "text-slate-400";
+                                        if (sales > 10) { giroLabel = `Alto (${sales}/mês)`; giroColor = "text-emerald-600"; }
+                                        else if (sales > 3) { giroLabel = `Médio (${sales}/mês)`; giroColor = "text-amber-600"; }
+                                        else if (sales > 0) { giroLabel = `Baixo (${sales}/mês)`; giroColor = "text-red-500"; }
+
+                                        return (
+                                            <tr key={idx} className="hover:bg-purple-50/30 transition-colors">
+                                                <td className="p-4">
+                                                    <p className="font-bold text-slate-800 text-xs uppercase line-clamp-2 max-w-[250px]">{item.description}</p>
+                                                    <span className="text-[9px] bg-slate-100 text-slate-400 px-1.5 py-0.5 rounded uppercase mt-1 inline-block">{item.category}</span>
+                                                </td>
+                                                <td className="p-4 font-mono text-xs font-bold text-slate-500">{item.serial}</td>
+                                                <td className="p-4 font-bold text-slate-700 text-xs uppercase whitespace-nowrap">{item.storeName}</td>
+                                                <td className="p-4 text-center">
+                                                    <span className="text-slate-500 font-bold bg-slate-100 px-3 py-1 rounded-lg text-xs">{item.daysInCompany} dias</span>
+                                                </td>
+                                                <td className="p-4 text-center min-w-[120px]">
+                                                    <span className={`px-3 py-1 rounded-lg font-black text-xs inline-block ${isCritico ? 'bg-red-50 text-red-600 border border-red-100' : isAtencao ? 'bg-amber-50 text-amber-600 border border-amber-100' : 'bg-emerald-50 text-emerald-600 border border-emerald-100'}`}>
+                                                        {item.daysInStore} dias
+                                                    </span>
+                                                    {item.transferCount > 0 && (
+                                                        <p className="text-[9px] font-bold text-purple-600 uppercase mt-1.5 flex items-center justify-center gap-1 bg-purple-50 py-0.5 rounded">
+                                                            <ArrowLeftRight size={10}/> {item.transferCount} mov.
+                                                        </p>
+                                                    )}
+                                                </td>
+                                                <td className="p-4 text-center">
+                                                    <span className={`text-[10px] font-black uppercase tracking-wider ${giroColor}`}>
+                                                        {giroLabel}
+                                                    </span>
+                                                </td>
+                                            </tr>
+                                        );
+                                    })
+                                }
+                                {analysisData.length === 0 && !loading && (
+                                    <tr>
+                                        <td colSpan={6} className="p-12 text-center text-slate-400 text-xs uppercase font-bold tracking-widest bg-slate-50/50">
+                                            Nenhum histórico de IMEI encontrado.
+                                        </td>
+                                    </tr>
+                                )}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        )}
 
         {/* ================= MÓDULO DE COMPRAS (COM DEBUG) ================= */}
         {moduleMode === 'purchases' && (
@@ -513,7 +633,6 @@ export default function StockModule() {
                     </div>
                 </div>
 
-                {/* BOTÃO DE DIAGNÓSTICO (APARECE SE NÃO TIVER DADOS OU POR OPÇÃO) */}
                 {purchaseData.length === 0 && (
                     <div className="bg-red-50 p-4 rounded-xl border border-red-200 text-center">
                         <p className="text-red-800 font-bold mb-2">⚠️ LISTA VAZIA - DIAGNÓSTICO</p>
@@ -626,12 +745,11 @@ export default function StockModule() {
             </div>
         )}
 
-        {/* ================= MÓDULO MALOTE (NOVO CÁLCULO) ================= */}
+        {/* ================= MÓDULO MALOTE ================= */}
         {moduleMode === 'malote' && (
             <div className="space-y-6 animate-fadeIn">
                 <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
                     
-                    {/* BARRA DE FILTROS DO MALOTE */}
                     <div className="flex flex-col md:flex-row justify-between items-center gap-4 mb-8">
                         <div className="flex flex-1 gap-2 w-full">
                             <div className="relative flex-1 max-w-sm">
@@ -670,7 +788,6 @@ export default function StockModule() {
                         </div>
                     </div>
 
-                    {/* RESUMO NO TOPO */}
                     <div className="flex justify-between items-end mb-6 border-b border-slate-50 pb-6">
                         <div>
                             <h2 className="text-lg font-black uppercase text-slate-800">Abastecimento CD Taguatinga</h2>
@@ -686,7 +803,6 @@ export default function StockModule() {
                         </div>
                     </div>
 
-                    {/* CONTEÚDO DINÂMICO: TABELA OU CARDS */}
                     {maloteViewMode === 'table' ? (
                         <div className="overflow-x-auto">
                             <table className="w-full text-left">
