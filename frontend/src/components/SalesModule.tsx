@@ -84,7 +84,11 @@ export default function SalesModule() {
   // 1. Lista de Famílias para o botão superior
   const uniqueFamilies = useMemo(() => {
     if (!Array.isArray(sales)) return ['TODOS'];
-    const fams = new Set(sales.map(s => String(s.FAMILIA || 'OUTROS').trim().toUpperCase()));
+    // Busca maiúsculo ou minúsculo e ignora os "NAN" gerados pelo Python
+    const fams = new Set(
+        sales.map(s => String(s.FAMILIA || s.familia || 'OUTROS').trim().toUpperCase())
+             .filter(f => f !== 'NAN' && f !== '')
+    );
     return ['TODOS', ...Array.from(fams).sort()];
   }, [sales]);
 
@@ -104,7 +108,7 @@ export default function SalesModule() {
       const matchesStore = storeFilter === 'TODAS' || lojaItem === storeFilter.toUpperCase();
       
       // Filtro de Família
-      const familiaItem = String(s.FAMILIA || 'OUTROS').trim().toUpperCase();
+      const familiaItem = String(s.FAMILIA || s.familia || 'OUTROS').trim().toUpperCase();
       const matchesFamily = familyFilter === 'TODOS' || familiaItem === familyFilter;
       
       // Filtro de Região (NOVO NA VISÃO GERAL)
@@ -162,7 +166,7 @@ export default function SalesModule() {
     const map: Record<string, number> = {};
     // Para o ranking de lojas, aplicamos todos os filtros MENOS o de loja
     const relevantData = Array.isArray(sales) ? sales.filter(s => {
-        const familiaItem = String(s.FAMILIA || 'OUTROS').trim().toUpperCase();
+        const familiaItem = String(s.FAMILIA || s.familia || 'OUTROS').trim().toUpperCase();
         const matchesFamily = familyFilter === 'TODOS' || familiaItem === familyFilter;
         
         const regiaoItem = String(s.REGIAO || 'GERAL').trim().toUpperCase();
@@ -237,7 +241,7 @@ export default function SalesModule() {
                 desc: key, 
                 qtd: 0, 
                 total: 0,
-                familia: s.FAMILIA || 'OUTROS'
+                familia: String(s.FAMILIA || s.familia || 'OUTROS').replace('NAN', 'OUTROS')
             };
         }
         agg[key].qtd += Number(s.QUANTIDADE || 0);
