@@ -1,3 +1,5 @@
+// ESSE É O RELATÓRIO QUE NAO ESTA SENDO USADO //
+
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
   TrendingUp, Search, Store, Award, RefreshCw, 

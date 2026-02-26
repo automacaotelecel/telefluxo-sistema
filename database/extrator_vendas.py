@@ -422,7 +422,8 @@ def integrar_vendas_geral():
         treated["regiao"] = df[col_regiao].astype(str).str.strip().str.upper()
 
         treated = treated.dropna(subset=["cnpj_empresa"])
-        treated = treated[(treated["total_liquido"] > 0.01) | (treated["quantidade"] > 0.001)].copy()
+        # NOVO CÓDIGO (Usa .abs() para manter valores negativos de devolução)
+        treated = treated[(treated["total_liquido"].abs() > 0.01) | (treated["quantidade"].abs() > 0.001)].copy()
 
         print(f"✅ Linhas prontas para enviar: {len(treated)}")
 

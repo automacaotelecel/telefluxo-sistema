@@ -164,9 +164,15 @@ export default function SalesDashboard() {
       return { diasPassados: passados, diasNoMes: noMes };
   }, [startDate, endDate]);
 
-  // Lista dinâmica de Categorias do BD
+  // Lista dinâmica de Categorias do BD (Corrigido para ler FAMILIA)
   const uniqueCategories = useMemo(() => {
-      const cats = new Set(rawData.map(r => (r.categoria || r.grupo || 'OUTROS').toUpperCase()));
+      const cats = new Set(
+          rawData.map(r => {
+              // Procura por familia (maiúsculo ou minúsculo) antes de tentar categoria ou grupo
+              const val = r.FAMILIA || r.familia || r.categoria || r.grupo || 'OUTROS';
+              return String(val).trim().toUpperCase();
+          }).filter(f => f !== 'NAN' && f !== 'UNDEFINED' && f !== '')
+      );
       return Array.from(cats).sort();
   }, [rawData]);
 
@@ -189,9 +195,10 @@ export default function SalesDashboard() {
               if (!selectedStores.includes(nomeLoja)) return false;
           }
 
-          // NOVO: Filtro de Categoria
+          // NOVO: Filtro de Categoria (Corrigido para ler FAMILIA)
           if (categoryFilter !== 'TODAS') {
-              const cat = (sale.categoria || sale.grupo || 'OUTROS').toUpperCase();
+              const rawCat = sale.FAMILIA || sale.familia || sale.categoria || sale.grupo || 'OUTROS';
+              const cat = String(rawCat).trim().toUpperCase();
               if (cat !== categoryFilter) return false;
           }
 

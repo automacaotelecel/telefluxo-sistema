@@ -1605,54 +1605,67 @@ app.get('/api/debug', async (req, res) => {
     }
 });
 
-//Rota de sincronização
-// Rota 1: Receber Vendas Gerais (COM SUPORTE A LOTES)
+// 🛒 ROTA DE SINCRONIZAÇÃO DE VENDAS (RECEBE DO PYTHON)
+// ==========================================
 app.post('/api/sync/vendas', async (req, res) => {
-  const dados = req.body;
-  // LÊ O PARÂMETRO DA URL: Se reset=false, NÃO apaga o banco (apenas adiciona)
-  // Se não vier nada na URL, o padrão é true (apaga tudo para garantir limpeza)
-  const shouldReset = req.query.reset !== 'false'; 
+    const dados = req.body;
+    const reset = req.query.reset === 'true';
 
-  if (!dados || !Array.isArray(dados)) return res.status(400).json({ error: "Formato inválido." });
+    if (!Array.isArray(dados)) {
+        return res.status(400).json({ error: "Formato inválido" });
+    }
 
-  const fixDate = (d: string) => {
-      if (!d) return null;
-      if (d.includes('/')) {
-          const parts = d.split('/'); 
-          if (parts.length === 3) return `${parts[2]}-${parts[1]}-${parts[0]}`;
-      }
-      return d; 
-  };
+    try {
+        const db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+        await db.exec("BEGIN TRANSACTION");
 
-  try {
-    await enqueueWrite(() => new Promise<void>((resolve, reject) => {
-      const db = new sqlite3.Database(GLOBAL_DB_PATH);
-      db.configure("busyTimeout", 15000);
-      db.serialize(() => {
-        db.run("PRAGMA journal_mode=WAL;");
-        db.run("BEGIN IMMEDIATE TRANSACTION");
+        // SEGREDO AQUI: O DROP TABLE apaga a tabela antiga para recriar com a nova coluna "familia"
+        if (reset) {
+            await db.exec("DROP TABLE IF EXISTS vendas");
+        }
 
-        // LÓGICA INTELIGENTE: Só deleta se for o primeiro lote (shouldReset = true)
-        const preQuery = shouldReset ? "DELETE FROM vendas" : "SELECT 1"; 
-        
-        db.run(preQuery, (err) => {
-          if (err) { db.run("ROLLBACK"); return reject(err); }
-          
-          const stmt = db.prepare(`INSERT INTO vendas (data_emissao, nome_vendedor, descricao, quantidade, total_liquido, cnpj_empresa, familia, regiao) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
-          for (const item of dados) {
-            stmt.run(fixDate(item.data_emissao), item.nome_vendedor, item.descricao, item.quantidade, item.total_liquido, item.cnpj_empresa, item.familia, item.regiao);
-          }
-          stmt.finalize();
-          db.run("COMMIT", (err3) => {
-             if (err3) { db.run("ROLLBACK"); return reject(err3); }
-             db.close(); resolve();
-          });
-        });
-      });
-    }));
-    // Avisa o Python se limpou ou só adicionou
-    res.json({ message: `Sincronização OK (Reset: ${shouldReset})` });
-  } catch (e: any) { res.status(500).json({ error: "Erro banco" }); }
+        // Cria a tabela garantindo que a coluna familia exista
+        await db.exec(`
+            CREATE TABLE IF NOT EXISTS vendas (
+                data_emissao TEXT,
+                nome_vendedor TEXT,
+                descricao TEXT,
+                quantidade REAL,
+                total_liquido REAL,
+                cnpj_empresa TEXT,
+                regiao TEXT,
+                familia TEXT
+            )
+        `);
+
+        // Ensina o servidor a inserir a familia
+        const stmt = await db.prepare(`
+            INSERT INTO vendas (data_emissao, nome_vendedor, descricao, quantidade, total_liquido, cnpj_empresa, regiao, familia)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+
+        for (const item of dados) {
+            await stmt.run(
+                item.data_emissao,
+                item.nome_vendedor,
+                item.descricao,
+                item.quantidade,
+                item.total_liquido,
+                item.cnpj_empresa,
+                item.regiao,
+                item.familia || 'OUTROS' // Salva a categoria enviada pelo Python
+            );
+        }
+
+        await stmt.finalize();
+        await db.exec("COMMIT");
+        await db.close();
+
+        res.json({ success: true, gravados: dados.length });
+    } catch (e: any) {
+        console.error("Erro Sync Vendas:", e);
+        res.status(500).json({ error: e.message });
+    }
 });
 
 
