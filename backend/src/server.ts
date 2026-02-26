@@ -704,13 +704,19 @@ app.get('/sales', async (req, res) => {
     // 4. Conecta e Busca
     const db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
     
-    // A query final combina:
-    // - Segurança (Só ver a própria loja)
-    // - Data (Só ver o período escolhido)
-    // - Ordem (Cronológica para o gráfico ficar bonito)
+    // A query final combina e FORÇA o nome das colunas em MAIÚSCULO para o React ler perfeitamente
     const query = `
-        SELECT * FROM vendas 
-        WHERE ${securityFilter} ${dateFilter} 
+        SELECT 
+            data_emissao AS DATA_EMISSAO,
+            nome_vendedor AS NOME_VENDEDOR,
+            descricao AS DESCRICAO,
+            quantidade AS QUANTIDADE,
+            total_liquido AS TOTAL_LIQUIDO,
+            cnpj_empresa AS CNPJ_EMPRESA,
+            familia AS FAMILIA,
+            regiao AS REGIAO
+        FROM vendas
+        WHERE ${securityFilter} ${dateFilter}
         ORDER BY data_emissao ASC
     `;
 
