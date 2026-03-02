@@ -375,13 +375,25 @@ export default function StockModule() {
 
     if (moduleMode === 'stock') {
         const dataToExport = expandedStore ? currentStoreProducts : filteredData;
-        headers = ["Loja", "Região", "Código", "Produto", "Categoria", "Qtd Estoque", "Qtd Vendida", "Custo Unit", "Total"];
+        headers = ["Loja", "Região", "Código", "Produto", "Categoria", "Qtd Estoque", "Qtd Vendida", "Custo Unit", "Preço Venda", "Custo Total"];
         csvRows = dataToExport.map(item => {
             const sold = getProductSales(item.storeName, item.description);
-            return [`"${item.storeName}"`, `"${STORE_REGIONS[item.storeName] || 'OUTROS'}"`, `"${item.productCode}"`, `"${item.description}"`, `"${item.category || 'GERAL'}"`, String(item.quantity).replace('.',','), String(sold).replace('.',','), Number(item.costPrice).toFixed(2).replace('.',','), (item.quantity * item.costPrice).toFixed(2).replace('.',',')].join(';');
+            return [
+                `"${item.storeName}"`, 
+                `"${STORE_REGIONS[item.storeName] || 'OUTROS'}"`, 
+                `"${item.productCode}"`, 
+                `"${item.description}"`, 
+                `"${item.category || 'GERAL'}"`, 
+                String(item.quantity).replace('.',','), 
+                String(sold).replace('.',','), 
+                Number(item.costPrice || 0).toFixed(2).replace('.',','), 
+                Number(item.salePrice || 0).toFixed(2).replace('.',','), // <-- Adicionado aqui!
+                (item.quantity * (item.costPrice || 0)).toFixed(2).replace('.',',')
+            ].join(';');
         });
         fileName = expandedStore ? `Estoque_${expandedStore}.csv` : `Estoque_Geral.csv`;
-    } 
+    }
+
     else if (moduleMode === 'malote') {
         headers = ["Produto", "Categoria", "Destino", "Estoque Atual (Loja)", "Giro (Loja)", "Qtd a Enviar (Malote)"];
         const filteredMalote = calculatedMalote.filter(item => 
@@ -971,15 +983,21 @@ export default function StockModule() {
                                             </div>
                                         </div>
                                         
-                                        <div className={`text-right ${viewMode === 'grid' ? 'mt-4 border-t border-slate-100 pt-3 w-full flex justify-between items-end' : ''}`}>
-                                            <div className={viewMode === 'grid' ? 'text-left' : ''}>
-                                                <p className="text-[9px] font-bold text-slate-400 uppercase">Custo Unit.</p>
-                                                <p className="text-xs font-black text-slate-700">R$ {Number(item.costPrice).toLocaleString('pt-BR', {minimumFractionDigits: 2})}</p>
+                                        <div className={`text-right ${viewMode === 'grid' ? 'mt-4 border-t border-slate-100 pt-3 w-full flex justify-between items-end' : 'flex items-center gap-6'}`}>
+                                            <div className="flex gap-4">
+                                                <div className={viewMode === 'grid' ? 'text-left' : 'text-right'}>
+                                                    <p className="text-[9px] font-bold text-slate-400 uppercase">Custo Unit.</p>
+                                                    <p className="text-xs font-black text-slate-700">R$ {Number(item.costPrice || 0).toLocaleString('pt-BR', {minimumFractionDigits: 2})}</p>
+                                                </div>
+                                                <div className={viewMode === 'grid' ? 'text-left border-l border-slate-100 pl-4' : 'text-right border-l border-slate-100 pl-4'}>
+                                                    <p className="text-[9px] font-bold text-emerald-500 uppercase">Preço Venda</p>
+                                                    <p className="text-xs font-black text-emerald-600">R$ {Number(item.salePrice || 0).toLocaleString('pt-BR', {minimumFractionDigits: 2})}</p>
+                                                </div>
                                             </div>
-                                            <div className={viewMode === 'grid' ? 'text-right' : 'min-w-[100px]'}>
+                                            <div className={viewMode === 'grid' ? 'text-right' : 'min-w-[100px] text-right'}>
                                                 <p className="text-[9px] font-bold text-slate-400 uppercase">Total Custo</p>
                                                 <p className={`text-sm font-black ${isLowStock ? 'text-red-600' : 'text-indigo-700'}`}>
-                                                    R$ {(Number(item.costPrice) * stockQty).toLocaleString('pt-BR', {minimumFractionDigits: 2})}
+                                                    R$ {(Number(item.costPrice || 0) * stockQty).toLocaleString('pt-BR', {minimumFractionDigits: 2})}
                                                 </p>
                                             </div>
                                         </div>
