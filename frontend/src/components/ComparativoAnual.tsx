@@ -159,6 +159,9 @@ export default function ComparativoAnual() {
 
       console.log("Recebido do Back-end (amostra):", list[0]);
 
+      console.log("TOTAL REGISTROS:", list.length);
+      console.log("AMOSTRA DATAS:", list.slice(0, 10).map((r:any) => r.data_emissao || r.DATA_EMISSAO || r.data || r.DATA));
+
       setAnnualRawData(list);
       setErrorMsg('');
     } catch (err: any) {
