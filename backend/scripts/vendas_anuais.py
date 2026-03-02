@@ -1,6 +1,13 @@
 # ===========================================
-# ⚡ CÓDIGO USADO PARA BAIXAR AS VENDAS ATRAVÉS DA API
-# O CÓDIGO  PARA ENVIAR AO SISTEMA É OUTRO.
+# ⚡ RELATÓRIO DE VENDAS MICROVIX – ACUMULADO (ANO ATÉ MÊS PASSADO)
+# Lógica: Puxa do dia 01/01 do ano atual até o último dia do mês anterior.
+# Se estiver em janeiro: puxa o ano anterior inteiro.
+# Substitui todos os dados do banco para evitar duplicatas.
+#
+# ✅ Patch 2026-03-02:
+# - Garante timestamp=0 no LinxMovimento (evita retorno vazio por validação da API)
+# - Loga trecho do XML de resposta quando vier 0 linhas (diagnóstico de ResponseSuccess/mensagem)
+# - Parse mais robusto (BOM / erro de XML)
 # ===========================================
 
 import requests
@@ -9,7 +16,9 @@ import pandas as pd
 from lxml import etree
 from datetime import datetime
 import sqlite3, os, time
+import logging
 import sys
+import calendar
 
 # --- Fixa o diretório de trabalho na pasta do script/EXE ---
 if getattr(sys, 'frozen', False):   # executável (PyInstaller)
@@ -25,13 +34,13 @@ URL = "https://webapi.microvix.com.br/1.0/api/integracao"
 headers = {"Content-Type": "application/xml; charset=utf-8", "Accept": "application/xml"}
 auth = HTTPBasicAuth(USUARIO, SENHA)
 
-# === BANCOS LOCAIS (caches) ===
+# === BANCOS LOCAIS ===
 CACHE_PRODUTOS   = r"C:\Users\Usuario\Desktop\API_LINX\data_bases\produtos_completos.db"
 CACHE_LOJAS      = r"C:\Users\Usuario\Desktop\API_LINX\data_bases\lojas_fixas.db"
 CACHE_IMEIS      = r"C:\Users\Usuario\Desktop\API_LINX\data_bases\serial_cache.db"
 CACHE_VENDEDORES = r"C:\Users\Usuario\Desktop\API_LINX\data_bases\vendedores_cache.db"
 
-# === DESTINO DO SQLITE FINAL (NOVO) ===
+# === DESTINO DO SQLITE FINAL ===
 DB_DEST_DIR  = r"C:\Users\Usuario\Desktop\TeleFluxo_Instalador\database"
 os.makedirs(DB_DEST_DIR, exist_ok=True)
 DB_DEST_PATH = os.path.join(DB_DEST_DIR, "samsung_anual.db")
@@ -64,45 +73,67 @@ OPER_MAP = {
 }
 
 # ===========================================
-# 🔧 META: detectar primeira execução
+# 🧾 LOG
 # ===========================================
+def setup_logger():
+    log_dir = r"C:\Users\Usuario\Desktop\API_LINX\logs"
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(log_dir, f"vendas_anual_{datetime.now().strftime('%Y%m%d')}.log")
 
-def ensure_meta_table(conn: sqlite3.Connection):
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS sync_meta (
-            k TEXT PRIMARY KEY,
-            v TEXT
-        )
-    """)
-    conn.commit()
+    logger = logging.getLogger("vendas_anual")
+    logger.setLevel(logging.INFO)
+    logger.handlers.clear()
 
-def get_meta(conn: sqlite3.Connection, key: str):
-    cur = conn.execute("SELECT v FROM sync_meta WHERE k = ?", (key,))
-    row = cur.fetchone()
-    return row[0] if row else None
+    fmt = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
 
-def set_meta(conn: sqlite3.Connection, key: str, value: str):
-    conn.execute(
-        "INSERT INTO sync_meta (k, v) VALUES (?, ?) "
-        "ON CONFLICT(k) DO UPDATE SET v=excluded.v",
-        (key, value)
-    )
-    conn.commit()
+    fh = logging.FileHandler(log_path, encoding="utf-8")
+    fh.setLevel(logging.INFO)
+    fh.setFormatter(fmt)
+    logger.addHandler(fh)
 
-def is_first_full_load(conn: sqlite3.Connection) -> bool:
-    ensure_meta_table(conn)
-    return get_meta(conn, "full_loaded") != "1"
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.INFO)
+    ch.setFormatter(fmt)
+    logger.addHandler(ch)
 
-def today_iso() -> str:
-    return datetime.now().strftime("%Y-%m-%d")
+    return logger, log_path
 
-def today_br() -> str:
-    return datetime.now().strftime("%d/%m/%Y")
+logger, LOG_FILE = setup_logger()
+logger.info("=== Início da execução do relatório de vendas (ANO ATÉ MÊS PASSADO) ===")
+
+# ===========================================
+# 🔧 CÁLCULO DA DATA FECHADA
+# ===========================================
+def get_datas_fechadas():
+    """
+    Calcula:
+      - do dia 01/01 do ano atual
+      - até o último dia do mês anterior
+    Se estivermos em janeiro, mês anterior é dezembro do ano anterior,
+    então puxa o ano anterior inteiro.
+    """
+    agora = datetime.now()
+
+    if agora.month == 1:
+        ano_alvo = agora.year - 1
+        d_ini = f"{ano_alvo}-01-01"
+        d_fim = f"{ano_alvo}-12-31"
+    else:
+        ano_alvo = agora.year
+        mes_anterior = agora.month - 1
+        ultimo_dia = calendar.monthrange(ano_alvo, mes_anterior)[1]
+
+        d_ini = f"{ano_alvo}-01-01"
+        d_fim = f"{ano_alvo}-{mes_anterior:02d}-{ultimo_dia:02d}"
+
+    return d_ini, d_fim
+
+DATA_INI, DATA_FIM = get_datas_fechadas()
+logger.info(f"Período de extração definido: {DATA_INI} até {DATA_FIM}")
 
 # ===========================================
 # 🔧 FUNÇÕES DE API E DADOS
 # ===========================================
-
 def achar_coluna_tolerante(df, nomes):
     for n in nomes:
         for c in df.columns:
@@ -110,10 +141,22 @@ def achar_coluna_tolerante(df, nomes):
                 return c
     return None
 
+def _preview_text(s, n=900):
+    if not s:
+        return ""
+    s = str(s)
+    return s[:n] + ("..." if len(s) > n else "")
+
 def montar_xml(cnpj, metodo, d_ini, d_fim, parametros=None):
-    """XML com janela definida (data_ini -> data_fim)."""
+    """
+    XML com janela definida (anual até mês passado).
+    ✅ Patch: garante timestamp=0 se não for passado.
+    """
     if parametros is None:
         parametros = {}
+
+    parametros = dict(parametros)      # cópia
+    parametros.setdefault("timestamp", "0")  # ✅ garante
 
     params = f"""
         <Parameter id="chave">{CHAVE}</Parameter>
@@ -127,14 +170,17 @@ def montar_xml(cnpj, metodo, d_ini, d_fim, parametros=None):
         params += f'<Parameter id="{k}">{v}</Parameter>'
 
     return f"""<?xml version="1.0" encoding="utf-8"?>
-        <LinxMicrovix>
-            <Authentication user="{USUARIO}" password="{SENHA}" />
-            <ResponseFormat>xml</ResponseFormat>
-            <Command><Name>{metodo}</Name><Parameters>{params}</Parameters></Command>
-        </LinxMicrovix>"""
+<LinxMicrovix>
+  <Authentication user="{USUARIO}" password="{SENHA}" />
+  <ResponseFormat>xml</ResponseFormat>
+  <Command>
+    <Name>{metodo}</Name>
+    <Parameters>{params}</Parameters>
+  </Command>
+</LinxMicrovix>"""
 
 def xml_fix(cnpj, metodo, parametros=None):
-    """XML sem janela de datas (para métodos timestamp)."""
+    """XML sem janela de datas (para métodos baseados em timestamp)."""
     if parametros is None:
         parametros = {}
     params = f"""
@@ -144,57 +190,75 @@ def xml_fix(cnpj, metodo, parametros=None):
     for k, v in parametros.items():
         params += f'<Parameter id="{k}">{v}</Parameter>'
     return f"""<?xml version="1.0" encoding="utf-8"?>
-        <LinxMicrovix>
-            <Authentication user="{USUARIO}" password="{SENHA}" />
-            <ResponseFormat>xml</ResponseFormat>
-            <Command><Name>{metodo}</Name><Parameters>{params}</Parameters></Command>
-        </LinxMicrovix>"""
+<LinxMicrovix>
+  <Authentication user="{USUARIO}" password="{SENHA}" />
+  <ResponseFormat>xml</ResponseFormat>
+  <Command>
+    <Name>{metodo}</Name>
+    <Parameters>{params}</Parameters>
+  </Command>
+</LinxMicrovix>"""
 
-def chamar_api(cnpj, metodo, parametros=None, usa_datas=True, d_ini=None, d_fim=None):
+def chamar_api(cnpj, metodo, parametros=None, usa_datas=True):
     """Chama API e retorna DataFrame."""
     if usa_datas:
-        if not d_ini or not d_fim:
-            raise ValueError("d_ini e d_fim são obrigatórios quando usa_datas=True")
-        xml = montar_xml(cnpj, metodo, d_ini, d_fim, parametros)
+        xml = montar_xml(cnpj, metodo, DATA_INI, DATA_FIM, parametros)
     else:
         xml = xml_fix(cnpj, metodo, parametros)
 
     try:
         r = requests.post(URL, data=xml.encode("utf-8"), headers=headers, auth=auth, timeout=180)
+
         if r.status_code != 200:
-            print(f"[WARN] Status HTTP {r.status_code} para {metodo} ({cnpj}).")
+            logger.warning(f"Status HTTP {r.status_code} para {metodo} ({cnpj}). Conteúdo: {_preview_text(r.text, 500)}")
             return pd.DataFrame()
 
-        root = etree.fromstring(r.content)
+        # ✅ remove BOM se vier e parseia com segurança
+        content = r.content
+        if content.startswith(b"\xef\xbb\xbf"):
+            content = content.lstrip(b"\xef\xbb\xbf")
+
+        try:
+            root = etree.fromstring(content)
+        except Exception as ex_parse:
+            logger.warning(f"Falha ao parsear XML em {metodo} ({cnpj}): {ex_parse}. Trecho: {_preview_text(r.text, 900)}")
+            return pd.DataFrame()
+
         ok_nodes = root.xpath(".//ResponseSuccess/text()")
-        if ok_nodes and ok_nodes[0].lower() == "false":
-            print(f"[WARN] API retornou False para {metodo} ({cnpj}).")
+        if ok_nodes and ok_nodes[0].strip().lower() == "false":
+            logger.warning(f"API retornou ResponseSuccess=false para {metodo} ({cnpj}). Resposta: {_preview_text(r.text, 900)}")
             return pd.DataFrame()
 
         cols = [d.text for d in root.xpath(".//C[last()]/D") if d.text]
         rows = root.xpath(".//R")
         data = [dict(zip(cols, [d.text for d in rr.xpath('./D')])) for rr in rows]
         df = pd.DataFrame(data)
-        print(f"[INFO] API {metodo} ({cnpj}) retornou {len(df)} linhas.")
+
+        if df.empty:
+            logger.warning(f"API {metodo} ({cnpj}) retornou 0 linhas. Resposta: {_preview_text(r.text, 900)}")
+        else:
+            logger.info(f"API {metodo} ({cnpj}) retornou {len(df)} linhas. Colunas: {list(df.columns)[:20]}")
+
         return df
+
     except Exception as e:
-        print(f"[ERRO] Falha em {metodo} ({cnpj}): {e}")
+        logger.exception(f"Erro em {metodo} ({cnpj}): {e}")
         return pd.DataFrame()
 
 def carregar_sqlite(path, tabela):
     if not os.path.exists(path):
-        print(f"[WARN] Cache ausente: {path}")
+        logger.warning(f"Cache ausente: {path}")
         return pd.DataFrame()
     conn = sqlite3.connect(path)
     try:
         df = pd.read_sql_query(f"SELECT * FROM {tabela}", conn)
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Falha ao ler tabela '{tabela}' de {path}: {e}")
         df = pd.DataFrame()
     conn.close()
     return df
 
 # ------------------ Naturezas ------------------
-
 def carregar_naturezas(cnpj):
     if cnpj in NATUREZAS_CACHE:
         return NATUREZAS_CACHE[cnpj]
@@ -243,20 +307,17 @@ def compor_natureza_operacao(df):
 # ===========================================
 # 🧩 ENRIQUECIMENTO
 # ===========================================
-
 def enriquecer(df_mov, cnpj):
     if df_mov.empty:
         return df_mov
 
     df_mov.columns = [c.lower() for c in df_mov.columns]
 
-    # --- Produto ---
     cod_col = achar_coluna_tolerante(df_mov, ["cod_produto", "codigo_produto", "produto"])
     if cod_col and cod_col != "cod_produto":
         df_mov.rename(columns={cod_col: "cod_produto"}, inplace=True)
     df_mov["CODIGO_PRODUTO_ORIGINAL"] = df_mov.get("cod_produto", "").astype(str)
 
-    # --- Lojas ---
     lojas = carregar_sqlite(CACHE_LOJAS, "lojas_fixas")
     if not lojas.empty:
         lojas.columns = [c.upper() for c in lojas.columns]
@@ -266,7 +327,6 @@ def enriquecer(df_mov, cnpj):
         df_mov = pd.merge(df_mov, lojas[["CNPJ", "NOME_FANTASIA"]],
                           left_on="cnpj_emp", right_on="CNPJ", how="left").drop(columns="CNPJ", errors="ignore")
 
-    # --- Produtos ---
     produtos = carregar_sqlite(CACHE_PRODUTOS, "produtos_completos")
     if not produtos.empty:
         produtos.columns = [c.lower() for c in produtos.columns]
@@ -276,7 +336,6 @@ def enriquecer(df_mov, cnpj):
         df_mov["DESCRICAO"] = df_mov.get("nome").combine_first(df_mov.get("descricao_basica"))
         df_mov["CATEGORIA"] = df_mov.get("desc_setor", df_mov.get("categoria"))
 
-    # --- IMEIs ---
     imei = carregar_sqlite(CACHE_IMEIS, "serial_cache")
     if not imei.empty:
         imei.columns = [c.lower() for c in imei.columns]
@@ -286,7 +345,6 @@ def enriquecer(df_mov, cnpj):
             df_mov = pd.merge(df_mov, imei[[tcol, icol]].rename(columns={icol: "IMEI"}),
                               left_on="transacao", right_on=tcol, how="left").drop(columns=tcol, errors="ignore")
 
-    # --- Vendedores ---
     vendedores = carregar_sqlite(CACHE_VENDEDORES, "vendedores_cache")
     if not vendedores.empty and {"cod_vendedor","cnpj_emp"}.issubset(df_mov.columns):
         vendedores.columns = [c.lower() for c in vendedores.columns]
@@ -295,7 +353,6 @@ def enriquecer(df_mov, cnpj):
                           right_on=["cod_vendedor", "cnpj_origem"]
                           ).drop(columns="cnpj_origem", errors="ignore")
 
-    # --- Tipo de Transação ---
     campo_tipo = achar_coluna_tolerante(df_mov, ["tipo_transacao"])
     if campo_tipo:
         df_mov.rename(columns={campo_tipo: "TIPO_TRANSACAO"}, inplace=True)
@@ -307,7 +364,6 @@ def enriquecer(df_mov, cnpj):
         }
         df_mov["TIPO_TRANSACAO"] = df_mov["TIPO_TRANSACAO"].fillna("").map(mapa_tipos).fillna("Normal")
 
-    # --- Natureza / Operação ---
     campo_op = achar_coluna_tolerante(df_mov, ["operacao"])
     campo_nat_txt = achar_coluna_tolerante(df_mov, ["natureza_operacao"])
     if campo_op:
@@ -317,7 +373,6 @@ def enriquecer(df_mov, cnpj):
     if "operacao" in df_mov.columns or "natureza_operacao" in df_mov.columns:
         df_mov = compor_natureza_operacao(df_mov)
 
-    # Fallback LinxNaturezaOperacao
     if "NATUREZA_OPERACAO" not in df_mov.columns:
         cod_nat_col = achar_coluna_tolerante(df_mov, ["cod_natureza_operacao", "cod_nat_operacao", "natureza"])
         if cod_nat_col:
@@ -328,9 +383,8 @@ def enriquecer(df_mov, cnpj):
                                   left_on=cod_nat_col, right_on="cod_natureza_operacao")
                 df_mov = compor_natureza_operacao(df_mov)
 
-    # Fallback LinxPedidosVenda (pode ser pesado)
     if "NATUREZA_OPERACAO" not in df_mov.columns:
-        pedidos = chamar_api(cnpj, "LinxPedidosVenda", parametros=None, usa_datas=True, d_ini=DATA_INI, d_fim=DATA_FIM)
+        pedidos = chamar_api(cnpj, "LinxPedidosVenda", parametros=None, usa_datas=True)
         if not pedidos.empty:
             pedidos.columns = [c.lower() for c in pedidos.columns]
             if "documento" in pedidos.columns and "natureza_operacao" in pedidos.columns and "documento" in df_mov.columns:
@@ -347,54 +401,37 @@ def enriquecer(df_mov, cnpj):
     return df_mov
 
 # ===========================================
-# 🧾 DEFINIÇÃO DO PERÍODO (1a vez vs diário)
+# 🧾 EXECUÇÃO
 # ===========================================
-
-conn_meta = sqlite3.connect(DB_DEST_PATH)
-primeira_vez = is_first_full_load(conn_meta)
-conn_meta.close()
-
-if primeira_vez:
-    DATA_INI = "2024-01-01"
-    DATA_FIM = today_iso()
-    print(f"[INFO] Primeira execução detectada. Carga histórica: {DATA_INI} até {DATA_FIM}")
-else:
-    DATA_INI = today_iso()
-    DATA_FIM = today_iso()
-    print(f"[INFO] Execução diária. Buscando somente HOJE: {DATA_INI}")
-
-# ===========================================
-# 🧾 EXECUÇÃO (multi-CNPJ)
-# ===========================================
-
 todos = []
-print(f"[INFO] Extração para {len(CNPJS)} CNPJs...")
+logger.info(f"Extração multi-CNPJ (vendas de {DATA_INI} até {DATA_FIM}) para {len(CNPJS)} CNPJs.")
 
 for cnpj in CNPJS:
-    print(f"[INFO] Buscando vendas para CNPJ {cnpj} ({DATA_INI} até {DATA_FIM}) ...")
+    logger.info("Buscando vendas para CNPJ %s ...", cnpj)
 
-    df = chamar_api(cnpj, "LinxMovimento", parametros=None, usa_datas=True, d_ini=DATA_INI, d_fim=DATA_FIM)
+    # ✅ timestamp=0 é injetado automaticamente pelo montar_xml()
+    df = chamar_api(cnpj, "LinxMovimento", parametros=None, usa_datas=True)
 
     if not df.empty:
         df["CNPJ_ORIGEM"] = cnpj
         df = enriquecer(df, cnpj)
-        print(f"[INFO] CNPJ {cnpj} enriquecido com {len(df)} linhas.")
+        logger.info("CNPJ %s enriquecido com %d linhas.", cnpj, len(df))
         todos.append(df)
     else:
-        print(f"[WARN] Nenhum dado retornado para {cnpj} neste período.")
+        logger.warning("Nenhum dado retornado para %s neste período.", cnpj)
 
     time.sleep(2)
 
 if not todos:
+    logger.error("Nenhum dado retornado em nenhum CNPJ. Encerrando.")
     print("❌ Nenhum dado retornado em nenhum CNPJ.")
-    raise SystemExit(1)
+    sys.exit(1)
 
 df_final = pd.concat(todos, ignore_index=True)
 
 # ===========================================
 # 🔢 CONVERSÕES E EXPORTAÇÃO
 # ===========================================
-
 df_final.columns = [c.upper() for c in df_final.columns]
 df_final.rename(columns={
     "DOCUMENTO": "NOTA_FISCAL",
@@ -417,7 +454,6 @@ for col in ["TOTAL_LIQUIDO", "QUANTIDADE"]:
     if col in df_final.columns:
         df_final[col] = to_float_safe(df_final[col])
 
-# Padroniza para DD/MM/YYYY (como você já usa no banco)
 if "DATA_EMISSAO" in df_final.columns:
     df_final["DATA_EMISSAO"] = pd.to_datetime(df_final["DATA_EMISSAO"], errors="coerce").dt.strftime("%d/%m/%Y")
 
@@ -425,52 +461,37 @@ df_saida = df_final[COLUNAS_FINAIS].copy()
 df_saida = df_saida.loc[:, ~df_saida.columns.duplicated()].copy()
 
 linhas_preparadas = len(df_saida)
-print(f"[INFO] Linhas preparadas para inserção: {linhas_preparadas}")
+logger.info("Linhas preparadas para inserção no .db: %d", linhas_preparadas)
 
 # ===========================================
-# 🔁 ATUALIZAÇÃO DO BANCO (1a vez vs diário)
+# 🔁 ATUALIZAÇÃO DO BANCO (SOBRESCREVE TUDO)
 # ===========================================
-
 conn = sqlite3.connect(DB_DEST_PATH)
 cur = conn.cursor()
 
-# garante tabela vendas
 try:
     cur.execute("SELECT 1 FROM vendas LIMIT 1")
 except Exception:
     df_saida.head(0).to_sql("vendas", conn, if_exists="append", index=False)
-    print("[INFO] Tabela 'vendas' criada.")
+    logger.info("Tabela 'vendas' criada no SQLite.")
 
-# garante meta
-ensure_meta_table(conn)
-
+logger.info("Apagando dados antigos da tabela 'vendas' para evitar duplicatas...")
 try:
-    if primeira_vez:
-        # Primeira carga: zerar para evitar qualquer duplicata histórica
-        print("[INFO] Limpando tabela 'vendas' (primeira carga)...")
-        cur.execute("DELETE FROM vendas")
-        print(f"[INFO] Linhas removidas: {cur.rowcount}")
-    else:
-        # Diário: apaga somente HOJE (DATA_EMISSAO em DD/MM/YYYY)
-        hoje = today_br()
-        print(f"[INFO] Removendo dados de HOJE ({hoje}) para evitar duplicatas...")
-        cur.execute("DELETE FROM vendas WHERE DATA_EMISSAO = ?", (hoje,))
-        print(f"[INFO] Linhas removidas hoje: {cur.rowcount}")
-
-    conn.commit()
+    cur.execute("DELETE FROM vendas")
+    deletadas = cur.rowcount
+    logger.info("Linhas removidas: %d", deletadas)
 except Exception as e:
-    print(f"[WARN] Erro ao limpar dados antes do insert: {e}")
-    conn.commit()
+    logger.warning(f"Erro ao limpar banco: {e}")
 
-# Insere novo lote
+conn.commit()
+
 df_saida.to_sql("vendas", conn, if_exists="append", index=False)
-
-# marca meta
-set_meta(conn, "full_loaded", "1")
-set_meta(conn, "last_run_date", today_iso())
-
 conn.close()
 
-print(f"✅ Banco SQLite atualizado: {DB_DEST_PATH}")
-print(f"📌 Período usado: {DATA_INI} até {DATA_FIM}")
-print(f"📦 Total inserido: {linhas_preparadas}")
+logger.info("Banco SQLite atualizado.")
+logger.info("Total inserido: %d linhas.", linhas_preparadas)
+logger.info("=== Fim da execução. Log salvo em: %s ===", LOG_FILE)
+
+print(f"💾 Banco SQLite atualizado: {DB_DEST_PATH}")
+print(f"📦 Total inserido: {linhas_preparadas} linhas referentes ao período {DATA_INI} a {DATA_FIM}.")
+print("\n✅ Processo concluído com sucesso!")
