@@ -1612,43 +1612,36 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 // ⚠️ ROTA DO HISTÓRICO ANUAL OTIMIZADA (COM LOGS DE DETETIVE)
 // ============================================================
 app.get('/sales_anuais', async (req, res) => {
-    try {
-      console.log(`\n🔎 [DEBUG ROTA ANUAL] Requisição recebida para userId: ${req.query.userId}`);
-      
-      if (!fs.existsSync(GLOBAL_DB_PATH)) {
-         console.log("❌ Banco de dados não encontrado no servidor.");
-         return res.json({ sales: [] });
-      }
-  
-      const userId = String(req.query.userId || '');
-      const securityFilter = await getSalesFilter(userId, 'vendas'); 
-      console.log(`🛡️ Filtro de Segurança Aplicado: ${securityFilter}`);
-  
-      const db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
-      
-      const query = `
-          SELECT 
-              substr(data_emissao, 1, 7) || '-01' as data_emissao, 
-              cnpj_empresa,
-              familia,
-              SUM(total_liquido) as total_liquido,
-              SUM(quantidade) as quantidade
-          FROM vendas_anuais 
-          WHERE ${securityFilter} AND data_emissao IS NOT NULL
-          GROUP BY substr(data_emissao, 1, 7), cnpj_empresa, familia
-          ORDER BY data_emissao ASC
-      `;
-      
-      const salesRaw = await db.all(query);
-      console.log(`📊 O Banco encontrou ${salesRaw.length} linhas agregadas!`);
-      await db.close();
-      
-      const sales = normalizeKeys(salesRaw);
-      res.json({ sales });
-    } catch (error: any) {
-      console.error("❌ Erro /sales_anuais:", error);
-      res.status(500).json({ error: "Erro ao buscar histórico anual" });
-    }
+  try {
+    const userId = String(req.query.userId || '');
+    const securityFilter = await getSalesFilter(userId, 'vendas'); // cnpj_empresa IN (...)
+
+    if (!fs.existsSync(ANUAL_DB_PATH)) return res.json({ sales: [] });
+
+    const db = await open({ filename: ANUAL_DB_PATH, driver: sqlite3.Database });
+
+    const query = `
+      SELECT 
+        substr(data_emissao, 1, 7) || '-01' as data_emissao,
+        cnpj_empresa,
+        familia,
+        SUM(total_liquido) as total_liquido,
+        SUM(quantidade) as quantidade
+      FROM vendas_anuais
+      WHERE ${securityFilter}
+        AND data_emissao IS NOT NULL
+      GROUP BY substr(data_emissao, 1, 7), cnpj_empresa, familia
+      ORDER BY data_emissao ASC
+    `;
+
+    const salesRaw = await db.all(query);
+    await db.close();
+
+    res.json({ sales: normalizeKeys(salesRaw) });
+  } catch (e: any) {
+    console.error("Erro /sales_anuais:", e);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // --- ROTA DE RAIO-X (DEBUG MELHORADO) ---
@@ -2578,15 +2571,15 @@ app.get('/anuais/summary', async (req, res) => {
     const db = await open({ filename: ANUAL_DB_PATH, driver: sqlite3.Database });
 
     const q = `
-      SELECT
-        ano,
-        SUM(venda_total)  AS venda_total,
-        SUM(seguro_total) AS seguro_total
-      FROM agg_lojas_mensal
-      WHERE ${securityFilter}
-        AND ano IN (${yearA}, ${yearB})
-        ${monthFilter}
-      GROUP BY ano
+        SELECT
+            ano,
+            SUM(vendas_total)  AS venda_total,
+            SUM(seguros_total) AS seguro_total
+        FROM agg_lojas_mensal
+        WHERE ${securityFilter}
+            AND ano IN (${yearA}, ${yearB})
+            ${monthFilter}
+        GROUP BY ano
     `;
 
     const rows = await db.all(q);
@@ -2619,15 +2612,17 @@ app.get('/anuais/lojas_compare', async (req, res) => {
     const db = await open({ filename: ANUAL_DB_PATH, driver: sqlite3.Database });
 
     const q = `
-      SELECT
-        ano, mes, loja, cnpj_empresa, regiao,
-        venda_total, venda_qtd,
-        seguro_total, seguro_qtd
-      FROM agg_lojas_mensal
-      WHERE ${securityFilter}
-        AND ano IN (${yearA}, ${yearB})
-        ${monthFilter}
-      ORDER BY loja ASC, ano ASC, mes ASC
+        SELECT
+            ano, mes, loja, cnpj_empresa, regiao,
+            vendas_total  AS venda_total,
+            vendas_qtd    AS venda_qtd,
+            seguros_total AS seguro_total,
+            seguros_qtd   AS seguro_qtd
+        FROM agg_lojas_mensal
+        WHERE ${securityFilter}
+            AND ano IN (${yearA}, ${yearB})
+            ${monthFilter}
+        ORDER BY loja ASC, ano ASC, mes ASC
     `;
 
     const rows = await db.all(q);
@@ -2655,16 +2650,18 @@ app.get('/anuais/vendedores_compare', async (req, res) => {
     const db = await open({ filename: ANUAL_DB_PATH, driver: sqlite3.Database });
 
     const q = `
-      SELECT
-        ano, mes, loja, cnpj_empresa, regiao, vendedor,
-        venda_total, venda_qtd,
-        seguro_total, seguro_qtd
-      FROM agg_vendedores_mensal
-      WHERE ${securityFilter}
-        AND ano IN (${yearA}, ${yearB})
-        ${monthFilter}
-        ${storeFilter}
-      ORDER BY vendedor ASC, loja ASC, ano ASC
+        SELECT
+            ano, mes, loja, cnpj_empresa, regiao, vendedor,
+            vendas_total  AS venda_total,
+            vendas_qtd    AS venda_qtd,
+            seguros_total AS seguro_total,
+            seguros_qtd   AS seguro_qtd
+        FROM agg_vendedores_mensal
+        WHERE ${securityFilter}
+            AND ano IN (${yearA}, ${yearB})
+            ${monthFilter}
+            ${storeFilter}
+        ORDER BY vendedor ASC, loja ASC, ano ASC
     `;
 
     const rows = await db.all(q);
