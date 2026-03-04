@@ -1620,18 +1620,22 @@ app.get('/sales_anuais', async (req, res) => {
 
     const db = await open({ filename: ANUAL_DB_PATH, driver: sqlite3.Database });
 
+    // ✅ Agora usa as colunas reais do banco anual:
+    // total_venda_real e qtd
+    // e devolve com alias "total_liquido" e "quantidade" pro React não quebrar.
     const query = `
       SELECT 
-        substr(data_emissao, 1, 7) || '-01' as data_emissao,
-        cnpj_empresa,
-        familia,
-        SUM(total_liquido) as total_liquido,
-        SUM(quantidade) as quantidade
+        printf('%04d-%02d-01', ano, mes) AS data_emissao,
+        cnpj_empresa AS cnpj_empresa,
+        UPPER(COALESCE(familia,'OUTROS')) AS familia,
+        SUM(COALESCE(total_venda_real,0)) AS total_liquido,
+        SUM(COALESCE(qtd,0)) AS quantidade
       FROM vendas_anuais
       WHERE ${securityFilter}
-        AND data_emissao IS NOT NULL
-      GROUP BY substr(data_emissao, 1, 7), cnpj_empresa, familia
-      ORDER BY data_emissao ASC
+        AND ano IS NOT NULL
+        AND mes IS NOT NULL
+      GROUP BY ano, mes, cnpj_empresa, UPPER(COALESCE(familia,'OUTROS'))
+      ORDER BY ano ASC, mes ASC
     `;
 
     const salesRaw = await db.all(query);
@@ -2670,6 +2674,81 @@ app.get('/anuais/vendedores_compare', async (req, res) => {
     res.json({ yearA, yearB, month, store, data: normalizeKeys(rows) });
   } catch (e: any) {
     console.error("Erro /anuais/vendedores_compare:", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/forecast/ano', async (req, res) => {
+  try {
+    const userId = String(req.query.userId || '');
+    const year = Number(req.query.year || new Date().getFullYear()); // ano alvo (ex 2026)
+
+    const securityFilter = await getSalesFilter(userId, 'vendas');
+    if (!fs.existsSync(GLOBAL_DB_PATH)) return res.json({});
+
+    const now = new Date();
+    const todayIso = now.toISOString().slice(0, 10);
+
+    const month = now.getMonth() + 1; // 1..12
+    const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+    const day = now.getDate();
+
+    const startMonth = `${year}-${String(month).padStart(2, '0')}-01`;
+    const startYear = `${year}-01-01`;
+
+    const db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+
+    // total do mês até hoje
+    const mtdRow = await db.get(`
+      SELECT COALESCE(SUM(total_liquido),0) AS total
+      FROM vendas
+      WHERE ${securityFilter}
+        AND data_emissao >= '${startMonth}'
+        AND data_emissao <= '${todayIso}'
+    `);
+
+    // total do ano até hoje
+    const ytdRow = await db.get(`
+      SELECT COALESCE(SUM(total_liquido),0) AS total
+      FROM vendas
+      WHERE ${securityFilter}
+        AND data_emissao >= '${startYear}'
+        AND data_emissao <= '${todayIso}'
+    `);
+
+    // meses com venda no ano (pra média mensal)
+    const monthsRow = await db.get(`
+      SELECT COUNT(DISTINCT substr(data_emissao,1,7)) AS meses
+      FROM vendas
+      WHERE ${securityFilter}
+        AND data_emissao >= '${startYear}'
+        AND data_emissao <= '${todayIso}'
+    `);
+
+    await db.close();
+
+    const monthSoFar = Number(mtdRow?.total || 0);
+    const ytd = Number(ytdRow?.total || 0);
+    const mesesComVenda = Math.max(1, Number(monthsRow?.meses || 1));
+
+    // projeções
+    const monthForecast = (day > 0) ? (monthSoFar / day) * daysInMonth : monthSoFar;
+    const avgMonthly = ytd / mesesComVenda;
+    const monthsRemaining = 12 - mesesComVenda;
+    const yearForecast = ytd + (avgMonthly * monthsRemaining);
+
+    res.json({
+      year,
+      month,
+      day,
+      daysInMonth,
+      month_so_far: monthSoFar,
+      month_forecast: monthForecast,
+      ytd,
+      year_forecast: yearForecast,
+    });
+  } catch (e: any) {
+    console.error("Erro /forecast/ano:", e);
     res.status(500).json({ error: e.message });
   }
 });

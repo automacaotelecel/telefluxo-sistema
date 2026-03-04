@@ -128,6 +128,12 @@ const extractYearMonth = (raw: any): { year: string; month: string } | null => {
   return null;
 };
 
+// ✅ ADIÇÃO: nomes de mês (pra exibir “Março”, etc.)
+const MONTH_FULL: Record<number, string> = {
+  1: 'Janeiro', 2: 'Fevereiro', 3: 'Março', 4: 'Abril', 5: 'Maio', 6: 'Junho',
+  7: 'Julho', 8: 'Agosto', 9: 'Setembro', 10: 'Outubro', 11: 'Novembro', 12: 'Dezembro'
+};
+
 export default function ComparativoAnual() {
   const [annualRawData, setAnnualRawData] = useState<any[]>([]);
   const [errorMsg, setErrorMsg] = useState<string>('');
@@ -142,6 +148,9 @@ export default function ComparativoAnual() {
   // ✅ COMPARATIVO: dois anos
   const [yearA, setYearA] = useState<string>('');
   const [yearB, setYearB] = useState<string>('');
+
+  // ✅ ADIÇÃO: dados de previsão (mês atual + projeção)
+  const [forecast, setForecast] = useState<any>(null);
 
   const API_URL = window.location.hostname === 'localhost'
     ? 'http://localhost:3000'
@@ -184,6 +193,22 @@ export default function ComparativoAnual() {
 
       setAnnualRawData(list);
       setErrorMsg('');
+
+      // ✅ ADIÇÃO: buscar previsão do ano selecionado (Ano B)
+      // (se a rota não existir, só ignora sem quebrar nada)
+      const targetYear = Number(yearB || new Date().getFullYear());
+      try {
+        const resForecast = await fetch(`${API_URL}/forecast/ano?userId=${userId}&year=${targetYear}`);
+        if (resForecast.ok) {
+          const f = await resForecast.json();
+          setForecast(f || null);
+        } else {
+          setForecast(null);
+        }
+      } catch (e) {
+        setForecast(null);
+      }
+
     } catch (err: any) {
       console.error(err);
       setErrorMsg("Erro ao carregar dados anuais. Verifique se o servidor está rodando.");
@@ -213,6 +238,16 @@ export default function ComparativoAnual() {
     setYearA((cur) => cur || prev);
     setYearB((cur) => cur || last);
   }, [yearsAvailable]);
+
+  // ✅ ADIÇÃO: quando trocar Ano B, recarrega previsão (sem apagar nada)
+  useEffect(() => {
+    // evita chamar antes de ter ano
+    if (!yearB) return;
+    // reaproveita o loadData pra não duplicar lógica e manter tudo consistente
+    // (não apaga nada, só garante que forecast acompanhe o Ano B)
+    loadData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [yearB]);
 
   const uniqueCategories = useMemo(() => {
     const cats = new Set(
@@ -319,6 +354,13 @@ export default function ComparativoAnual() {
 
   const noData = (computed.totalA + computed.totalB) <= 0;
 
+  // ✅ ADIÇÃO: helpers de forecast (sem mexer em nada do resto)
+  const monthLabel = forecast?.month ? (MONTH_FULL[Number(forecast.month)] || `Mês ${forecast.month}`) : 'Mês atual';
+  const monthSoFar = toNumberSafe(forecast?.month_so_far);
+  const monthForecast = toNumberSafe(forecast?.month_forecast);
+  const yearForecast = toNumberSafe(forecast?.year_forecast);
+  const ytd = toNumberSafe(forecast?.ytd);
+
   return (
     <div className="h-full overflow-y-auto p-4 md:p-6 bg-[#F0F2F5] font-sans text-slate-800">
       {errorMsg && (
@@ -357,7 +399,8 @@ export default function ComparativoAnual() {
 
           {/* Ano B */}
           <div className="flex items-center bg-white border border-slate-200 px-3 py-2 rounded-lg gap-2 shadow-sm">
-            <Calendar size={14} className="text-purple-600" />
+            {/* ✅ TROCA DO ROXO -> VERDE */}
+            <Calendar size={14} className="text-emerald-600" />
             <select
               value={yearB}
               onChange={e => setYearB(e.target.value)}
@@ -438,7 +481,8 @@ export default function ComparativoAnual() {
       )}
 
       {/* CARDS */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+      {/* ✅ edit: aumentei pra 5 colunas no desktop pra incluir o card de previsão sem remover nada */}
+      <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-6">
         <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
           <div className="flex justify-between items-start mb-2">
             <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Total ({yearA || '—'})</span>
@@ -451,9 +495,11 @@ export default function ComparativoAnual() {
         <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
           <div className="flex justify-between items-start mb-2">
             <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Total ({yearB || '—'})</span>
-            <Calendar size={16} className="text-purple-600" />
+            {/* ✅ TROCA DO ROXO -> VERDE */}
+            <Calendar size={16} className="text-emerald-600" />
           </div>
-          <h3 className="text-2xl font-black text-purple-700 mt-1">{formatMoney(computed.totalB)}</h3>
+          {/* ✅ TROCA DO ROXO -> VERDE */}
+          <h3 className="text-2xl font-black text-emerald-700 mt-1">{formatMoney(computed.totalB)}</h3>
           <div className="text-[10px] font-bold text-slate-400 uppercase mt-1">Melhor loja: {computed.bestB.nome}</div>
         </div>
 
@@ -465,6 +511,30 @@ export default function ComparativoAnual() {
           <h3 className="text-2xl font-black text-emerald-700 mt-1">{formatMoney(computed.diff)}</h3>
           <div className="text-[10px] font-bold text-slate-400 uppercase mt-1">
             {computed.diffPct >= 0 ? '+' : ''}{computed.diffPct.toFixed(1)}%
+          </div>
+        </div>
+
+        {/* ✅ NOVO CARD: PREVISÃO */}
+        <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+          <div className="flex justify-between items-start mb-2">
+            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
+              Previsão ({yearB || '—'})
+            </span>
+            <TrendingUp size={16} className="text-sky-600" />
+          </div>
+
+          <div className="text-[10px] font-black text-slate-500 uppercase">
+            {monthLabel}: até agora / previsão
+          </div>
+          <div className="text-[12px] font-black text-slate-700 mt-1">
+            {formatMoney(monthSoFar)} <span className="text-slate-400">/</span> {formatMoney(monthForecast)}
+          </div>
+
+          <h3 className="text-xl font-black text-sky-700 mt-3">
+            {formatMoney(yearForecast)}
+          </h3>
+          <div className="text-[10px] font-bold text-slate-400 uppercase mt-1">
+            YTD: {formatMoney(ytd)}
           </div>
         </div>
 
@@ -513,12 +583,13 @@ export default function ComparativoAnual() {
               </Bar>
 
               {/* Ano B */}
-              <Bar dataKey={yearB || 'Ano B'} fill="#8B5CF6" radius={[4, 4, 0, 0]}>
+              {/* ✅ TROCA DO ROXO -> VERDE */}
+              <Bar dataKey={yearB || 'Ano B'} fill="#16A34A" radius={[4, 4, 0, 0]}>
                 <LabelList
                   dataKey={yearB || 'Ano B'}
                   position="top"
                   formatter={(val: any) => (Number(val) > 0 ? formatMoneyShort(Number(val)) : '')}
-                  style={{ fontSize: '10px', fill: '#8B5CF6', fontWeight: '900' }}
+                  style={{ fontSize: '10px', fill: '#16A34A', fontWeight: '900' }}
                 />
               </Bar>
             </BarChart>
