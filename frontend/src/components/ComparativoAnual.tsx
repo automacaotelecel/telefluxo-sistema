@@ -1,10 +1,27 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react';
 import {
-  XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, BarChart, Bar, Cell, LabelList
+  XAxis,
+  YAxis,
+  Tooltip,
+  ResponsiveContainer,
+  CartesianGrid,
+  BarChart,
+  Bar,
+  Cell,
+  LabelList
 } from 'recharts';
 import {
-  Calendar, Store, AlertCircle, ChevronDown, CheckSquare, Square, Filter, Layers,
-  Activity, LayoutGrid, TrendingUp
+  Calendar,
+  Store,
+  AlertCircle,
+  ChevronDown,
+  CheckSquare,
+  Square,
+  Filter,
+  Layers,
+  Activity,
+  LayoutGrid,
+  TrendingUp
 } from 'lucide-react';
 
 const STORE_MAP: Record<string, string> = {
@@ -25,14 +42,14 @@ const STORE_MAP: Record<string, string> = {
 
 const getStoreName = (raw: string) => {
   if (!raw) return "N/D";
-  const clean = raw.replace(/\D/g, '');
-  return STORE_MAP[clean] || STORE_MAP[raw] || raw;
+  const clean = String(raw).replace(/\D/g, '');
+  return STORE_MAP[clean] || STORE_MAP[String(raw)] || String(raw);
 };
 
 const formatMoneyShort = (val: number) => {
   if (!val) return 'R$ 0';
-  if (val >= 1000000) return `R$ ${(val / 1000000).toFixed(1)}M`;
-  if (val >= 1000) return `R$ ${(val / 1000).toFixed(0)}k`;
+  if (val >= 1_000_000) return `R$ ${(val / 1_000_000).toFixed(1)}M`;
+  if (val >= 1_000) return `R$ ${(val / 1_000).toFixed(0)}k`;
   return `R$ ${val.toFixed(0)}`;
 };
 
@@ -101,7 +118,7 @@ const extractYearMonth = (raw: any): { year: string; month: string } | null => {
   }
 
   // timestamp (ms)
-  if (typeof raw === 'number' && raw > 1000000000) {
+  if (typeof raw === 'number' && raw > 1_000_000_000) {
     const d = new Date(raw);
     if (!isNaN(d.getTime())) {
       const y = d.getFullYear();
@@ -114,7 +131,7 @@ const extractYearMonth = (raw: any): { year: string; month: string } | null => {
 
   // "2026"
   if (/^\d{4}$/.test(s)) {
-    return { year: s, month: '01' }; // mês default só pra não matar (não usamos mês aqui pra somar por mês? usamos sim. então deixe 01.)
+    return { year: s, month: '01' };
   }
 
   // Normaliza separadores
@@ -140,7 +157,12 @@ const extractYearMonth = (raw: any): { year: string; month: string } | null => {
     }
 
     // DD/MM/YYYY
-    if (parts.length === 3 && /^\d{1,2}$/.test(parts[0]) && /^\d{1,2}$/.test(parts[1]) && /^\d{4}$/.test(parts[2])) {
+    if (
+      parts.length === 3 &&
+      /^\d{1,2}$/.test(parts[0]) &&
+      /^\d{1,2}$/.test(parts[1]) &&
+      /^\d{4}$/.test(parts[2])
+    ) {
       return { year: parts[2], month: String(parts[1]).padStart(2, '0') };
     }
   }
@@ -154,6 +176,44 @@ const extractYearMonth = (raw: any): { year: string; month: string } | null => {
   return null;
 };
 
+/** =========================
+ *  USER ID (BLINDADO)
+ *  ========================= */
+const getUserIdSafe = (): string => {
+  const keys = [
+    'user',
+    'telefluxo_user',
+    'telefluxoUser',
+    'telefluxo_user_data',
+    'auth',
+    'session'
+  ];
+
+  for (const k of keys) {
+    try {
+      const raw = localStorage.getItem(k);
+      if (!raw) continue;
+
+      const p = JSON.parse(raw);
+
+      const id =
+        p?.id ||
+        p?.userId ||
+        p?._id ||
+        p?.user?.id ||
+        p?.user?._id ||
+        p?.data?.id ||
+        p?.data?._id;
+
+      if (id) return String(id);
+    } catch {
+      // ignora e tenta próxima chave
+    }
+  }
+
+  return '';
+};
+
 export default function ComparativoAnual() {
   const [annualRawData, setAnnualRawData] = useState<any[]>([]);
   const [errorMsg, setErrorMsg] = useState<string>('');
@@ -164,15 +224,18 @@ export default function ComparativoAnual() {
   const storeMenuRef = useRef<HTMLDivElement>(null);
   const [categoryFilter, setCategoryFilter] = useState('TODAS');
 
-  const API_URL = window.location.hostname === 'localhost'
-    ? 'http://localhost:3000'
-    : 'https://telefluxo-aplicacao.onrender.com';
+  const API_URL =
+    window.location.hostname === 'localhost'
+      ? 'http://localhost:3000'
+      : 'https://telefluxo-aplicacao.onrender.com';
 
-  const targetYear = new Date().getFullYear().toString(); // "2026"
+  const targetYear = new Date().getFullYear().toString();
 
   useEffect(() => {
     function handleClickOutside(event: any) {
-      if (storeMenuRef.current && !storeMenuRef.current.contains(event.target)) setIsStoreMenuOpen(false);
+      if (storeMenuRef.current && !storeMenuRef.current.contains(event.target)) {
+        setIsStoreMenuOpen(false);
+      }
     }
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
@@ -181,17 +244,25 @@ export default function ComparativoAnual() {
   const loadData = async () => {
     setLoading(true);
 
-    let userId = '';
-    try {
-      const rawUser = localStorage.getItem('user') || localStorage.getItem('telefluxo_user');
-      if (rawUser) {
-        const parsed = JSON.parse(rawUser);
-        userId = parsed.id || parsed.userId || parsed._id || '';
-      }
-    } catch (e) { console.error(e); }
+    const userId = getUserIdSafe();
+
+    // ✅ Se não tiver userId, não chama o backend (evita WHERE 1=0)
+    if (!userId) {
+      setErrorMsg("Sessão inválida: userId não encontrado. Faça login novamente.");
+      setAnnualRawData([]);
+      setLoading(false);
+      return;
+    }
 
     try {
-      const resAnnual = await fetch(`${API_URL}/sales_anuais?userId=${userId}`);
+      const url = `${API_URL}/sales_anuais?userId=${encodeURIComponent(userId)}`;
+
+      // DEBUG (deixa ligado até estabilizar)
+      console.log("ANUAIS: userId:", userId);
+      console.log("ANUAIS: URL:", url);
+
+      const resAnnual = await fetch(url);
+
       if (!resAnnual.ok) {
         setErrorMsg("Rota de histórico anual não encontrada no servidor.");
         setAnnualRawData([]);
@@ -205,7 +276,6 @@ export default function ComparativoAnual() {
         (dataAnnual && Array.isArray(dataAnnual.data) && dataAnnual.data) ||
         (Array.isArray(dataAnnual) ? dataAnnual : []);
 
-      // DEBUG útil (deixa ligado até resolver):
       console.log("ANUAIS: total registros:", list.length);
       console.log("ANUAIS: amostra 5 datas:", list.slice(0, 5).map((r: any) => getDateValue(r)));
       console.log("ANUAIS: amostra 1 linha:", list[0]);
@@ -259,17 +329,14 @@ export default function ComparativoAnual() {
   const computed = useMemo(() => {
     const mesesNomes = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
 
-    // buckets mês -> total
     const monthlyTotals: Record<string, number> = {};
     for (let i = 1; i <= 12; i++) monthlyTotals[String(i).padStart(2, '0')] = 0;
 
-    // loja -> total
     const storeTotals: Record<string, number> = {};
 
     let totalYear = 0;
 
     for (const sale of annualRawData) {
-      // filtros loja/categoria
       const storeName = getStoreName(getStoreRaw(sale));
       const storeNameU = storeName.toUpperCase();
 
@@ -283,39 +350,31 @@ export default function ComparativoAnual() {
         if (cat !== categoryFilter) continue;
       }
 
-      // ano/mês
       const ym = extractYearMonth(getDateValue(sale));
       if (!ym) continue;
 
-      // 🔒 só ano atual
       if (ym.year !== targetYear) continue;
 
       const total = getTotal(sale);
       if (!total) continue;
 
       monthlyTotals[ym.month] = (monthlyTotals[ym.month] || 0) + total;
-
       storeTotals[storeName] = (storeTotals[storeName] || 0) + total;
-
       totalYear += total;
     }
 
-    // chart mês
     const chartData = Object.keys(monthlyTotals).map((mesNum, idx) => ({
       mes: mesesNomes[idx],
       mesNum,
       total: monthlyTotals[mesNum] || 0
     }));
 
-    // meses com venda
     const monthsWithData = chartData.filter(d => d.total > 0).length;
-    const currentMonthIndex = new Date().getMonth() + 1; // 1..12
+    const currentMonthIndex = new Date().getMonth() + 1;
 
-    // tendência anual: projeção usando YTD / mês atual
     const monthsBase = Math.max(1, Math.min(currentMonthIndex, 12));
     const tendenciaAnual = (totalYear / monthsBase) * 12;
 
-    // ranking lojas
     const storeRanking = Object.entries(storeTotals)
       .map(([nome, total]) => ({ nome, total }))
       .sort((a, b) => b.total - a.total);
@@ -336,7 +395,6 @@ export default function ComparativoAnual() {
 
   return (
     <div className="h-full overflow-y-auto p-4 md:p-6 bg-[#F0F2F5] font-sans text-slate-800">
-
       {errorMsg && (
         <div className="mb-4 bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative flex items-center gap-2">
           <AlertCircle size={20} />
@@ -387,12 +445,20 @@ export default function ComparativoAnual() {
 
             {isStoreMenuOpen && (
               <div className="absolute top-full right-0 mt-2 w-64 bg-white rounded-xl shadow-xl border border-slate-100 z-50 p-2 max-h-80 overflow-y-auto">
-                <div onClick={() => setSelectedStores([])} className="flex items-center gap-3 p-3 hover:bg-slate-50 rounded-lg cursor-pointer border-b border-slate-50 mb-1">
+                <div
+                  onClick={() => setSelectedStores([])}
+                  className="flex items-center gap-3 p-3 hover:bg-slate-50 rounded-lg cursor-pointer border-b border-slate-50 mb-1"
+                >
                   {selectedStores.length === 0 ? <CheckSquare size={16} className="text-blue-600" /> : <Square size={16} className="text-slate-300" />}
                   <span className="text-xs font-bold text-slate-700 uppercase">Todas as Lojas</span>
                 </div>
+
                 {uniqueStores.map((store: string) => (
-                  <div key={store} onClick={() => toggleStore(store)} className="flex items-center gap-3 p-3 hover:bg-slate-50 rounded-lg cursor-pointer">
+                  <div
+                    key={store}
+                    onClick={() => toggleStore(store)}
+                    className="flex items-center gap-3 p-3 hover:bg-slate-50 rounded-lg cursor-pointer"
+                  >
                     {selectedStores.includes(store) ? <CheckSquare size={16} className="text-blue-600" /> : <Square size={16} className="text-slate-300" />}
                     <span className="text-xs font-bold text-slate-600 uppercase truncate">{store}</span>
                   </div>
@@ -572,9 +638,7 @@ export default function ComparativoAnual() {
                   {computed.storeRanking.slice(0, 10).map((r, i) => (
                     <tr key={i} className="hover:bg-slate-50 transition-colors">
                       <td className="py-3 pr-2 w-8">
-                        <span className={`w-6 h-6 flex items-center justify-center rounded text-[10px] font-black ${
-                          i === 0 ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'
-                        }`}>
+                        <span className={`w-6 h-6 flex items-center justify-center rounded text-[10px] font-black ${i === 0 ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
                           {i + 1}
                         </span>
                       </td>
@@ -594,7 +658,6 @@ export default function ComparativoAnual() {
           </div>
         </div>
       </div>
-
     </div>
   );
 }
