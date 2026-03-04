@@ -1,27 +1,10 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react';
 import {
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-  CartesianGrid,
-  BarChart,
-  Bar,
-  Cell,
-  LabelList
+  XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, BarChart, Bar, Cell, LabelList, Legend
 } from 'recharts';
 import {
-  Calendar,
-  Store,
-  AlertCircle,
-  ChevronDown,
-  CheckSquare,
-  Square,
-  Filter,
-  Layers,
-  Activity,
-  LayoutGrid,
-  TrendingUp
+  Calendar, Store, AlertCircle, ChevronDown, CheckSquare, Square, Filter, Layers,
+  Activity, LayoutGrid, TrendingUp
 } from 'lucide-react';
 
 const STORE_MAP: Record<string, string> = {
@@ -42,23 +25,20 @@ const STORE_MAP: Record<string, string> = {
 
 const getStoreName = (raw: string) => {
   if (!raw) return "N/D";
-  const clean = String(raw).replace(/\D/g, '');
-  return STORE_MAP[clean] || STORE_MAP[String(raw)] || String(raw);
+  const clean = raw.replace(/\D/g, '');
+  return STORE_MAP[clean] || STORE_MAP[raw] || raw;
 };
 
 const formatMoneyShort = (val: number) => {
   if (!val) return 'R$ 0';
-  if (val >= 1_000_000) return `R$ ${(val / 1_000_000).toFixed(1)}M`;
-  if (val >= 1_000) return `R$ ${(val / 1_000).toFixed(0)}k`;
+  if (val >= 1000000) return `R$ ${(val / 1000000).toFixed(1)}M`;
+  if (val >= 1000) return `R$ ${(val / 1000).toFixed(0)}k`;
   return `R$ ${val.toFixed(0)}`;
 };
 
 const formatMoney = (val: number) =>
   new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val || 0);
 
-/** =========================
- *  HELPERS (BLINDAGEM)
- *  ========================= */
 type AnyRow = Record<string, any>;
 
 const pick = (obj: AnyRow, keys: string[], fallback: any = undefined) => {
@@ -98,27 +78,16 @@ const getCategory = (sale: AnyRow) =>
     .trim()
     .toUpperCase();
 
-/**
- * Extrai {year, month} de:
- * - "2026-02-01", "2026-02"
- * - "01/02/2026"
- * - "2026/02/01", "2026/02"
- * - "2026"
- * - timestamp ms (1709251200000)
- * - Date object
- */
 const extractYearMonth = (raw: any): { year: string; month: string } | null => {
   if (raw === null || raw === undefined || raw === '') return null;
 
-  // Date object
   if (raw instanceof Date && !isNaN(raw.getTime())) {
     const y = raw.getFullYear();
     const m = String(raw.getMonth() + 1).padStart(2, '0');
     return { year: String(y), month: m };
   }
 
-  // timestamp (ms)
-  if (typeof raw === 'number' && raw > 1_000_000_000) {
+  if (typeof raw === 'number' && raw > 1000000000) {
     const d = new Date(raw);
     if (!isNaN(d.getTime())) {
       const y = d.getFullYear();
@@ -128,16 +97,10 @@ const extractYearMonth = (raw: any): { year: string; month: string } | null => {
   }
 
   const s = String(raw).trim();
+  if (/^\d{4}$/.test(s)) return { year: s, month: '01' };
 
-  // "2026"
-  if (/^\d{4}$/.test(s)) {
-    return { year: s, month: '01' };
-  }
-
-  // Normaliza separadores
   const ss = s.replace(/\./g, '/').replace(/\s+/g, '');
 
-  // "YYYY-MM-DD" ou "YYYY-MM"
   if (ss.includes('-')) {
     const parts = ss.split('-').filter(Boolean);
     const year = parts[0];
@@ -147,71 +110,22 @@ const extractYearMonth = (raw: any): { year: string; month: string } | null => {
     }
   }
 
-  // "DD/MM/YYYY" ou "YYYY/MM/DD" ou "YYYY/MM"
   if (ss.includes('/')) {
     const parts = ss.split('/').filter(Boolean);
 
-    // YYYY/MM(/DD)
     if (parts.length >= 2 && /^\d{4}$/.test(parts[0]) && /^\d{1,2}$/.test(parts[1])) {
       return { year: parts[0], month: String(parts[1]).padStart(2, '0') };
     }
 
-    // DD/MM/YYYY
-    if (
-      parts.length === 3 &&
-      /^\d{1,2}$/.test(parts[0]) &&
-      /^\d{1,2}$/.test(parts[1]) &&
-      /^\d{4}$/.test(parts[2])
-    ) {
+    if (parts.length === 3 && /^\d{1,2}$/.test(parts[0]) && /^\d{1,2}$/.test(parts[1]) && /^\d{4}$/.test(parts[2])) {
       return { year: parts[2], month: String(parts[1]).padStart(2, '0') };
     }
   }
 
-  // tenta achar YYYY e MM em qualquer lugar
   const m = ss.match(/(\d{4}).*?(\d{1,2})/);
-  if (m && m[1] && m[2]) {
-    return { year: m[1], month: String(m[2]).padStart(2, '0') };
-  }
+  if (m?.[1] && m?.[2]) return { year: m[1], month: String(m[2]).padStart(2, '0') };
 
   return null;
-};
-
-/** =========================
- *  USER ID (BLINDADO)
- *  ========================= */
-const getUserIdSafe = (): string => {
-  const keys = [
-    'user',
-    'telefluxo_user',
-    'telefluxoUser',
-    'telefluxo_user_data',
-    'auth',
-    'session'
-  ];
-
-  for (const k of keys) {
-    try {
-      const raw = localStorage.getItem(k);
-      if (!raw) continue;
-
-      const p = JSON.parse(raw);
-
-      const id =
-        p?.id ||
-        p?.userId ||
-        p?._id ||
-        p?.user?.id ||
-        p?.user?._id ||
-        p?.data?.id ||
-        p?.data?._id;
-
-      if (id) return String(id);
-    } catch {
-      // ignora e tenta próxima chave
-    }
-  }
-
-  return '';
 };
 
 export default function ComparativoAnual() {
@@ -222,20 +136,20 @@ export default function ComparativoAnual() {
   const [selectedStores, setSelectedStores] = useState<string[]>([]);
   const [isStoreMenuOpen, setIsStoreMenuOpen] = useState(false);
   const storeMenuRef = useRef<HTMLDivElement>(null);
+
   const [categoryFilter, setCategoryFilter] = useState('TODAS');
 
-  const API_URL =
-    window.location.hostname === 'localhost'
-      ? 'http://localhost:3000'
-      : 'https://telefluxo-aplicacao.onrender.com';
+  // ✅ COMPARATIVO: dois anos
+  const [yearA, setYearA] = useState<string>('');
+  const [yearB, setYearB] = useState<string>('');
 
-  const targetYear = new Date().getFullYear().toString();
+  const API_URL = window.location.hostname === 'localhost'
+    ? 'http://localhost:3000'
+    : 'https://telefluxo-aplicacao.onrender.com';
 
   useEffect(() => {
     function handleClickOutside(event: any) {
-      if (storeMenuRef.current && !storeMenuRef.current.contains(event.target)) {
-        setIsStoreMenuOpen(false);
-      }
+      if (storeMenuRef.current && !storeMenuRef.current.contains(event.target)) setIsStoreMenuOpen(false);
     }
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
@@ -244,25 +158,17 @@ export default function ComparativoAnual() {
   const loadData = async () => {
     setLoading(true);
 
-    const userId = getUserIdSafe();
-
-    // ✅ Se não tiver userId, não chama o backend (evita WHERE 1=0)
-    if (!userId) {
-      setErrorMsg("Sessão inválida: userId não encontrado. Faça login novamente.");
-      setAnnualRawData([]);
-      setLoading(false);
-      return;
-    }
+    let userId = '';
+    try {
+      const rawUser = localStorage.getItem('user') || localStorage.getItem('telefluxo_user');
+      if (rawUser) {
+        const parsed = JSON.parse(rawUser);
+        userId = parsed.id || parsed.userId || parsed._id || '';
+      }
+    } catch (e) { console.error(e); }
 
     try {
-      const url = `${API_URL}/sales_anuais?userId=${encodeURIComponent(userId)}`;
-
-      // DEBUG (deixa ligado até estabilizar)
-      console.log("ANUAIS: userId:", userId);
-      console.log("ANUAIS: URL:", url);
-
-      const resAnnual = await fetch(url);
-
+      const resAnnual = await fetch(`${API_URL}/sales_anuais?userId=${userId}`);
       if (!resAnnual.ok) {
         setErrorMsg("Rota de histórico anual não encontrada no servidor.");
         setAnnualRawData([]);
@@ -276,10 +182,6 @@ export default function ComparativoAnual() {
         (dataAnnual && Array.isArray(dataAnnual.data) && dataAnnual.data) ||
         (Array.isArray(dataAnnual) ? dataAnnual : []);
 
-      console.log("ANUAIS: total registros:", list.length);
-      console.log("ANUAIS: amostra 5 datas:", list.slice(0, 5).map((r: any) => getDateValue(r)));
-      console.log("ANUAIS: amostra 1 linha:", list[0]);
-
       setAnnualRawData(list);
       setErrorMsg('');
     } catch (err: any) {
@@ -292,6 +194,25 @@ export default function ComparativoAnual() {
   };
 
   useEffect(() => { loadData(); }, []);
+
+  const yearsAvailable = useMemo(() => {
+    const set = new Set<string>();
+    for (const sale of annualRawData) {
+      const ym = extractYearMonth(getDateValue(sale));
+      if (ym?.year) set.add(ym.year);
+    }
+    return Array.from(set).sort();
+  }, [annualRawData]);
+
+  // ✅ default: últimos 2 anos do banco
+  useEffect(() => {
+    if (!yearsAvailable.length) return;
+    const last = yearsAvailable[yearsAvailable.length - 1];
+    const prev = yearsAvailable.length >= 2 ? yearsAvailable[yearsAvailable.length - 2] : last;
+
+    setYearA((cur) => cur || prev);
+    setYearB((cur) => cur || last);
+  }, [yearsAvailable]);
 
   const uniqueCategories = useMemo(() => {
     const cats = new Set(
@@ -316,25 +237,26 @@ export default function ComparativoAnual() {
     else setSelectedStores([...selectedStores, store]);
   };
 
-  // anos presentes (pra mensagem ficar inteligente)
-  const yearsAvailable = useMemo(() => {
-    const set = new Set<string>();
-    for (const sale of annualRawData) {
-      const ym = extractYearMonth(getDateValue(sale));
-      if (ym?.year) set.add(ym.year);
-    }
-    return Array.from(set).sort();
-  }, [annualRawData]);
-
   const computed = useMemo(() => {
     const mesesNomes = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
 
-    const monthlyTotals: Record<string, number> = {};
-    for (let i = 1; i <= 12; i++) monthlyTotals[String(i).padStart(2, '0')] = 0;
+    const years = [yearA, yearB].filter(Boolean);
+    const monthKeys = Array.from({ length: 12 }, (_, i) => String(i + 1).padStart(2, '0'));
 
-    const storeTotals: Record<string, number> = {};
+    // year -> month -> total
+    const totalsByYearMonth: Record<string, Record<string, number>> = {};
+    for (const y of years) {
+      totalsByYearMonth[y] = {};
+      for (const m of monthKeys) totalsByYearMonth[y][m] = 0;
+    }
 
-    let totalYear = 0;
+    // year -> store -> total
+    const storeTotalsByYear: Record<string, Record<string, number>> = {};
+    for (const y of years) storeTotalsByYear[y] = {};
+
+    // year totals
+    const totalByYear: Record<string, number> = {};
+    for (const y of years) totalByYear[y] = 0;
 
     for (const sale of annualRawData) {
       const storeName = getStoreName(getStoreRaw(sale));
@@ -353,45 +275,49 @@ export default function ComparativoAnual() {
       const ym = extractYearMonth(getDateValue(sale));
       if (!ym) continue;
 
-      if (ym.year !== targetYear) continue;
+      if (!years.includes(ym.year)) continue;
 
       const total = getTotal(sale);
       if (!total) continue;
 
-      monthlyTotals[ym.month] = (monthlyTotals[ym.month] || 0) + total;
-      storeTotals[storeName] = (storeTotals[storeName] || 0) + total;
-      totalYear += total;
+      totalsByYearMonth[ym.year][ym.month] = (totalsByYearMonth[ym.year][ym.month] || 0) + total;
+
+      storeTotalsByYear[ym.year][storeName] = (storeTotalsByYear[ym.year][storeName] || 0) + total;
+      totalByYear[ym.year] += total;
     }
 
-    const chartData = Object.keys(monthlyTotals).map((mesNum, idx) => ({
+    // chart: cada mês tem colunas yearA e yearB
+    const chartData = monthKeys.map((m, idx) => ({
       mes: mesesNomes[idx],
-      mesNum,
-      total: monthlyTotals[mesNum] || 0
+      mesNum: m,
+      [yearA || 'Ano A']: yearA ? (totalsByYearMonth[yearA]?.[m] || 0) : 0,
+      [yearB || 'Ano B']: yearB ? (totalsByYearMonth[yearB]?.[m] || 0) : 0,
     }));
 
-    const monthsWithData = chartData.filter(d => d.total > 0).length;
-    const currentMonthIndex = new Date().getMonth() + 1;
+    const totalA = yearA ? (totalByYear[yearA] || 0) : 0;
+    const totalB = yearB ? (totalByYear[yearB] || 0) : 0;
+    const diff = totalB - totalA;
+    const diffPct = totalA > 0 ? (diff / totalA) * 100 : (totalB > 0 ? 100 : 0);
 
-    const monthsBase = Math.max(1, Math.min(currentMonthIndex, 12));
-    const tendenciaAnual = (totalYear / monthsBase) * 12;
-
-    const storeRanking = Object.entries(storeTotals)
-      .map(([nome, total]) => ({ nome, total }))
-      .sort((a, b) => b.total - a.total);
-
-    const bestStore = storeRanking[0] || { nome: '—', total: 0 };
+    const bestStoreByYear = (y: string) => {
+      const entries = Object.entries(storeTotalsByYear[y] || {})
+        .map(([nome, total]) => ({ nome, total }))
+        .sort((a, b) => b.total - a.total);
+      return entries[0] || { nome: '—', total: 0 };
+    };
 
     return {
       chartData,
-      totalYear,
-      tendenciaAnual: Math.max(tendenciaAnual, totalYear),
-      monthsWithData,
-      storeRanking,
-      bestStore
+      totalA,
+      totalB,
+      diff,
+      diffPct,
+      bestA: yearA ? bestStoreByYear(yearA) : { nome: '—', total: 0 },
+      bestB: yearB ? bestStoreByYear(yearB) : { nome: '—', total: 0 },
     };
-  }, [annualRawData, selectedStores, categoryFilter, targetYear]);
+  }, [annualRawData, selectedStores, categoryFilter, yearA, yearB]);
 
-  const noDataThisYear = computed.totalYear <= 0;
+  const noData = (computed.totalA + computed.totalB) <= 0;
 
   return (
     <div className="h-full overflow-y-auto p-4 md:p-6 bg-[#F0F2F5] font-sans text-slate-800">
@@ -407,14 +333,41 @@ export default function ComparativoAnual() {
         <div>
           <div className="flex items-center gap-2 mb-1">
             <div className="p-2 bg-[#1428A0] rounded text-white"><Activity size={18} /></div>
-            <h1 className="text-lg font-black uppercase tracking-tight text-[#1428A0]">Vendas Anuais ({targetYear})</h1>
+            <h1 className="text-lg font-black uppercase tracking-tight text-[#1428A0]">
+              Comparativo Anual ({yearA || '—'} x {yearB || '—'})
+            </h1>
           </div>
           <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-10">
-            Meses do ano • Tendência anual • Desempenho das lojas
+            Histórico completo • Comparativo entre anos • Desempenho das lojas
           </p>
         </div>
 
         <div className="flex flex-wrap gap-3 items-center w-full xl:w-auto">
+          {/* Ano A */}
+          <div className="flex items-center bg-white border border-slate-200 px-3 py-2 rounded-lg gap-2 shadow-sm">
+            <Calendar size={14} className="text-blue-600" />
+            <select
+              value={yearA}
+              onChange={e => setYearA(e.target.value)}
+              className="bg-transparent text-xs font-bold text-slate-600 uppercase outline-none cursor-pointer max-w-[120px] truncate"
+            >
+              {yearsAvailable.map(y => <option key={y} value={y}>{y}</option>)}
+            </select>
+          </div>
+
+          {/* Ano B */}
+          <div className="flex items-center bg-white border border-slate-200 px-3 py-2 rounded-lg gap-2 shadow-sm">
+            <Calendar size={14} className="text-purple-600" />
+            <select
+              value={yearB}
+              onChange={e => setYearB(e.target.value)}
+              className="bg-transparent text-xs font-bold text-slate-600 uppercase outline-none cursor-pointer max-w-[120px] truncate"
+            >
+              {yearsAvailable.map(y => <option key={y} value={y}>{y}</option>)}
+            </select>
+          </div>
+
+          {/* Categoria */}
           <div className="flex items-center bg-white border border-slate-200 px-3 py-2 rounded-lg gap-2 shadow-sm">
             <Layers size={14} className="text-blue-600" />
             <select
@@ -427,6 +380,7 @@ export default function ComparativoAnual() {
             </select>
           </div>
 
+          {/* Lojas */}
           <div className="relative" ref={storeMenuRef}>
             <button
               onClick={() => setIsStoreMenuOpen(!isStoreMenuOpen)}
@@ -445,20 +399,12 @@ export default function ComparativoAnual() {
 
             {isStoreMenuOpen && (
               <div className="absolute top-full right-0 mt-2 w-64 bg-white rounded-xl shadow-xl border border-slate-100 z-50 p-2 max-h-80 overflow-y-auto">
-                <div
-                  onClick={() => setSelectedStores([])}
-                  className="flex items-center gap-3 p-3 hover:bg-slate-50 rounded-lg cursor-pointer border-b border-slate-50 mb-1"
-                >
+                <div onClick={() => setSelectedStores([])} className="flex items-center gap-3 p-3 hover:bg-slate-50 rounded-lg cursor-pointer border-b border-slate-50 mb-1">
                   {selectedStores.length === 0 ? <CheckSquare size={16} className="text-blue-600" /> : <Square size={16} className="text-slate-300" />}
                   <span className="text-xs font-bold text-slate-700 uppercase">Todas as Lojas</span>
                 </div>
-
                 {uniqueStores.map((store: string) => (
-                  <div
-                    key={store}
-                    onClick={() => toggleStore(store)}
-                    className="flex items-center gap-3 p-3 hover:bg-slate-50 rounded-lg cursor-pointer"
-                  >
+                  <div key={store} onClick={() => toggleStore(store)} className="flex items-center gap-3 p-3 hover:bg-slate-50 rounded-lg cursor-pointer">
                     {selectedStores.includes(store) ? <CheckSquare size={16} className="text-blue-600" /> : <Square size={16} className="text-slate-300" />}
                     <span className="text-xs font-bold text-slate-600 uppercase truncate">{store}</span>
                   </div>
@@ -477,16 +423,14 @@ export default function ComparativoAnual() {
         </div>
       </div>
 
-      {/* AVISO */}
-      {noDataThisYear && !loading && !errorMsg && (
+      {noData && !loading && !errorMsg && (
         <div className="bg-yellow-50 border border-yellow-200 text-yellow-700 p-4 rounded-xl flex items-center gap-3 mb-6">
           <AlertCircle size={20} />
           <div className="text-sm font-bold">
-            Nenhuma venda encontrada para <b>{targetYear}</b> com os filtros atuais.
+            Nenhuma venda encontrada para os anos selecionados com os filtros atuais.
             {yearsAvailable.length > 0 && (
               <div className="text-[12px] font-bold mt-1">
                 Anos encontrados no banco: {yearsAvailable.join(', ')}.
-                (Se o último ano não for {targetYear}, você ainda não tem {targetYear} no histórico anual.)
               </div>
             )}
           </div>
@@ -494,59 +438,60 @@ export default function ComparativoAnual() {
       )}
 
       {/* CARDS */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
         <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
           <div className="flex justify-between items-start mb-2">
-            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Total do Ano ({targetYear})</span>
+            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Total ({yearA || '—'})</span>
             <Calendar size={16} className="text-indigo-600" />
           </div>
-          <h3 className="text-3xl font-black text-indigo-900 mt-1">
-            {formatMoney(computed.totalYear)}
-          </h3>
+          <h3 className="text-2xl font-black text-indigo-900 mt-1">{formatMoney(computed.totalA)}</h3>
+          <div className="text-[10px] font-bold text-slate-400 uppercase mt-1">Melhor loja: {computed.bestA.nome}</div>
+        </div>
+
+        <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+          <div className="flex justify-between items-start mb-2">
+            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Total ({yearB || '—'})</span>
+            <Calendar size={16} className="text-purple-600" />
+          </div>
+          <h3 className="text-2xl font-black text-purple-700 mt-1">{formatMoney(computed.totalB)}</h3>
+          <div className="text-[10px] font-bold text-slate-400 uppercase mt-1">Melhor loja: {computed.bestB.nome}</div>
+        </div>
+
+        <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+          <div className="flex justify-between items-start mb-2">
+            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Diferença (B - A)</span>
+            <TrendingUp size={16} className="text-emerald-600" />
+          </div>
+          <h3 className="text-2xl font-black text-emerald-700 mt-1">{formatMoney(computed.diff)}</h3>
           <div className="text-[10px] font-bold text-slate-400 uppercase mt-1">
-            acumulado em {computed.monthsWithData}/12 meses
+            {computed.diffPct >= 0 ? '+' : ''}{computed.diffPct.toFixed(1)}%
           </div>
         </div>
 
         <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
           <div className="flex justify-between items-start mb-2">
-            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Tendência Anual (Projeção)</span>
-            <TrendingUp size={16} className="text-purple-600" />
-          </div>
-          <h3 className="text-3xl font-black text-purple-700 mt-1">
-            {formatMoney(computed.tendenciaAnual)}
-          </h3>
-          <div className="text-[10px] font-bold text-purple-600 uppercase mt-1">
-            projeção por média mensal (YTD)
-          </div>
-        </div>
-
-        <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
-          <div className="flex justify-between items-start mb-2">
-            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Melhor Loja (Ano)</span>
+            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Melhor Loja (Ano B)</span>
             <Store size={16} className="text-emerald-600" />
           </div>
-          <h3 className="text-xl font-black text-slate-800 mt-1 uppercase truncate" title={computed.bestStore.nome}>
-            {computed.bestStore.nome}
+          <h3 className="text-lg font-black text-slate-800 mt-1 uppercase truncate" title={computed.bestB.nome}>
+            {computed.bestB.nome}
           </h3>
-          <div className="text-[12px] font-black text-emerald-700 mt-1">
-            {formatMoney(computed.bestStore.total)}
-          </div>
+          <div className="text-[12px] font-black text-emerald-700 mt-1">{formatMoney(computed.bestB.total)}</div>
         </div>
       </div>
 
-      {/* VENDAS POR MÊS */}
-      <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm h-[360px] mb-6">
+      {/* GRÁFICO */}
+      <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm h-[380px] mb-6">
         <div className="flex items-center gap-2 mb-6">
           <Activity size={16} className="text-indigo-600" />
           <h3 className="font-black text-slate-700 uppercase text-xs">
-            Vendas por Mês ({targetYear})
+            Vendas por Mês ({yearA || '—'} x {yearB || '—'})
           </h3>
         </div>
 
         <div className="h-full pb-8">
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={computed.chartData} margin={{ top: 20, right: 10, left: 10, bottom: 0 }}>
+            <BarChart data={computed.chartData} margin={{ top: 10, right: 10, left: 10, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
               <XAxis dataKey="mes" tick={{ fontSize: 12, fontWeight: 'bold', fill: '#64748b' }} axisLine={false} tickLine={false} />
               <YAxis hide />
@@ -555,13 +500,25 @@ export default function ComparativoAnual() {
                 contentStyle={{ backgroundColor: '#1e293b', borderRadius: '8px', border: 'none', color: '#fff' }}
                 formatter={(val: any) => [formatMoney(Number(val) || 0), 'Faturamento']}
               />
+              <Legend />
 
-              <Bar dataKey="total" fill="#1428A0" radius={[4, 4, 0, 0]} name={`Ano ${targetYear}`}>
+              {/* Ano A */}
+              <Bar dataKey={yearA || 'Ano A'} fill="#1428A0" radius={[4, 4, 0, 0]}>
                 <LabelList
-                  dataKey="total"
+                  dataKey={yearA || 'Ano A'}
                   position="top"
                   formatter={(val: any) => (Number(val) > 0 ? formatMoneyShort(Number(val)) : '')}
                   style={{ fontSize: '10px', fill: '#1428A0', fontWeight: '900' }}
+                />
+              </Bar>
+
+              {/* Ano B */}
+              <Bar dataKey={yearB || 'Ano B'} fill="#8B5CF6" radius={[4, 4, 0, 0]}>
+                <LabelList
+                  dataKey={yearB || 'Ano B'}
+                  position="top"
+                  formatter={(val: any) => (Number(val) > 0 ? formatMoneyShort(Number(val)) : '')}
+                  style={{ fontSize: '10px', fill: '#8B5CF6', fontWeight: '900' }}
                 />
               </Bar>
             </BarChart>
@@ -569,95 +526,10 @@ export default function ComparativoAnual() {
         </div>
       </div>
 
-      {/* DESEMPENHO DAS LOJAS */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
-        <div className="lg:col-span-2 bg-white p-6 rounded-2xl border border-slate-200 shadow-sm h-[420px]">
-          <div className="flex items-center gap-2 mb-4">
-            <Store size={16} className="text-indigo-600" />
-            <h3 className="font-black text-slate-700 uppercase text-xs">
-              Ranking de Lojas ({targetYear})
-            </h3>
-          </div>
-
-          <div className="h-[340px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart
-                data={computed.storeRanking.slice(0, 20)}
-                layout="vertical"
-                margin={{ top: 10, right: 60, left: 10, bottom: 10 }}
-                barSize={16}
-              >
-                <CartesianGrid strokeDasharray="3 3" horizontal={true} vertical={false} stroke="#f1f5f9" />
-                <XAxis type="number" hide />
-                <YAxis
-                  dataKey="nome"
-                  type="category"
-                  width={220}
-                  tick={{ fontSize: 9, fontWeight: 900, fill: '#475569' }}
-                  interval={0}
-                />
-                <Tooltip
-                  cursor={{ fill: '#f1f5f9' }}
-                  contentStyle={{ backgroundColor: '#1e293b', borderRadius: '8px', border: 'none', color: '#fff' }}
-                  formatter={(val: any) => [formatMoney(Number(val) || 0), 'Faturamento']}
-                />
-                <Bar dataKey="total" radius={[0, 4, 4, 0]}>
-                  {computed.storeRanking.slice(0, 20).map((_, idx) => (
-                    <Cell key={idx} fill={idx === 0 ? '#25D366' : (idx < 3 ? '#1428A0' : '#94a3b8')} />
-                  ))}
-                  <LabelList
-                    dataKey="total"
-                    position="right"
-                    formatter={(val: any) => formatMoneyShort(Number(val) || 0)}
-                    style={{ fontSize: '9px', fontWeight: 'bold', fill: '#475569' }}
-                  />
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-          <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50">
-            <h3 className="font-bold text-slate-700 uppercase flex items-center gap-2 text-xs">
-              <LayoutGrid size={16} className="text-indigo-600" /> Top Lojas
-            </h3>
-            <span className="text-[10px] font-bold text-slate-400 uppercase">
-              {computed.storeRanking.length} lojas
-            </span>
-          </div>
-
-          <div className="p-4">
-            {computed.storeRanking.length === 0 ? (
-              <div className="p-10 text-center text-slate-400 font-bold text-sm">
-                Nenhuma loja com vendas no período.
-              </div>
-            ) : (
-              <table className="w-full text-left border-collapse">
-                <tbody className="divide-y divide-slate-50">
-                  {computed.storeRanking.slice(0, 10).map((r, i) => (
-                    <tr key={i} className="hover:bg-slate-50 transition-colors">
-                      <td className="py-3 pr-2 w-8">
-                        <span className={`w-6 h-6 flex items-center justify-center rounded text-[10px] font-black ${i === 0 ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
-                          {i + 1}
-                        </span>
-                      </td>
-                      <td className="py-3">
-                        <div className="text-[11px] font-black text-slate-700 uppercase truncate max-w-[180px]" title={r.nome}>
-                          {r.nome}
-                        </div>
-                      </td>
-                      <td className="py-3 text-right text-[12px] font-black text-[#1428A0]">
-                        {formatMoney(r.total)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
-        </div>
-      </div>
+      {/* (Opcional) você pode manter seu ranking/tabela aqui se quiser,
+          mas agora precisa decidir: ranking de qual ano? A/B ou combinado.
+          Se quiser, eu adapto pra mostrar duas tabs: "Ano A" e "Ano B". */}
+      
     </div>
   );
 }
