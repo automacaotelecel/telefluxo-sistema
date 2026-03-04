@@ -1620,21 +1620,19 @@ app.get('/sales_anuais', async (req, res) => {
 
     const db = await open({ filename: ANUAL_DB_PATH, driver: sqlite3.Database });
 
-    // ✅ Agora usa as colunas reais do banco anual:
-    // total_venda_real e qtd
-    // e devolve com alias "total_liquido" e "quantidade" pro React não quebrar.
+    // ✅ usa ano/mes do banco anual (mais confiável) e as colunas certas
     const query = `
-      SELECT 
+      SELECT
         printf('%04d-%02d-01', ano, mes) AS data_emissao,
-        cnpj_empresa AS cnpj_empresa,
-        UPPER(COALESCE(familia,'OUTROS')) AS familia,
-        SUM(COALESCE(total_venda_real,0)) AS total_liquido,
-        SUM(COALESCE(qtd,0)) AS quantidade
+        cnpj_empresa,
+        COALESCE(familia, 'OUTROS') AS familia,
+        SUM(COALESCE(total_venda_real, 0)) AS total_liquido,
+        SUM(COALESCE(qtd, 0)) AS quantidade
       FROM vendas_anuais
       WHERE ${securityFilter}
         AND ano IS NOT NULL
         AND mes IS NOT NULL
-      GROUP BY ano, mes, cnpj_empresa, UPPER(COALESCE(familia,'OUTROS'))
+      GROUP BY ano, mes, cnpj_empresa, COALESCE(familia, 'OUTROS')
       ORDER BY ano ASC, mes ASC
     `;
 
