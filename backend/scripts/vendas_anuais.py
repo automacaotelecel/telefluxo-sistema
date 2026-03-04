@@ -1,13 +1,9 @@
 # ===========================================
-# ⚡ RELATÓRIO DE VENDAS MICROVIX – ACUMULADO (ANO ATÉ MÊS PASSADO)
-# Lógica: Puxa do dia 01/01 do ano atual até o último dia do mês anterior.
-# Se estiver em janeiro: puxa o ano anterior inteiro.
-# Substitui todos os dados do banco para evitar duplicatas.
-#
-# ✅ Patch 2026-03-02:
-# - Garante timestamp=0 no LinxMovimento (evita retorno vazio por validação da API)
-# - Loga trecho do XML de resposta quando vier 0 linhas (diagnóstico de ResponseSuccess/mensagem)
-# - Parse mais robusto (BOM / erro de XML)
+# ⚡DESATIVADO POR TEMPO INDETERMINADO
+#  Tabela de vendas do ano criada de forma manual
+# Criada para economizar requisiçoes da API
+# 04.03.26 - 14:20 = ultima atualização
+# código não utilizado nessa data
 # ===========================================
 
 import requests

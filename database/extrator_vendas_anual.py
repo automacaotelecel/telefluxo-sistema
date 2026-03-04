@@ -1,61 +1,22 @@
-# ============================================================
-# ✅ EXTRATOR / INTEGRADOR (ANUAL) - SEM EXIGIR USER_ID
-# Mantém o comportamento do script antigo (não trava sem ID)
-# + Envia para endpoints anuais: /api/sync/vendas_anuais e /api/sync/vendedores_anuais
-# + Banco local separado: samsung_vendas_anuais.db
-# + Tabelas locais separadas: vendas_anuais / vendedores_anuais
-# + Excel anual: vendas_anuais.xlsm
-# ============================================================
-
-import pandas as pd
-import requests
 import os
 import re
-from typing import List, Dict, Any
 import sqlite3
 from datetime import datetime
-import time
+from typing import Any
 
-# ============================================================
-# ✅ CONFIGURAÇÃO DE URL AUTOMÁTICA (HÍBRIDA)
-# ============================================================
-def get_backend_url():
-    """
-    Tenta conectar no localhost. Se conseguir, usa LOCAL.
-    Se falhar (servidor local desligado), usa PRODUÇÃO.
-    """
-    local_url = "http://localhost:3000"
-    prod_url = "https://telefluxo-aplicacao.onrender.com"
-
-    print("🔍 Detectando ambiente...")
-    try:
-        requests.get(local_url, timeout=1)
-        print(f"🏠 Servidor Local encontrado! Usando: {local_url}")
-        return local_url
-    except Exception:
-        print(f"☁️ Servidor Local offline. Usando PRODUÇÃO: {prod_url}")
-        return prod_url
+import pandas as pd
 
 
 # ============================================================
-# ✅ CONFIGURAÇÕES (ANUAL)
+# CONFIG
 # ============================================================
-DB_COPIA_DIR = r"C:\Users\Usuario\Desktop\TeleFluxo_Instalador\database"
-DB_COPIA_PATH = os.path.join(DB_COPIA_DIR, "samsung_vendas_anuais.db")
+DB_DIR = r"C:\Users\Usuario\Desktop\TeleFluxo_Instalador\database"
+EXCEL_PATH = os.path.join(DB_DIR, "db_samsung.xlsx")
+DB_PATH = os.path.join(DB_DIR, "samsung_vendas_anuais.db")
 
-# Excel anual (seu arquivo consolidado anual)
-CAMINHO_EXCEL = r"C:\Users\Usuario\Desktop\TeleFluxo_Instalador\database\vendas_anuais.xlsm"
-
-URL_BACKEND = get_backend_url()
-TIMEOUT = (10, 180)  # (conexão, resposta)
-
-# política de retry
-RETRY_STATUS = {502, 503, 504}
-MAX_RETRIES = 6
-BASE_WAIT_SECONDS = 8
 
 # ============================================================
-# MAPA DE LOJAS (CNPJ -> NOME)
+# MAPA DE LOJAS (CNPJ -> NOME)  [mantive o seu]
 # ============================================================
 LOJAS_MAP = {
     "12309173001309": "ARAGUAIA SHOPPING",
@@ -86,7 +47,6 @@ LOJAS_MAP = {
     "12309173001066": "CD TAGUATINGA",
 }
 
-# correções
 CORRECAO_NOMES = {
     "UBERABA": "UBERABA SHOPPING",
     "UBERLÂNDIA": "UBERLÂNDIA SHOPPING",
@@ -129,471 +89,336 @@ ALIASES_N = {norm(k): norm(v) for k, v in ALIASES.items()}
 def loja_para_cnpj(loja: Any) -> str | None:
     t = norm(loja)
 
-    # Correção manual primeiro
     if t in CORRECAO_NOMES:
         t = CORRECAO_NOMES[t]
 
-    # Remove prefixos comuns
     for prefix in ["SAMSUNG - MRF - ", "SSG "]:
         if t.startswith(prefix):
             t = norm(t[len(prefix):])
 
-    # Aplica aliases
     t = ALIASES_N.get(t, t)
-
     return REVERSE_LOJAS.get(t)
 
 
 def get_clean_store_name(raw_name: Any) -> str:
-    nome_sujo = norm(raw_name)
-
-    if nome_sujo in CORRECAO_NOMES:
-        return CORRECAO_NOMES[nome_sujo]
-
-    if nome_sujo in REVERSE_LOJAS:
-        return LOJAS_MAP[REVERSE_LOJAS[nome_sujo]]
-
-    cnpj = loja_para_cnpj(nome_sujo)
+    nome = norm(raw_name)
+    if nome in CORRECAO_NOMES:
+        return CORRECAO_NOMES[nome]
+    if nome in REVERSE_LOJAS:
+        return LOJAS_MAP[REVERSE_LOJAS[nome]]
+    cnpj = loja_para_cnpj(nome)
     if cnpj and cnpj in LOJAS_MAP:
         return LOJAS_MAP[cnpj]
-
-    return nome_sujo
-
-
-def limpar_valores_json(dados: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    cleaned = []
-    for row in dados:
-        new_row = {}
-        for k, v in row.items():
-            new_row[k] = None if pd.isna(v) else v
-        cleaned.append(new_row)
-    return cleaned
+    return nome
 
 
-# ============================================================
-# ✅ ENVIO EM LOTES (ANUAL) - com pausa pequena
-# ============================================================
-def enviar_dados_para_api(endpoint: str, dados: List[Dict[str, Any]]) -> bool:
-    if not isinstance(dados, list):
-        print("❌ ERRO: dados não é uma lista.")
-        return False
+def parse_any_date(series: pd.Series) -> pd.Series:
+    """Blindagem: datetime / serial excel / strings dd/mm/yyyy ou yyyy-mm-dd."""
+    s = series.copy()
 
-    if len(dados) == 0:
-        print(f"⚠️ Nenhum registro para enviar em {endpoint}.")
-        return True
+    if pd.api.types.is_datetime64_any_dtype(s):
+        return s
 
-    dados = limpar_valores_json(dados)
+    # serial excel
+    s_num = pd.to_numeric(s, errors="coerce")
+    dt_excel = pd.to_datetime(s_num, unit="D", origin="1899-12-30", errors="coerce")
 
-    # equilíbrio (você já testou que funciona bem)
-    BATCH_SIZE = 250
-    total_lotes = (len(dados) // BATCH_SIZE) + (1 if (len(dados) % BATCH_SIZE) else 0)
+    # strings
+    s_str = s.astype(str).str.strip()
+    s_date_only = s_str.str.split(" ").str[0].str.replace(".", "/", regex=False)
 
-    print(f"📡 Preparando envio de {len(dados)} registros em {total_lotes} lotes para {endpoint}...")
+    dt1 = pd.to_datetime(s_date_only, format="%Y-%m-%d", errors="coerce")
+    m = dt1.isna()
+    if m.any():
+        dt1.loc[m] = pd.to_datetime(s_date_only[m], format="%d/%m/%Y", errors="coerce")
+    m = dt1.isna()
+    if m.any():
+        dt1.loc[m] = pd.to_datetime(s_date_only[m], dayfirst=True, errors="coerce")
 
-    headers = {"Content-Type": "application/json"}
+    # fallback excel serial
+    m = dt1.isna()
+    if m.any():
+        dt1.loc[m] = dt_excel.loc[m]
 
-    for i in range(0, len(dados), BATCH_SIZE):
-        lote = dados[i: i + BATCH_SIZE]
-        lote_num = (i // BATCH_SIZE) + 1
-
-        # reset só no primeiro lote
-        param_reset = "true" if i == 0 else "false"
-        url_lote = f"{URL_BACKEND}{endpoint}?reset={param_reset}"
-
-        print(f"   📦 Enviando Lote {lote_num}/{total_lotes} ({len(lote)} itens)...")
-
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                response = requests.post(url_lote, json=lote, headers=headers, timeout=TIMEOUT)
-
-                if 200 <= response.status_code < 300:
-                    time.sleep(1.5)  # deixa o servidor respirar
-                    break
-
-                if response.status_code == 413:
-                    print(f"❌ ERRO 413: Lote {lote_num} muito grande. Reduza BATCH_SIZE.")
-                    return False
-
-                if response.status_code in RETRY_STATUS or "SQLITE_BUSY" in response.text:
-                    print(f"⚠️ Servidor ocupado/reiniciando (Erro {response.status_code}). Aguardando 15s...")
-                    time.sleep(15)
-                    continue
-
-                print(f"❌ ERRO FATAL no Lote {lote_num}: {response.status_code} -> {response.text[:300]}")
-                return False
-
-            except Exception as e:
-                print(f"⚠️ Falha de conexão no Lote {lote_num} (Tentativa {attempt}): {e}")
-                time.sleep(15)
-        else:
-            print(f"❌ Desistindo do Lote {lote_num} após {MAX_RETRIES} tentativas.")
-            return False
-
-    print("✅ Todos os lotes enviados com sucesso!")
-    return True
+    return dt1
 
 
-# ============================================================
-# ✅ SQLITE LOCAL (CÓPIA) - ANUAL
-# ============================================================
-def _sqlite_connect(db_path: str) -> sqlite3.Connection:
+def pick_sheet(xls: pd.ExcelFile, candidates: list[str]) -> str:
+    for name in candidates:
+        if name in xls.sheet_names:
+            return name
+    raise ValueError(f"Nenhuma aba encontrada entre: {candidates}. Abas no arquivo: {xls.sheet_names}")
+
+
+def recreate_db_schema(con: sqlite3.Connection) -> None:
+    cur = con.cursor()
+
+    # DROPS (recria tudo sempre)
+    cur.executescript(
+        """
+        DROP TABLE IF EXISTS vendas_anuais;
+        DROP TABLE IF EXISTS seguros_anuais;
+
+        DROP TABLE IF EXISTS agg_lojas_mensal;
+        DROP TABLE IF EXISTS agg_vendedores_mensal;
+
+        CREATE TABLE vendas_anuais (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            data_emissao TEXT,
+            ano INTEGER,
+            mes INTEGER,
+            loja TEXT,
+            cnpj_empresa TEXT,
+            nome_vendedor TEXT,
+            descricao TEXT,
+            familia TEXT,
+            regiao TEXT,
+            quantidade REAL,
+            total_liquido REAL
+        );
+
+        CREATE TABLE seguros_anuais (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            data_emissao TEXT,
+            ano INTEGER,
+            mes INTEGER,
+            loja TEXT,
+            cnpj_empresa TEXT,
+            nome_vendedor TEXT,
+            descricao TEXT,
+            regiao TEXT,
+            qtd REAL,
+            premio REAL,
+            nf TEXT
+        );
+
+        -- Agregado por LOJA/MÊS/ANO (vendas e seguros juntos)
+        CREATE TABLE agg_lojas_mensal (
+            ano INTEGER,
+            mes INTEGER,
+            loja TEXT,
+            cnpj_empresa TEXT,
+            regiao TEXT,
+            vendas_total REAL,
+            vendas_qtd REAL,
+            seguros_total REAL,
+            seguros_qtd REAL,
+            PRIMARY KEY (ano, mes, loja)
+        );
+
+        -- Agregado por VENDEDOR/MÊS/ANO (vendas e seguros juntos)
+        CREATE TABLE agg_vendedores_mensal (
+            ano INTEGER,
+            mes INTEGER,
+            loja TEXT,
+            cnpj_empresa TEXT,
+            regiao TEXT,
+            vendedor TEXT,
+            vendas_total REAL,
+            vendas_qtd REAL,
+            seguros_total REAL,
+            seguros_qtd REAL,
+            PRIMARY KEY (ano, mes, loja, vendedor)
+        );
+        """
+    )
+    con.commit()
+
+
+def build_db(excel_path: str, db_path: str) -> None:
+    if not os.path.exists(excel_path):
+        raise FileNotFoundError(f"Excel não encontrado: {excel_path}")
+
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
-    con = sqlite3.connect(db_path)
-    con.execute("PRAGMA journal_mode=WAL;")
-    con.execute("PRAGMA synchronous=NORMAL;")
-    con.execute("PRAGMA busy_timeout=15000;")
-    return con
 
+    xls = pd.ExcelFile(excel_path)
 
-def criar_tabelas_copia(db_path: str) -> None:
-    con = _sqlite_connect(db_path)
-    try:
-        cur = con.cursor()
+    # ✅ nomes reais / fallbacks
+    sheet_vendas = pick_sheet(xls, ["BASE_VENDAS", "VENDAS"])
+    sheet_seguros = pick_sheet(xls, ["BASE_SEGURO", "SEGUROS", "seguros"])
 
-        cur.execute("""
-        CREATE TABLE IF NOT EXISTS vendas_anuais (
-            data_emissao   TEXT,
-            nome_vendedor  TEXT,
-            descricao      TEXT,
-            quantidade     REAL,
-            total_liquido  REAL,
-            cnpj_empresa   TEXT,
-            familia        TEXT,
-            regiao         TEXT
-        )
-        """)
+    df_v = pd.read_excel(excel_path, sheet_name=sheet_vendas, engine="openpyxl")
+    df_s = pd.read_excel(excel_path, sheet_name=sheet_seguros, engine="openpyxl")
 
-        cur.execute("""
-        CREATE TABLE IF NOT EXISTS vendedores_anuais (
-            loja          TEXT,
-            vendedor      TEXT,
-            fat_atual     REAL,
-            tendencia     REAL,
-            fat_anterior  REAL,
-            crescimento   REAL,
-            pa            REAL,
-            ticket        REAL,
-            qtd           REAL,
-            regiao        TEXT,
-            pct_seguro    REAL,
-            seguros       REAL
-        )
-        """)
+    # ------------------------
+    # VENDAS: normalização
+    # ------------------------
+    if "CANCELADO" in df_v.columns:
+        df_v = df_v[df_v["CANCELADO"].astype(str).str.strip().str.upper() == "N"].copy()
 
-        cur.execute("""
-        CREATE TABLE IF NOT EXISTS _sync_meta_anual (
-            chave TEXT PRIMARY KEY,
-            valor TEXT
-        )
-        """)
+    # colunas esperadas na sua BASE_VENDAS (vi no arquivo):
+    # DATA_EMISSAO, NOME_VENDEDOR, DESCRICAO, CATEGORIA REAL, LOJA, REGIAO, QTD REAL, TOTAL REAL
+    required_v = ["DATA_EMISSAO", "NOME_VENDEDOR", "DESCRICAO", "LOJA"]
+    for c in required_v:
+        if c not in df_v.columns:
+            raise ValueError(f"Coluna obrigatória ausente em vendas: {c}. Colunas: {list(df_v.columns)}")
 
-        con.commit()
-    finally:
-        con.close()
+    dt_v = parse_any_date(df_v["DATA_EMISSAO"])
+    df_v = df_v.loc[dt_v.notna()].copy()
+    dt_v = dt_v.loc[dt_v.notna()]
 
+    df_v["data_emissao"] = dt_v.dt.strftime("%Y-%m-%d")
+    df_v["ano"] = dt_v.dt.year.astype(int)
+    df_v["mes"] = dt_v.dt.month.astype(int)
 
-def salvar_copia_vendas(dados_vendas: List[Dict[str, Any]], db_path: str = DB_COPIA_PATH) -> None:
-    criar_tabelas_copia(db_path)
-    con = _sqlite_connect(db_path)
-    try:
-        cur = con.cursor()
-        cur.execute("DELETE FROM vendas_anuais")
+    df_v["loja"] = df_v["LOJA"].apply(get_clean_store_name)
+    df_v["cnpj_empresa"] = df_v["loja"].map(loja_para_cnpj)
 
-        rows = []
-        for r in dados_vendas:
-            rows.append((
-                r.get("data_emissao"),
-                r.get("nome_vendedor"),
-                r.get("descricao"),
-                r.get("quantidade") if r.get("quantidade") is not None else 0,
-                r.get("total_liquido") if r.get("total_liquido") is not None else 0,
-                r.get("cnpj_empresa"),
-                r.get("familia"),
-                r.get("regiao"),
-            ))
+    df_v["nome_vendedor"] = df_v["NOME_VENDEDOR"].astype(str).str.strip().str.upper()
+    df_v["descricao"] = df_v["DESCRICAO"].astype(str).str.strip().str.upper()
 
-        cur.executemany("""
-            INSERT INTO vendas_anuais (
-                data_emissao, nome_vendedor, descricao, quantidade,
-                total_liquido, cnpj_empresa, familia, regiao
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, rows)
-
-        cur.execute("""
-            INSERT INTO _sync_meta_anual (chave, valor)
-            VALUES ('vendas_anuais_last_write', ?)
-            ON CONFLICT(chave) DO UPDATE SET valor=excluded.valor
-        """, (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),))
-
-        con.commit()
-        print(f"💾 Cópia local salva (vendas_anuais): {db_path} | Registros: {len(rows)}")
-    finally:
-        con.close()
-
-
-def salvar_copia_vendedores(dados_vendedores: List[Dict[str, Any]], db_path: str = DB_COPIA_PATH) -> None:
-    criar_tabelas_copia(db_path)
-    con = _sqlite_connect(db_path)
-    try:
-        cur = con.cursor()
-        cur.execute("DELETE FROM vendedores_anuais")
-
-        rows = []
-        for r in dados_vendedores:
-            rows.append((
-                r.get("loja"),
-                r.get("vendedor"),
-                r.get("fat_atual") if r.get("fat_atual") is not None else 0,
-                r.get("tendencia") if r.get("tendencia") is not None else 0,
-                r.get("fat_anterior") if r.get("fat_anterior") is not None else 0,
-                r.get("crescimento") if r.get("crescimento") is not None else 0,
-                r.get("pa") if r.get("pa") is not None else 0,
-                r.get("ticket") if r.get("ticket") is not None else 0,
-                r.get("qtd") if r.get("qtd") is not None else 0,
-                r.get("regiao"),
-                r.get("pct_seguro") if r.get("pct_seguro") is not None else 0,
-                r.get("seguros") if r.get("seguros") is not None else 0,
-            ))
-
-        cur.executemany("""
-            INSERT INTO vendedores_anuais (
-                loja, vendedor, fat_atual, tendencia, fat_anterior,
-                crescimento, pa, ticket, qtd, regiao, pct_seguro, seguros
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, rows)
-
-        cur.execute("""
-            INSERT INTO _sync_meta_anual (chave, valor)
-            VALUES ('vendedores_anuais_last_write', ?)
-            ON CONFLICT(chave) DO UPDATE SET valor=excluded.valor
-        """, (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),))
-
-        con.commit()
-        print(f"💾 Cópia local salva (vendedores_anuais): {db_path} | Registros: {len(rows)}")
-    finally:
-        con.close()
-
-
-# ============================================================
-# ✅ INTEGRAÇÕES (ANUAL)
-# ============================================================
-def integrar_vendas_geral() -> bool:
-    if not os.path.exists(CAMINHO_EXCEL):
-        print(f"❌ Arquivo Excel não encontrado em: {CAMINHO_EXCEL}")
-        return False
-
-    print("📊 Lendo Excel ANUAL (Aba VENDAS)...")
-    try:
-        df = pd.read_excel(CAMINHO_EXCEL, sheet_name="VENDAS", engine="openpyxl")
-    except Exception as e:
-        print(f"❌ Erro leitura Excel VENDAS: {e}")
-        return False
-
-    print(f"📌 Linhas lidas (bruto): {len(df)}")
-
-    if "CANCELADO" in df.columns:
-        df = df[df["CANCELADO"].astype(str).str.strip().str.upper() == "N"].copy()
-        print(f"📌 Linhas após remover canceladas: {len(df)}")
-
-    col_data = "DATA_EMISSAO"
-    col_vendedor = "NOME_VENDEDOR"
-    col_desc = "DESCRICAO"
-    col_qtd = "QTD REAL" if "QTD REAL" in df.columns else "QUANTIDADE"
-    col_loja = "LOJA SISTEMA" if "LOJA SISTEMA" in df.columns else "NOME_FANTASIA"
-    col_familia = "CATEGORIA REAL" if "CATEGORIA REAL" in df.columns else "CATEGORIA"
-    col_regiao = "REGIAO"
-
-    # validações mínimas
-    for req in [col_data, col_vendedor, col_desc, col_loja]:
-        if req not in df.columns:
-            print(f"❌ ERRO: Coluna obrigatória '{req}' não encontrada na aba VENDAS.")
-            return False
-
-    if col_regiao not in df.columns:
-        df[col_regiao] = ""
-
-    try:
-        treated = pd.DataFrame()
-
-        treated["data_emissao"] = pd.to_datetime(df[col_data], dayfirst=True, errors="coerce")
-        treated = treated.dropna(subset=["data_emissao"])
-        treated["data_emissao"] = treated["data_emissao"].dt.strftime("%Y-%m-%d")
-
-        treated["nome_vendedor"] = df[col_vendedor].astype(str).str.strip().str.upper()
-        treated["descricao"] = df[col_desc].astype(str).str.strip().str.upper()
-
-        treated["quantidade"] = pd.to_numeric(df[col_qtd], errors="coerce").fillna(0) if col_qtd in df.columns else 0
-
-        # coluna S (índice 18) = valor real
-        if df.shape[1] <= 18:
-            print("❌ ERRO: planilha não tem a coluna S (índice 18) para VALOR REAL.")
-            return False
-        treated["total_liquido"] = pd.to_numeric(df.iloc[:, 18], errors="coerce").fillna(0)
-
-        treated["cnpj_empresa"] = df[col_loja].map(loja_para_cnpj)
-        treated["familia"] = df[col_familia].astype(str).str.strip().str.upper() if col_familia in df.columns else "OUTROS"
-        treated["regiao"] = df[col_regiao].astype(str).str.strip().str.upper()
-
-        treated = treated.dropna(subset=["cnpj_empresa"])
-
-        # mantém devoluções/negativos também (ANUAL geralmente inclui)
-        treated = treated[(treated["total_liquido"].abs() > 0.01) | (treated["quantidade"].abs() > 0.001)].copy()
-
-        print(f"✅ Linhas prontas para enviar (anuais): {len(treated)}")
-
-    except Exception as e:
-        print(f"❌ Erro tratamento VENDAS anuais: {e}")
-        return False
-
-    dados_json = treated.to_dict(orient="records")
-
-    # salva cópia local
-    salvar_copia_vendas(dados_json)
-
-    # envia para endpoint anual
-    ok = enviar_dados_para_api("/api/sync/vendas_anuais", dados_json)
-
-    if ok:
-        print("✅ Vendas anuais enviadas e sincronizadas com sucesso.")
-        time.sleep(3)
-        return True
-
-    print("❌ Falha ao enviar vendas anuais.")
-    return False
-
-
-def integrar_kpi_vendedores() -> bool:
-    print("🏆 Calculando KPIs Anuais...")
-
-    try:
-        df_vendas = pd.read_excel(CAMINHO_EXCEL, sheet_name="VENDAS", engine="openpyxl")
-        df_meta = pd.read_excel(CAMINHO_EXCEL, sheet_name="API VENDEDORES", engine="openpyxl")
-    except Exception as e:
-        print(f"❌ Erro leitura Excel (KPIs anuais): {e}")
-        return False
-
-    col_vendedor = "NOME_VENDEDOR"
-    col_loja = "LOJA SISTEMA" if "LOJA SISTEMA" in df_vendas.columns else "NOME_FANTASIA"
-
-    if "CANCELADO" in df_vendas.columns:
-        df_vendas = df_vendas[df_vendas["CANCELADO"].astype(str).str.strip().str.upper() == "N"].copy()
-
-    if col_vendedor not in df_vendas.columns or col_loja not in df_vendas.columns:
-        print("❌ ERRO: Colunas essenciais não encontradas na aba VENDAS (KPIs).")
-        return False
-
-    # total real = coluna S (índice 18)
-    if df_vendas.shape[1] <= 18:
-        print("❌ ERRO: planilha não tem a coluna S (índice 18) para TOTAL REAL.")
-        return False
-    df_vendas["total_real"] = pd.to_numeric(df_vendas.iloc[:, 18], errors="coerce").fillna(0)
-
-    # qtd_real
-    if "QTD REAL" in df_vendas.columns:
-        df_vendas["qtd_real"] = pd.to_numeric(df_vendas["QTD REAL"], errors="coerce").fillna(0)
-    elif "QUANTIDADE" in df_vendas.columns:
-        df_vendas["qtd_real"] = pd.to_numeric(df_vendas["QUANTIDADE"], errors="coerce").fillna(0)
-    else:
-        df_vendas["qtd_real"] = 0
-
-    if "NOTA_FISCAL" not in df_vendas.columns:
-        df_vendas["NOTA_FISCAL"] = ""
-    if "REGIAO" not in df_vendas.columns:
-        df_vendas["REGIAO"] = ""
-
-    # KPI real por vendedor
-    kpi_real = (
-        df_vendas.groupby(col_vendedor)
-        .agg({
-            "total_real": "sum",
-            "qtd_real": "sum",
-            col_loja: "first",
-            "NOTA_FISCAL": pd.Series.nunique,
-            "REGIAO": "first",
-        })
-        .reset_index()
+    df_v["familia"] = (
+        df_v["CATEGORIA REAL"].astype(str).str.strip().str.upper()
+        if "CATEGORIA REAL" in df_v.columns
+        else (df_v["CATEGORIA"].astype(str).str.strip().str.upper() if "CATEGORIA" in df_v.columns else "OUTROS")
     )
 
-    # metas/histórico
-    df_meta_clean = pd.DataFrame()
+    df_v["regiao"] = df_v["REGIAO"].astype(str).str.strip().str.upper() if "REGIAO" in df_v.columns else ""
+
+    df_v["quantidade"] = pd.to_numeric(df_v["QTD REAL"], errors="coerce").fillna(
+        pd.to_numeric(df_v.get("QUANTIDADE", 0), errors="coerce")
+    ).fillna(0)
+
+    # total
+    if "TOTAL REAL" in df_v.columns:
+        df_v["total_liquido"] = pd.to_numeric(df_v["TOTAL REAL"], errors="coerce").fillna(0)
+    elif "TOTAL_LIQUIDO" in df_v.columns:
+        df_v["total_liquido"] = pd.to_numeric(df_v["TOTAL_LIQUIDO"], errors="coerce").fillna(0)
+    else:
+        df_v["total_liquido"] = 0.0
+
+    df_v = df_v[(df_v["total_liquido"].abs() > 0.01) | (df_v["quantidade"].abs() > 0.001)].copy()
+
+    vendas_out = df_v[
+        ["data_emissao", "ano", "mes", "loja", "cnpj_empresa", "nome_vendedor", "descricao", "familia", "regiao", "quantidade", "total_liquido"]
+    ].copy()
+
+    # ------------------------
+    # SEGUROS: normalização
+    # ------------------------
+    # No seu arquivo vi colunas: DataEmissao, PREMIO REAL, QTD REAL, LOJA, NOME_VENDEDOR, DESCRIÇÃO, REGIAO, CnpjEmp, NF
+    # data: tenta DataEmissao (ou DataNF como fallback)
+    if "DataEmissao" in df_s.columns:
+        dt_s = parse_any_date(df_s["DataEmissao"])
+    elif "DataNF" in df_s.columns:
+        dt_s = parse_any_date(df_s["DataNF"])
+    else:
+        raise ValueError(f"SEGUROS: não achei DataEmissao nem DataNF. Colunas: {list(df_s.columns)}")
+
+    df_s = df_s.loc[dt_s.notna()].copy()
+    dt_s = dt_s.loc[dt_s.notna()]
+
+    df_s["data_emissao"] = dt_s.dt.strftime("%Y-%m-%d")
+    df_s["ano"] = dt_s.dt.year.astype(int)
+    df_s["mes"] = dt_s.dt.month.astype(int)
+
+    if "LOJA" not in df_s.columns:
+        raise ValueError(f"SEGUROS: coluna LOJA ausente. Colunas: {list(df_s.columns)}")
+
+    df_s["loja"] = df_s["LOJA"].apply(get_clean_store_name)
+
+    # CNPJ do seguro pode existir como CnpjEmp
+    if "CnpjEmp" in df_s.columns:
+        df_s["cnpj_empresa"] = df_s["CnpjEmp"].astype(str).str.replace(r"\D", "", regex=True)
+        df_s.loc[df_s["cnpj_empresa"].str.len() == 0, "cnpj_empresa"] = None
+    else:
+        df_s["cnpj_empresa"] = df_s["loja"].map(loja_para_cnpj)
+
+    if "NOME_VENDEDOR" not in df_s.columns:
+        raise ValueError("SEGUROS: coluna NOME_VENDEDOR ausente (precisa para união).")
+
+    df_s["nome_vendedor"] = df_s["NOME_VENDEDOR"].astype(str).str.strip().str.upper()
+
+    # descrição do seguro
+    if "DESCRIÇÃO" in df_s.columns:
+        df_s["descricao"] = df_s["DESCRIÇÃO"].astype(str).str.strip().str.upper()
+    elif "DescServico" in df_s.columns:
+        df_s["descricao"] = df_s["DescServico"].astype(str).str.strip().str.upper()
+    else:
+        df_s["descricao"] = ""
+
+    df_s["regiao"] = df_s["REGIAO"].astype(str).str.strip().str.upper() if "REGIAO" in df_s.columns else ""
+
+    df_s["qtd"] = pd.to_numeric(df_s.get("QTD REAL", 0), errors="coerce").fillna(0)
+    df_s["premio"] = pd.to_numeric(df_s.get("PREMIO REAL", 0), errors="coerce").fillna(0)
+
+    df_s["nf"] = df_s.get("NF", "").astype(str) if "NF" in df_s.columns else ""
+
+    df_s = df_s[(df_s["premio"].abs() > 0.01) | (df_s["qtd"].abs() > 0.001)].copy()
+
+    seguros_out = df_s[
+        ["data_emissao", "ano", "mes", "loja", "cnpj_empresa", "nome_vendedor", "descricao", "regiao", "qtd", "premio", "nf"]
+    ].copy()
+
+    # ------------------------
+    # SQLITE: grava e cria agregados
+    # ------------------------
+    con = sqlite3.connect(db_path)
     try:
-        df_meta_clean["vendedor"] = df_meta.iloc[:, 1].astype(str).str.strip().str.upper()  # B
-        df_meta_clean["tendencia"] = pd.to_numeric(df_meta.iloc[:, 2], errors="coerce").fillna(0)  # C
-        df_meta_clean["fat_anterior"] = pd.to_numeric(df_meta.iloc[:, 4], errors="coerce").fillna(0)  # E
-        df_meta_clean["valor_seguros"] = pd.to_numeric(df_meta.iloc[:, 9], errors="coerce").fillna(0)  # J
-        df_meta_clean["pct_seguro"] = pd.to_numeric(df_meta.iloc[:, 18], errors="coerce").fillna(0)  # S
-    except Exception as e:
-        print(f"⚠️ Aviso: falha ao ler colunas da aba API VENDEDORES: {e}")
-        df_meta_clean = pd.DataFrame(columns=["vendedor","tendencia","fat_anterior","valor_seguros","pct_seguro"])
+        con.execute("PRAGMA journal_mode=WAL;")
+        con.execute("PRAGMA synchronous=NORMAL;")
+        con.execute("PRAGMA busy_timeout=15000;")
 
-    df_final = pd.merge(kpi_real, df_meta_clean, left_on=col_vendedor, right_on="vendedor", how="left")
+        recreate_db_schema(con)
 
-    output_list: List[Dict[str, Any]] = []
+        vendas_out.to_sql("vendas_anuais", con, if_exists="append", index=False)
+        seguros_out.to_sql("seguros_anuais", con, if_exists="append", index=False)
 
-    for _, row in df_final.iterrows():
-        vendedor = str(row[col_vendedor]).strip().upper()
-        if vendedor in ("NAN", "NONE", ""):
-            continue
+        # Agregado lojas/mês
+        v_loja = (
+            vendas_out.groupby(["ano", "mes", "loja", "cnpj_empresa", "regiao"], dropna=False)
+            .agg(vendas_total=("total_liquido", "sum"), vendas_qtd=("quantidade", "sum"))
+            .reset_index()
+        )
+        s_loja = (
+            seguros_out.groupby(["ano", "mes", "loja", "cnpj_empresa", "regiao"], dropna=False)
+            .agg(seguros_total=("premio", "sum"), seguros_qtd=("qtd", "sum"))
+            .reset_index()
+        )
 
-        nome_loja_sujo = "" if pd.isna(row.get(col_loja, "")) else str(row.get(col_loja, ""))
-        nome_loja_limpo = get_clean_store_name(nome_loja_sujo)
+        lojas = pd.merge(
+            v_loja, s_loja,
+            on=["ano", "mes", "loja", "cnpj_empresa", "regiao"],
+            how="outer"
+        ).fillna({"vendas_total": 0, "vendas_qtd": 0, "seguros_total": 0, "seguros_qtd": 0})
 
-        total = float(row.get("total_real", 0) or 0)
-        qtd = float(row.get("qtd_real", 0) or 0)
+        lojas.to_sql("agg_lojas_mensal", con, if_exists="append", index=False)
 
-        num_nf = int(row.get("NOTA_FISCAL", 1) or 1)
-        if num_nf <= 0:
-            num_nf = 1
+        # Agregado vendedores/mês (união por loja+vendedor+ano+mes)
+        v_vend = (
+            vendas_out.groupby(["ano", "mes", "loja", "cnpj_empresa", "regiao", "nome_vendedor"], dropna=False)
+            .agg(vendas_total=("total_liquido", "sum"), vendas_qtd=("quantidade", "sum"))
+            .reset_index()
+            .rename(columns={"nome_vendedor": "vendedor"})
+        )
+        s_vend = (
+            seguros_out.groupby(["ano", "mes", "loja", "cnpj_empresa", "regiao", "nome_vendedor"], dropna=False)
+            .agg(seguros_total=("premio", "sum"), seguros_qtd=("qtd", "sum"))
+            .reset_index()
+            .rename(columns={"nome_vendedor": "vendedor"})
+        )
 
-        ticket = total / num_nf if num_nf > 0 else 0.0
-        pa = qtd / num_nf if num_nf > 0 else 0.0
+        vendedores = pd.merge(
+            v_vend, s_vend,
+            on=["ano", "mes", "loja", "cnpj_empresa", "regiao", "vendedor"],
+            how="outer"
+        ).fillna({"vendas_total": 0, "vendas_qtd": 0, "seguros_total": 0, "seguros_qtd": 0})
 
-        anterior = float(row.get("fat_anterior", 0) or 0)
-        crescimento = ((total - anterior) / anterior) if anterior > 0 else 0.0
+        vendedores.to_sql("agg_vendedores_mensal", con, if_exists="append", index=False)
 
-        regiao = "" if pd.isna(row.get("REGIAO", "")) else str(row.get("REGIAO", "")).strip().upper()
-        pct_seguro = float(row.get("pct_seguro", 0) or 0)
-        seguros_val = float(row.get("valor_seguros", 0) or 0)
-        tendencia_val = float(row.get("tendencia", 0) or 0)
+        con.commit()
 
-        output_list.append({
-            "loja": nome_loja_limpo,
-            "vendedor": vendedor,
-            "fat_atual": total,
-            "tendencia": tendencia_val,
-            "fat_anterior": anterior,
-            "crescimento": crescimento,
-            "pa": pa,
-            "ticket": ticket,
-            "qtd": qtd,
-            "regiao": regiao,
-            "pct_seguro": pct_seguro,
-            "seguros": seguros_val,
-        })
+        print("✅ Banco recriado com sucesso!")
+        print(f"📌 Excel: {excel_path}")
+        print(f"📌 DB:    {db_path}")
+        print(f"📊 Vendas:   {len(vendas_out)} registros")
+        print(f"🛡️ Seguros:  {len(seguros_out)} registros")
+        print(f"🏬 Lojas(mensal):     {len(lojas)} linhas")
+        print(f"🧑‍💼 Vendedores(mensal): {len(vendedores)} linhas")
 
-    print(f"📊 KPIs anuais processados: {len(output_list)} vendedores.")
-
-    # salva cópia local
-    salvar_copia_vendedores(output_list)
-
-    # envia para endpoint anual
-    ok = enviar_dados_para_api("/api/sync/vendedores_anuais", output_list)
-
-    if ok:
-        print("✅ KPIs anuais enviados com sucesso!")
-        return True
-
-    print("❌ Falha ao enviar KPIs anuais.")
-    return False
+    finally:
+        con.close()
 
 
 if __name__ == "__main__":
-    if not URL_BACKEND:
-        print("❌ ERRO FATAL: Não foi possível definir a URL do backend.")
-        raise SystemExit(1)
-
-    ok_vendas = integrar_vendas_geral()
-    if ok_vendas:
-        integrar_kpi_vendedores()
-    else:
-        print("⚠️ KPI anual não foi enviado porque VENDAS anuais não confirmou sucesso (evita SQLITE_BUSY/lock).")
+    build_db(EXCEL_PATH, DB_PATH)

@@ -29,6 +29,9 @@ const GLOBAL_DB_PATH = path.join(DATABASE_DIR, 'samsung_vendas.db');
 const SAMSUNG_DB_PATH = GLOBAL_DB_PATH; // Cria um "apelido" para funcionar nas rotas novas e antigas
 const BESTFLOW_DB_PATH = path.join(DATABASE_DIR, 'bestflow.db');
 
+// ✅ NOVO: DB ANUAL SEPARADO
+const ANUAL_DB_PATH = path.join(DATABASE_DIR, 'samsung_vendas_anuais.db');
+
 console.log("📂 Banco Vendas:", GLOBAL_DB_PATH);
 console.log("📂 Banco BestFlow:", BESTFLOW_DB_PATH);
 
@@ -116,6 +119,77 @@ dbInit.serialize(() => {
         )
     `);
     console.log("📦 Tabelas do Banco de Dados Garantidas!");
+});
+
+const anualInit = new sqlite3.Database(ANUAL_DB_PATH);
+anualInit.serialize(() => {
+  // RAW VENDAS
+  anualInit.run(`
+    CREATE TABLE IF NOT EXISTS vendas_anuais (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      data_emissao TEXT,
+      ano INTEGER,
+      mes INTEGER,
+      loja TEXT,
+      cnpj_empresa TEXT,
+      nome_vendedor TEXT,
+      familia TEXT,
+      total_venda_real REAL,
+      qtd REAL,
+      regiao TEXT
+    )
+  `);
+
+  // RAW SEGUROS
+  anualInit.run(`
+    CREATE TABLE IF NOT EXISTS seguros_anuais (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      data_emissao TEXT,
+      ano INTEGER,
+      mes INTEGER,
+      loja TEXT,
+      cnpj_empresa TEXT,
+      nome_vendedor TEXT,
+      premio_real REAL,
+      qtd REAL,
+      regiao TEXT
+    )
+  `);
+
+  // AGG LOJA/MÊS/ANO (pronto pro comparativo)
+  anualInit.run(`
+    CREATE TABLE IF NOT EXISTS agg_lojas_mensal (
+      ano INTEGER,
+      mes INTEGER,
+      loja TEXT,
+      cnpj_empresa TEXT,
+      regiao TEXT,
+      venda_total REAL,
+      venda_qtd REAL,
+      seguro_total REAL,
+      seguro_qtd REAL,
+      PRIMARY KEY (ano, mes, loja)
+    )
+  `);
+
+  // AGG VENDEDOR/MÊS/ANO (pronto pro comparativo)
+  anualInit.run(`
+    CREATE TABLE IF NOT EXISTS agg_vendedores_mensal (
+      ano INTEGER,
+      mes INTEGER,
+      loja TEXT,
+      cnpj_empresa TEXT,
+      regiao TEXT,
+      vendedor TEXT,
+      venda_total REAL,
+      venda_qtd REAL,
+      seguro_total REAL,
+      seguro_qtd REAL,
+      PRIMARY KEY (ano, mes, loja, vendedor)
+    )
+  `);
+
+  console.log("📦 Tabelas ANUAIS garantidas!");
 });
 
 const app = express();
@@ -2488,6 +2562,119 @@ app.get('/api/malote', async (req, res) => {
     } catch (e: any) {
         res.status(500).json({ error: e.message });
     }
+});
+
+app.get('/anuais/summary', async (req, res) => {
+  try {
+    const userId = String(req.query.userId || '');
+    const yearA = Number(req.query.yearA || 2025);
+    const yearB = Number(req.query.yearB || 2026);
+    const month = Number(req.query.month || 0); // 1..12 (0 = todos)
+
+    const securityFilter = await getSalesFilter(userId, 'vendas');
+
+    const monthFilter = month >= 1 && month <= 12 ? ` AND mes = ${month} ` : '';
+
+    const db = await open({ filename: ANUAL_DB_PATH, driver: sqlite3.Database });
+
+    const q = `
+      SELECT
+        ano,
+        SUM(venda_total)  AS venda_total,
+        SUM(seguro_total) AS seguro_total
+      FROM agg_lojas_mensal
+      WHERE ${securityFilter}
+        AND ano IN (${yearA}, ${yearB})
+        ${monthFilter}
+      GROUP BY ano
+    `;
+
+    const rows = await db.all(q);
+    await db.close();
+
+    const byYear: any = {};
+    rows.forEach((r: any) => (byYear[r.ano] = { venda_total: r.venda_total || 0, seguro_total: r.seguro_total || 0 }));
+
+    res.json({
+      yearA, yearB, month,
+      a: byYear[yearA] || { venda_total: 0, seguro_total: 0 },
+      b: byYear[yearB] || { venda_total: 0, seguro_total: 0 },
+    });
+  } catch (e: any) {
+    console.error("Erro /anuais/summary:", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/anuais/lojas_compare', async (req, res) => {
+  try {
+    const userId = String(req.query.userId || '');
+    const yearA = Number(req.query.yearA || 2025);
+    const yearB = Number(req.query.yearB || 2026);
+    const month = Number(req.query.month || 0);
+
+    const securityFilter = await getSalesFilter(userId, 'vendas');
+    const monthFilter = month >= 1 && month <= 12 ? ` AND mes = ${month} ` : '';
+
+    const db = await open({ filename: ANUAL_DB_PATH, driver: sqlite3.Database });
+
+    const q = `
+      SELECT
+        ano, mes, loja, cnpj_empresa, regiao,
+        venda_total, venda_qtd,
+        seguro_total, seguro_qtd
+      FROM agg_lojas_mensal
+      WHERE ${securityFilter}
+        AND ano IN (${yearA}, ${yearB})
+        ${monthFilter}
+      ORDER BY loja ASC, ano ASC, mes ASC
+    `;
+
+    const rows = await db.all(q);
+    await db.close();
+
+    res.json({ yearA, yearB, month, data: normalizeKeys(rows) });
+  } catch (e: any) {
+    console.error("Erro /anuais/lojas_compare:", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/anuais/vendedores_compare', async (req, res) => {
+  try {
+    const userId = String(req.query.userId || '');
+    const yearA = Number(req.query.yearA || 2025);
+    const yearB = Number(req.query.yearB || 2026);
+    const month = Number(req.query.month || 0);
+    const store = req.query.store ? String(req.query.store).toUpperCase().trim() : '';
+
+    const securityFilter = await getSalesFilter(userId, 'vendas');
+    const monthFilter = month >= 1 && month <= 12 ? ` AND mes = ${month} ` : '';
+    const storeFilter = store ? ` AND UPPER(loja) = '${store.replace(/'/g, "''")}' ` : '';
+
+    const db = await open({ filename: ANUAL_DB_PATH, driver: sqlite3.Database });
+
+    const q = `
+      SELECT
+        ano, mes, loja, cnpj_empresa, regiao, vendedor,
+        venda_total, venda_qtd,
+        seguro_total, seguro_qtd
+      FROM agg_vendedores_mensal
+      WHERE ${securityFilter}
+        AND ano IN (${yearA}, ${yearB})
+        ${monthFilter}
+        ${storeFilter}
+      ORDER BY vendedor ASC, loja ASC, ano ASC
+    `;
+
+    const rows = await db.all(q);
+    await db.close();
+
+    res.json({ yearA, yearB, month, store, data: normalizeKeys(rows) });
+  } catch (e: any) {
+    console.error("Erro /anuais/vendedores_compare:", e);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // Define a porta: Usa a do Render (process.env.PORT) ou a 3000 se for local

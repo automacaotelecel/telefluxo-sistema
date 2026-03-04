@@ -162,6 +162,38 @@ def limpar_valores_json(dados: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 # ============================================================
+# ✅ PARSE DE DATA SEM AMBIGUIDADE (VERSÃO DEFINITIVA)
+# ============================================================
+def parse_data_emissao(series: pd.Series) -> pd.Series:
+    s = series.copy()
+
+    # Se a coluna já for 100% datetime, maravilha
+    if pd.api.types.is_datetime64_any_dtype(s):
+        return s
+
+    # Força tudo para string e corta a hora extra que o Pandas inventa
+    s_str = s.astype(str).str.strip()
+    s_date_only = s_str.str.split(' ').str[0]
+
+    # 1) Tenta ler os que vieram como Data Nativa (formato YYYY-MM-DD)
+    dt1 = pd.to_datetime(s_date_only, format="%Y-%m-%d", errors="coerce")
+
+    # 2) Tenta ler os que vieram como Texto no Excel (formato DD/MM/YYYY)
+    mask_iso = dt1.isna()
+    if mask_iso.any():
+        dt2 = pd.to_datetime(s_date_only[mask_iso], format="%d/%m/%Y", errors="coerce")
+        dt1.loc[mask_iso] = dt2
+
+    # 3) O que sobrar (se houver), força o dayfirst
+    mask_br = dt1.isna()
+    if mask_br.any():
+        dt3 = pd.to_datetime(s_date_only[mask_br], dayfirst=True, errors="coerce")
+        dt1.loc[mask_br] = dt3
+
+    return dt1
+
+
+# ============================================================
 # ✅ FUNÇÃO DE ENVIO EM LOTES (CORRIGIDA PARA ERRO 413)
 # ============================================================
 def enviar_dados_para_api(endpoint: str, dados: List[Dict[str, Any]]) -> bool:
@@ -176,7 +208,7 @@ def enviar_dados_para_api(endpoint: str, dados: List[Dict[str, Any]]) -> bool:
     dados = limpar_valores_json(dados)
     
     # --- LÓGICA DE LOTES (BATCHING) ---
-    # Reduzido para 500 para garantir que não estoure o limite do servidor
+    # Reduzido para 100 para garantir que não estoure o limite do servidor
     BATCH_SIZE = 100
     total_lotes = (len(dados) // BATCH_SIZE) + 1
     
@@ -405,7 +437,9 @@ def integrar_vendas_geral():
     try:
         treated = pd.DataFrame()
 
-        treated["data_emissao"] = pd.to_datetime(df[col_data], dayfirst=True, errors="coerce")
+        # ✅ AQUI ESTÁ A CORREÇÃO! Usando a função definitiva para tratar as datas:
+        treated["data_emissao"] = parse_data_emissao(df[col_data])
+        
         treated = treated.dropna(subset=["data_emissao"])
         treated["data_emissao"] = treated["data_emissao"].dt.strftime("%Y-%m-%d")
 
