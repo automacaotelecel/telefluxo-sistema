@@ -1,7 +1,6 @@
 import os
 import re
 import sqlite3
-from datetime import datetime
 from typing import Any
 
 import pandas as pd
@@ -16,7 +15,7 @@ DB_PATH = os.path.join(DB_DIR, "samsung_vendas_anuais.db")
 
 
 # ============================================================
-# MAPA DE LOJAS (CNPJ -> NOME)  [mantive o seu]
+# MAPA DE LOJAS (CNPJ -> NOME)
 # ============================================================
 LOJAS_MAP = {
     "12309173001309": "ARAGUAIA SHOPPING",
@@ -151,16 +150,38 @@ def pick_sheet(xls: pd.ExcelFile, candidates: list[str]) -> str:
 
 
 def recreate_db_schema(con: sqlite3.Connection) -> None:
-    cur = con.cursor()
-
-    # DROPS (recria tudo sempre)
-    cur.executescript(
+    con.executescript(
         """
         DROP TABLE IF EXISTS vendas_anuais;
+        DROP TABLE IF EXISTS vendas_anuais_raw;
         DROP TABLE IF EXISTS seguros_anuais;
-
         DROP TABLE IF EXISTS agg_lojas_mensal;
         DROP TABLE IF EXISTS agg_vendedores_mensal;
+
+        CREATE TABLE vendas_anuais_raw (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          nota_fiscal TEXT,
+          cancelado TEXT,
+          tipo_transacao TEXT,
+          natureza_operacao TEXT,
+          data_emissao TEXT,
+          nome_vendedor TEXT,
+          codigo_produto TEXT,
+          referencia TEXT,
+          descricao TEXT,
+          categoria TEXT,
+          imei TEXT,
+          quantidade REAL,
+          total_liquido REAL,
+          qtd_real REAL,
+          total_real REAL,
+          categoria_real TEXT,
+          loja TEXT,
+          regiao TEXT,
+          ano INTEGER,
+          mes INTEGER,
+          cnpj_empresa TEXT
+        );
 
         CREATE TABLE vendas_anuais (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -192,7 +213,6 @@ def recreate_db_schema(con: sqlite3.Connection) -> None:
             nf TEXT
         );
 
-        -- Agregado por LOJA/MÊS/ANO (vendas e seguros juntos)
         CREATE TABLE agg_lojas_mensal (
             ano INTEGER,
             mes INTEGER,
@@ -206,7 +226,6 @@ def recreate_db_schema(con: sqlite3.Connection) -> None:
             PRIMARY KEY (ano, mes, loja)
         );
 
-        -- Agregado por VENDEDOR/MÊS/ANO (vendas e seguros juntos)
         CREATE TABLE agg_vendedores_mensal (
             ano INTEGER,
             mes INTEGER,
@@ -230,74 +249,137 @@ def build_db(excel_path: str, db_path: str) -> None:
         raise FileNotFoundError(f"Excel não encontrado: {excel_path}")
 
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
-
     xls = pd.ExcelFile(excel_path)
 
-    # ✅ nomes reais / fallbacks
     sheet_vendas = pick_sheet(xls, ["BASE_VENDAS", "VENDAS"])
     sheet_seguros = pick_sheet(xls, ["BASE_SEGURO", "SEGUROS", "seguros"])
 
     df_v = pd.read_excel(excel_path, sheet_name=sheet_vendas, engine="openpyxl")
     df_s = pd.read_excel(excel_path, sheet_name=sheet_seguros, engine="openpyxl")
 
-    # ------------------------
-    # VENDAS: normalização
-    # ------------------------
-    if "CANCELADO" in df_v.columns:
-        df_v = df_v[df_v["CANCELADO"].astype(str).str.strip().str.upper() == "N"].copy()
+    # ✅ tira espaços dos headers
+    df_v.columns = [str(c).strip() for c in df_v.columns]
+    df_s.columns = [str(c).strip() for c in df_s.columns]
 
-    # colunas esperadas na sua BASE_VENDAS (vi no arquivo):
-    # DATA_EMISSAO, NOME_VENDEDOR, DESCRICAO, CATEGORIA REAL, LOJA, REGIAO, QTD REAL, TOTAL REAL
-    required_v = ["DATA_EMISSAO", "NOME_VENDEDOR", "DESCRICAO", "LOJA"]
-    for c in required_v:
-        if c not in df_v.columns:
-            raise ValueError(f"Coluna obrigatória ausente em vendas: {c}. Colunas: {list(df_v.columns)}")
+    # helper: pega coluna mesmo se vier com variação de nome
+    def col(df: pd.DataFrame, name: str, default=None) -> pd.Series:
+        if name in df.columns:
+            return df[name]
+        # tenta variações com normalização de espaço/underscore
+        wanted = norm(name).replace("_", " ")
+        for c in df.columns:
+            if norm(c).replace("_", " ") == wanted:
+                return df[c]
+        if default is None:
+            return pd.Series([None] * len(df))
+        return pd.Series([default] * len(df))
 
-    dt_v = parse_any_date(df_v["DATA_EMISSAO"])
-    df_v = df_v.loc[dt_v.notna()].copy()
+    # ============================================================
+    # ✅ RAW (espelha Excel) - filtra só datas válidas
+    # ============================================================
+    raw = df_v.copy()
+    raw_dt = parse_any_date(col(raw, "DATA_EMISSAO"))
+    raw = raw.loc[raw_dt.notna()].copy()
+    raw_dt = raw_dt.loc[raw_dt.notna()]
+
+    raw["data_emissao"] = raw_dt.dt.strftime("%Y-%m-%d")
+    raw["ano"] = raw_dt.dt.year.astype(int)
+    raw["mes"] = raw_dt.dt.month.astype(int)
+
+    raw["loja_clean"] = col(raw, "LOJA", "").apply(get_clean_store_name)
+    raw["cnpj_empresa"] = raw["loja_clean"].map(loja_para_cnpj)
+
+    raw_out = pd.DataFrame({
+        "nota_fiscal": col(raw, "NOTA FISCAL", "").astype(str),
+        "cancelado": col(raw, "CANCELADO", "").astype(str),
+        "tipo_transacao": col(raw, "TIPO_TRANSACAO", "").astype(str),
+        "natureza_operacao": col(raw, "NATUREZA_OPERACAO", "").astype(str),
+
+        "data_emissao": raw["data_emissao"],
+
+        "nome_vendedor": col(raw, "NOME_VENDEDOR", "").astype(str),
+        "codigo_produto": col(raw, "CODIGO_PRODUTO", "").astype(str),
+        "referencia": col(raw, "REFERENCIA", "").astype(str),
+        "descricao": col(raw, "DESCRICAO", "").astype(str),
+
+        "categoria": col(raw, "CATEGORIA", "").astype(str),
+        "imei": col(raw, "IMEI", "").astype(str),
+
+        "quantidade": pd.to_numeric(col(raw, "QUANTIDADE", 0), errors="coerce").fillna(0),
+        "total_liquido": pd.to_numeric(col(raw, "TOTAL_LIQUIDO", 0), errors="coerce").fillna(0),
+
+        "qtd_real": pd.to_numeric(col(raw, "QTD REAL", 0), errors="coerce").fillna(0),
+        "total_real": pd.to_numeric(col(raw, "TOTAL REAL", 0), errors="coerce").fillna(0),
+
+        "categoria_real": col(raw, "CATEGORIA REAL", "").astype(str),
+        "loja": raw["loja_clean"].astype(str),
+        "regiao": col(raw, "REGIAO", "").astype(str),
+
+        "ano": raw["ano"],
+        "mes": raw["mes"],
+        "cnpj_empresa": raw["cnpj_empresa"],
+    })
+
+    # ============================================================
+    # ✅ NORMALIZADA (pro BI) - usa QTD REAL / TOTAL REAL
+    # ============================================================
+    dfv = df_v.copy()
+
+    if "CANCELADO" in dfv.columns:
+        dfv = dfv[dfv["CANCELADO"].astype(str).str.strip().str.upper() == "N"].copy()
+
+    # obrigatórias
+    for c in ["DATA_EMISSAO", "NOME_VENDEDOR", "DESCRICAO", "LOJA"]:
+        if c not in dfv.columns:
+            raise ValueError(f"Coluna obrigatória ausente em vendas: {c}. Colunas: {list(dfv.columns)}")
+
+    dt_v = parse_any_date(dfv["DATA_EMISSAO"])
+    dfv = dfv.loc[dt_v.notna()].copy()
     dt_v = dt_v.loc[dt_v.notna()]
 
-    df_v["data_emissao"] = dt_v.dt.strftime("%Y-%m-%d")
-    df_v["ano"] = dt_v.dt.year.astype(int)
-    df_v["mes"] = dt_v.dt.month.astype(int)
+    dfv["data_emissao"] = dt_v.dt.strftime("%Y-%m-%d")
+    dfv["ano"] = dt_v.dt.year.astype(int)
+    dfv["mes"] = dt_v.dt.month.astype(int)
 
-    df_v["loja"] = df_v["LOJA"].apply(get_clean_store_name)
-    df_v["cnpj_empresa"] = df_v["loja"].map(loja_para_cnpj)
+    dfv["loja"] = dfv["LOJA"].apply(get_clean_store_name)
+    dfv["cnpj_empresa"] = dfv["loja"].map(loja_para_cnpj)
 
-    df_v["nome_vendedor"] = df_v["NOME_VENDEDOR"].astype(str).str.strip().str.upper()
-    df_v["descricao"] = df_v["DESCRICAO"].astype(str).str.strip().str.upper()
+    dfv["nome_vendedor"] = dfv["NOME_VENDEDOR"].astype(str).str.strip().str.upper()
+    dfv["descricao"] = dfv["DESCRICAO"].astype(str).str.strip().str.upper()
 
-    df_v["familia"] = (
-        df_v["CATEGORIA REAL"].astype(str).str.strip().str.upper()
-        if "CATEGORIA REAL" in df_v.columns
-        else (df_v["CATEGORIA"].astype(str).str.strip().str.upper() if "CATEGORIA" in df_v.columns else "OUTROS")
-    )
-
-    df_v["regiao"] = df_v["REGIAO"].astype(str).str.strip().str.upper() if "REGIAO" in df_v.columns else ""
-
-    df_v["quantidade"] = pd.to_numeric(df_v["QTD REAL"], errors="coerce").fillna(
-        pd.to_numeric(df_v.get("QUANTIDADE", 0), errors="coerce")
-    ).fillna(0)
-
-    # total
-    if "TOTAL REAL" in df_v.columns:
-        df_v["total_liquido"] = pd.to_numeric(df_v["TOTAL REAL"], errors="coerce").fillna(0)
-    elif "TOTAL_LIQUIDO" in df_v.columns:
-        df_v["total_liquido"] = pd.to_numeric(df_v["TOTAL_LIQUIDO"], errors="coerce").fillna(0)
+    if "CATEGORIA REAL" in dfv.columns:
+        dfv["familia"] = dfv["CATEGORIA REAL"].astype(str).str.strip().str.upper()
+    elif "CATEGORIA" in dfv.columns:
+        dfv["familia"] = dfv["CATEGORIA"].astype(str).str.strip().str.upper()
     else:
-        df_v["total_liquido"] = 0.0
+        dfv["familia"] = "OUTROS"
 
-    df_v = df_v[(df_v["total_liquido"].abs() > 0.01) | (df_v["quantidade"].abs() > 0.001)].copy()
+    dfv["regiao"] = dfv["REGIAO"].astype(str).str.strip().str.upper() if "REGIAO" in dfv.columns else ""
 
-    vendas_out = df_v[
-        ["data_emissao", "ano", "mes", "loja", "cnpj_empresa", "nome_vendedor", "descricao", "familia", "regiao", "quantidade", "total_liquido"]
+    # prioridade: QTD REAL
+    if "QTD REAL" in dfv.columns:
+        dfv["quantidade"] = pd.to_numeric(dfv["QTD REAL"], errors="coerce").fillna(0)
+    else:
+        dfv["quantidade"] = pd.to_numeric(dfv.get("QUANTIDADE", 0), errors="coerce").fillna(0)
+
+    # prioridade: TOTAL REAL
+    if "TOTAL REAL" in dfv.columns:
+        dfv["total_liquido"] = pd.to_numeric(dfv["TOTAL REAL"], errors="coerce").fillna(0)
+    elif "TOTAL_LIQUIDO" in dfv.columns:
+        dfv["total_liquido"] = pd.to_numeric(dfv["TOTAL_LIQUIDO"], errors="coerce").fillna(0)
+    else:
+        dfv["total_liquido"] = 0.0
+
+    dfv = dfv[(dfv["total_liquido"].abs() > 0.01) | (dfv["quantidade"].abs() > 0.001)].copy()
+
+    vendas_out = dfv[
+        ["data_emissao", "ano", "mes", "loja", "cnpj_empresa", "nome_vendedor",
+         "descricao", "familia", "regiao", "quantidade", "total_liquido"]
     ].copy()
 
-    # ------------------------
-    # SEGUROS: normalização
-    # ------------------------
-    # No seu arquivo vi colunas: DataEmissao, PREMIO REAL, QTD REAL, LOJA, NOME_VENDEDOR, DESCRIÇÃO, REGIAO, CnpjEmp, NF
-    # data: tenta DataEmissao (ou DataNF como fallback)
+    # ============================================================
+    # ✅ SEGUROS (mantido)
+    # ============================================================
     if "DataEmissao" in df_s.columns:
         dt_s = parse_any_date(df_s["DataEmissao"])
     elif "DataNF" in df_s.columns:
@@ -305,54 +387,52 @@ def build_db(excel_path: str, db_path: str) -> None:
     else:
         raise ValueError(f"SEGUROS: não achei DataEmissao nem DataNF. Colunas: {list(df_s.columns)}")
 
-    df_s = df_s.loc[dt_s.notna()].copy()
+    dfs = df_s.loc[dt_s.notna()].copy()
     dt_s = dt_s.loc[dt_s.notna()]
 
-    df_s["data_emissao"] = dt_s.dt.strftime("%Y-%m-%d")
-    df_s["ano"] = dt_s.dt.year.astype(int)
-    df_s["mes"] = dt_s.dt.month.astype(int)
+    dfs["data_emissao"] = dt_s.dt.strftime("%Y-%m-%d")
+    dfs["ano"] = dt_s.dt.year.astype(int)
+    dfs["mes"] = dt_s.dt.month.astype(int)
 
-    if "LOJA" not in df_s.columns:
-        raise ValueError(f"SEGUROS: coluna LOJA ausente. Colunas: {list(df_s.columns)}")
+    if "LOJA" not in dfs.columns:
+        raise ValueError(f"SEGUROS: coluna LOJA ausente. Colunas: {list(dfs.columns)}")
 
-    df_s["loja"] = df_s["LOJA"].apply(get_clean_store_name)
+    dfs["loja"] = dfs["LOJA"].apply(get_clean_store_name)
 
-    # CNPJ do seguro pode existir como CnpjEmp
-    if "CnpjEmp" in df_s.columns:
-        df_s["cnpj_empresa"] = df_s["CnpjEmp"].astype(str).str.replace(r"\D", "", regex=True)
-        df_s.loc[df_s["cnpj_empresa"].str.len() == 0, "cnpj_empresa"] = None
+    if "CnpjEmp" in dfs.columns:
+        dfs["cnpj_empresa"] = dfs["CnpjEmp"].astype(str).str.replace(r"\D", "", regex=True)
+        dfs.loc[dfs["cnpj_empresa"].str.len() == 0, "cnpj_empresa"] = None
     else:
-        df_s["cnpj_empresa"] = df_s["loja"].map(loja_para_cnpj)
+        dfs["cnpj_empresa"] = dfs["loja"].map(loja_para_cnpj)
 
-    if "NOME_VENDEDOR" not in df_s.columns:
+    if "NOME_VENDEDOR" not in dfs.columns:
         raise ValueError("SEGUROS: coluna NOME_VENDEDOR ausente (precisa para união).")
 
-    df_s["nome_vendedor"] = df_s["NOME_VENDEDOR"].astype(str).str.strip().str.upper()
+    dfs["nome_vendedor"] = dfs["NOME_VENDEDOR"].astype(str).str.strip().str.upper()
 
-    # descrição do seguro
-    if "DESCRIÇÃO" in df_s.columns:
-        df_s["descricao"] = df_s["DESCRIÇÃO"].astype(str).str.strip().str.upper()
-    elif "DescServico" in df_s.columns:
-        df_s["descricao"] = df_s["DescServico"].astype(str).str.strip().str.upper()
+    if "DESCRIÇÃO" in dfs.columns:
+        dfs["descricao"] = dfs["DESCRIÇÃO"].astype(str).str.strip().str.upper()
+    elif "DescServico" in dfs.columns:
+        dfs["descricao"] = dfs["DescServico"].astype(str).str.strip().str.upper()
     else:
-        df_s["descricao"] = ""
+        dfs["descricao"] = ""
 
-    df_s["regiao"] = df_s["REGIAO"].astype(str).str.strip().str.upper() if "REGIAO" in df_s.columns else ""
+    dfs["regiao"] = dfs["REGIAO"].astype(str).str.strip().str.upper() if "REGIAO" in dfs.columns else ""
 
-    df_s["qtd"] = pd.to_numeric(df_s.get("QTD REAL", 0), errors="coerce").fillna(0)
-    df_s["premio"] = pd.to_numeric(df_s.get("PREMIO REAL", 0), errors="coerce").fillna(0)
+    dfs["qtd"] = pd.to_numeric(dfs.get("QTD REAL", 0), errors="coerce").fillna(0)
+    dfs["premio"] = pd.to_numeric(dfs.get("PREMIO REAL", 0), errors="coerce").fillna(0)
+    dfs["nf"] = dfs.get("NF", "").astype(str) if "NF" in dfs.columns else ""
 
-    df_s["nf"] = df_s.get("NF", "").astype(str) if "NF" in df_s.columns else ""
+    dfs = dfs[(dfs["premio"].abs() > 0.01) | (dfs["qtd"].abs() > 0.001)].copy()
 
-    df_s = df_s[(df_s["premio"].abs() > 0.01) | (df_s["qtd"].abs() > 0.001)].copy()
-
-    seguros_out = df_s[
-        ["data_emissao", "ano", "mes", "loja", "cnpj_empresa", "nome_vendedor", "descricao", "regiao", "qtd", "premio", "nf"]
+    seguros_out = dfs[
+        ["data_emissao", "ano", "mes", "loja", "cnpj_empresa", "nome_vendedor",
+         "descricao", "regiao", "qtd", "premio", "nf"]
     ].copy()
 
-    # ------------------------
-    # SQLITE: grava e cria agregados
-    # ------------------------
+    # ============================================================
+    # SQLITE: grava tudo + agregados
+    # ============================================================
     con = sqlite3.connect(db_path)
     try:
         con.execute("PRAGMA journal_mode=WAL;")
@@ -361,10 +441,14 @@ def build_db(excel_path: str, db_path: str) -> None:
 
         recreate_db_schema(con)
 
+        # ✅ grava RAW primeiro
+        raw_out.to_sql("vendas_anuais_raw", con, if_exists="append", index=False)
+
+        # ✅ grava normalizadas
         vendas_out.to_sql("vendas_anuais", con, if_exists="append", index=False)
         seguros_out.to_sql("seguros_anuais", con, if_exists="append", index=False)
 
-        # Agregado lojas/mês
+        # agregados loja/mês
         v_loja = (
             vendas_out.groupby(["ano", "mes", "loja", "cnpj_empresa", "regiao"], dropna=False)
             .agg(vendas_total=("total_liquido", "sum"), vendas_qtd=("quantidade", "sum"))
@@ -375,16 +459,14 @@ def build_db(excel_path: str, db_path: str) -> None:
             .agg(seguros_total=("premio", "sum"), seguros_qtd=("qtd", "sum"))
             .reset_index()
         )
-
         lojas = pd.merge(
             v_loja, s_loja,
             on=["ano", "mes", "loja", "cnpj_empresa", "regiao"],
             how="outer"
         ).fillna({"vendas_total": 0, "vendas_qtd": 0, "seguros_total": 0, "seguros_qtd": 0})
-
         lojas.to_sql("agg_lojas_mensal", con, if_exists="append", index=False)
 
-        # Agregado vendedores/mês (união por loja+vendedor+ano+mes)
+        # agregados vendedor/mês
         v_vend = (
             vendas_out.groupby(["ano", "mes", "loja", "cnpj_empresa", "regiao", "nome_vendedor"], dropna=False)
             .agg(vendas_total=("total_liquido", "sum"), vendas_qtd=("quantidade", "sum"))
@@ -397,13 +479,11 @@ def build_db(excel_path: str, db_path: str) -> None:
             .reset_index()
             .rename(columns={"nome_vendedor": "vendedor"})
         )
-
         vendedores = pd.merge(
             v_vend, s_vend,
             on=["ano", "mes", "loja", "cnpj_empresa", "regiao", "vendedor"],
             how="outer"
         ).fillna({"vendas_total": 0, "vendas_qtd": 0, "seguros_total": 0, "seguros_qtd": 0})
-
         vendedores.to_sql("agg_vendedores_mensal", con, if_exists="append", index=False)
 
         con.commit()
@@ -411,9 +491,10 @@ def build_db(excel_path: str, db_path: str) -> None:
         print("✅ Banco recriado com sucesso!")
         print(f"📌 Excel: {excel_path}")
         print(f"📌 DB:    {db_path}")
-        print(f"📊 Vendas:   {len(vendas_out)} registros")
-        print(f"🛡️ Seguros:  {len(seguros_out)} registros")
-        print(f"🏬 Lojas(mensal):     {len(lojas)} linhas")
+        print(f"📊 Vendas normalizadas: {len(vendas_out)} registros")
+        print(f"📦 Vendas RAW:          {len(raw_out)} registros")
+        print(f"🛡️ Seguros:            {len(seguros_out)} registros")
+        print(f"🏬 Lojas(mensal):       {len(lojas)} linhas")
         print(f"🧑‍💼 Vendedores(mensal): {len(vendedores)} linhas")
 
     finally:

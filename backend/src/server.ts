@@ -1614,26 +1614,45 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 app.get('/sales_anuais', async (req, res) => {
   try {
     const userId = String(req.query.userId || '');
-    const securityFilter = await getSalesFilter(userId, 'vendas'); // cnpj_empresa IN (...)
+    const securityFilter = await getSalesFilter(userId, 'vendas');
 
     if (!fs.existsSync(ANUAL_DB_PATH)) return res.json({ sales: [] });
 
     const db = await open({ filename: ANUAL_DB_PATH, driver: sqlite3.Database });
 
-    // ✅ usa ano/mes do banco anual (mais confiável) e as colunas certas
+    // Descobre schema real
+    const cols = await db.all(`PRAGMA table_info(vendas_anuais)`);
+    const colNames = new Set((cols || []).map((c: any) => String(c.name || '').toLowerCase()));
+
+    const hasTotalVendaReal = colNames.has('total_venda_real');
+    const hasQtd = colNames.has('qtd');
+    const hasTotalLiquido = colNames.has('total_liquido');
+    const hasQuantidade = colNames.has('quantidade');
+
+    const totalExpr = hasTotalVendaReal
+      ? `SUM(COALESCE(total_venda_real,0))`
+      : hasTotalLiquido
+        ? `SUM(COALESCE(total_liquido,0))`
+        : `0`;
+
+    const qtdExpr = hasQtd
+      ? `SUM(COALESCE(qtd,0))`
+      : hasQuantidade
+        ? `SUM(COALESCE(quantidade,0))`
+        : `0`;
+
     const query = `
-      SELECT
-        printf('%04d-%02d-01', ano, mes) AS data_emissao,
+      SELECT 
+        substr(data_emissao, 1, 7) || '-01' as data_emissao,
         cnpj_empresa,
-        COALESCE(familia, 'OUTROS') AS familia,
-        SUM(COALESCE(total_venda_real, 0)) AS total_liquido,
-        SUM(COALESCE(qtd, 0)) AS quantidade
+        COALESCE(familia,'OUTROS') as familia,
+        ${totalExpr} as total_liquido,
+        ${qtdExpr} as quantidade
       FROM vendas_anuais
       WHERE ${securityFilter}
-        AND ano IS NOT NULL
-        AND mes IS NOT NULL
-      GROUP BY ano, mes, cnpj_empresa, COALESCE(familia, 'OUTROS')
-      ORDER BY ano ASC, mes ASC
+        AND data_emissao IS NOT NULL
+      GROUP BY substr(data_emissao, 1, 7), cnpj_empresa, COALESCE(familia,'OUTROS')
+      ORDER BY data_emissao ASC
     `;
 
     const salesRaw = await db.all(query);
@@ -2747,6 +2766,52 @@ app.get('/forecast/ano', async (req, res) => {
     });
   } catch (e: any) {
     console.error("Erro /forecast/ano:", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/sales_anuais', async (req, res) => {
+  try {
+    const userId = String(req.query.userId || '');
+    const securityFilter = await getSalesFilter(userId, 'vendas');
+
+    if (!fs.existsSync(ANUAL_DB_PATH)) return res.json({ sales: [] });
+
+    const db = await open({ filename: ANUAL_DB_PATH, driver: sqlite3.Database });
+
+    // garante que a tabela existe
+    const tables = await db.all(`
+      SELECT name FROM sqlite_master WHERE type='table' AND name='vendas_anuais_raw'
+    `);
+    if (!tables || tables.length === 0) {
+      await db.close();
+      return res.json({ sales: [] });
+    }
+
+    // Agrupa por mês + loja/cnpj + categoria (familia)
+    const query = `
+      SELECT 
+        substr(data_emissao, 1, 7) || '-01' AS data_emissao,
+        cnpj_empresa AS cnpj_empresa,
+        loja AS loja,
+        regiao AS regiao,
+        COALESCE(categoria_real,'OUTROS') AS familia,
+        SUM(COALESCE(total_real,0)) AS total_liquido,
+        SUM(COALESCE(qtd_real,0)) AS quantidade
+      FROM vendas_anuais_raw
+      WHERE ${securityFilter}
+        AND data_emissao IS NOT NULL
+      GROUP BY substr(data_emissao, 1, 7), cnpj_empresa, loja, regiao, COALESCE(categoria_real,'OUTROS')
+      ORDER BY data_emissao ASC
+    `;
+
+    const rows = await db.all(query);
+    await db.close();
+
+    // seu frontend lê tanto snake_case quanto maiúsculo, mas vamos normalizar
+    res.json({ sales: normalizeKeys(rows) });
+  } catch (e: any) {
+    console.error("Erro /sales_anuais:", e);
     res.status(500).json({ error: e.message });
   }
 });
