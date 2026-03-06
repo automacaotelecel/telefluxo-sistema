@@ -1407,86 +1407,119 @@ app.get('/finance', async (req, res) => {
   }
 });
 
-// --- ROTA BLINDADA PARA O PYTHON ENVIAR OS DADOS (COM SUPORTE A LOTES E AGING DE IMEI) ---
-// --- ROTA BLINDADA PARA O PYTHON ENVIAR OS DADOS (COM SUPORTE A LOTES E AGING DE IMEI) ---
 app.post('/stock/sync', async (req, res) => {
-  const data = req.body; 
-  const shouldReset = req.query.reset !== 'false'; 
+  const data = req.body;
+  const shouldReset = req.query.reset !== 'false';
 
   console.log(`📦 Recebendo lote de estoque... Resetar Banco: ${shouldReset}`);
 
   if (!Array.isArray(data)) {
-      return res.status(400).json({ error: "Formato inválido. Envie uma lista." });
+    return res.status(400).json({ error: "Formato inválido. Envie uma lista." });
   }
 
   try {
-      if (shouldReset) {
-          await prisma.stock.deleteMany();
-          console.log("🗑️ Banco de estoque limpo para iniciar nova carga.");
+    if (shouldReset) {
+      await prisma.stock.deleteMany();
+      console.log("🗑️ Banco de estoque limpo para iniciar nova carga.");
+    }
+
+    const safeNum = (val: any) => {
+      const parsed = Number(val);
+      return isNaN(parsed) ? 0 : parsed;
+    };
+
+    const safeStr = (val: any, fallback = "") => {
+      if (val === null || val === undefined) return fallback;
+      return String(val).trim();
+    };
+
+    const formattedData = data.map((item: any) => {
+      const emLinhaValue = safeStr(
+        item.EM_LINHA ??
+        item.em_linha ??
+        item.emLinha ??
+        item.linha,
+        ""
+      );
+
+      const clusterValue = safeStr(
+        item.CLUSTER ??
+        item.cluster ??
+        item.Cluster,
+        ""
+      );
+
+      return {
+        cnpj: safeStr(item.CNPJ_ORIGEM),
+        storeName: safeStr(item.NOME_FANTASIA, "LOJA"),
+        productCode: safeStr(item.CODIGO_PRODUTO),
+        reference: safeStr(item.REFERENCIA),
+        description: safeStr(item.DESCRICAO, "SEM DESCRIÇÃO"),
+        category: safeStr(item.CATEGORIA, "GERAL"),
+        quantity: safeNum(item.QUANTIDADE),
+        costPrice: safeNum(item.PRECO_CUSTO),
+        salePrice: safeNum(item.PRECO_VENDA),
+        averageCost: safeNum(item.CUSTO_MEDIO),
+        serial: safeStr(item.SERIAL),
+
+        // ✅ NOVAS COLUNAS
+        emLinha: emLinhaValue,
+        cluster: clusterValue
+      };
+    });
+
+    await prisma.stock.createMany({
+      data: formattedData
+    });
+
+    // =======================================================
+    // INTELIGÊNCIA DE RASTREAMENTO DE IMEI
+    // =======================================================
+    for (const item of formattedData) {
+      if (item.serial && item.serial.trim() !== '') {
+        const serialClean = item.serial.trim();
+
+        const existing = await prisma.imeiHistory.findUnique({
+          where: { serial: serialClean }
+        });
+
+        if (!existing) {
+          await prisma.imeiHistory.create({
+            data: {
+              serial: serialClean,
+              productCode: item.productCode,
+              description: item.description,
+              currentStore: item.storeName
+            }
+          });
+        } else if (existing.currentStore !== item.storeName) {
+          await prisma.imeiHistory.update({
+            where: { serial: serialClean },
+            data: {
+              currentStore: item.storeName,
+              entryDateStore: new Date(),
+              transferCount: existing.transferCount + 1
+            }
+          });
+        }
       }
+    }
+    // =======================================================
 
-      const formattedData = data.map((item: any) => {
-          const safeNum = (val: any) => {
-              const parsed = Number(val);
-              return isNaN(parsed) ? 0 : parsed;
-          };
+    console.log(`✅ Lote processado com sucesso: ${formattedData.length} registros.`);
+    console.log("🔎 Exemplo do primeiro item salvo:", formattedData[0]);
 
-          return {
-              cnpj: String(item.CNPJ_ORIGEM || ""),
-              storeName: String(item.NOME_FANTASIA || "LOJA"),
-              productCode: String(item.CODIGO_PRODUTO || ""),
-              reference: String(item.REFERENCIA || ""),
-              description: String(item.DESCRICAO || "SEM DESCRIÇÃO"),
-              category: String(item.CATEGORIA || "GERAL"),
-              quantity: safeNum(item.QUANTIDADE),
-              costPrice: safeNum(item.PRECO_CUSTO),
-              salePrice: safeNum(item.PRECO_VENDA),
-              averageCost: safeNum(item.CUSTO_MEDIO),
-              serial: String(item.SERIAL || "") 
-          };
-      });
-
-      await prisma.stock.createMany({ data: formattedData });
-      
-      // =======================================================
-      // 4. INTELIGÊNCIA DE RASTREAMENTO DE IMEI (AJUSTADO PARA SEU SCHEMA)
-      // =======================================================
-      for (const item of formattedData) {
-          if (item.serial && item.serial.trim() !== '') {
-              const serialClean = item.serial.trim();
-              
-              const existing = await prisma.imeiHistory.findUnique({
-                  where: { serial: serialClean } // <-- Usando "serial" como no seu schema
-              });
-
-              if (!existing) {
-                  await prisma.imeiHistory.create({
-                      data: {
-                          serial: serialClean, // <-- Usando "serial"
-                          productCode: item.productCode,
-                          description: item.description,
-                          currentStore: item.storeName
-                      }
-                  });
-              } else if (existing.currentStore !== item.storeName) {
-                  await prisma.imeiHistory.update({
-                      where: { serial: serialClean }, // <-- Usando "serial"
-                      data: {
-                          currentStore: item.storeName,
-                          entryDateStore: new Date(), // <-- Usando "entryDateStore"
-                          transferCount: existing.transferCount + 1 
-                      }
-                  });
-              }
-          }
-      }
-      // =======================================================
-
-      return res.json({ success: true, count: formattedData.length });
+    return res.json({
+      success: true,
+      count: formattedData.length
+    });
 
   } catch (error: any) {
-      console.error("❌ ERRO CRÍTICO NO PRISMA:", error);
-      return res.status(500).json({ error: "Erro ao sincronizar estoque.", details: error.message });
+    console.error("❌ ERRO CRÍTICO NO PRISMA:", error);
+    return res.status(500).json({
+      error: "Erro ao sincronizar estoque.",
+      details: error.message
+    });
   }
 });
 

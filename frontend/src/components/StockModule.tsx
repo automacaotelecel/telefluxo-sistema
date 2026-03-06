@@ -2,7 +2,8 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Package, Search, Box, Store, 
   TrendingUp, AlertCircle, LayoutGrid, List as ListIcon,
-  Smartphone, Tag, Filter, MapPin, X, Download, ChevronRight, ArrowLeft, ShoppingBag, RefreshCw, Truck, ArrowRight, ShoppingCart, Calendar, Bug, Activity, Clock, ArrowLeftRight
+  Smartphone, Tag, Filter, MapPin, X, Download, ChevronRight, ArrowLeft, ShoppingBag, RefreshCw, Truck, ArrowRight, ShoppingCart, Calendar, Bug, Activity, Clock, ArrowLeftRight,
+  BarChart3, Layers, Eye, EyeOff
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
@@ -61,6 +62,16 @@ const normalizeDate = (value: any) => {
   return s;
 };
 
+const getLineValue = (item: any) =>
+  String(item.emLinha || item.em_linha || item.linha || 'SEM LINHA')
+    .trim()
+    .toUpperCase();
+
+const getClusterValue = (item: any) =>
+  String(item.cluster || 'SEM CLUSTER')
+    .trim()
+    .toUpperCase();
+
 export default function StockModule() {
   const [stockData, setStockData] = useState<any[]>([]);
   const [salesData, setSalesData] = useState<any[]>([]);
@@ -79,6 +90,11 @@ export default function StockModule() {
   const [analysisSearch, setAnalysisSearch] = useState('');
   const [analysisStatusFilter, setAnalysisStatusFilter] = useState('TODOS');
   const [maloteViewMode, setMaloteViewMode] = useState<'table' | 'cards'>('table');
+  const [stockViewFilter, setStockViewFilter] = useState<'TODOS' | 'COM_GIRO' | 'SEM_GIRO' | 'ESTOQUE_BAIXO'>('TODOS');
+  const [showInsightsPanel, setShowInsightsPanel] = useState(false);
+  const [insightCategory, setInsightCategory] = useState('TODAS');
+  const [lineFilter, setLineFilter] = useState('TODAS');
+  const [clusterFilter, setClusterFilter] = useState('TODOS');
 
   // NOVO: calendário de período
   const today = new Date();
@@ -184,7 +200,13 @@ export default function StockModule() {
 
   useEffect(() => {
     loadData();
-  }, []);
+  }, [startDate, endDate]);
+
+  useEffect(() => {
+    if (expandedStore) {
+      setShowInsightsPanel(false);
+    }
+  }, [expandedStore]);
 
   // --- MAPAS AUXILIARES ---
   const salesMap = useMemo(() => {
@@ -420,17 +442,87 @@ export default function StockModule() {
   const filteredData = useMemo(() => {
     return stockData.filter(item => {
       const itemRegion = STORE_REGIONS[item.storeName] || "OUTROS";
-      const matchesSearch = ((item.description || '').toLowerCase().includes(filter.toLowerCase()) || (item.productCode || '').toString().includes(filter));
-      const matchesCategory = categoryFilter === 'TODAS' || (item.category || 'GERAL') === categoryFilter;
-      const matchesRegion = regionFilter === 'TODAS' || itemRegion === regionFilter;
-      return matchesSearch && matchesCategory && matchesRegion;
+
+      const matchesSearch =
+        ((item.description || '').toLowerCase().includes(filter.toLowerCase()) ||
+        (item.productCode || '').toString().includes(filter));
+
+      const matchesCategory =
+        categoryFilter === 'TODAS' || (item.category || 'GERAL') === categoryFilter;
+
+      const matchesRegion =
+        regionFilter === 'TODAS' || itemRegion === regionFilter;
+
+      const matchesLine =
+        lineFilter === 'TODAS' || getLineValue(item) === lineFilter;
+
+      const matchesCluster =
+        clusterFilter === 'TODOS' || getClusterValue(item) === clusterFilter;
+
+      const productSales = getProductSales(item.storeName, item.description);
+      const stockQty = Number(item.quantity) || 0;
+
+      let matchesViewFilter = true;
+      if (stockViewFilter === 'COM_GIRO') matchesViewFilter = productSales > 0;
+      if (stockViewFilter === 'SEM_GIRO') matchesViewFilter = productSales === 0;
+      if (stockViewFilter === 'ESTOQUE_BAIXO') matchesViewFilter = stockQty > 0 && stockQty < 3;
+
+      return (
+        matchesSearch &&
+        matchesCategory &&
+        matchesRegion &&
+        matchesLine &&
+        matchesCluster &&
+        matchesViewFilter
+      );
     });
-  }, [stockData, filter, categoryFilter, regionFilter]);
+  }, [
+    stockData,
+    filter,
+    categoryFilter,
+    regionFilter,
+    lineFilter,
+    clusterFilter,
+    stockViewFilter,
+    salesMap
+  ]);
 
   const currentStoreProducts = useMemo(() => {
     if (!expandedStore) return [];
     return filteredData.filter(i => i.storeName === expandedStore);
   }, [filteredData, expandedStore]);
+
+  const stockSummary = useMemo(() => {
+    const base = expandedStore ? currentStoreProducts : filteredData;
+
+    const totalItems = base.length;
+    const totalStockQty = base.reduce((acc, item) => acc + (Number(item.quantity) || 0), 0);
+    const totalStockValue = base.reduce((acc, item) => {
+      return acc + ((Number(item.quantity) || 0) * (Number(item.costPrice) || 0));
+    }, 0);
+
+    const totalSalesQty = base.reduce((acc, item) => {
+      return acc + getProductSales(item.storeName, item.description);
+    }, 0);
+
+    const lowStockCount = base.filter(item => {
+      const q = Number(item.quantity) || 0;
+      return q > 0 && q < 3;
+    }).length;
+
+    const noSalesCount = base.filter(item => {
+      return getProductSales(item.storeName, item.description) === 0;
+    }).length;
+
+    return {
+      totalItems,
+      totalStockQty,
+      totalStockValue,
+      totalSalesQty,
+      lowStockCount,
+      noSalesCount
+    };
+  }, [expandedStore, currentStoreProducts, filteredData, salesMap]);
 
   const groupedStores = useMemo(() => {
     const groups: Record<string, any[]> = {};
@@ -439,7 +531,16 @@ export default function StockModule() {
     filteredData.forEach(item => {
       const store = item.storeName || 'LOJA DESCONHECIDA';
       const region = STORE_REGIONS[store] || 'OUTROS';
-      if (!storeStats[store]) storeStats[store] = { name: store, region: region, qty: 0, value: 0, lowStockCount: 0 };
+      if (!storeStats[store]) {
+        storeStats[store] = {
+          name: store,
+          region: region,
+          qty: 0,
+          value: 0,
+          lowStockCount: 0,
+          cluster: getClusterValue(item)
+        };
+      }
 
       const q = Number(item.quantity) || 0;
       storeStats[store].qty += q;
@@ -463,6 +564,22 @@ export default function StockModule() {
   const uniqueCategories = useMemo(() => Array.from(new Set(stockData.map(i => i.category || 'GERAL'))).sort(), [stockData]);
   const uniqueRegions = useMemo(() => Array.from(new Set(Object.values(STORE_REGIONS))).sort(), []);
 
+  const uniqueLines = useMemo(() => {
+    const values = stockData
+      .map(item => getLineValue(item))
+      .filter(Boolean);
+
+    return Array.from(new Set(values)).sort();
+  }, [stockData]);
+
+  const uniqueClusters = useMemo(() => {
+    const values = stockData
+      .map(item => getClusterValue(item))
+      .filter(Boolean);
+
+    return Array.from(new Set(values)).sort();
+  }, [stockData]);
+
   const getStoreTotalSales = (storeName: string) => {
     const sales = salesData.filter(s => getStoreNameFromCNPJ(s.cnpj_empresa || s.loja) === storeName);
     return sales.reduce((acc, s) => acc + Number(s.quantidade || 0), 0);
@@ -473,6 +590,59 @@ export default function StockModule() {
     return Array.from(regs).sort();
   }, [purchaseData]);
 
+  const categorySalesRanking = useMemo(() => {
+    const rankingMap: Record<string, number> = {};
+
+    filteredData.forEach(item => {
+      const category = item.category || 'GERAL';
+      const sold = getProductSales(item.storeName, item.description);
+
+      if (!rankingMap[category]) rankingMap[category] = 0;
+      rankingMap[category] += sold;
+    });
+
+    return Object.entries(rankingMap)
+      .map(([category, sales]) => ({ category, sales }))
+      .sort((a, b) => b.sales - a.sales);
+  }, [filteredData, salesMap]);
+
+  const topProductsRanking = useMemo(() => {
+    const rankingMap: Record<string, { product: string; category: string; sales: number; stock: number }> = {};
+
+    filteredData.forEach(item => {
+      const product = item.description || 'SEM NOME';
+      const category = item.category || 'GERAL';
+      const sold = getProductSales(item.storeName, item.description);
+      const stock = Number(item.quantity) || 0;
+      const key = `${category}|||${product}`;
+
+      if (!rankingMap[key]) {
+        rankingMap[key] = {
+          product,
+          category,
+          sales: 0,
+          stock: 0
+        };
+      }
+
+      rankingMap[key].sales += sold;
+      rankingMap[key].stock += stock;
+    });
+
+    let list = Object.values(rankingMap);
+
+    if (insightCategory !== 'TODAS') {
+      list = list.filter(item => item.category === insightCategory);
+    }
+
+    return list.sort((a, b) => b.sales - a.sales).slice(0, 8);
+  }, [filteredData, salesMap, insightCategory]);
+
+  const topCategoriesOptions = useMemo(() => {
+    const cats = Array.from(new Set(filteredData.map(item => item.category || 'GERAL'))).sort();
+    return ['TODAS', ...cats];
+  }, [filteredData]);
+
   // --- EXPORTADOR INTELIGENTE (DOWNLOAD SELETIVO) ---
   const handleExport = () => {
     let headers: string[] = [];
@@ -481,11 +651,13 @@ export default function StockModule() {
 
     if (moduleMode === 'stock') {
       const dataToExport = expandedStore ? currentStoreProducts : filteredData;
-      headers = ["Loja", "Região", "Código", "Produto", "Categoria", "Qtd Estoque", "Qtd Vendida Período", "Custo Unit", "Preço Venda", "Custo Total"];
+      headers = ["Loja", "Cluster", "Linha", "Região", "Código", "Produto", "Categoria", "Qtd Estoque", "Qtd Vendida Período", "Custo Unit", "Preço Venda", "Custo Total"];
       csvRows = dataToExport.map(item => {
         const sold = getProductSales(item.storeName, item.description);
         return [
           `"${item.storeName}"`,
+          `"${getClusterValue(item)}"`,
+          `"${getLineValue(item)}"`,
           `"${STORE_REGIONS[item.storeName] || 'OUTROS'}"`,
           `"${item.productCode}"`,
           `"${item.description}"`,
@@ -565,7 +737,13 @@ export default function StockModule() {
           <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
             <div className="flex items-center gap-3">
               {expandedStore ? (
-                <button onClick={() => setExpandedStore(null)} className="p-2 hover:bg-slate-100 rounded-xl text-slate-500 transition-colors">
+                <button
+                  onClick={() => {
+                    setExpandedStore(null);
+                    setStockViewFilter('TODOS');
+                  }}
+                  className="p-2 hover:bg-slate-100 rounded-xl text-slate-500 transition-colors"
+                >
                   <ArrowLeft size={24} />
                 </button>
               ) : (
@@ -659,7 +837,6 @@ export default function StockModule() {
         {/* ================= MÓDULO DE ANÁLISE DE ESTOQUE (AGING) ================= */}
         {moduleMode === 'analysis' && (
           <div className="space-y-6 animate-fadeIn">
-            {/* Banner Educativo */}
             <div className="bg-gradient-to-r from-purple-900 to-indigo-900 p-6 rounded-2xl text-white shadow-lg flex justify-between items-center relative overflow-hidden">
               <div className="absolute right-0 top-0 opacity-10">
                 <Clock size={120} />
@@ -672,7 +849,6 @@ export default function StockModule() {
               </div>
             </div>
 
-            {/* Filtros da Análise */}
             <div className="flex flex-col md:flex-row gap-3 bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
               <div className="relative flex-1">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
@@ -696,7 +872,6 @@ export default function StockModule() {
               </select>
             </div>
 
-            {/* Tabela de Dados Reais e Dinâmicos */}
             <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
               <div className="overflow-x-auto max-h-[600px] scrollbar-thin">
                 <table className="w-full text-left border-collapse">
@@ -780,7 +955,7 @@ export default function StockModule() {
           </div>
         )}
 
-        {/* ================= MÓDULO DE COMPRAS (COM DEBUG) ================= */}
+        {/* ================= MÓDULO DE COMPRAS ================= */}
         {moduleMode === 'purchases' && (
           <div className="space-y-6 animate-fadeIn">
             <div className="flex justify-between items-center bg-white p-4 rounded-xl border border-slate-200">
@@ -1055,9 +1230,196 @@ export default function StockModule() {
           </div>
         )}
 
-        {/* ================= MÓDULO ESTOQUE (CLÁSSICO) ================= */}
+        {/* ================= MÓDULO ESTOQUE ================= */}
         {moduleMode === 'stock' && (
           <>
+            {!expandedStore && (
+              <div className="space-y-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
+                  <button
+                    onClick={() => setStockViewFilter('TODOS')}
+                    className={`bg-white rounded-2xl border p-4 text-left shadow-sm transition-all hover:-translate-y-0.5 ${
+                      stockViewFilter === 'TODOS' ? 'border-indigo-500 ring-2 ring-indigo-100' : 'border-slate-200'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-[10px] font-black uppercase text-slate-400">Produtos Visíveis</span>
+                      <Package size={16} className="text-slate-400" />
+                    </div>
+                    <div className="text-2xl font-black text-slate-800">{stockSummary.totalItems}</div>
+                    <div className="text-[10px] font-bold text-slate-400 uppercase mt-1">Clique para ver todos</div>
+                  </button>
+
+                  <button
+                    onClick={() => setStockViewFilter('TODOS')}
+                    className={`bg-white rounded-2xl border p-4 text-left shadow-sm transition-all hover:-translate-y-0.5 ${
+                      stockViewFilter === 'TODOS' ? 'border-indigo-500 ring-2 ring-indigo-100' : 'border-slate-200'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-[10px] font-black uppercase text-slate-400">Peças em Estoque</span>
+                      <Box size={16} className="text-indigo-500" />
+                    </div>
+                    <div className="text-2xl font-black text-slate-800">
+                      {stockSummary.totalStockQty.toLocaleString('pt-BR')}
+                    </div>
+                    <div className="text-[10px] font-bold text-slate-400 uppercase mt-1">Base atual filtrada</div>
+                  </button>
+
+                  <button
+                    onClick={() => setStockViewFilter('COM_GIRO')}
+                    className={`bg-white rounded-2xl border p-4 text-left shadow-sm transition-all hover:-translate-y-0.5 ${
+                      stockViewFilter === 'COM_GIRO' ? 'border-emerald-500 ring-2 ring-emerald-100' : 'border-slate-200'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-[10px] font-black uppercase text-slate-400">Vendas no Período</span>
+                      <TrendingUp size={16} className="text-emerald-500" />
+                    </div>
+                    <div className="text-2xl font-black text-emerald-600">
+                      {stockSummary.totalSalesQty.toLocaleString('pt-BR')}
+                    </div>
+                    <div className="text-[10px] font-bold text-slate-400 uppercase mt-1">Clique para ver com giro</div>
+                  </button>
+
+                  <button
+                    onClick={() => setStockViewFilter('ESTOQUE_BAIXO')}
+                    className={`bg-white rounded-2xl border p-4 text-left shadow-sm transition-all hover:-translate-y-0.5 ${
+                      stockViewFilter === 'ESTOQUE_BAIXO' ? 'border-red-500 ring-2 ring-red-100' : 'border-slate-200'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-[10px] font-black uppercase text-slate-400">Estoque Baixo</span>
+                      <AlertCircle size={16} className="text-red-500" />
+                    </div>
+                    <div className="text-2xl font-black text-red-600">{stockSummary.lowStockCount}</div>
+                    <div className="text-[10px] font-bold text-slate-400 uppercase mt-1">Clique para filtrar</div>
+                  </button>
+
+                  <button
+                    onClick={() => setStockViewFilter('SEM_GIRO')}
+                    className={`bg-white rounded-2xl border p-4 text-left shadow-sm transition-all hover:-translate-y-0.5 ${
+                      stockViewFilter === 'SEM_GIRO' ? 'border-amber-500 ring-2 ring-amber-100' : 'border-slate-200'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-[10px] font-black uppercase text-slate-400">Sem Giro</span>
+                      <Tag size={16} className="text-amber-500" />
+                    </div>
+                    <div className="text-2xl font-black text-amber-600">{stockSummary.noSalesCount}</div>
+                    <div className="text-[10px] font-bold text-slate-400 uppercase mt-1">Clique para filtrar</div>
+                  </button>
+                </div>
+
+                <div className="bg-gradient-to-r from-slate-900 to-indigo-900 rounded-2xl p-5 text-white shadow-lg flex flex-col md:flex-row justify-between gap-4">
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-widest text-white/60">Valor Total em Estoque</p>
+                    <h3 className="text-3xl font-black mt-2">
+                      R$ {stockSummary.totalStockValue.toLocaleString('pt-BR', { maximumFractionDigits: 0 })}
+                    </h3>
+                    <p className="text-[11px] text-white/70 mt-1">
+                      Totais calculados com os filtros e pesquisa atuais
+                    </p>
+                  </div>
+
+                  <div className="flex items-center">
+                    <button
+                      onClick={() => setShowInsightsPanel(prev => !prev)}
+                      className="bg-white/10 hover:bg-white/20 border border-white/10 px-4 py-2 rounded-xl text-xs font-black uppercase flex items-center gap-2 transition-all"
+                    >
+                      <BarChart3 size={14} />
+                      {showInsightsPanel ? 'Ocultar Insights' : 'Ver Insights'}
+                      {showInsightsPanel ? <EyeOff size={14} /> : <Eye size={14} />}
+                    </button>
+                  </div>
+                </div>
+
+                {showInsightsPanel && (
+                  <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 space-y-5 animate-fadeIn">
+                    <div className="flex flex-col lg:flex-row justify-between gap-3 lg:items-center">
+                      <div>
+                        <h3 className="text-sm font-black uppercase text-slate-800 flex items-center gap-2">
+                          <Layers size={16} className="text-indigo-600" />
+                          Insights de Giro
+                        </h3>
+                        <p className="text-[10px] font-bold uppercase text-slate-400 mt-1">
+                          Ranking baseado no período, busca e filtros aplicados
+                        </p>
+                      </div>
+
+                      <select
+                        value={insightCategory}
+                        onChange={e => setInsightCategory(e.target.value)}
+                        className="bg-slate-50 border border-slate-200 text-slate-600 text-xs font-bold uppercase px-4 py-2.5 rounded-xl outline-none cursor-pointer"
+                      >
+                        {topCategoriesOptions.map(cat => (
+                          <option key={cat} value={cat}>{cat}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+                      <div className="bg-slate-50 rounded-2xl p-4 border border-slate-100">
+                        <h4 className="text-[11px] font-black uppercase text-slate-700 mb-3">Top Categorias</h4>
+                        <div className="space-y-2">
+                          {categorySalesRanking.slice(0, 5).map((item, idx) => (
+                            <div key={item.category} className="flex justify-between items-center text-xs">
+                              <span className="font-bold text-slate-700 uppercase">
+                                {idx + 1}. {item.category}
+                              </span>
+                              <span className="font-black text-indigo-600">{item.sales}</span>
+                            </div>
+                          ))}
+                          {categorySalesRanking.length === 0 && (
+                            <p className="text-xs text-slate-400 font-bold uppercase">Sem dados</p>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="xl:col-span-2 bg-slate-50 rounded-2xl p-4 border border-slate-100">
+                        <h4 className="text-[11px] font-black uppercase text-slate-700 mb-3">
+                          Top Produtos {insightCategory !== 'TODAS' ? `- ${insightCategory}` : ''}
+                        </h4>
+
+                        <div className="space-y-2">
+                          {topProductsRanking.map((item, idx) => (
+                            <div
+                              key={`${item.category}-${item.product}-${idx}`}
+                              className="flex flex-col md:flex-row md:items-center justify-between gap-2 bg-white rounded-xl border border-slate-100 px-3 py-2"
+                            >
+                              <div className="min-w-0">
+                                <p className="text-xs font-black text-slate-800 uppercase truncate">
+                                  {idx + 1}. {item.product}
+                                </p>
+                                <p className="text-[10px] font-bold text-slate-400 uppercase mt-1">
+                                  {item.category}
+                                </p>
+                              </div>
+
+                              <div className="flex gap-4 text-right">
+                                <div>
+                                  <p className="text-[9px] font-bold text-slate-400 uppercase">Vendas</p>
+                                  <p className="text-sm font-black text-emerald-600">{item.sales}</p>
+                                </div>
+                                <div>
+                                  <p className="text-[9px] font-bold text-slate-400 uppercase">Estoque</p>
+                                  <p className="text-sm font-black text-indigo-600">{item.stock}</p>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+
+                          {topProductsRanking.length === 0 && (
+                            <p className="text-xs text-slate-400 font-bold uppercase">Nenhum produto encontrado</p>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
             {!expandedStore && (
               <div className="flex flex-col md:flex-row gap-3 mb-4">
                 <div className="relative flex-1">
@@ -1075,12 +1437,60 @@ export default function StockModule() {
                     <option value="TODAS">Todas as Regiões</option>
                     {uniqueRegions.map(r => <option key={r} value={r}>{r}</option>)}
                   </select>
+
                   <select value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)} className="bg-white border border-slate-200 text-slate-600 text-xs font-bold uppercase px-4 py-2.5 rounded-xl outline-none cursor-pointer hover:border-indigo-300 shadow-sm whitespace-nowrap">
                     <option value="TODAS">Todas as Categorias</option>
                     {uniqueCategories.map(c => <option key={c} value={c}>{c}</option>)}
                   </select>
-                  {(regionFilter !== 'TODAS' || categoryFilter !== 'TODAS' || filter !== '') && (
-                    <button onClick={() => { setRegionFilter('TODAS'); setCategoryFilter('TODAS'); setFilter('') }} className="bg-red-50 border border-red-100 text-red-600 hover:bg-red-100 text-xs font-bold px-4 py-2.5 rounded-xl transition-colors shadow-sm flex items-center gap-1">
+
+                  <select
+                    value={lineFilter}
+                    onChange={e => setLineFilter(e.target.value)}
+                    className="bg-white border border-slate-200 text-slate-600 text-xs font-bold uppercase px-4 py-2.5 rounded-xl outline-none cursor-pointer hover:border-indigo-300 shadow-sm whitespace-nowrap"
+                  >
+                    <option value="TODAS">Todas as Linhas</option>
+                    {uniqueLines.map(line => (
+                      <option key={line} value={line}>{line}</option>
+                    ))}
+                  </select>
+
+                  <select
+                    value={clusterFilter}
+                    onChange={e => setClusterFilter(e.target.value)}
+                    className="bg-white border border-slate-200 text-slate-600 text-xs font-bold uppercase px-4 py-2.5 rounded-xl outline-none cursor-pointer hover:border-indigo-300 shadow-sm whitespace-nowrap"
+                  >
+                    <option value="TODOS">Todos os Clusters</option>
+                    {uniqueClusters.map(cluster => (
+                      <option key={cluster} value={cluster}>{cluster}</option>
+                    ))}
+                  </select>
+
+                  <select value={stockViewFilter} onChange={e => setStockViewFilter(e.target.value as any)} className="bg-white border border-slate-200 text-slate-600 text-xs font-bold uppercase px-4 py-2.5 rounded-xl outline-none cursor-pointer hover:border-indigo-300 shadow-sm whitespace-nowrap">
+                    <option value="TODOS">Todos</option>
+                    <option value="COM_GIRO">Com Giro</option>
+                    <option value="SEM_GIRO">Sem Giro</option>
+                    <option value="ESTOQUE_BAIXO">Estoque Baixo</option>
+                  </select>
+
+                  {(
+                    regionFilter !== 'TODAS' ||
+                    categoryFilter !== 'TODAS' ||
+                    lineFilter !== 'TODAS' ||
+                    clusterFilter !== 'TODOS' ||
+                    filter !== '' ||
+                    stockViewFilter !== 'TODOS'
+                  ) && (
+                    <button
+                      onClick={() => {
+                        setRegionFilter('TODAS');
+                        setCategoryFilter('TODAS');
+                        setLineFilter('TODAS');
+                        setClusterFilter('TODOS');
+                        setFilter('');
+                        setStockViewFilter('TODOS');
+                      }}
+                      className="bg-red-50 border border-red-100 text-red-600 hover:bg-red-100 text-xs font-bold px-4 py-2.5 rounded-xl transition-colors shadow-sm flex items-center gap-1"
+                    >
                       <X size={14} /> LIMPAR
                     </button>
                   )}
@@ -1089,7 +1499,6 @@ export default function StockModule() {
             )}
 
             {expandedStore ? (
-              /* MICRO VIEW */
               <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 animate-fadeIn">
                 <div className="lg:col-span-3 space-y-3">
                   <div className="flex justify-between items-center mb-2">
@@ -1123,6 +1532,12 @@ export default function StockModule() {
                               <h4 className="text-xs font-bold text-slate-800 uppercase line-clamp-2 leading-tight">{item.description}</h4>
                               <div className="flex flex-wrap items-center gap-2 mt-1">
                                 <span className="text-[9px] font-bold bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded uppercase">{item.category}</span>
+                                <span className="text-[9px] font-bold bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded uppercase border border-blue-100">
+                                  {getLineValue(item)}
+                                </span>
+                                <span className="text-[9px] font-bold bg-purple-50 text-purple-700 px-1.5 py-0.5 rounded uppercase border border-purple-100">
+                                  {getClusterValue(item)}
+                                </span>
                                 {soldQty > 0 ? (
                                   <span className="text-[9px] font-bold bg-green-100 text-green-700 px-1.5 py-0.5 rounded uppercase flex items-center gap-1 border border-green-200">
                                     <ShoppingBag size={10} /> {soldQty} vend
@@ -1163,6 +1578,9 @@ export default function StockModule() {
                     <div className="absolute top-0 right-0 p-4 opacity-10"><Store size={80} /></div>
                     <p className="text-[10px] font-bold opacity-70 uppercase tracking-widest mb-1">Resumo da Loja</p>
                     <h2 className="text-xl font-black uppercase leading-tight mb-6">{expandedStore}</h2>
+                    <p className="text-[10px] font-bold text-indigo-200 uppercase -mt-4 mb-4">
+                      Cluster: {currentStoreProducts[0] ? getClusterValue(currentStoreProducts[0]) : 'SEM CLUSTER'}
+                    </p>
                     <div className="space-y-4">
                       <div>
                         <p className="text-[10px] opacity-70 uppercase">Valor em Estoque</p>
@@ -1183,7 +1601,6 @@ export default function StockModule() {
                 </div>
               </div>
             ) : (
-              /* MACRO VIEW */
               <div className="space-y-10 animate-fadeIn pb-10">
                 {Object.entries(groupedStores).length > 0 ? Object.entries(groupedStores).map(([region, stores]) => (
                   <div key={region} className="space-y-4">
@@ -1202,7 +1619,12 @@ export default function StockModule() {
                             className={`group bg-white p-5 rounded-2xl border shadow-sm cursor-pointer transition-all hover:-translate-y-1 hover:shadow-lg relative overflow-hidden ${hasLowStockAlert ? 'border-red-300 ring-4 ring-red-50' : 'border-slate-100 hover:border-indigo-200'}`}
                           >
                             {hasLowStockAlert && <div className="absolute top-3 right-3 w-3 h-3 bg-red-500 rounded-full animate-pulse shadow-lg"></div>}
-                            <h3 className="text-sm font-black text-slate-800 uppercase leading-tight mb-4 truncate pr-4">{store.name}</h3>
+                            <h3 className="text-sm font-black text-slate-800 uppercase leading-tight mb-2 truncate pr-4">{store.name}</h3>
+                            <div className="mb-3">
+                              <span className="text-[9px] font-bold bg-purple-50 text-purple-700 px-2 py-1 rounded uppercase border border-purple-100">
+                                {store.cluster || 'SEM CLUSTER'}
+                              </span>
+                            </div>
                             <div className="space-y-2">
                               <div className="flex justify-between items-end border-b border-slate-50 pb-2">
                                 <span className="text-[10px] font-bold text-slate-400 uppercase">Estoque</span>
