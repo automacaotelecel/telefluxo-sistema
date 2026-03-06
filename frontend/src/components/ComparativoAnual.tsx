@@ -1,10 +1,10 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react';
 import {
-  XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, BarChart, Bar, Cell, LabelList, Legend
+  XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, BarChart, Bar, LabelList, Legend
 } from 'recharts';
 import {
   Calendar, Store, AlertCircle, ChevronDown, CheckSquare, Square, Filter, Layers,
-  Activity, LayoutGrid, TrendingUp
+  Activity, TrendingUp
 } from 'lucide-react';
 
 const STORE_MAP: Record<string, string> = {
@@ -68,13 +68,13 @@ const getDateValue = (sale: AnyRow) =>
   pick(sale, ['data_emissao', 'DATA_EMISSAO', 'data', 'DATA', 'date', 'DATE'], '');
 
 const getTotal = (sale: AnyRow) =>
-  toNumberSafe(pick(sale, ['total_liquido', 'TOTAL_LIQUIDO', 'total', 'TOTAL', 'valor', 'VALOR'], 0));
+  toNumberSafe(pick(sale, ['total_liquido', 'TOTAL_LIQUIDO', 'total_real', 'TOTAL_REAL', 'total', 'TOTAL', 'valor', 'VALOR'], 0));
 
 const getStoreRaw = (sale: AnyRow) =>
   String(pick(sale, ['cnpj_empresa', 'CNPJ_EMPRESA', 'cnpjEmp', 'CNPJ', 'loja', 'LOJA'], '')).trim();
 
 const getCategory = (sale: AnyRow) =>
-  String(pick(sale, ['familia', 'FAMILIA', 'categoria', 'CATEGORIA', 'grupo', 'GRUPO'], 'OUTROS'))
+  String(pick(sale, ['familia', 'FAMILIA', 'categoria_real', 'CATEGORIA_REAL', 'categoria', 'CATEGORIA', 'grupo', 'GRUPO'], 'OUTROS'))
     .trim()
     .toUpperCase();
 
@@ -128,7 +128,6 @@ const extractYearMonth = (raw: any): { year: string; month: string } | null => {
   return null;
 };
 
-// ✅ ADIÇÃO: nomes de mês (pra exibir “Março”, etc.)
 const MONTH_FULL: Record<number, string> = {
   1: 'Janeiro', 2: 'Fevereiro', 3: 'Março', 4: 'Abril', 5: 'Maio', 6: 'Junho',
   7: 'Julho', 8: 'Agosto', 9: 'Setembro', 10: 'Outubro', 11: 'Novembro', 12: 'Dezembro'
@@ -145,11 +144,9 @@ export default function ComparativoAnual() {
 
   const [categoryFilter, setCategoryFilter] = useState('TODAS');
 
-  // ✅ COMPARATIVO: dois anos
   const [yearA, setYearA] = useState<string>('');
   const [yearB, setYearB] = useState<string>('');
 
-  // ✅ ADIÇÃO: dados de previsão (mês atual + projeção)
   const [forecast, setForecast] = useState<any>(null);
 
   const API_URL = window.location.hostname === 'localhost'
@@ -164,9 +161,7 @@ export default function ComparativoAnual() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  const loadData = async () => {
-    setLoading(true);
-
+  const getUserId = () => {
     let userId = '';
     try {
       const rawUser = localStorage.getItem('user') || localStorage.getItem('telefluxo_user');
@@ -174,44 +169,53 @@ export default function ComparativoAnual() {
         const parsed = JSON.parse(rawUser);
         userId = parsed.id || parsed.userId || parsed._id || '';
       }
-    } catch (e) { console.error(e); }
+    } catch (e) {
+      console.error(e);
+    }
+    return userId;
+  };
 
+  const loadAnnualData = async () => {
+    const userId = getUserId();
+    const resAnnual = await fetch(`${API_URL}/sales_anuais?userId=${userId}`);
+
+    if (!resAnnual.ok) {
+      throw new Error('Rota de histórico anual não encontrada no servidor.');
+    }
+
+    const dataAnnual = await resAnnual.json();
+
+    const list =
+      (dataAnnual && Array.isArray(dataAnnual.sales) && dataAnnual.sales) ||
+      (dataAnnual && Array.isArray(dataAnnual.data) && dataAnnual.data) ||
+      (Array.isArray(dataAnnual) ? dataAnnual : []);
+
+    setAnnualRawData(list);
+    setErrorMsg('');
+  };
+
+  const loadForecast = async (targetYear: number) => {
+    const userId = getUserId();
     try {
-      const resAnnual = await fetch(`${API_URL}/sales_anuais?userId=${userId}`);
-      if (!resAnnual.ok) {
-        setErrorMsg("Rota de histórico anual não encontrada no servidor.");
-        setAnnualRawData([]);
-        return;
-      }
-
-      const dataAnnual = await resAnnual.json();
-
-      const list =
-        (dataAnnual && Array.isArray(dataAnnual.sales) && dataAnnual.sales) ||
-        (dataAnnual && Array.isArray(dataAnnual.data) && dataAnnual.data) ||
-        (Array.isArray(dataAnnual) ? dataAnnual : []);
-
-      setAnnualRawData(list);
-      setErrorMsg('');
-
-      // ✅ ADIÇÃO: buscar previsão do ano selecionado (Ano B)
-      // (se a rota não existir, só ignora sem quebrar nada)
-      const targetYear = Number(yearB || new Date().getFullYear());
-      try {
-        const resForecast = await fetch(`${API_URL}/forecast/ano?userId=${userId}&year=${targetYear}`);
-        if (resForecast.ok) {
-          const f = await resForecast.json();
-          setForecast(f || null);
-        } else {
-          setForecast(null);
-        }
-      } catch (e) {
+      const resForecast = await fetch(`${API_URL}/forecast/ano?userId=${userId}&year=${targetYear}`);
+      if (resForecast.ok) {
+        const f = await resForecast.json();
+        setForecast(f || null);
+      } else {
         setForecast(null);
       }
+    } catch (e) {
+      setForecast(null);
+    }
+  };
 
+  const loadData = async () => {
+    setLoading(true);
+    try {
+      await loadAnnualData();
     } catch (err: any) {
       console.error(err);
-      setErrorMsg("Erro ao carregar dados anuais. Verifique se o servidor está rodando.");
+      setErrorMsg(err?.message || "Erro ao carregar dados anuais. Verifique se o servidor está rodando.");
       setAnnualRawData([]);
     } finally {
       setLoading(false);
@@ -229,7 +233,6 @@ export default function ComparativoAnual() {
     return Array.from(set).sort();
   }, [annualRawData]);
 
-  // ✅ default: últimos 2 anos do banco
   useEffect(() => {
     if (!yearsAvailable.length) return;
     const last = yearsAvailable[yearsAvailable.length - 1];
@@ -239,14 +242,9 @@ export default function ComparativoAnual() {
     setYearB((cur) => cur || last);
   }, [yearsAvailable]);
 
-  // ✅ ADIÇÃO: quando trocar Ano B, recarrega previsão (sem apagar nada)
   useEffect(() => {
-    // evita chamar antes de ter ano
     if (!yearB) return;
-    // reaproveita o loadData pra não duplicar lógica e manter tudo consistente
-    // (não apaga nada, só garante que forecast acompanhe o Ano B)
-    loadData();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    loadForecast(Number(yearB));
   }, [yearB]);
 
   const uniqueCategories = useMemo(() => {
@@ -272,24 +270,28 @@ export default function ComparativoAnual() {
     else setSelectedStores([...selectedStores, store]);
   };
 
+  const monthLabel = forecast?.month ? (MONTH_FULL[Number(forecast.month)] || `Mês ${forecast.month}`) : 'Mês atual';
+  const monthSoFar = toNumberSafe(forecast?.month_so_far);
+  const monthForecast = toNumberSafe(forecast?.month_forecast);
+  const monthRemainingForecast = toNumberSafe(forecast?.month_remaining_forecast);
+  const yearForecast = toNumberSafe(forecast?.year_forecast);
+  const ytd = toNumberSafe(forecast?.ytd);
+
   const computed = useMemo(() => {
     const mesesNomes = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
 
     const years = [yearA, yearB].filter(Boolean);
     const monthKeys = Array.from({ length: 12 }, (_, i) => String(i + 1).padStart(2, '0'));
 
-    // year -> month -> total
     const totalsByYearMonth: Record<string, Record<string, number>> = {};
     for (const y of years) {
       totalsByYearMonth[y] = {};
       for (const m of monthKeys) totalsByYearMonth[y][m] = 0;
     }
 
-    // year -> store -> total
     const storeTotalsByYear: Record<string, Record<string, number>> = {};
     for (const y of years) storeTotalsByYear[y] = {};
 
-    // year totals
     const totalByYear: Record<string, number> = {};
     for (const y of years) totalByYear[y] = 0;
 
@@ -309,30 +311,45 @@ export default function ComparativoAnual() {
 
       const ym = extractYearMonth(getDateValue(sale));
       if (!ym) continue;
-
       if (!years.includes(ym.year)) continue;
 
       const total = getTotal(sale);
       if (!total) continue;
 
       totalsByYearMonth[ym.year][ym.month] = (totalsByYearMonth[ym.year][ym.month] || 0) + total;
-
       storeTotalsByYear[ym.year][storeName] = (storeTotalsByYear[ym.year][storeName] || 0) + total;
       totalByYear[ym.year] += total;
     }
 
-    // chart: cada mês tem colunas yearA e yearB
-    const chartData = monthKeys.map((m, idx) => ({
-      mes: mesesNomes[idx],
-      mesNum: m,
-      [yearA || 'Ano A']: yearA ? (totalsByYearMonth[yearA]?.[m] || 0) : 0,
-      [yearB || 'Ano B']: yearB ? (totalsByYearMonth[yearB]?.[m] || 0) : 0,
-    }));
+    const forecastMonth = Number(forecast?.month || 0);
+    const currentReal = monthSoFar;
+    const currentProj = monthRemainingForecast;
+
+    const chartData = monthKeys.map((m, idx) => {
+      const row: any = {
+        mes: mesesNomes[idx],
+        mesNum: m,
+        [yearA || 'Ano A']: yearA ? (totalsByYearMonth[yearA]?.[m] || 0) : 0,
+        [yearB || 'Ano B']: yearB ? (totalsByYearMonth[yearB]?.[m] || 0) : 0,
+        [`${yearB || 'Ano B'}_real`]: yearB ? (totalsByYearMonth[yearB]?.[m] || 0) : 0,
+        [`${yearB || 'Ano B'}_proj`]: 0,
+      };
+
+      if (
+        yearB &&
+        Number(yearB) === new Date().getFullYear() &&
+        Number(m) === forecastMonth
+      ) {
+        row[`${yearB}_real`] = currentReal;
+        row[`${yearB}_proj`] = currentProj;
+        row[yearB] = currentReal + currentProj;
+      }
+
+      return row;
+    });
 
     const totalA = yearA ? (totalByYear[yearA] || 0) : 0;
     const totalB = yearB ? (totalByYear[yearB] || 0) : 0;
-    const diff = totalB - totalA;
-    const diffPct = totalA > 0 ? (diff / totalA) * 100 : (totalB > 0 ? 100 : 0);
 
     const bestStoreByYear = (y: string) => {
       const entries = Object.entries(storeTotalsByYear[y] || {})
@@ -345,21 +362,15 @@ export default function ComparativoAnual() {
       chartData,
       totalA,
       totalB,
-      diff,
-      diffPct,
       bestA: yearA ? bestStoreByYear(yearA) : { nome: '—', total: 0 },
       bestB: yearB ? bestStoreByYear(yearB) : { nome: '—', total: 0 },
     };
-  }, [annualRawData, selectedStores, categoryFilter, yearA, yearB]);
+  }, [annualRawData, selectedStores, categoryFilter, yearA, yearB, forecast, monthSoFar, monthRemainingForecast]);
 
   const noData = (computed.totalA + computed.totalB) <= 0;
 
-  // ✅ ADIÇÃO: helpers de forecast (sem mexer em nada do resto)
-  const monthLabel = forecast?.month ? (MONTH_FULL[Number(forecast.month)] || `Mês ${forecast.month}`) : 'Mês atual';
-  const monthSoFar = toNumberSafe(forecast?.month_so_far);
-  const monthForecast = toNumberSafe(forecast?.month_forecast);
-  const yearForecast = toNumberSafe(forecast?.year_forecast);
-  const ytd = toNumberSafe(forecast?.ytd);
+  const trendDiff = yearForecast - computed.totalA;
+  const trendDiffPct = computed.totalA > 0 ? (trendDiff / computed.totalA) * 100 : 0;
 
   return (
     <div className="h-full overflow-y-auto p-4 md:p-6 bg-[#F0F2F5] font-sans text-slate-800">
@@ -385,7 +396,6 @@ export default function ComparativoAnual() {
         </div>
 
         <div className="flex flex-wrap gap-3 items-center w-full xl:w-auto">
-          {/* Ano A */}
           <div className="flex items-center bg-white border border-slate-200 px-3 py-2 rounded-lg gap-2 shadow-sm">
             <Calendar size={14} className="text-blue-600" />
             <select
@@ -397,10 +407,8 @@ export default function ComparativoAnual() {
             </select>
           </div>
 
-          {/* Ano B */}
           <div className="flex items-center bg-white border border-slate-200 px-3 py-2 rounded-lg gap-2 shadow-sm">
-            {/* ✅ TROCA DO ROXO -> VERDE */}
-            <Calendar size={14} className="text-emerald-600" />
+            <Calendar size={14} className="text-sky-600" />
             <select
               value={yearB}
               onChange={e => setYearB(e.target.value)}
@@ -410,7 +418,6 @@ export default function ComparativoAnual() {
             </select>
           </div>
 
-          {/* Categoria */}
           <div className="flex items-center bg-white border border-slate-200 px-3 py-2 rounded-lg gap-2 shadow-sm">
             <Layers size={14} className="text-blue-600" />
             <select
@@ -423,7 +430,6 @@ export default function ComparativoAnual() {
             </select>
           </div>
 
-          {/* Lojas */}
           <div className="relative" ref={storeMenuRef}>
             <button
               onClick={() => setIsStoreMenuOpen(!isStoreMenuOpen)}
@@ -481,7 +487,6 @@ export default function ComparativoAnual() {
       )}
 
       {/* CARDS */}
-      {/* ✅ edit: aumentei pra 5 colunas no desktop pra incluir o card de previsão sem remover nada */}
       <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-6">
         <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
           <div className="flex justify-between items-start mb-2">
@@ -495,26 +500,25 @@ export default function ComparativoAnual() {
         <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
           <div className="flex justify-between items-start mb-2">
             <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Total ({yearB || '—'})</span>
-            {/* ✅ TROCA DO ROXO -> VERDE */}
-            <Calendar size={16} className="text-emerald-600" />
+            <Calendar size={16} className="text-sky-600" />
           </div>
-          {/* ✅ TROCA DO ROXO -> VERDE */}
-          <h3 className="text-2xl font-black text-emerald-700 mt-1">{formatMoney(computed.totalB)}</h3>
+          <h3 className="text-2xl font-black text-sky-700 mt-1">{formatMoney(computed.totalB)}</h3>
           <div className="text-[10px] font-bold text-slate-400 uppercase mt-1">Melhor loja: {computed.bestB.nome}</div>
         </div>
 
         <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
           <div className="flex justify-between items-start mb-2">
-            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Diferença (B - A)</span>
-            <TrendingUp size={16} className="text-emerald-600" />
+            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Tendência 2026 - Real 2025</span>
+            <TrendingUp size={16} className={trendDiff >= 0 ? 'text-teal-600' : 'text-red-600'} />
           </div>
-          <h3 className="text-2xl font-black text-emerald-700 mt-1">{formatMoney(computed.diff)}</h3>
+          <h3 className={`text-2xl font-black mt-1 ${trendDiff >= 0 ? 'text-teal-700' : 'text-red-700'}`}>
+            {formatMoney(trendDiff)}
+          </h3>
           <div className="text-[10px] font-bold text-slate-400 uppercase mt-1">
-            {computed.diffPct >= 0 ? '+' : ''}{computed.diffPct.toFixed(1)}%
+            {trendDiff >= 0 ? '+' : ''}{trendDiffPct.toFixed(1)}%
           </div>
         </div>
 
-        {/* ✅ NOVO CARD: PREVISÃO */}
         <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
           <div className="flex justify-between items-start mb-2">
             <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
@@ -524,7 +528,7 @@ export default function ComparativoAnual() {
           </div>
 
           <div className="text-[10px] font-black text-slate-500 uppercase">
-            {monthLabel}: até agora / previsão
+            {monthLabel}: até agora / projeção final
           </div>
           <div className="text-[12px] font-black text-slate-700 mt-1">
             {formatMoney(monthSoFar)} <span className="text-slate-400">/</span> {formatMoney(monthForecast)}
@@ -541,12 +545,12 @@ export default function ComparativoAnual() {
         <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
           <div className="flex justify-between items-start mb-2">
             <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Melhor Loja (Ano B)</span>
-            <Store size={16} className="text-emerald-600" />
+            <Store size={16} className="text-sky-600" />
           </div>
           <h3 className="text-lg font-black text-slate-800 mt-1 uppercase truncate" title={computed.bestB.nome}>
             {computed.bestB.nome}
           </h3>
-          <div className="text-[12px] font-black text-emerald-700 mt-1">{formatMoney(computed.bestB.total)}</div>
+          <div className="text-[12px] font-black text-sky-700 mt-1">{formatMoney(computed.bestB.total)}</div>
         </div>
       </div>
 
@@ -572,8 +576,7 @@ export default function ComparativoAnual() {
               />
               <Legend />
 
-              {/* Ano A */}
-              <Bar dataKey={yearA || 'Ano A'} fill="#1428A0" radius={[4, 4, 0, 0]}>
+              <Bar dataKey={yearA || 'Ano A'} name={`${yearA || 'Ano A'} Real`} fill="#1428A0" radius={[4, 4, 0, 0]}>
                 <LabelList
                   dataKey={yearA || 'Ano A'}
                   position="top"
@@ -582,14 +585,26 @@ export default function ComparativoAnual() {
                 />
               </Bar>
 
-              {/* Ano B */}
-              {/* ✅ TROCA DO ROXO -> VERDE */}
-              <Bar dataKey={yearB || 'Ano B'} fill="#16A34A" radius={[4, 4, 0, 0]}>
+              <Bar
+                dataKey={`${yearB || 'Ano B'}_real`}
+                name={`${yearB || 'Ano B'} Real`}
+                stackId="yearB"
+                fill="#0EA5E9"
+                radius={[4, 4, 0, 0]}
+              />
+
+              <Bar
+                dataKey={`${yearB || 'Ano B'}_proj`}
+                name={`${yearB || 'Ano B'} Tendência`}
+                stackId="yearB"
+                fill="#7DD3FC"
+                radius={[4, 4, 0, 0]}
+              >
                 <LabelList
                   dataKey={yearB || 'Ano B'}
                   position="top"
                   formatter={(val: any) => (Number(val) > 0 ? formatMoneyShort(Number(val)) : '')}
-                  style={{ fontSize: '10px', fill: '#16A34A', fontWeight: '900' }}
+                  style={{ fontSize: '10px', fill: '#0369A1', fontWeight: '900' }}
                 />
               </Bar>
             </BarChart>
@@ -600,7 +615,6 @@ export default function ComparativoAnual() {
       {/* (Opcional) você pode manter seu ranking/tabela aqui se quiser,
           mas agora precisa decidir: ranking de qual ano? A/B ou combinado.
           Se quiser, eu adapto pra mostrar duas tabs: "Ano A" e "Ano B". */}
-      
     </div>
   );
 }

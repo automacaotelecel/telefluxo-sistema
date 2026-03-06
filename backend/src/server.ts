@@ -2698,69 +2698,157 @@ app.get('/anuais/vendedores_compare', async (req, res) => {
 app.get('/forecast/ano', async (req, res) => {
   try {
     const userId = String(req.query.userId || '');
-    const year = Number(req.query.year || new Date().getFullYear()); // ano alvo (ex 2026)
+    const year = Number(req.query.year || new Date().getFullYear());
 
     const securityFilter = await getSalesFilter(userId, 'vendas');
-    if (!fs.existsSync(GLOBAL_DB_PATH)) return res.json({});
+
+    if (!fs.existsSync(ANUAL_DB_PATH)) {
+      return res.json({
+        year,
+        month: 0,
+        day: 0,
+        daysInMonth: 0,
+        month_so_far: 0,
+        month_forecast: 0,
+        month_remaining_forecast: 0,
+        ytd: 0,
+        year_forecast: 0,
+      });
+    }
 
     const now = new Date();
-    const todayIso = now.toISOString().slice(0, 10);
+    const currentYear = now.getFullYear();
+    const currentMonth = now.getMonth() + 1;
+    const currentDay = now.getDate();
+    const daysInMonth = new Date(currentYear, currentMonth, 0).getDate();
 
-    const month = now.getMonth() + 1; // 1..12
-    const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-    const day = now.getDate();
+    const db = await open({ filename: ANUAL_DB_PATH, driver: sqlite3.Database });
 
-    const startMonth = `${year}-${String(month).padStart(2, '0')}-01`;
-    const startYear = `${year}-01-01`;
+    const tables = await db.all(`
+      SELECT name
+      FROM sqlite_master
+      WHERE type='table' AND name='vendas_anuais_raw'
+    `);
 
-    const db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+    if (!tables || tables.length === 0) {
+      await db.close();
+      return res.json({
+        year,
+        month: currentMonth,
+        day: currentDay,
+        daysInMonth,
+        month_so_far: 0,
+        month_forecast: 0,
+        month_remaining_forecast: 0,
+        ytd: 0,
+        year_forecast: 0,
+      });
+    }
 
-    // total do mês até hoje
+    // Se o ano consultado não for o ano atual, não existe "tendência do mês atual"
+    // então retornamos o total do ano fechado, sem projeção parcial
+    if (year !== currentYear) {
+      const fullYearRow = await db.get(`
+        SELECT COALESCE(SUM(total_real), 0) AS total
+        FROM vendas_anuais_raw
+        WHERE ${securityFilter}
+          AND ano = ${year}
+      `);
+
+      await db.close();
+
+      const totalYear = Number(fullYearRow?.total || 0);
+
+      return res.json({
+        year,
+        month: currentMonth,
+        day: currentDay,
+        daysInMonth,
+        month_so_far: 0,
+        month_forecast: 0,
+        month_remaining_forecast: 0,
+        ytd: totalYear,
+        year_forecast: totalYear,
+      });
+    }
+
+    // Total do mês atual até o dia de hoje
     const mtdRow = await db.get(`
-      SELECT COALESCE(SUM(total_liquido),0) AS total
-      FROM vendas
+      SELECT COALESCE(SUM(total_real), 0) AS total
+      FROM vendas_anuais_raw
       WHERE ${securityFilter}
-        AND data_emissao >= '${startMonth}'
-        AND data_emissao <= '${todayIso}'
+        AND ano = ${year}
+        AND mes = ${currentMonth}
+        AND CAST(substr(data_emissao, 9, 2) AS INTEGER) <= ${currentDay}
     `);
 
-    // total do ano até hoje
-    const ytdRow = await db.get(`
-      SELECT COALESCE(SUM(total_liquido),0) AS total
-      FROM vendas
+    // Total do mês atual inteiro (se já houver lançamentos futuros dentro do mesmo mês)
+    const fullMonthRow = await db.get(`
+      SELECT COALESCE(SUM(total_real), 0) AS total
+      FROM vendas_anuais_raw
       WHERE ${securityFilter}
-        AND data_emissao >= '${startYear}'
-        AND data_emissao <= '${todayIso}'
+        AND ano = ${year}
+        AND mes = ${currentMonth}
     `);
 
-    // meses com venda no ano (pra média mensal)
-    const monthsRow = await db.get(`
-      SELECT COUNT(DISTINCT substr(data_emissao,1,7)) AS meses
-      FROM vendas
+    // Total dos meses fechados antes do mês atual
+    const closedMonthsRow = await db.get(`
+      SELECT COALESCE(SUM(total_real), 0) AS total
+      FROM vendas_anuais_raw
       WHERE ${securityFilter}
-        AND data_emissao >= '${startYear}'
-        AND data_emissao <= '${todayIso}'
+        AND ano = ${year}
+        AND mes < ${currentMonth}
+    `);
+
+    // Quantos meses fechados já existem
+    const closedMonthsCountRow = await db.get(`
+      SELECT COUNT(DISTINCT mes) AS total
+      FROM vendas_anuais_raw
+      WHERE ${securityFilter}
+        AND ano = ${year}
+        AND mes < ${currentMonth}
     `);
 
     await db.close();
 
     const monthSoFar = Number(mtdRow?.total || 0);
-    const ytd = Number(ytdRow?.total || 0);
-    const mesesComVenda = Math.max(1, Number(monthsRow?.meses || 1));
+    const monthFullActual = Number(fullMonthRow?.total || 0);
+    const closedMonthsTotal = Number(closedMonthsRow?.total || 0);
+    const closedMonthsCount = Number(closedMonthsCountRow?.total || 0);
 
-    // projeções
-    const monthForecast = (day > 0) ? (monthSoFar / day) * daysInMonth : monthSoFar;
-    const avgMonthly = ytd / mesesComVenda;
-    const monthsRemaining = 12 - mesesComVenda;
-    const yearForecast = ytd + (avgMonthly * monthsRemaining);
+    // Projeção do mês atual:
+    // se já existe mês inteiro carregado no banco, usa ele;
+    // senão, projeta pelo ritmo diário
+    const projectedMonth =
+      monthFullActual > monthSoFar
+        ? monthFullActual
+        : currentDay > 0
+          ? (monthSoFar / currentDay) * daysInMonth
+          : monthSoFar;
+
+    const monthRemainingForecast = Math.max(0, projectedMonth - monthSoFar);
+
+    // YTD real = meses fechados + realizado do mês atual
+    const ytd = closedMonthsTotal + monthSoFar;
+
+    // Projeção anual:
+    // meses fechados reais + projeção do mês atual + média dos meses fechados para os meses restantes
+    const avgClosedMonth = closedMonthsCount > 0 ? (closedMonthsTotal / closedMonthsCount) : projectedMonth;
+    const remainingFutureMonths = 12 - currentMonth;
+
+    const yearForecast =
+      closedMonthsTotal +
+      projectedMonth +
+      (avgClosedMonth * remainingFutureMonths);
 
     res.json({
       year,
-      month,
-      day,
+      month: currentMonth,
+      day: currentDay,
       daysInMonth,
       month_so_far: monthSoFar,
-      month_forecast: monthForecast,
+      month_forecast: projectedMonth,
+      month_remaining_forecast: monthRemainingForecast,
       ytd,
       year_forecast: yearForecast,
     });
@@ -2808,7 +2896,6 @@ app.get('/sales_anuais', async (req, res) => {
     const rows = await db.all(query);
     await db.close();
 
-    // seu frontend lê tanto snake_case quanto maiúsculo, mas vamos normalizar
     res.json({ sales: normalizeKeys(rows) });
   } catch (e: any) {
     console.error("Erro /sales_anuais:", e);
