@@ -22,39 +22,56 @@ const STORE_REGIONS: Record<string, string> = {
 };
 
 const CNPJ_MAP: Record<string, string> = {
-    "12309173001309": "ARAGUAIA SHOPPING", "12309173000418": "BOULEVARD SHOPPING",
-    "12309173000175": "BRASILIA SHOPPING", "12309173000680": "CONJUNTO NACIONAL",
-    "12309173001228": "CONJUNTO NACIONAL QUIOSQUE", "12309173000507": "GOIANIA SHOPPING",
-    "12309173000256": "IGUATEMI SHOPPING", "12309173000841": "JK SHOPPING",
-    "12309173000337": "PARK SHOPPING", "12309173000922": "PATIO BRASIL",
-    "12309173000760": "TAGUATINGA SHOPPING", "12309173001147": "TERRAÇO SHOPPING",
-    "12309173001651": "TAGUATINGA SHOPPING QQ", "12309173001732": "UBERLÂNDIA SHOPPING",
-    "12309173001813": "UBERABA SHOPPING", "12309173001570": "FLAMBOYANT SHOPPING",
-    "12309173002119": "BURITI SHOPPING", "12309173002461": "PASSEIO DAS AGUAS",
-    "12309173002038": "PORTAL SHOPPING", "12309173002208": "SHOPPING SUL",
-    "12309173001902": "BURITI RIO VERDE", "12309173002380": "PARK ANAPOLIS",
-    "12309173002542": "SHOPPING RECIFE", "12309173002895": "MANAIRA SHOPPING",
-    "12309173002976": "IGUATEMI FORTALEZA", "12309173001066": "CD TAGUATINGA"
+  "12309173001309": "ARAGUAIA SHOPPING", "12309173000418": "BOULEVARD SHOPPING",
+  "12309173000175": "BRASILIA SHOPPING", "12309173000680": "CONJUNTO NACIONAL",
+  "12309173001228": "CONJUNTO NACIONAL QUIOSQUE", "12309173000507": "GOIANIA SHOPPING",
+  "12309173000256": "IGUATEMI SHOPPING", "12309173000841": "JK SHOPPING",
+  "12309173000337": "PARK SHOPPING", "12309173000922": "PATIO BRASIL",
+  "12309173000760": "TAGUATINGA SHOPPING", "12309173001147": "TERRAÇO SHOPPING",
+  "12309173001651": "TAGUATINGA SHOPPING QQ", "12309173001732": "UBERLÂNDIA SHOPPING",
+  "12309173001813": "UBERABA SHOPPING", "12309173001570": "FLAMBOYANT SHOPPING",
+  "12309173002119": "BURITI SHOPPING", "12309173002461": "PASSEIO DAS AGUAS",
+  "12309173002038": "PORTAL SHOPPING", "12309173002208": "SHOPPING SUL",
+  "12309173001902": "BURITI RIO VERDE", "12309173002380": "PARK ANAPOLIS",
+  "12309173002542": "SHOPPING RECIFE", "12309173002895": "MANAIRA SHOPPING",
+  "12309173002976": "IGUATEMI FORTALEZA", "12309173001066": "CD TAGUATINGA"
 };
 
-const normalizeStr = (str: string) => str.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+const normalizeStr = (str: string) => String(str || '').replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+
 const getStoreNameFromCNPJ = (raw: string) => {
-    if (!raw) return "";
-    const clean = raw.replace(/\D/g, ''); 
-    return CNPJ_MAP[clean] || CNPJ_MAP[raw] || raw.toUpperCase();
+  if (!raw) return "";
+  const clean = raw.replace(/\D/g, '');
+  return CNPJ_MAP[clean] || CNPJ_MAP[raw] || raw.toUpperCase();
+};
+
+const normalizeDate = (value: any) => {
+  const s = String(value || '').trim();
+  if (!s) return '';
+
+  if (s.includes('/')) {
+    const parts = s.split('/');
+    if (parts.length === 3) return `${parts[2]}-${parts[1]}-${parts[0]}`;
+  }
+
+  if (s.includes('-')) {
+    return s.substring(0, 10);
+  }
+
+  return s;
 };
 
 export default function StockModule() {
   const [stockData, setStockData] = useState<any[]>([]);
-  const [salesData, setSalesData] = useState<any[]>([]); 
-  const [purchaseData, setPurchaseData] = useState<any[]>([]); 
+  const [salesData, setSalesData] = useState<any[]>([]);
+  const [purchaseData, setPurchaseData] = useState<any[]>([]);
   const [moduleMode, setModuleMode] = useState<'stock' | 'malote' | 'redistribution' | 'purchases' | 'analysis'>('stock');
   const [loading, setLoading] = useState(false);
   const [showDebug, setShowDebug] = useState(false);
   const [filter, setFilter] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('TODAS');
   const [regionFilter, setRegionFilter] = useState('TODAS');
-  const [expandedStore, setExpandedStore] = useState<string | null>(null); 
+  const [expandedStore, setExpandedStore] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
   const [maloteSearch, setMaloteSearch] = useState('');
   const [maloteCategory, setMaloteCategory] = useState('TODAS');
@@ -63,10 +80,16 @@ export default function StockModule() {
   const [analysisStatusFilter, setAnalysisStatusFilter] = useState('TODOS');
   const [maloteViewMode, setMaloteViewMode] = useState<'table' | 'cards'>('table');
 
-    // Regra blindada que sabe diferenciar IP local de Vercel
+  // NOVO: calendário de período
+  const today = new Date();
+  const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+  const [startDate, setStartDate] = useState(firstDayOfMonth.toISOString().split('T')[0]);
+  const [endDate, setEndDate] = useState(today.toISOString().split('T')[0]);
+
+  // Regra blindada que sabe diferenciar IP local de Vercel
   const isLocal = window.location.hostname === 'localhost' || /^[0-9.]+$/.test(window.location.hostname);
-  const API_URL = isLocal 
-    ? `http://${window.location.hostname}:3000` 
+  const API_URL = isLocal
+    ? `http://${window.location.hostname}:3000`
     : 'https://telefluxo-aplicacao.onrender.com';
 
   const loadData = async () => {
@@ -75,247 +98,323 @@ export default function StockModule() {
       // 1. Estoque (AGORA COM REAGRUPAMENTO AUTOMÁTICO PARA VISÃO GERAL)
       const resStock = await fetch(`${API_URL}/stock`);
       const jsonStock = await resStock.json();
-      
-      if(Array.isArray(jsonStock)) {
-          const groupedStock: Record<string, any> = {};
-          
-          jsonStock.forEach((item: any) => {
-              const key = `${item.storeName}|${item.productCode}`; 
-              
-              if (!groupedStock[key]) {
-                  groupedStock[key] = { ...item, quantity: 0 }; 
-              }
-              groupedStock[key].quantity += Number(item.quantity) || 0; 
-          });
-          
-          setStockData(Object.values(groupedStock));
+
+      if (Array.isArray(jsonStock)) {
+        const groupedStock: Record<string, any> = {};
+
+        jsonStock.forEach((item: any) => {
+          const key = `${item.storeName}|${item.productCode}`;
+
+          if (!groupedStock[key]) {
+            groupedStock[key] = { ...item, quantity: 0 };
+          }
+          groupedStock[key].quantity += Number(item.quantity) || 0;
+        });
+
+        setStockData(Object.values(groupedStock));
       }
 
       // 2. Compras
       try {
-          const resPurchases = await fetch(`${API_URL}/purchases`);
-          const jsonPurchases = await resPurchases.json();
-          if(Array.isArray(jsonPurchases)) setPurchaseData(jsonPurchases);
-      } catch(e) { console.warn("Erro ao carregar compras", e); }
+        const resPurchases = await fetch(`${API_URL}/purchases`);
+        const jsonPurchases = await resPurchases.json();
+        if (Array.isArray(jsonPurchases)) setPurchaseData(jsonPurchases);
+      } catch (e) {
+        console.warn("Erro ao carregar compras", e);
+      }
 
-      // 3. Vendas
+      // 3. Descobre usuário
       let userId = '';
       try {
-          const rawUser = localStorage.getItem('user') || localStorage.getItem('telefluxo_user');
-          if (rawUser) {
-              const parsed = JSON.parse(rawUser);
-              userId = parsed.id || parsed.userId;
-          }
-      } catch(e) {}
+        const rawUser = localStorage.getItem('user') || localStorage.getItem('telefluxo_user');
+        if (rawUser) {
+          const parsed = JSON.parse(rawUser);
+          userId = parsed.id || parsed.userId || parsed._id || '';
+        }
+      } catch (e) {}
 
       // 4. Análise de Estoque (O FILME DO IMEI)
       try {
-          const resAnalysis = await fetch(`${API_URL}/stock/analysis`);
-          const jsonAnalysis = await resAnalysis.json();
-          if(Array.isArray(jsonAnalysis)) setAnalysisData(jsonAnalysis);
-      } catch(e) { console.warn("Erro ao carregar análise", e); }
+        const resAnalysis = await fetch(`${API_URL}/stock/analysis`);
+        const jsonAnalysis = await resAnalysis.json();
+        if (Array.isArray(jsonAnalysis)) setAnalysisData(jsonAnalysis);
+      } catch (e) {
+        console.warn("Erro ao carregar análise", e);
+      }
 
-      const salesUrl = `${API_URL}/sales?userId=${userId}`; 
-      const resSales = await fetch(salesUrl);
-      const jsonSales = await resSales.json();
-      const salesList = jsonSales.sales || (Array.isArray(jsonSales) ? jsonSales : []);
-      setSalesData(salesList);
+      // 5. Vendas: junta histórico anual + mês atual, ambos respeitando o período escolhido
+      const resSalesMes = await fetch(
+        `${API_URL}/sales?userId=${userId}&startDate=${startDate}&endDate=${endDate}`
+      );
+      const resSalesAnual = await fetch(
+        `${API_URL}/sales_anuais?userId=${userId}&startDate=${startDate}&endDate=${endDate}`
+      );
 
-    } catch (error) { 
-        console.error("Erro geral no loadData:", error); 
-    } finally { 
-        setLoading(false); 
+      let vendasMes: any[] = [];
+      let vendasAnual: any[] = [];
+
+      if (resSalesMes.ok) {
+        const jsonSalesMes = await resSalesMes.json();
+        vendasMes = jsonSalesMes.sales || (Array.isArray(jsonSalesMes) ? jsonSalesMes : []);
+      }
+
+      if (resSalesAnual.ok) {
+        const jsonSalesAnual = await resSalesAnual.json();
+        vendasAnual = jsonSalesAnual.sales || (Array.isArray(jsonSalesAnual) ? jsonSalesAnual : []);
+      }
+
+      // Junta os dois bancos
+      const vendasCombinadas = [...vendasAnual, ...vendasMes];
+
+      // Blindagem extra: garante filtro final no frontend também
+      const vendasFiltradasNoPeriodo = vendasCombinadas.filter((sale: any) => {
+        const dataISO = normalizeDate(sale.data_emissao || sale.DATA_EMISSAO || '');
+        if (!dataISO) return false;
+        return dataISO >= startDate && dataISO <= endDate;
+      });
+
+      setSalesData(vendasFiltradasNoPeriodo);
+
+    } catch (error) {
+      console.error("Erro geral no loadData:", error);
+    } finally {
+      setLoading(false);
     }
   };
 
-  useEffect(() => { loadData(); }, []);
+  useEffect(() => {
+    loadData();
+  }, []);
 
   // --- MAPAS AUXILIARES ---
   const salesMap = useMemo(() => {
-      const map: Record<string, number> = {};
-      salesData.forEach(sale => {
-          const rawStore = sale.cnpj_empresa || sale.loja || "";
-          const storeName = getStoreNameFromCNPJ(rawStore).trim().toUpperCase();
-          const desc = normalizeStr(sale.descricao || sale.produto || "");
-          const key = `${storeName}|${desc}`;
-          if (!map[key]) map[key] = 0;
-          map[key] += Number(sale.quantidade || 1);
-      });
-      return map;
+    const map: Record<string, number> = {};
+    salesData.forEach(sale => {
+      const rawStore = sale.cnpj_empresa || sale.loja || "";
+      const storeName = getStoreNameFromCNPJ(rawStore).trim().toUpperCase();
+      const desc = normalizeStr(sale.descricao || sale.produto || "");
+      const key = `${storeName}|${desc}`;
+      if (!map[key]) map[key] = 0;
+      map[key] += Number(sale.quantidade || 1);
+    });
+    return map;
   }, [salesData]);
 
   const purchasesMap = useMemo(() => {
-      const map: Record<string, any> = {};
-      purchaseData.forEach(p => {
-          const rawRegiao = (p.regiao || "OUTROS").toUpperCase();
-          const key = `${rawRegiao}|${normalizeStr(p.descricao)}`;
-          
-          if (!map[key]) map[key] = { total: 0, details: [] };
-          map[key].total += p.qtd_total;
-          
-          let prev = {};
-          try { prev = JSON.parse(p.previsao_info); } catch(e) {}
-          map[key].details.push(prev);
-      });
-      return map;
+    const map: Record<string, any> = {};
+    purchaseData.forEach(p => {
+      const rawRegiao = (p.regiao || "OUTROS").toUpperCase();
+      const key = `${rawRegiao}|${normalizeStr(p.descricao)}`;
+
+      if (!map[key]) map[key] = { total: 0, details: [] };
+      map[key].total += p.qtd_total;
+
+      let prev = {};
+      try { prev = JSON.parse(p.previsao_info); } catch (e) {}
+      map[key].details.push(prev);
+    });
+    return map;
   }, [purchaseData]);
 
   const getProductSales = (storeName: string, description: string) => {
-      const key = `${storeName.trim().toUpperCase()}|${normalizeStr(description)}`;
-      return salesMap[key] || 0;
+    const key = `${storeName.trim().toUpperCase()}|${normalizeStr(description)}`;
+    return salesMap[key] || 0;
   };
 
   const getIncomingStock = (region: string, description: string) => {
-      const key = `${region.toUpperCase()}|${normalizeStr(description)}`;
-      return purchasesMap[key] || null;
+    const key = `${region.toUpperCase()}|${normalizeStr(description)}`;
+    return purchasesMap[key] || null;
   };
 
+  const periodDays = useMemo(() => {
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+    start.setMinutes(start.getMinutes() + start.getTimezoneOffset());
+    end.setMinutes(end.getMinutes() + end.getTimezoneOffset());
+
+    const diff = Math.ceil((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+    return Math.max(1, diff);
+  }, [startDate, endDate]);
+
   // --- ALGORITMOS ---
-  
+
   const redistributionSuggestions = useMemo(() => {
-      if (stockData.length === 0) return { moves: [], buys: [] };
-      const suggestions: any[] = [];
-      const purchasesSug: any[] = [];
-      const productGroups: Record<string, any> = {};
+    if (stockData.length === 0) return { moves: [], buys: [] };
 
-      stockData.forEach(item => {
-          const region = STORE_REGIONS[item.storeName] || "OUTROS";
-          if (regionFilter !== 'TODAS' && region !== regionFilter) return;
+    const suggestions: any[] = [];
+    const purchasesSug: any[] = [];
+    const productGroups: Record<string, any> = {};
 
-          const key = `${region}|${item.description}|${item.productCode}`;
-          if (!productGroups[key]) {
-              productGroups[key] = {
-                  description: item.description, productCode: item.productCode, region: region, category: item.category,
-                  totalStock: 0, totalSales: 0, stores: []
-              };
-          }
-          const sales = getProductSales(item.storeName, item.description);
-          productGroups[key].totalStock += Number(item.quantity);
-          productGroups[key].totalSales += sales;
-          productGroups[key].stores.push({ storeName: item.storeName, qty: Number(item.quantity), sales: sales });
+    stockData.forEach(item => {
+      const region = STORE_REGIONS[item.storeName] || "OUTROS";
+      if (regionFilter !== 'TODAS' && region !== regionFilter) return;
+
+      const key = `${region}|${item.description}|${item.productCode}`;
+      if (!productGroups[key]) {
+        productGroups[key] = {
+          description: item.description,
+          productCode: item.productCode,
+          region: region,
+          category: item.category,
+          totalStock: 0,
+          totalSales: 0,
+          stores: []
+        };
+      }
+
+      const sales = getProductSales(item.storeName, item.description);
+      productGroups[key].totalStock += Number(item.quantity);
+      productGroups[key].totalSales += sales;
+      productGroups[key].stores.push({
+        storeName: item.storeName,
+        qty: Number(item.quantity),
+        sales: sales
       });
+    });
 
-      Object.values(productGroups).forEach((prod: any) => {
-          const donors = prod.stores.filter((s: any) => s.qty > 3 && s.sales < s.qty).sort((a:any, b:any) => b.qty - a.qty);
-          const receivers = prod.stores.filter((s: any) => s.qty < 2 && s.sales > 2).sort((a:any, b:any) => b.sales - a.sales);
+    Object.values(productGroups).forEach((prod: any) => {
+      const donors = prod.stores
+        .filter((s: any) => s.qty > 3 && s.sales < s.qty)
+        .sort((a: any, b: any) => b.qty - a.qty);
 
-          const incoming = getIncomingStock(prod.region, prod.description);
-          const incomingQty = incoming ? incoming.total : 0;
+      const receivers = prod.stores
+        .filter((s: any) => s.qty < 2 && s.sales > 2)
+        .sort((a: any, b: any) => b.sales - a.sales);
 
-          const gap = prod.totalSales - prod.totalStock;
-          
-          if (gap > 5 && incomingQty < gap) {
-              purchasesSug.push({
-                  type: 'purchase', product: prod.description, region: prod.region, category: prod.category,
-                  gap: gap - incomingQty,
-                  insight: `Vendas: ${prod.totalSales} | Estoque: ${prod.totalStock} | Chegando: ${incomingQty}`
-              });
+      const incoming = getIncomingStock(prod.region, prod.description);
+      const incomingQty = incoming ? incoming.total : 0;
+
+      const gap = prod.totalSales - prod.totalStock;
+
+      if (gap > 5 && incomingQty < gap) {
+        purchasesSug.push({
+          type: 'purchase',
+          product: prod.description,
+          region: prod.region,
+          category: prod.category,
+          gap: gap - incomingQty,
+          insight: `Vendas no período: ${prod.totalSales} | Estoque: ${prod.totalStock} | Chegando: ${incomingQty}`
+        });
+      }
+
+      if (donors.length > 0 && receivers.length > 0) {
+        let dIdx = 0;
+        let rIdx = 0;
+
+        while (dIdx < donors.length && rIdx < receivers.length) {
+          const donor = donors[dIdx];
+          const receiver = receivers[rIdx];
+          const moveQty = Math.min(donor.qty - 2, 3 - receiver.qty);
+
+          if (moveQty > 0) {
+            suggestions.push({
+              type: 'move',
+              product: prod.description,
+              from: donor.storeName,
+              to: receiver.storeName,
+              qty: moveQty,
+              region: prod.region,
+              reason: `Loja ${donor.storeName} tem sobra (${donor.qty}) e ${receiver.storeName} tem giro no período (${receiver.sales}).`
+            });
+            donor.qty -= moveQty;
+            receiver.qty += moveQty;
           }
 
-          if (donors.length > 0 && receivers.length > 0) {
-              let dIdx = 0; let rIdx = 0;
-              while (dIdx < donors.length && rIdx < receivers.length) {
-                  const donor = donors[dIdx]; const receiver = receivers[rIdx];
-                  const moveQty = Math.min(donor.qty - 2, 3 - receiver.qty);
-                  if (moveQty > 0) {
-                      suggestions.push({
-                          type: 'move', product: prod.description, from: donor.storeName, to: receiver.storeName,
-                          qty: moveQty, region: prod.region,
-                          reason: `Loja ${donor.storeName} tem sobra (${donor.qty}) e ${receiver.storeName} tem giro (${receiver.sales}).`
-                      });
-                      donor.qty -= moveQty; receiver.qty += moveQty;
-                  }
-                  if (donor.qty <= 3) dIdx++;
-                  if (receiver.qty >= 3) rIdx++;
-              }
-          }
-      });
-      return { moves: suggestions, buys: purchasesSug };
+          if (donor.qty <= 3) dIdx++;
+          if (receiver.qty >= 3) rIdx++;
+        }
+      }
+    });
+
+    return { moves: suggestions, buys: purchasesSug };
   }, [stockData, salesData, regionFilter, purchaseData]);
 
   // --- ALGORITMO MALOTE (FRONT-END) ---
   const calculatedMalote = useMemo(() => {
-      if (stockData.length === 0) return [];
+    if (stockData.length === 0) return [];
 
-      const suggestions: any[] = [];
-      const cdName = "CD TAGUATINGA";
-      
-      const cdStock = stockData.filter(i => i.storeName === cdName);
-      const productGroups: Record<string, any> = {};
+    const suggestions: any[] = [];
+    const cdName = "CD TAGUATINGA";
 
-      stockData.forEach(item => {
-          if (item.storeName === cdName) return; 
+    const cdStock = stockData.filter(i => i.storeName === cdName);
+    const productGroups: Record<string, any> = {};
 
-          const productKey = item.description;
-          
-          if (!productGroups[productKey]) {
-              productGroups[productKey] = {
-                  modelo: item.description,
-                  category: item.category || 'GERAL',
-                  lojas: []
-              };
+    stockData.forEach(item => {
+      if (item.storeName === cdName) return;
+
+      const productKey = item.description;
+
+      if (!productGroups[productKey]) {
+        productGroups[productKey] = {
+          modelo: item.description,
+          category: item.category || 'GERAL',
+          lojas: []
+        };
+      }
+
+      const sales = getProductSales(item.storeName, item.description);
+      const stock = Number(item.quantity) || 0;
+
+      // cobertura baseada no período escolhido
+      const dailySales = sales / Math.max(periodDays, 1);
+      const coberturaAlvo = Math.ceil(dailySales * 15);
+      const sugestao = Math.max(0, coberturaAlvo - stock);
+
+      if (sugestao > 0) {
+        productGroups[productKey].lojas.push({
+          loja: item.storeName,
+          estoqueAtual: stock,
+          vendaPeriodo: sales,
+          mediaDia: dailySales,
+          sugestaoEnvio: sugestao
+        });
+      }
+    });
+
+    Object.values(productGroups).forEach((prod: any) => {
+      const itemNoCd = cdStock.find(i => i.description === prod.modelo);
+      let saldoCd = itemNoCd ? Number(itemNoCd.quantity) : 0;
+
+      if (saldoCd > 0 && prod.lojas.length > 0) {
+        const lojasComAtendimento: any[] = [];
+        const lojasOrdenadas = prod.lojas.sort((a: any, b: any) => b.vendaPeriodo - a.vendaPeriodo);
+
+        lojasOrdenadas.forEach((lj: any) => {
+          if (saldoCd <= 0) return;
+          const qtdEnviar = Math.min(saldoCd, lj.sugestaoEnvio);
+
+          if (qtdEnviar > 0) {
+            lojasComAtendimento.push({
+              ...lj,
+              sugestaoEnvio: qtdEnviar
+            });
+            saldoCd -= qtdEnviar;
           }
+        });
 
-          const sales = getProductSales(item.storeName, item.description);
-          const stock = Number(item.quantity) || 0;
+        if (lojasComAtendimento.length > 0) {
+          suggestions.push({
+            ...prod,
+            lojas: lojasComAtendimento,
+            saldoRestanteCd: saldoCd
+          });
+        }
+      }
+    });
 
-          const coberturaAlvo = Math.ceil(sales * 0.5); 
-          const sugestao = Math.max(0, coberturaAlvo - stock);
-
-          if (sugestao > 0) {
-              productGroups[productKey].lojas.push({
-                  loja: item.storeName,
-                  estoqueAtual: stock,
-                  vendaPeriodo: sales,
-                  sugestaoEnvio: sugestao
-              });
-          }
-      });
-
-      Object.values(productGroups).forEach((prod: any) => {
-          const itemNoCd = cdStock.find(i => i.description === prod.modelo);
-          let saldoCd = itemNoCd ? Number(itemNoCd.quantity) : 0;
-
-          if (saldoCd > 0 && prod.lojas.length > 0) {
-              const lojasComAtendimento: any[] = [];
-              const lojasOrdenadas = prod.lojas.sort((a: any, b: any) => b.vendaPeriodo - a.vendaPeriodo);
-
-              lojasOrdenadas.forEach((lj: any) => {
-                  if (saldoCd <= 0) return;
-                  const qtdEnviar = Math.min(saldoCd, lj.sugestaoEnvio);
-                  
-                  if (qtdEnviar > 0) {
-                      lojasComAtendimento.push({
-                          ...lj,
-                          sugestaoEnvio: qtdEnviar
-                      });
-                      saldoCd -= qtdEnviar;
-                  }
-              });
-
-              if (lojasComAtendimento.length > 0) {
-                  suggestions.push({
-                      ...prod,
-                      lojas: lojasComAtendimento,
-                      saldoRestanteCd: saldoCd
-                  });
-              }
-          }
-      });
-
-      return suggestions;
-  }, [stockData, salesData]);
+    return suggestions;
+  }, [stockData, salesData, periodDays]);
 
   // --- AGRUPAMENTO DE COMPRAS ---
   const groupedPurchases = useMemo(() => {
-      const groups: Record<string, any[]> = {};
-      purchaseData.forEach(p => {
-          const regiao = (p.regiao || "OUTROS").toUpperCase();
-          if (regionFilter !== 'TODAS' && regiao !== regionFilter) return;
-          if (!groups[regiao]) groups[regiao] = [];
-          groups[regiao].push(p);
-      });
-      return groups;
+    const groups: Record<string, any[]> = {};
+    purchaseData.forEach(p => {
+      const regiao = (p.regiao || "OUTROS").toUpperCase();
+      if (regionFilter !== 'TODAS' && regiao !== regionFilter) return;
+      if (!groups[regiao]) groups[regiao] = [];
+      groups[regiao].push(p);
+    });
+    return groups;
   }, [purchaseData, regionFilter]);
 
   const filteredData = useMemo(() => {
@@ -329,754 +428,806 @@ export default function StockModule() {
   }, [stockData, filter, categoryFilter, regionFilter]);
 
   const currentStoreProducts = useMemo(() => {
-      if (!expandedStore) return [];
-      return filteredData.filter(i => i.storeName === expandedStore);
+    if (!expandedStore) return [];
+    return filteredData.filter(i => i.storeName === expandedStore);
   }, [filteredData, expandedStore]);
 
   const groupedStores = useMemo(() => {
-    const groups: Record<string, any[]> = {}; 
+    const groups: Record<string, any[]> = {};
     const storeStats: Record<string, any> = {};
+
     filteredData.forEach(item => {
-        const store = item.storeName || 'LOJA DESCONHECIDA';
-        const region = STORE_REGIONS[store] || 'OUTROS';
-        if (!storeStats[store]) storeStats[store] = { name: store, region: region, qty: 0, value: 0, lowStockCount: 0 };
-        const q = Number(item.quantity) || 0;
-        storeStats[store].qty += q;
-        storeStats[store].value += (Number(item.costPrice) || 0) * q;
-        if (q > 0 && q < 3) storeStats[store].lowStockCount += 1;
+      const store = item.storeName || 'LOJA DESCONHECIDA';
+      const region = STORE_REGIONS[store] || 'OUTROS';
+      if (!storeStats[store]) storeStats[store] = { name: store, region: region, qty: 0, value: 0, lowStockCount: 0 };
+
+      const q = Number(item.quantity) || 0;
+      storeStats[store].qty += q;
+      storeStats[store].value += (Number(item.costPrice) || 0) * q;
+      if (q > 0 && q < 3) storeStats[store].lowStockCount += 1;
     });
+
     Object.values(storeStats).forEach((store: any) => {
-        if (!groups[store.region]) groups[store.region] = [];
-        groups[store.region].push(store);
+      if (!groups[store.region]) groups[store.region] = [];
+      groups[store.region].push(store);
     });
+
     const sortedGroups: Record<string, any[]> = {};
-    Object.keys(groups).sort().forEach(region => sortedGroups[region] = groups[region].sort((a,b) => b.value - a.value));
+    Object.keys(groups).sort().forEach(region => {
+      sortedGroups[region] = groups[region].sort((a, b) => b.value - a.value);
+    });
+
     return sortedGroups;
   }, [filteredData]);
 
   const uniqueCategories = useMemo(() => Array.from(new Set(stockData.map(i => i.category || 'GERAL'))).sort(), [stockData]);
   const uniqueRegions = useMemo(() => Array.from(new Set(Object.values(STORE_REGIONS))).sort(), []);
-  
+
   const getStoreTotalSales = (storeName: string) => {
-      const sales = salesData.filter(s => getStoreNameFromCNPJ(s.cnpj_empresa || s.loja) === storeName);
-      return sales.reduce((acc, s) => acc + Number(s.quantidade), 0);
+    const sales = salesData.filter(s => getStoreNameFromCNPJ(s.cnpj_empresa || s.loja) === storeName);
+    return sales.reduce((acc, s) => acc + Number(s.quantidade || 0), 0);
   };
 
   const purchaseRegions = useMemo(() => {
-      const regs = new Set(purchaseData.map(p => (p.regiao || "OUTROS").toUpperCase()));
-      return Array.from(regs).sort();
+    const regs = new Set(purchaseData.map(p => (p.regiao || "OUTROS").toUpperCase()));
+    return Array.from(regs).sort();
   }, [purchaseData]);
 
-// --- EXPORTADOR INTELIGENTE (DOWNLOAD SELETIVO) ---
+  // --- EXPORTADOR INTELIGENTE (DOWNLOAD SELETIVO) ---
   const handleExport = () => {
     let headers: string[] = [];
     let csvRows: string[] = [];
     let fileName = "Relatorio.csv";
 
     if (moduleMode === 'stock') {
-        const dataToExport = expandedStore ? currentStoreProducts : filteredData;
-        headers = ["Loja", "Região", "Código", "Produto", "Categoria", "Qtd Estoque", "Qtd Vendida", "Custo Unit", "Preço Venda", "Custo Total"];
-        csvRows = dataToExport.map(item => {
-            const sold = getProductSales(item.storeName, item.description);
-            return [
-                `"${item.storeName}"`, 
-                `"${STORE_REGIONS[item.storeName] || 'OUTROS'}"`, 
-                `"${item.productCode}"`, 
-                `"${item.description}"`, 
-                `"${item.category || 'GERAL'}"`, 
-                String(item.quantity).replace('.',','), 
-                String(sold).replace('.',','), 
-                Number(item.costPrice || 0).toFixed(2).replace('.',','), 
-                Number(item.salePrice || 0).toFixed(2).replace('.',','), // <-- Adicionado aqui!
-                (item.quantity * (item.costPrice || 0)).toFixed(2).replace('.',',')
-            ].join(';');
-        });
-        fileName = expandedStore ? `Estoque_${expandedStore}.csv` : `Estoque_Geral.csv`;
+      const dataToExport = expandedStore ? currentStoreProducts : filteredData;
+      headers = ["Loja", "Região", "Código", "Produto", "Categoria", "Qtd Estoque", "Qtd Vendida Período", "Custo Unit", "Preço Venda", "Custo Total"];
+      csvRows = dataToExport.map(item => {
+        const sold = getProductSales(item.storeName, item.description);
+        return [
+          `"${item.storeName}"`,
+          `"${STORE_REGIONS[item.storeName] || 'OUTROS'}"`,
+          `"${item.productCode}"`,
+          `"${item.description}"`,
+          `"${item.category || 'GERAL'}"`,
+          String(item.quantity).replace('.', ','),
+          String(sold).replace('.', ','),
+          Number(item.costPrice || 0).toFixed(2).replace('.', ','),
+          Number(item.salePrice || 0).toFixed(2).replace('.', ','),
+          (item.quantity * (item.costPrice || 0)).toFixed(2).replace('.', ',')
+        ].join(';');
+      });
+      fileName = expandedStore ? `Estoque_${expandedStore}.csv` : `Estoque_Geral.csv`;
     }
 
     else if (moduleMode === 'malote') {
-        headers = ["Produto", "Categoria", "Destino", "Estoque Atual (Loja)", "Giro (Loja)", "Qtd a Enviar (Malote)"];
-        const filteredMalote = calculatedMalote.filter(item => 
-            (maloteCategory === 'TODAS' || item.category === maloteCategory) && 
-            item.modelo.toLowerCase().includes(maloteSearch.toLowerCase())
-        );
-        filteredMalote.forEach((prod: any) => {
-            prod.lojas.forEach((loja: any) => {
-                if (loja.sugestaoEnvio > 0) {
-                    csvRows.push([`"${prod.modelo}"`, `"${prod.category}"`, `"${loja.loja}"`, loja.estoqueAtual, Math.round(loja.vendaPeriodo), loja.sugestaoEnvio].join(';'));
-                }
-            });
+      headers = ["Produto", "Categoria", "Destino", "Estoque Atual (Loja)", "Vendas no Período", "Qtd a Enviar (Malote)"];
+      const filteredMalote = calculatedMalote.filter(item =>
+        (maloteCategory === 'TODAS' || item.category === maloteCategory) &&
+        item.modelo.toLowerCase().includes(maloteSearch.toLowerCase())
+      );
+      filteredMalote.forEach((prod: any) => {
+        prod.lojas.forEach((loja: any) => {
+          if (loja.sugestaoEnvio > 0) {
+            csvRows.push([`"${prod.modelo}"`, `"${prod.category}"`, `"${loja.loja}"`, loja.estoqueAtual, Math.round(loja.vendaPeriodo), loja.sugestaoEnvio].join(';'));
+          }
         });
-        fileName = `Malote_CD_Taguatinga.csv`;
+      });
+      fileName = `Malote_CD_Taguatinga.csv`;
     }
+
     else if (moduleMode === 'redistribution') {
-        headers = ["Tipo da Sugestão", "Produto", "Região", "Origem (Tirar de)", "Destino (Mandar para)", "Quantidade", "Motivo / Insight"];
-        redistributionSuggestions.moves.forEach((move: any) => {
-            csvRows.push([`"Transferência"`, `"${move.product}"`, `"${move.region}"`, `"${move.from}"`, `"${move.to}"`, move.qty, `"${move.reason}"`].join(';'));
-        });
-        redistributionSuggestions.buys.forEach((buy: any) => {
-            csvRows.push([`"Sugestão Compra"`, `"${buy.product}"`, `"${buy.region}"`, `"-"`, `"-"`, buy.gap, `"${buy.insight}"`].join(';'));
-        });
-        fileName = `Remanejamento_Oportunidades.csv`;
+      headers = ["Tipo da Sugestão", "Produto", "Região", "Origem (Tirar de)", "Destino (Mandar para)", "Quantidade", "Motivo / Insight"];
+      redistributionSuggestions.moves.forEach((move: any) => {
+        csvRows.push([`"Transferência"`, `"${move.product}"`, `"${move.region}"`, `"${move.from}"`, `"${move.to}"`, move.qty, `"${move.reason}"`].join(';'));
+      });
+      redistributionSuggestions.buys.forEach((buy: any) => {
+        csvRows.push([`"Sugestão Compra"`, `"${buy.product}"`, `"${buy.region}"`, `"-"`, `"-"`, buy.gap, `"${buy.insight}"`].join(';'));
+      });
+      fileName = `Remanejamento_Oportunidades.csv`;
     }
+
     else if (moduleMode === 'purchases') {
-        headers = ["Produto", "Região", "Total a Receber", "Previsão / Detalhes"];
-        Object.entries(groupedPurchases).forEach(([region, items]) => {
-            items.forEach((item: any) => {
-                let prevInfo = "";
-                try {
-                    const prev = JSON.parse(item.previsao_info || '{}');
-                    prevInfo = Object.entries(prev).map(([week, qty]) => `${week}: ${qtd}`).join(' | ');
-                } catch(e) {}
-                csvRows.push([`"${item.descricao}"`, `"${region}"`, item.qtd_total, `"${prevInfo}"`].join(';'));
-            });
+      headers = ["Produto", "Região", "Total a Receber", "Previsão / Detalhes"];
+      Object.entries(groupedPurchases).forEach(([region, items]) => {
+        items.forEach((item: any) => {
+          let prevInfo = "";
+          try {
+            const prev = JSON.parse(item.previsao_info || '{}');
+            prevInfo = Object.entries(prev).map(([week, qty]) => `${week}: ${qty}`).join(' | ');
+          } catch (e) {}
+          csvRows.push([`"${item.descricao}"`, `"${region}"`, item.qtd_total, `"${prevInfo}"`].join(';'));
         });
-        fileName = `Pedidos_Compras_Abertos.csv`;
+      });
+      fileName = `Pedidos_Compras_Abertos.csv`;
     }
 
     if (csvRows.length === 0) {
-        alert("Não há dados para exportar com os filtros atuais.");
-        return;
+      alert("Não há dados para exportar com os filtros atuais.");
+      return;
     }
 
-    const csvContent = "\uFEFF" + [headers.join(';'), ...csvRows].join('\n'); 
+    const csvContent = "\uFEFF" + [headers.join(';'), ...csvRows].join('\n');
     const link = document.createElement('a');
     link.href = URL.createObjectURL(new Blob([csvContent], { type: 'text/csv;charset=utf-8;' }));
     link.setAttribute('download', fileName);
-    document.body.appendChild(link); 
-    link.click(); 
+    document.body.appendChild(link);
+    link.click();
     document.body.removeChild(link);
   };
 
   return (
     <div className="flex-1 p-6 md:p-8 overflow-y-auto font-sans bg-[#F0F2F5] min-h-screen">
       <div className="max-w-[1600px] mx-auto space-y-6">
-        
+
         {/* HEADER */}
-        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white p-4 rounded-2xl shadow-sm border border-slate-200">
+        <div className="flex flex-col gap-4 bg-white p-4 rounded-2xl shadow-sm border border-slate-200">
+          <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
             <div className="flex items-center gap-3">
-                {expandedStore ? (
-                    <button onClick={() => setExpandedStore(null)} className="p-2 hover:bg-slate-100 rounded-xl text-slate-500 transition-colors">
-                        <ArrowLeft size={24}/>
-                    </button>
-                ) : (
-                    <div className={`p-2.5 rounded-xl text-white shadow-md ${moduleMode === 'analysis' ? 'bg-purple-600 shadow-purple-200' : 'bg-indigo-600 shadow-indigo-200'}`}>
-                        {moduleMode === 'stock' ? <Box size={20} /> : 
-                         moduleMode === 'redistribution' ? <Truck size={20}/> : 
-                         moduleMode === 'purchases' ? <ShoppingCart size={20}/> :
-                         moduleMode === 'analysis' ? <Activity size={20}/> : <ShoppingCart size={20}/>}
-                    </div>
-                )}
-                <div>
-                    <h1 className="text-xl md:text-2xl font-black uppercase tracking-tight text-slate-800">
-                        {moduleMode === 'stock' ? (expandedStore || "Visão Estratégica de Estoque") : 
-                         moduleMode === 'redistribution' ? "Central de Remanejamento" : 
-                         moduleMode === 'analysis' ? "Análise de Estoque" :
-                         "Controle de Compras"}
-                    </h1>
-                    <div className="flex items-center gap-2">
-                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                            {moduleMode === 'stock' ? "Físico & Giro" : 
-                             moduleMode === 'redistribution' ? "Inteligência de Distribuição" : 
-                             moduleMode === 'analysis' ? "Rastreabilidade por IMEI" :
-                             "Gestão de Pedidos em Aberto"}
-                        </p>
-                    </div>
+              {expandedStore ? (
+                <button onClick={() => setExpandedStore(null)} className="p-2 hover:bg-slate-100 rounded-xl text-slate-500 transition-colors">
+                  <ArrowLeft size={24} />
+                </button>
+              ) : (
+                <div className={`p-2.5 rounded-xl text-white shadow-md ${moduleMode === 'analysis' ? 'bg-purple-600 shadow-purple-200' : 'bg-indigo-600 shadow-indigo-200'}`}>
+                  {moduleMode === 'stock' ? <Box size={20} /> :
+                    moduleMode === 'redistribution' ? <Truck size={20} /> :
+                    moduleMode === 'purchases' ? <ShoppingCart size={20} /> :
+                    moduleMode === 'analysis' ? <Activity size={20} /> : <ShoppingCart size={20} />}
                 </div>
+              )}
+              <div>
+                <h1 className="text-xl md:text-2xl font-black uppercase tracking-tight text-slate-800">
+                  {moduleMode === 'stock' ? (expandedStore || "Visão Estratégica de Estoque") :
+                    moduleMode === 'redistribution' ? "Central de Remanejamento" :
+                    moduleMode === 'analysis' ? "Análise de Estoque" :
+                    "Controle de Compras"}
+                </h1>
+                <div className="flex items-center gap-2">
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                    {moduleMode === 'stock' ? "Físico & Giro por Período" :
+                      moduleMode === 'redistribution' ? "Inteligência de Distribuição" :
+                      moduleMode === 'analysis' ? "Rastreabilidade por IMEI" :
+                      "Gestão de Pedidos em Aberto"}
+                  </p>
+                </div>
+              </div>
             </div>
 
-            <div className="flex gap-2">
-                <div className="flex bg-slate-100 p-1 rounded-xl overflow-x-auto">
-                    <button onClick={() => setModuleMode('stock')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all ${moduleMode === 'stock' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-indigo-500'}`}>Estoque</button>
-                    <button onClick={() => setModuleMode('malote')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all ${moduleMode === 'malote' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-indigo-500'}`}>Malote</button>
-                    <button onClick={() => setModuleMode('redistribution')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all ${moduleMode === 'redistribution' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-indigo-500'}`}>Remanejamento</button>
-                    <button onClick={() => setModuleMode('purchases')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all ${moduleMode === 'purchases' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-indigo-500'}`}>Compras</button>
-                </div>
-                
-                {/* O NOVO BOTÃO DE ANÁLISE SUBSTITUINDO O SYNC */}
-                <button 
-                    onClick={() => setModuleMode('analysis')} 
-                    className={`px-4 py-2 rounded-xl text-xs font-bold uppercase transition-all shadow-md flex items-center gap-2 ${moduleMode === 'analysis' ? 'bg-purple-700 text-white' : 'bg-purple-600 text-white hover:bg-purple-700'}`}
-                >
-                    <Activity size={14} /> Análise
-                </button>
-                
-                <button onClick={handleExport} className="p-2 bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 rounded-xl transition-all" title="Exportar Excel"><Download size={18}/></button>
+            <div className="flex gap-2 flex-wrap">
+              <div className="flex bg-slate-100 p-1 rounded-xl overflow-x-auto">
+                <button onClick={() => setModuleMode('stock')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all ${moduleMode === 'stock' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-indigo-500'}`}>Estoque</button>
+                <button onClick={() => setModuleMode('malote')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all ${moduleMode === 'malote' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-indigo-500'}`}>Malote</button>
+                <button onClick={() => setModuleMode('redistribution')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all ${moduleMode === 'redistribution' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-indigo-500'}`}>Remanejamento</button>
+                <button onClick={() => setModuleMode('purchases')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all ${moduleMode === 'purchases' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-indigo-500'}`}>Compras</button>
+              </div>
+
+              <button
+                onClick={() => setModuleMode('analysis')}
+                className={`px-4 py-2 rounded-xl text-xs font-bold uppercase transition-all shadow-md flex items-center gap-2 ${moduleMode === 'analysis' ? 'bg-purple-700 text-white' : 'bg-purple-600 text-white hover:bg-purple-700'}`}
+              >
+                <Activity size={14} /> Análise
+              </button>
+
+              <button onClick={handleExport} className="p-2 bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 rounded-xl transition-all" title="Exportar Excel">
+                <Download size={18} />
+              </button>
             </div>
+          </div>
+
+          {/* NOVO: calendário global do módulo */}
+          <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center gap-4 border-t border-slate-100 pt-4">
+            <div className="flex flex-col md:flex-row gap-3 w-full xl:w-auto">
+              <div className="flex items-center bg-slate-50 border border-slate-200 rounded-xl p-1 shadow-sm">
+                <div className="flex items-center px-2 border-r border-slate-200">
+                  <Calendar size={14} className="text-slate-400 mr-2" />
+                  <input
+                    type="date"
+                    value={startDate}
+                    onChange={e => setStartDate(e.target.value)}
+                    className="bg-transparent border-none text-[10px] font-bold text-slate-600 uppercase focus:outline-none w-28"
+                  />
+                </div>
+                <div className="flex items-center px-2">
+                  <span className="text-slate-300 font-bold mr-2 text-[10px]">ATÉ</span>
+                  <input
+                    type="date"
+                    value={endDate}
+                    onChange={e => setEndDate(e.target.value)}
+                    className="bg-transparent border-none text-[10px] font-bold text-slate-600 uppercase focus:outline-none w-28"
+                  />
+                </div>
+              </div>
+
+              <div className="bg-indigo-50 border border-indigo-100 text-indigo-700 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-wider flex items-center gap-2">
+                <Clock size={14} />
+                Período: {periodDays} dias
+              </div>
+            </div>
+
+            <button
+              onClick={loadData}
+              disabled={loading}
+              className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-xl text-xs font-bold uppercase transition-all shadow-md flex items-center gap-2 disabled:opacity-50"
+            >
+              <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+              {loading ? 'Atualizando...' : 'Atualizar dados'}
+            </button>
+          </div>
         </div>
 
         {/* ================= MÓDULO DE ANÁLISE DE ESTOQUE (AGING) ================= */}
         {moduleMode === 'analysis' && (
-            <div className="space-y-6 animate-fadeIn">
-                {/* Banner Educativo */}
-                <div className="bg-gradient-to-r from-purple-900 to-indigo-900 p-6 rounded-2xl text-white shadow-lg flex justify-between items-center relative overflow-hidden">
-                    <div className="absolute right-0 top-0 opacity-10">
-                        <Clock size={120} />
-                    </div>
-                    <div className="relative z-10 max-w-2xl">
-                        <h2 className="text-xl font-black uppercase mb-2 flex items-center gap-2"><Clock size={24}/> Aging de Estoque</h2>
-                        <p className="text-xs text-purple-100 opacity-90 leading-relaxed">
-                            Acompanhe a idade de cada aparelho e o histórico de transferências entre as lojas.
-                        </p>
-                    </div>
-                </div>
-
-                {/* Filtros da Análise */}
-                <div className="flex flex-col md:flex-row gap-3 bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-                    <div className="relative flex-1">
-                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-                        <input 
-                            type="text" 
-                            placeholder="BUSCAR POR IMEI, PRODUTO OU LOJA..." 
-                            value={analysisSearch}
-                            onChange={e => setAnalysisSearch(e.target.value)}
-                            className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold uppercase outline-none focus:ring-2 focus:ring-purple-500 transition-all"
-                        />
-                    </div>
-                    <select 
-                        value={analysisStatusFilter}
-                        onChange={e => setAnalysisStatusFilter(e.target.value)}
-                        className="bg-slate-50 border border-slate-200 text-slate-600 text-xs font-bold uppercase px-4 py-2.5 rounded-xl outline-none cursor-pointer"
-                    >
-                        <option value="TODOS">Status: Todos</option>
-                        <option value="CRITICO">Status: Crítico (+90 dias)</option>
-                        <option value="ATENCAO">Status: Atenção (30 a 90 dias)</option>
-                        <option value="NOVO">Status: Novo (Até 30 dias)</option>
-                    </select>
-                </div>
-
-                {/* Tabela de Dados Reais e Dinâmicos */}
-                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-                    <div className="overflow-x-auto max-h-[600px] scrollbar-thin">
-                        <table className="w-full text-left border-collapse">
-                            <thead className="bg-slate-50 text-[10px] font-black uppercase text-slate-500 sticky top-0 z-10 shadow-sm">
-                                <tr>
-                                    <th className="p-4 whitespace-nowrap">Produto</th>
-                                    <th className="p-4 whitespace-nowrap">IMEI / Série</th>
-                                    <th className="p-4 whitespace-nowrap">Loja Atual</th>
-                                    <th className="p-4 text-center whitespace-nowrap">Dias na Empresa</th>
-                                    <th className="p-4 text-center whitespace-nowrap">Dias nesta Loja</th>
-                                    <th className="p-4 text-center whitespace-nowrap">Giro do Produto</th>
-                                </tr>
-                            </thead>
-                            <tbody className="divide-y divide-slate-100 text-sm text-slate-600">
-                                {analysisData
-                                    .filter(item => {
-                                        const matchSearch = item.description.toLowerCase().includes(analysisSearch.toLowerCase()) || 
-                                                            String(item.serial).includes(analysisSearch) || 
-                                                            item.storeName.toLowerCase().includes(analysisSearch.toLowerCase());
-                                        if (!matchSearch) return false;
-
-                                        if (analysisStatusFilter === 'CRITICO') return item.daysInStore > 90;
-                                        if (analysisStatusFilter === 'ATENCAO') return item.daysInStore >= 30 && item.daysInStore <= 90;
-                                        if (analysisStatusFilter === 'NOVO') return item.daysInStore < 30;
-                                        return true;
-                                    })
-                                    .sort((a, b) => b.daysInStore - a.daysInStore) // Ordena do mais velho pro mais novo
-                                    .map((item, idx) => {
-                                        const isCritico = item.daysInStore > 90;
-                                        const isAtencao = item.daysInStore >= 30 && item.daysInStore <= 90;
-                                        
-                                        // Calcula o giro do produto na loja
-                                        const sales = getProductSales(item.storeName, item.description);
-                                        let giroLabel = "Sem Giro";
-                                        let giroColor = "text-slate-400";
-                                        if (sales > 10) { giroLabel = `Alto (${sales}/mês)`; giroColor = "text-emerald-600"; }
-                                        else if (sales > 3) { giroLabel = `Médio (${sales}/mês)`; giroColor = "text-amber-600"; }
-                                        else if (sales > 0) { giroLabel = `Baixo (${sales}/mês)`; giroColor = "text-red-500"; }
-
-                                        return (
-                                            <tr key={idx} className="hover:bg-purple-50/30 transition-colors">
-                                                <td className="p-4">
-                                                    <p className="font-bold text-slate-800 text-xs uppercase line-clamp-2 max-w-[250px]">{item.description}</p>
-                                                    <span className="text-[9px] bg-slate-100 text-slate-400 px-1.5 py-0.5 rounded uppercase mt-1 inline-block">{item.category}</span>
-                                                </td>
-                                                <td className="p-4 font-mono text-xs font-bold text-slate-500">{item.serial}</td>
-                                                <td className="p-4 font-bold text-slate-700 text-xs uppercase whitespace-nowrap">{item.storeName}</td>
-                                                <td className="p-4 text-center">
-                                                    <span className="text-slate-500 font-bold bg-slate-100 px-3 py-1 rounded-lg text-xs">{item.daysInCompany} dias</span>
-                                                </td>
-                                                <td className="p-4 text-center min-w-[120px]">
-                                                    <span className={`px-3 py-1 rounded-lg font-black text-xs inline-block ${isCritico ? 'bg-red-50 text-red-600 border border-red-100' : isAtencao ? 'bg-amber-50 text-amber-600 border border-amber-100' : 'bg-emerald-50 text-emerald-600 border border-emerald-100'}`}>
-                                                        {item.daysInStore} dias
-                                                    </span>
-                                                    {item.transferCount > 0 && (
-                                                        <p className="text-[9px] font-bold text-purple-600 uppercase mt-1.5 flex items-center justify-center gap-1 bg-purple-50 py-0.5 rounded">
-                                                            <ArrowLeftRight size={10}/> {item.transferCount} mov.
-                                                        </p>
-                                                    )}
-                                                </td>
-                                                <td className="p-4 text-center">
-                                                    <span className={`text-[10px] font-black uppercase tracking-wider ${giroColor}`}>
-                                                        {giroLabel}
-                                                    </span>
-                                                </td>
-                                            </tr>
-                                        );
-                                    })
-                                }
-                                {analysisData.length === 0 && !loading && (
-                                    <tr>
-                                        <td colSpan={6} className="p-12 text-center text-slate-400 text-xs uppercase font-bold tracking-widest bg-slate-50/50">
-                                            Nenhum histórico de IMEI encontrado.
-                                        </td>
-                                    </tr>
-                                )}
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
+          <div className="space-y-6 animate-fadeIn">
+            {/* Banner Educativo */}
+            <div className="bg-gradient-to-r from-purple-900 to-indigo-900 p-6 rounded-2xl text-white shadow-lg flex justify-between items-center relative overflow-hidden">
+              <div className="absolute right-0 top-0 opacity-10">
+                <Clock size={120} />
+              </div>
+              <div className="relative z-10 max-w-2xl">
+                <h2 className="text-xl font-black uppercase mb-2 flex items-center gap-2"><Clock size={24} /> Aging de Estoque</h2>
+                <p className="text-xs text-purple-100 opacity-90 leading-relaxed">
+                  Acompanhe a idade de cada aparelho e o histórico de transferências entre as lojas.
+                </p>
+              </div>
             </div>
+
+            {/* Filtros da Análise */}
+            <div className="flex flex-col md:flex-row gap-3 bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+              <div className="relative flex-1">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                <input
+                  type="text"
+                  placeholder="BUSCAR POR IMEI, PRODUTO OU LOJA..."
+                  value={analysisSearch}
+                  onChange={e => setAnalysisSearch(e.target.value)}
+                  className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold uppercase outline-none focus:ring-2 focus:ring-purple-500 transition-all"
+                />
+              </div>
+              <select
+                value={analysisStatusFilter}
+                onChange={e => setAnalysisStatusFilter(e.target.value)}
+                className="bg-slate-50 border border-slate-200 text-slate-600 text-xs font-bold uppercase px-4 py-2.5 rounded-xl outline-none cursor-pointer"
+              >
+                <option value="TODOS">Status: Todos</option>
+                <option value="CRITICO">Status: Crítico (+90 dias)</option>
+                <option value="ATENCAO">Status: Atenção (30 a 90 dias)</option>
+                <option value="NOVO">Status: Novo (Até 30 dias)</option>
+              </select>
+            </div>
+
+            {/* Tabela de Dados Reais e Dinâmicos */}
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+              <div className="overflow-x-auto max-h-[600px] scrollbar-thin">
+                <table className="w-full text-left border-collapse">
+                  <thead className="bg-slate-50 text-[10px] font-black uppercase text-slate-500 sticky top-0 z-10 shadow-sm">
+                    <tr>
+                      <th className="p-4 whitespace-nowrap">Produto</th>
+                      <th className="p-4 whitespace-nowrap">IMEI / Série</th>
+                      <th className="p-4 whitespace-nowrap">Loja Atual</th>
+                      <th className="p-4 text-center whitespace-nowrap">Dias na Empresa</th>
+                      <th className="p-4 text-center whitespace-nowrap">Dias nesta Loja</th>
+                      <th className="p-4 text-center whitespace-nowrap">Giro do Produto</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 text-sm text-slate-600">
+                    {analysisData
+                      .filter(item => {
+                        const matchSearch =
+                          item.description.toLowerCase().includes(analysisSearch.toLowerCase()) ||
+                          String(item.serial).includes(analysisSearch) ||
+                          item.storeName.toLowerCase().includes(analysisSearch.toLowerCase());
+                        if (!matchSearch) return false;
+
+                        if (analysisStatusFilter === 'CRITICO') return item.daysInStore > 90;
+                        if (analysisStatusFilter === 'ATENCAO') return item.daysInStore >= 30 && item.daysInStore <= 90;
+                        if (analysisStatusFilter === 'NOVO') return item.daysInStore < 30;
+                        return true;
+                      })
+                      .sort((a, b) => b.daysInStore - a.daysInStore)
+                      .map((item, idx) => {
+                        const isCritico = item.daysInStore > 90;
+                        const isAtencao = item.daysInStore >= 30 && item.daysInStore <= 90;
+
+                        const sales = getProductSales(item.storeName, item.description);
+                        let giroLabel = "Sem Giro";
+                        let giroColor = "text-slate-400";
+                        if (sales > 10) { giroLabel = `Alto (${sales}/período)`; giroColor = "text-emerald-600"; }
+                        else if (sales > 3) { giroLabel = `Médio (${sales}/período)`; giroColor = "text-amber-600"; }
+                        else if (sales > 0) { giroLabel = `Baixo (${sales}/período)`; giroColor = "text-red-500"; }
+
+                        return (
+                          <tr key={idx} className="hover:bg-purple-50/30 transition-colors">
+                            <td className="p-4">
+                              <p className="font-bold text-slate-800 text-xs uppercase line-clamp-2 max-w-[250px]">{item.description}</p>
+                              <span className="text-[9px] bg-slate-100 text-slate-400 px-1.5 py-0.5 rounded uppercase mt-1 inline-block">{item.category}</span>
+                            </td>
+                            <td className="p-4 font-mono text-xs font-bold text-slate-500">{item.serial}</td>
+                            <td className="p-4 font-bold text-slate-700 text-xs uppercase whitespace-nowrap">{item.storeName}</td>
+                            <td className="p-4 text-center">
+                              <span className="text-slate-500 font-bold bg-slate-100 px-3 py-1 rounded-lg text-xs">{item.daysInCompany} dias</span>
+                            </td>
+                            <td className="p-4 text-center min-w-[120px]">
+                              <span className={`px-3 py-1 rounded-lg font-black text-xs inline-block ${isCritico ? 'bg-red-50 text-red-600 border border-red-100' : isAtencao ? 'bg-amber-50 text-amber-600 border border-amber-100' : 'bg-emerald-50 text-emerald-600 border border-emerald-100'}`}>
+                                {item.daysInStore} dias
+                              </span>
+                              {item.transferCount > 0 && (
+                                <p className="text-[9px] font-bold text-purple-600 uppercase mt-1.5 flex items-center justify-center gap-1 bg-purple-50 py-0.5 rounded">
+                                  <ArrowLeftRight size={10} /> {item.transferCount} mov.
+                                </p>
+                              )}
+                            </td>
+                            <td className="p-4 text-center">
+                              <span className={`text-[10px] font-black uppercase tracking-wider ${giroColor}`}>
+                                {giroLabel}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    }
+                    {analysisData.length === 0 && !loading && (
+                      <tr>
+                        <td colSpan={6} className="p-12 text-center text-slate-400 text-xs uppercase font-bold tracking-widest bg-slate-50/50">
+                          Nenhum histórico de IMEI encontrado.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
         )}
 
         {/* ================= MÓDULO DE COMPRAS (COM DEBUG) ================= */}
         {moduleMode === 'purchases' && (
-            <div className="space-y-6 animate-fadeIn">
-                <div className="flex justify-between items-center bg-white p-4 rounded-xl border border-slate-200">
-                    <div className="flex items-center gap-2">
-                        <MapPin className="text-indigo-600" size={20}/>
-                        <span className="text-sm font-bold text-slate-700 uppercase">Filtrar Região:</span>
-                        <select value={regionFilter} onChange={e => setRegionFilter(e.target.value)} className="bg-white border border-slate-200 text-slate-600 text-xs font-bold uppercase px-3 py-2 rounded-lg outline-none cursor-pointer hover:border-indigo-300">
-                            <option value="TODAS">Todas as Regiões</option>
-                            {purchaseRegions.map(r => <option key={r} value={r}>{r}</option>)}
-                        </select>
-                    </div>
-                    <div className="text-right">
-                        <span className="text-2xl font-black text-slate-800">{purchaseData.filter(p => regionFilter === 'TODAS' || (p.regiao||'OUTROS').toUpperCase() === regionFilter).reduce((acc, curr) => acc + curr.qtd_total, 0)}</span>
-                        <span className="block text-[9px] font-bold text-slate-400 uppercase">Peças a receber</span>
-                    </div>
-                </div>
-
-                {purchaseData.length === 0 && (
-                    <div className="bg-red-50 p-4 rounded-xl border border-red-200 text-center">
-                        <p className="text-red-800 font-bold mb-2">⚠️ LISTA VAZIA - DIAGNÓSTICO</p>
-                        <button onClick={() => setShowDebug(!showDebug)} className="bg-red-600 text-white px-4 py-2 rounded-lg text-xs font-bold uppercase flex items-center gap-2 mx-auto">
-                            <Bug size={16}/> VER DADOS DO SERVIDOR
-                        </button>
-                        {showDebug && (
-                            <div className="mt-4 text-left bg-slate-900 text-green-400 p-4 rounded-xl text-xs overflow-auto max-h-60">
-                                <p className="mb-2 text-white border-b border-white/20 pb-1">DADOS RECEBIDOS DO BACKEND:</p>
-                                <pre>{JSON.stringify(purchaseData, null, 2)}</pre>
-                            </div>
-                        )}
-                    </div>
-                )}
-
-                {Object.keys(groupedPurchases).length > 0 ? Object.entries(groupedPurchases).map(([region, items]) => (
-                    <div key={region} className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-                        <div className="bg-slate-50 px-6 py-3 border-b border-slate-200 flex justify-between items-center">
-                            <h3 className="font-black text-slate-700 uppercase flex items-center gap-2"><MapPin size={16}/> {region}</h3>
-                            <span className="text-xs font-bold bg-indigo-100 text-indigo-700 px-3 py-1 rounded-full">{items.reduce((acc, i)=>acc+i.qtd_total, 0)} un</span>
-                        </div>
-                        <div className="divide-y divide-slate-100">
-                            {items.map((item: any, idx: number) => {
-                                let prev = {};
-                                try { prev = JSON.parse(item.previsao_info || '{}'); } catch(e) {}
-                                
-                                return (
-                                    <div key={idx} className="p-4 flex flex-col md:flex-row justify-between items-center gap-4 hover:bg-slate-50 transition-colors">
-                                        <div className="flex-1">
-                                            <h4 className="text-sm font-bold text-slate-800 uppercase">{item.descricao}</h4>
-                                            {Object.keys(prev).length > 0 && (
-                                                <div className="flex flex-wrap gap-2 mt-2">
-                                                    {Object.entries(prev).map(([week, qtd]) => (
-                                                        <span key={week} className="text-[10px] font-bold bg-green-50 text-green-700 border border-green-100 px-2 py-1 rounded uppercase flex items-center gap-1">
-                                                            <Calendar size={10} /> {week}: {String(qtd)} un
-                                                        </span>
-                                                    ))}
-                                                </div>
-                                            )}
-                                        </div>
-                                        <div className="text-right min-w-[80px]">
-                                            <span className="block text-2xl font-black text-slate-700">{item.qtd_total}</span>
-                                            <span className="text-[8px] font-bold text-slate-400 uppercase">Total Geral</span>
-                                        </div>
-                                    </div>
-                                )
-                            })}
-                        </div>
-                    </div>
-                )) : (
-                    purchaseData.length > 0 && (
-                        <div className="p-20 text-center text-slate-400 font-bold uppercase text-sm bg-white rounded-2xl border border-dashed">
-                            Filtro atual ocultou todos os {purchaseData.length} itens. Tente mudar a região.
-                        </div>
-                    )
-                )}
+          <div className="space-y-6 animate-fadeIn">
+            <div className="flex justify-between items-center bg-white p-4 rounded-xl border border-slate-200">
+              <div className="flex items-center gap-2">
+                <MapPin className="text-indigo-600" size={20} />
+                <span className="text-sm font-bold text-slate-700 uppercase">Filtrar Região:</span>
+                <select value={regionFilter} onChange={e => setRegionFilter(e.target.value)} className="bg-white border border-slate-200 text-slate-600 text-xs font-bold uppercase px-3 py-2 rounded-lg outline-none cursor-pointer hover:border-indigo-300">
+                  <option value="TODAS">Todas as Regiões</option>
+                  {purchaseRegions.map(r => <option key={r} value={r}>{r}</option>)}
+                </select>
+              </div>
+              <div className="text-right">
+                <span className="text-2xl font-black text-slate-800">{purchaseData.filter(p => regionFilter === 'TODAS' || (p.regiao || 'OUTROS').toUpperCase() === regionFilter).reduce((acc, curr) => acc + curr.qtd_total, 0)}</span>
+                <span className="block text-[9px] font-bold text-slate-400 uppercase">Peças a receber</span>
+              </div>
             </div>
+
+            {purchaseData.length === 0 && (
+              <div className="bg-red-50 p-4 rounded-xl border border-red-200 text-center">
+                <p className="text-red-800 font-bold mb-2">⚠️ LISTA VAZIA - DIAGNÓSTICO</p>
+                <button onClick={() => setShowDebug(!showDebug)} className="bg-red-600 text-white px-4 py-2 rounded-lg text-xs font-bold uppercase flex items-center gap-2 mx-auto">
+                  <Bug size={16} /> VER DADOS DO SERVIDOR
+                </button>
+                {showDebug && (
+                  <div className="mt-4 text-left bg-slate-900 text-green-400 p-4 rounded-xl text-xs overflow-auto max-h-60">
+                    <p className="mb-2 text-white border-b border-white/20 pb-1">DADOS RECEBIDOS DO BACKEND:</p>
+                    <pre>{JSON.stringify(purchaseData, null, 2)}</pre>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {Object.keys(groupedPurchases).length > 0 ? Object.entries(groupedPurchases).map(([region, items]) => (
+              <div key={region} className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                <div className="bg-slate-50 px-6 py-3 border-b border-slate-200 flex justify-between items-center">
+                  <h3 className="font-black text-slate-700 uppercase flex items-center gap-2"><MapPin size={16} /> {region}</h3>
+                  <span className="text-xs font-bold bg-indigo-100 text-indigo-700 px-3 py-1 rounded-full">{items.reduce((acc, i) => acc + i.qtd_total, 0)} un</span>
+                </div>
+                <div className="divide-y divide-slate-100">
+                  {items.map((item: any, idx: number) => {
+                    let prev = {};
+                    try { prev = JSON.parse(item.previsao_info || '{}'); } catch (e) {}
+
+                    return (
+                      <div key={idx} className="p-4 flex flex-col md:flex-row justify-between items-center gap-4 hover:bg-slate-50 transition-colors">
+                        <div className="flex-1">
+                          <h4 className="text-sm font-bold text-slate-800 uppercase">{item.descricao}</h4>
+                          {Object.keys(prev).length > 0 && (
+                            <div className="flex flex-wrap gap-2 mt-2">
+                              {Object.entries(prev).map(([week, qty]) => (
+                                <span key={week} className="text-[10px] font-bold bg-green-50 text-green-700 border border-green-100 px-2 py-1 rounded uppercase flex items-center gap-1">
+                                  <Calendar size={10} /> {week}: {String(qty)} un
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                        <div className="text-right min-w-[80px]">
+                          <span className="block text-2xl font-black text-slate-700">{item.qtd_total}</span>
+                          <span className="text-[8px] font-bold text-slate-400 uppercase">Total Geral</span>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )) : (
+              purchaseData.length > 0 && (
+                <div className="p-20 text-center text-slate-400 font-bold uppercase text-sm bg-white rounded-2xl border border-dashed">
+                  Filtro atual ocultou todos os {purchaseData.length} itens. Tente mudar a região.
+                </div>
+              )
+            )}
+          </div>
         )}
 
         {/* ================= MÓDULO REMANEJAMENTO ================= */}
         {moduleMode === 'redistribution' && (
-            <div className="space-y-8 animate-fadeIn">
-                <div className="bg-gradient-to-r from-indigo-900 to-indigo-800 p-6 rounded-2xl text-white shadow-lg flex justify-between items-center">
-                    <div>
-                        <h2 className="text-lg font-black uppercase mb-1">Painel de Oportunidades</h2>
-                        <p className="text-xs opacity-70">Otimização baseada em Estoque Local vs Vendas Recentes vs Compras Futuras.</p>
-                    </div>
-                    <div className="flex gap-4 text-center">
-                        <div>
-                            <span className="block text-2xl font-bold">{redistributionSuggestions.moves.length}</span>
-                            <span className="text-[9px] uppercase opacity-70">Moves</span>
-                        </div>
-                        <div>
-                            <span className="block text-2xl font-bold">{redistributionSuggestions.buys.length}</span>
-                            <span className="text-[9px] uppercase opacity-70">Buys</span>
-                        </div>
-                    </div>
+          <div className="space-y-8 animate-fadeIn">
+            <div className="bg-gradient-to-r from-indigo-900 to-indigo-800 p-6 rounded-2xl text-white shadow-lg flex justify-between items-center">
+              <div>
+                <h2 className="text-lg font-black uppercase mb-1">Painel de Oportunidades</h2>
+                <p className="text-xs opacity-70">Otimização baseada em Estoque Local vs Vendas no período vs Compras Futuras.</p>
+              </div>
+              <div className="flex gap-4 text-center">
+                <div>
+                  <span className="block text-2xl font-bold">{redistributionSuggestions.moves.length}</span>
+                  <span className="text-[9px] uppercase opacity-70">Moves</span>
                 </div>
-
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                    <div className="space-y-4">
-                        <h3 className="flex items-center gap-2 text-indigo-700 font-black uppercase text-sm border-b border-indigo-100 pb-2"><Truck size={18}/> Transferências</h3>
-                        {redistributionSuggestions.moves.map((move: any, idx: number) => (
-                            <div key={idx} className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col gap-3 relative group">
-                                <div className="absolute top-0 right-0 bg-indigo-50 text-indigo-600 text-[9px] font-bold px-2 py-1 rounded-bl-lg uppercase">{move.region}</div>
-                                <h4 className="text-xs font-black text-slate-800 uppercase pr-8">{move.product}</h4>
-                                <div className="flex items-center justify-between bg-slate-50 p-3 rounded-lg border border-slate-100">
-                                    <div className="text-center"><p className="text-[9px] font-bold text-red-400 uppercase">Origem</p><p className="text-xs font-black text-slate-700">{move.from}</p></div>
-                                    <div className="flex flex-col items-center"><span className="text-xs font-black text-indigo-600 bg-indigo-100 px-2 py-1 rounded-full">{move.qty} un</span><ArrowRight size={14} className="text-indigo-300 mt-1"/></div>
-                                    <div className="text-center"><p className="text-[9px] font-bold text-green-500 uppercase">Destino</p><p className="text-xs font-black text-slate-700">{move.to}</p></div>
-                                </div>
-                            </div>
-                        ))}
-                    </div>
-                    
-                    <div className="space-y-4">
-                        <h3 className="flex items-center gap-2 text-green-700 font-black uppercase text-sm border-b border-green-100 pb-2"><ShoppingBag size={18}/> Sugestões de Compra</h3>
-                        {redistributionSuggestions.buys.map((buy: any, idx: number) => (
-                            <div key={idx} className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex justify-between items-center gap-4">
-                                <div>
-                                    <div className="flex gap-2 mb-1"><span className="text-[9px] font-bold bg-green-50 text-green-600 px-1.5 py-0.5 rounded uppercase">{buy.region}</span></div>
-                                    <h4 className="text-xs font-black text-slate-800 uppercase">{buy.product}</h4>
-                                    <p className="text-[10px] text-slate-400 mt-1">{buy.insight}</p>
-                                </div>
-                                <div className="text-center"><p className="text-[9px] font-bold text-slate-400 uppercase">Comprar</p><p className="text-xl font-black text-green-600">+{buy.gap}</p></div>
-                            </div>
-                        ))}
-                    </div>
+                <div>
+                  <span className="block text-2xl font-bold">{redistributionSuggestions.buys.length}</span>
+                  <span className="text-[9px] uppercase opacity-70">Buys</span>
                 </div>
+              </div>
             </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+              <div className="space-y-4">
+                <h3 className="flex items-center gap-2 text-indigo-700 font-black uppercase text-sm border-b border-indigo-100 pb-2"><Truck size={18} /> Transferências</h3>
+                {redistributionSuggestions.moves.map((move: any, idx: number) => (
+                  <div key={idx} className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col gap-3 relative group">
+                    <div className="absolute top-0 right-0 bg-indigo-50 text-indigo-600 text-[9px] font-bold px-2 py-1 rounded-bl-lg uppercase">{move.region}</div>
+                    <h4 className="text-xs font-black text-slate-800 uppercase pr-8">{move.product}</h4>
+                    <div className="flex items-center justify-between bg-slate-50 p-3 rounded-lg border border-slate-100">
+                      <div className="text-center"><p className="text-[9px] font-bold text-red-400 uppercase">Origem</p><p className="text-xs font-black text-slate-700">{move.from}</p></div>
+                      <div className="flex flex-col items-center"><span className="text-xs font-black text-indigo-600 bg-indigo-100 px-2 py-1 rounded-full">{move.qty} un</span><ArrowRight size={14} className="text-indigo-300 mt-1" /></div>
+                      <div className="text-center"><p className="text-[9px] font-bold text-green-500 uppercase">Destino</p><p className="text-xs font-black text-slate-700">{move.to}</p></div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="space-y-4">
+                <h3 className="flex items-center gap-2 text-green-700 font-black uppercase text-sm border-b border-green-100 pb-2"><ShoppingBag size={18} /> Sugestões de Compra</h3>
+                {redistributionSuggestions.buys.map((buy: any, idx: number) => (
+                  <div key={idx} className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex justify-between items-center gap-4">
+                    <div>
+                      <div className="flex gap-2 mb-1"><span className="text-[9px] font-bold bg-green-50 text-green-600 px-1.5 py-0.5 rounded uppercase">{buy.region}</span></div>
+                      <h4 className="text-xs font-black text-slate-800 uppercase">{buy.product}</h4>
+                      <p className="text-[10px] text-slate-400 mt-1">{buy.insight}</p>
+                    </div>
+                    <div className="text-center"><p className="text-[9px] font-bold text-slate-400 uppercase">Comprar</p><p className="text-xl font-black text-green-600">+{buy.gap}</p></div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
         )}
 
         {/* ================= MÓDULO MALOTE ================= */}
         {moduleMode === 'malote' && (
-            <div className="space-y-6 animate-fadeIn">
-                <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-                    
-                    <div className="flex flex-col md:flex-row justify-between items-center gap-4 mb-8">
-                        <div className="flex flex-1 gap-2 w-full">
-                            <div className="relative flex-1 max-w-sm">
-                                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-                                <input 
-                                    type="text" 
-                                    placeholder="Pesquisar modelo no malote..." 
-                                    value={maloteSearch}
-                                    onChange={(e) => setMaloteSearch(e.target.value)}
-                                    className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold uppercase outline-none focus:ring-2 focus:ring-indigo-500"
-                                />
-                            </div>
-                            <select 
-                                value={maloteCategory}
-                                onChange={(e) => setMaloteCategory(e.target.value)}
-                                className="bg-slate-50 border border-slate-200 text-slate-600 text-[10px] font-black uppercase px-4 py-2 rounded-xl outline-none cursor-pointer hover:bg-slate-100"
-                            >
-                                <option value="TODAS">Todas as Categorias</option>
-                                {uniqueCategories.map(c => <option key={c} value={c}>{c}</option>)}
-                            </select>
-                        </div>
+          <div className="space-y-6 animate-fadeIn">
+            <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
 
-                        <div className="flex bg-slate-100 p-1 rounded-xl">
-                            <button 
-                                onClick={() => setMaloteViewMode('table')}
-                                className={`p-2 rounded-lg transition-all ${maloteViewMode === 'table' ? 'bg-white shadow text-indigo-600' : 'text-slate-400'}`}
-                            >
-                                <ListIcon size={18} />
-                            </button>
-                            <button 
-                                onClick={() => setMaloteViewMode('cards')}
-                                className={`p-2 rounded-lg transition-all ${maloteViewMode === 'cards' ? 'bg-white shadow text-indigo-600' : 'text-slate-400'}`}
-                            >
-                                <LayoutGrid size={18} />
-                            </button>
-                        </div>
-                    </div>
-
-                    <div className="flex justify-between items-end mb-6 border-b border-slate-50 pb-6">
-                        <div>
-                            <h2 className="text-lg font-black uppercase text-slate-800">Abastecimento CD Taguatinga</h2>
-                            <p className="text-xs text-slate-400">Saída Centralizada | Objetivo: 15 dias de cobertura</p>
-                        </div>
-                        <div className="text-right">
-                            <p className="text-[10px] font-bold text-slate-400 uppercase">Total a Despachar</p>
-                            <p className="text-3xl font-black text-indigo-600">
-                                {calculatedMalote
-                                .filter(item => (maloteCategory === 'TODAS' || item.category === maloteCategory) && item.modelo.toLowerCase().includes(maloteSearch.toLowerCase()))
-                                .reduce((acc, item) => acc + (item.lojas?.reduce((sum: number, l: any) => sum + (l.sugestaoEnvio || 0), 0) || 0), 0)} un
-                            </p>
-                        </div>
-                    </div>
-
-                    {maloteViewMode === 'table' ? (
-                        <div className="overflow-x-auto">
-                            <table className="w-full text-left">
-                                <thead className="bg-slate-50 text-[10px] font-black uppercase text-slate-400">
-                                    <tr>
-                                        <th className="px-4 py-3">Modelo</th>
-                                        <th className="px-4 py-3">Total Envio</th>
-                                        <th className="px-4 py-3 text-right">Ações</th>
-                                    </tr>
-                                </thead>
-                                <tbody className="divide-y divide-slate-50">
-                                    {calculatedMalote
-                                        .filter(item => (maloteCategory === 'TODAS' || item.category === maloteCategory) && item.modelo.toLowerCase().includes(maloteSearch.toLowerCase()))
-                                        .map((item, idx) => {
-                                            const totalEnvio = item.lojas?.reduce((acc: number, l: any) => acc + (l.sugestaoEnvio || 0), 0) || 0;
-                                            return (
-                                                <tr key={idx} className="hover:bg-slate-50/50 transition-colors">
-                                                    <td className="px-4 py-3 text-xs font-bold text-slate-700 uppercase">
-                                                        {item.modelo}
-                                                        <div className="flex gap-2 mt-1">
-                                                            {item.lojas.slice(0, 3).map((l:any, i:number) => (
-                                                                <span key={i} className="text-[9px] bg-slate-100 text-slate-500 px-1 rounded">{l.loja}: {l.sugestaoEnvio}</span>
-                                                            ))}
-                                                            {item.lojas.length > 3 && <span className="text-[9px] text-slate-400">+{item.lojas.length - 3}</span>}
-                                                        </div>
-                                                    </td>
-                                                    <td className="px-4 py-3">
-                                                        <span className="bg-indigo-50 text-indigo-600 px-2 py-1 rounded-md text-[10px] font-black">
-                                                            {totalEnvio} un
-                                                        </span>
-                                                    </td>
-                                                    <td className="px-4 py-3 text-right">
-                                                        <button className="text-slate-400 hover:text-indigo-600 transition-colors">
-                                                            <ChevronRight size={16} />
-                                                        </button>
-                                                    </td>
-                                                </tr>
-                                            );
-                                        })
-                                    }
-                                </tbody>
-                            </table>
-                        </div>
-                    ) : (
-                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                            {calculatedMalote
-                                .filter(item => (maloteCategory === 'TODAS' || item.category === maloteCategory) && item.modelo.toLowerCase().includes(maloteSearch.toLowerCase()))
-                                .map((item, idx) => (
-                                    item.lojas?.filter((l: any) => l.sugestaoEnvio > 0).map((loja: any, lidx: number) => (
-                                        <div key={`${idx}-${lidx}`} className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition-all relative overflow-hidden group">
-                                            <div className="absolute top-0 right-0 bg-indigo-50 text-indigo-600 text-[9px] font-black px-3 py-1 rounded-bl-xl uppercase tracking-tighter">
-                                                CD Taguatinga
-                                            </div>
-                                            <h4 className="text-xs font-black text-slate-800 uppercase mb-3 pr-20">{item.modelo}</h4>
-                                            
-                                            <div className="flex items-center justify-between bg-slate-50 p-4 rounded-xl border border-slate-100">
-                                                <div className="text-center flex-1">
-                                                    <p className="text-[8px] font-black text-slate-400 uppercase mb-1">Origem</p>
-                                                    <p className="text-[10px] font-black text-slate-700 uppercase">CD TAGUATINGA</p>
-                                                </div>
-                                                
-                                                <div className="flex flex-col items-center px-4">
-                                                    <span className="text-xs font-black text-indigo-600 bg-indigo-100 px-3 py-1 rounded-full mb-1">
-                                                        {loja.sugestaoEnvio} un
-                                                    </span>
-                                                    <ArrowRight size={14} className="text-indigo-300 animate-pulse" />
-                                                </div>
-
-                                                <div className="text-center flex-1">
-                                                    <p className="text-[8px] font-black text-slate-400 uppercase mb-1">Destino</p>
-                                                    <p className="text-[10px] font-black text-green-600 uppercase">{loja.loja}</p>
-                                                </div>
-                                            </div>
-                                            <div className="mt-2 flex justify-between text-[9px] text-slate-400 font-bold uppercase">
-                                                <span>Giro Loja: {loja.vendaPeriodo}</span>
-                                                <span>Estoque Atual: {loja.estoqueAtual}</span>
-                                            </div>
-                                        </div>
-                                    ))
-                                ))
-                            }
-                        </div>
-                    )}
+              <div className="flex flex-col md:flex-row justify-between items-center gap-4 mb-8">
+                <div className="flex flex-1 gap-2 w-full">
+                  <div className="relative flex-1 max-w-sm">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                    <input
+                      type="text"
+                      placeholder="Pesquisar modelo no malote..."
+                      value={maloteSearch}
+                      onChange={(e) => setMaloteSearch(e.target.value)}
+                      className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold uppercase outline-none focus:ring-2 focus:ring-indigo-500"
+                    />
+                  </div>
+                  <select
+                    value={maloteCategory}
+                    onChange={(e) => setMaloteCategory(e.target.value)}
+                    className="bg-slate-50 border border-slate-200 text-slate-600 text-[10px] font-black uppercase px-4 py-2 rounded-xl outline-none cursor-pointer hover:bg-slate-100"
+                  >
+                    <option value="TODAS">Todas as Categorias</option>
+                    {uniqueCategories.map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
                 </div>
+
+                <div className="flex bg-slate-100 p-1 rounded-xl">
+                  <button
+                    onClick={() => setMaloteViewMode('table')}
+                    className={`p-2 rounded-lg transition-all ${maloteViewMode === 'table' ? 'bg-white shadow text-indigo-600' : 'text-slate-400'}`}
+                  >
+                    <ListIcon size={18} />
+                  </button>
+                  <button
+                    onClick={() => setMaloteViewMode('cards')}
+                    className={`p-2 rounded-lg transition-all ${maloteViewMode === 'cards' ? 'bg-white shadow text-indigo-600' : 'text-slate-400'}`}
+                  >
+                    <LayoutGrid size={18} />
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex justify-between items-end mb-6 border-b border-slate-50 pb-6">
+                <div>
+                  <h2 className="text-lg font-black uppercase text-slate-800">Abastecimento CD Taguatinga</h2>
+                  <p className="text-xs text-slate-400">Saída Centralizada | Objetivo: 15 dias de cobertura | Base: {periodDays} dias selecionados</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-[10px] font-bold text-slate-400 uppercase">Total a Despachar</p>
+                  <p className="text-3xl font-black text-indigo-600">
+                    {calculatedMalote
+                      .filter(item => (maloteCategory === 'TODAS' || item.category === maloteCategory) && item.modelo.toLowerCase().includes(maloteSearch.toLowerCase()))
+                      .reduce((acc, item) => acc + (item.lojas?.reduce((sum: number, l: any) => sum + (l.sugestaoEnvio || 0), 0) || 0), 0)} un
+                  </p>
+                </div>
+              </div>
+
+              {maloteViewMode === 'table' ? (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left">
+                    <thead className="bg-slate-50 text-[10px] font-black uppercase text-slate-400">
+                      <tr>
+                        <th className="px-4 py-3">Modelo</th>
+                        <th className="px-4 py-3">Total Envio</th>
+                        <th className="px-4 py-3 text-right">Ações</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                      {calculatedMalote
+                        .filter(item => (maloteCategory === 'TODAS' || item.category === maloteCategory) && item.modelo.toLowerCase().includes(maloteSearch.toLowerCase()))
+                        .map((item, idx) => {
+                          const totalEnvio = item.lojas?.reduce((acc: number, l: any) => acc + (l.sugestaoEnvio || 0), 0) || 0;
+                          return (
+                            <tr key={idx} className="hover:bg-slate-50/50 transition-colors">
+                              <td className="px-4 py-3 text-xs font-bold text-slate-700 uppercase">
+                                {item.modelo}
+                                <div className="flex gap-2 mt-1">
+                                  {item.lojas.slice(0, 3).map((l: any, i: number) => (
+                                    <span key={i} className="text-[9px] bg-slate-100 text-slate-500 px-1 rounded">{l.loja}: {l.sugestaoEnvio}</span>
+                                  ))}
+                                  {item.lojas.length > 3 && <span className="text-[9px] text-slate-400">+{item.lojas.length - 3}</span>}
+                                </div>
+                              </td>
+                              <td className="px-4 py-3">
+                                <span className="bg-indigo-50 text-indigo-600 px-2 py-1 rounded-md text-[10px] font-black">
+                                  {totalEnvio} un
+                                </span>
+                              </td>
+                              <td className="px-4 py-3 text-right">
+                                <button className="text-slate-400 hover:text-indigo-600 transition-colors">
+                                  <ChevronRight size={16} />
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })
+                      }
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {calculatedMalote
+                    .filter(item => (maloteCategory === 'TODAS' || item.category === maloteCategory) && item.modelo.toLowerCase().includes(maloteSearch.toLowerCase()))
+                    .map((item, idx) => (
+                      item.lojas?.filter((l: any) => l.sugestaoEnvio > 0).map((loja: any, lidx: number) => (
+                        <div key={`${idx}-${lidx}`} className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition-all relative overflow-hidden group">
+                          <div className="absolute top-0 right-0 bg-indigo-50 text-indigo-600 text-[9px] font-black px-3 py-1 rounded-bl-xl uppercase tracking-tighter">
+                            CD Taguatinga
+                          </div>
+                          <h4 className="text-xs font-black text-slate-800 uppercase mb-3 pr-20">{item.modelo}</h4>
+
+                          <div className="flex items-center justify-between bg-slate-50 p-4 rounded-xl border border-slate-100">
+                            <div className="text-center flex-1">
+                              <p className="text-[8px] font-black text-slate-400 uppercase mb-1">Origem</p>
+                              <p className="text-[10px] font-black text-slate-700 uppercase">CD TAGUATINGA</p>
+                            </div>
+
+                            <div className="flex flex-col items-center px-4">
+                              <span className="text-xs font-black text-indigo-600 bg-indigo-100 px-3 py-1 rounded-full mb-1">
+                                {loja.sugestaoEnvio} un
+                              </span>
+                              <ArrowRight size={14} className="text-indigo-300 animate-pulse" />
+                            </div>
+
+                            <div className="text-center flex-1">
+                              <p className="text-[8px] font-black text-slate-400 uppercase mb-1">Destino</p>
+                              <p className="text-[10px] font-black text-green-600 uppercase">{loja.loja}</p>
+                            </div>
+                          </div>
+                          <div className="mt-2 flex justify-between text-[9px] text-slate-400 font-bold uppercase">
+                            <span>Vendas Período: {loja.vendaPeriodo}</span>
+                            <span>Estoque Atual: {loja.estoqueAtual}</span>
+                          </div>
+                        </div>
+                      ))
+                    ))
+                  }
+                </div>
+              )}
             </div>
+          </div>
         )}
-                
+
         {/* ================= MÓDULO ESTOQUE (CLÁSSICO) ================= */}
         {moduleMode === 'stock' && (
-            <>
+          <>
             {!expandedStore && (
-                <div className="flex flex-col md:flex-row gap-3 mb-4">
-                    <div className="relative flex-1">
-                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-                        <input 
-                            type="text" 
-                            placeholder="BUSCAR POR PRODUTO OU CÓDIGO..." 
-                            value={filter}
-                            onChange={(e) => setFilter(e.target.value)}
-                            className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 text-slate-700 text-xs font-bold uppercase rounded-xl outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-50/50 transition-all shadow-sm"
-                        />
-                    </div>
-                    <div className="flex gap-2 overflow-x-auto pb-2 md:pb-0 scrollbar-hide">
-                        <select value={regionFilter} onChange={e => setRegionFilter(e.target.value)} className="bg-white border border-slate-200 text-slate-600 text-xs font-bold uppercase px-4 py-2.5 rounded-xl outline-none cursor-pointer hover:border-indigo-300 shadow-sm whitespace-nowrap">
-                            <option value="TODAS">Todas as Regiões</option>
-                            {uniqueRegions.map(r => <option key={r} value={r}>{r}</option>)}
-                        </select>
-                        <select value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)} className="bg-white border border-slate-200 text-slate-600 text-xs font-bold uppercase px-4 py-2.5 rounded-xl outline-none cursor-pointer hover:border-indigo-300 shadow-sm whitespace-nowrap">
-                            <option value="TODAS">Todas as Categorias</option>
-                            {uniqueCategories.map(c => <option key={c} value={c}>{c}</option>)}
-                        </select>
-                        {(regionFilter !== 'TODAS' || categoryFilter !== 'TODAS' || filter !== '') && (
-                            <button onClick={() => {setRegionFilter('TODAS'); setCategoryFilter('TODAS'); setFilter('')}} className="bg-red-50 border border-red-100 text-red-600 hover:bg-red-100 text-xs font-bold px-4 py-2.5 rounded-xl transition-colors shadow-sm flex items-center gap-1">
-                                <X size={14}/> LIMPAR
-                            </button>
-                        )}
-                    </div>
+              <div className="flex flex-col md:flex-row gap-3 mb-4">
+                <div className="relative flex-1">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                  <input
+                    type="text"
+                    placeholder="BUSCAR POR PRODUTO OU CÓDIGO..."
+                    value={filter}
+                    onChange={(e) => setFilter(e.target.value)}
+                    className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 text-slate-700 text-xs font-bold uppercase rounded-xl outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-50/50 transition-all shadow-sm"
+                  />
                 </div>
+                <div className="flex gap-2 overflow-x-auto pb-2 md:pb-0 scrollbar-hide">
+                  <select value={regionFilter} onChange={e => setRegionFilter(e.target.value)} className="bg-white border border-slate-200 text-slate-600 text-xs font-bold uppercase px-4 py-2.5 rounded-xl outline-none cursor-pointer hover:border-indigo-300 shadow-sm whitespace-nowrap">
+                    <option value="TODAS">Todas as Regiões</option>
+                    {uniqueRegions.map(r => <option key={r} value={r}>{r}</option>)}
+                  </select>
+                  <select value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)} className="bg-white border border-slate-200 text-slate-600 text-xs font-bold uppercase px-4 py-2.5 rounded-xl outline-none cursor-pointer hover:border-indigo-300 shadow-sm whitespace-nowrap">
+                    <option value="TODAS">Todas as Categorias</option>
+                    {uniqueCategories.map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                  {(regionFilter !== 'TODAS' || categoryFilter !== 'TODAS' || filter !== '') && (
+                    <button onClick={() => { setRegionFilter('TODAS'); setCategoryFilter('TODAS'); setFilter('') }} className="bg-red-50 border border-red-100 text-red-600 hover:bg-red-100 text-xs font-bold px-4 py-2.5 rounded-xl transition-colors shadow-sm flex items-center gap-1">
+                      <X size={14} /> LIMPAR
+                    </button>
+                  )}
+                </div>
+              </div>
             )}
 
             {expandedStore ? (
-                /* MICRO VIEW */
-                <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 animate-fadeIn">
-                    <div className="lg:col-span-3 space-y-3">
-                        <div className="flex justify-between items-center mb-2">
-                            <div className="flex gap-2">
-                                <button onClick={() => setViewMode('list')} className={`p-1.5 rounded-lg ${viewMode === 'list' ? 'bg-indigo-100 text-indigo-700' : 'text-slate-400'}`}><ListIcon size={16}/></button>
-                                <button onClick={() => setViewMode('grid')} className={`p-1.5 rounded-lg ${viewMode === 'grid' ? 'bg-indigo-100 text-indigo-700' : 'text-slate-400'}`}><LayoutGrid size={16}/></button>
-                            </div>
-                            <span className="text-[10px] font-bold text-slate-400 uppercase">{currentStoreProducts.length} ITENS ENCONTRADOS</span>
-                        </div>
-
-                        <div className={viewMode === 'grid' ? "grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4" : "flex flex-col gap-2"}>
-                            {currentStoreProducts.slice(0, 100).map((item, idx) => {
-                                const stockQty = Number(item.quantity);
-                                const isLowStock = stockQty < 3; 
-                                const soldQty = getProductSales(item.storeName, item.description);
-
-                                return (
-                                    <div key={idx} className={`bg-white rounded-xl border p-4 hover:shadow-md transition-all group relative overflow-hidden ${isLowStock ? 'border-red-300 bg-red-50/20' : 'border-slate-100'} ${viewMode === 'list' ? 'flex justify-between items-center' : 'flex flex-col justify-between h-full'}`}>
-                                        {isLowStock && (
-                                            <div className="absolute top-0 right-0 p-2">
-                                                <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse shadow-[0_0_8px_rgba(239,68,68,0.6)]"></div>
-                                            </div>
-                                        )}
-
-                                        <div className="flex gap-4 items-start">
-                                            <div className={`w-12 h-12 rounded-xl flex flex-col items-center justify-center font-black text-xs shrink-0 ${isLowStock ? 'bg-red-100 text-red-600' : 'bg-slate-100 text-slate-600'}`}>
-                                                <span className="text-[14px]">{stockQty}</span>
-                                                <span className="text-[8px] uppercase opacity-70">Est</span>
-                                            </div>
-                                            <div>
-                                                <h4 className="text-xs font-bold text-slate-800 uppercase line-clamp-2 leading-tight">{item.description}</h4>
-                                                <div className="flex flex-wrap items-center gap-2 mt-1">
-                                                    <span className="text-[9px] font-bold bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded uppercase">{item.category}</span>
-                                                    {soldQty > 0 ? (
-                                                        <span className="text-[9px] font-bold bg-green-100 text-green-700 px-1.5 py-0.5 rounded uppercase flex items-center gap-1 border border-green-200">
-                                                            <ShoppingBag size={10}/> {soldQty} vend
-                                                        </span>
-                                                    ) : (
-                                                        <span className="text-[8px] text-slate-300 uppercase">Sem giro</span>
-                                                    )}
-                                                </div>
-                                            </div>
-                                        </div>
-                                        
-                                        <div className={`text-right ${viewMode === 'grid' ? 'mt-4 border-t border-slate-100 pt-3 w-full flex justify-between items-end' : 'flex items-center gap-6'}`}>
-                                            <div className="flex gap-4">
-                                                <div className={viewMode === 'grid' ? 'text-left' : 'text-right'}>
-                                                    <p className="text-[9px] font-bold text-slate-400 uppercase">Custo Unit.</p>
-                                                    <p className="text-xs font-black text-slate-700">R$ {Number(item.costPrice || 0).toLocaleString('pt-BR', {minimumFractionDigits: 2})}</p>
-                                                </div>
-                                                <div className={viewMode === 'grid' ? 'text-left border-l border-slate-100 pl-4' : 'text-right border-l border-slate-100 pl-4'}>
-                                                    <p className="text-[9px] font-bold text-emerald-500 uppercase">Preço Venda</p>
-                                                    <p className="text-xs font-black text-emerald-600">R$ {Number(item.salePrice || 0).toLocaleString('pt-BR', {minimumFractionDigits: 2})}</p>
-                                                </div>
-                                            </div>
-                                            <div className={viewMode === 'grid' ? 'text-right' : 'min-w-[100px] text-right'}>
-                                                <p className="text-[9px] font-bold text-slate-400 uppercase">Total Custo</p>
-                                                <p className={`text-sm font-black ${isLowStock ? 'text-red-600' : 'text-indigo-700'}`}>
-                                                    R$ {(Number(item.costPrice || 0) * stockQty).toLocaleString('pt-BR', {minimumFractionDigits: 2})}
-                                                </p>
-                                            </div>
-                                        </div>
-                                    </div>
-                                )
-                            })}
-                        </div>
+              /* MICRO VIEW */
+              <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 animate-fadeIn">
+                <div className="lg:col-span-3 space-y-3">
+                  <div className="flex justify-between items-center mb-2">
+                    <div className="flex gap-2">
+                      <button onClick={() => setViewMode('list')} className={`p-1.5 rounded-lg ${viewMode === 'list' ? 'bg-indigo-100 text-indigo-700' : 'text-slate-400'}`}><ListIcon size={16} /></button>
+                      <button onClick={() => setViewMode('grid')} className={`p-1.5 rounded-lg ${viewMode === 'grid' ? 'bg-indigo-100 text-indigo-700' : 'text-slate-400'}`}><LayoutGrid size={16} /></button>
                     </div>
+                    <span className="text-[10px] font-bold text-slate-400 uppercase">{currentStoreProducts.length} ITENS ENCONTRADOS</span>
+                  </div>
 
+                  <div className={viewMode === 'grid' ? "grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4" : "flex flex-col gap-2"}>
+                    {currentStoreProducts.slice(0, 100).map((item, idx) => {
+                      const stockQty = Number(item.quantity);
+                      const isLowStock = stockQty < 3;
+                      const soldQty = getProductSales(item.storeName, item.description);
+
+                      return (
+                        <div key={idx} className={`bg-white rounded-xl border p-4 hover:shadow-md transition-all group relative overflow-hidden ${isLowStock ? 'border-red-300 bg-red-50/20' : 'border-slate-100'} ${viewMode === 'list' ? 'flex justify-between items-center' : 'flex flex-col justify-between h-full'}`}>
+                          {isLowStock && (
+                            <div className="absolute top-0 right-0 p-2">
+                              <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse shadow-[0_0_8px_rgba(239,68,68,0.6)]"></div>
+                            </div>
+                          )}
+
+                          <div className="flex gap-4 items-start">
+                            <div className={`w-12 h-12 rounded-xl flex flex-col items-center justify-center font-black text-xs shrink-0 ${isLowStock ? 'bg-red-100 text-red-600' : 'bg-slate-100 text-slate-600'}`}>
+                              <span className="text-[14px]">{stockQty}</span>
+                              <span className="text-[8px] uppercase opacity-70">Est</span>
+                            </div>
+                            <div>
+                              <h4 className="text-xs font-bold text-slate-800 uppercase line-clamp-2 leading-tight">{item.description}</h4>
+                              <div className="flex flex-wrap items-center gap-2 mt-1">
+                                <span className="text-[9px] font-bold bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded uppercase">{item.category}</span>
+                                {soldQty > 0 ? (
+                                  <span className="text-[9px] font-bold bg-green-100 text-green-700 px-1.5 py-0.5 rounded uppercase flex items-center gap-1 border border-green-200">
+                                    <ShoppingBag size={10} /> {soldQty} vend
+                                  </span>
+                                ) : (
+                                  <span className="text-[8px] text-slate-300 uppercase">Sem giro</span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className={`text-right ${viewMode === 'grid' ? 'mt-4 border-t border-slate-100 pt-3 w-full flex justify-between items-end' : 'flex items-center gap-6'}`}>
+                            <div className="flex gap-4">
+                              <div className={viewMode === 'grid' ? 'text-left' : 'text-right'}>
+                                <p className="text-[9px] font-bold text-slate-400 uppercase">Custo Unit.</p>
+                                <p className="text-xs font-black text-slate-700">R$ {Number(item.costPrice || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
+                              </div>
+                              <div className={viewMode === 'grid' ? 'text-left border-l border-slate-100 pl-4' : 'text-right border-l border-slate-100 pl-4'}>
+                                <p className="text-[9px] font-bold text-emerald-500 uppercase">Preço Venda</p>
+                                <p className="text-xs font-black text-emerald-600">R$ {Number(item.salePrice || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
+                              </div>
+                            </div>
+                            <div className={viewMode === 'grid' ? 'text-right' : 'min-w-[100px] text-right'}>
+                              <p className="text-[9px] font-bold text-slate-400 uppercase">Total Custo</p>
+                              <p className={`text-sm font-black ${isLowStock ? 'text-red-600' : 'text-indigo-700'}`}>
+                                R$ {(Number(item.costPrice || 0) * stockQty).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <div className="bg-indigo-900 rounded-[32px] p-6 text-white shadow-xl relative overflow-hidden">
+                    <div className="absolute top-0 right-0 p-4 opacity-10"><Store size={80} /></div>
+                    <p className="text-[10px] font-bold opacity-70 uppercase tracking-widest mb-1">Resumo da Loja</p>
+                    <h2 className="text-xl font-black uppercase leading-tight mb-6">{expandedStore}</h2>
                     <div className="space-y-4">
-                        <div className="bg-indigo-900 rounded-[32px] p-6 text-white shadow-xl relative overflow-hidden">
-                            <div className="absolute top-0 right-0 p-4 opacity-10"><Store size={80}/></div>
-                            <p className="text-[10px] font-bold opacity-70 uppercase tracking-widest mb-1">Resumo da Loja</p>
-                            <h2 className="text-xl font-black uppercase leading-tight mb-6">{expandedStore}</h2>
-                            <div className="space-y-4">
-                                <div>
-                                    <p className="text-[10px] opacity-70 uppercase">Valor em Estoque</p>
-                                    <p className="text-2xl font-bold">R$ {currentStoreProducts.reduce((acc, i) => acc + (i.costPrice * i.quantity), 0).toLocaleString('pt-BR', {maximumFractionDigits: 0})}</p>
-                                </div>
-                                <div>
-                                    <p className="text-[10px] opacity-70 uppercase">Total de Peças</p>
-                                    <p className="text-2xl font-bold">{currentStoreProducts.reduce((acc, i) => acc + Number(i.quantity), 0).toLocaleString('pt-BR')}</p>
-                                </div>
-                                <div>
-                                    <p className="text-[10px] opacity-70 uppercase">Giro Total (Período)</p>
-                                    <p className="text-xl font-bold text-green-300">
-                                        {getStoreTotalSales(expandedStore || "")} peças
-                                    </p>
-                                </div>
-                            </div>
-                        </div>
+                      <div>
+                        <p className="text-[10px] opacity-70 uppercase">Valor em Estoque</p>
+                        <p className="text-2xl font-bold">R$ {currentStoreProducts.reduce((acc, i) => acc + (i.costPrice * i.quantity), 0).toLocaleString('pt-BR', { maximumFractionDigits: 0 })}</p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] opacity-70 uppercase">Total de Peças</p>
+                        <p className="text-2xl font-bold">{currentStoreProducts.reduce((acc, i) => acc + Number(i.quantity), 0).toLocaleString('pt-BR')}</p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] opacity-70 uppercase">Giro Total (Período Selecionado)</p>
+                        <p className="text-xl font-bold text-green-300">
+                          {getStoreTotalSales(expandedStore || "")} peças
+                        </p>
+                      </div>
                     </div>
+                  </div>
                 </div>
+              </div>
             ) : (
-                /* MACRO VIEW */
-                <div className="space-y-10 animate-fadeIn pb-10">
-                    {Object.entries(groupedStores).length > 0 ? Object.entries(groupedStores).map(([region, stores]) => (
-                        <div key={region} className="space-y-4">
-                            <div className="flex items-center gap-3 border-b border-slate-200 pb-2">
-                                <MapPin className="text-indigo-600" size={20}/>
-                                <h2 className="text-lg font-black text-slate-700 uppercase tracking-wide">{region}</h2>
-                                <span className="text-xs font-bold bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full">{stores.length} Lojas</span>
+              /* MACRO VIEW */
+              <div className="space-y-10 animate-fadeIn pb-10">
+                {Object.entries(groupedStores).length > 0 ? Object.entries(groupedStores).map(([region, stores]) => (
+                  <div key={region} className="space-y-4">
+                    <div className="flex items-center gap-3 border-b border-slate-200 pb-2">
+                      <MapPin className="text-indigo-600" size={20} />
+                      <h2 className="text-lg font-black text-slate-700 uppercase tracking-wide">{region}</h2>
+                      <span className="text-xs font-bold bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full">{stores.length} Lojas</span>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                      {stores.map((store) => {
+                        const hasLowStockAlert = store.lowStockCount > 0 && filter !== '';
+                        return (
+                          <div
+                            key={store.name}
+                            onClick={() => setExpandedStore(store.name)}
+                            className={`group bg-white p-5 rounded-2xl border shadow-sm cursor-pointer transition-all hover:-translate-y-1 hover:shadow-lg relative overflow-hidden ${hasLowStockAlert ? 'border-red-300 ring-4 ring-red-50' : 'border-slate-100 hover:border-indigo-200'}`}
+                          >
+                            {hasLowStockAlert && <div className="absolute top-3 right-3 w-3 h-3 bg-red-500 rounded-full animate-pulse shadow-lg"></div>}
+                            <h3 className="text-sm font-black text-slate-800 uppercase leading-tight mb-4 truncate pr-4">{store.name}</h3>
+                            <div className="space-y-2">
+                              <div className="flex justify-between items-end border-b border-slate-50 pb-2">
+                                <span className="text-[10px] font-bold text-slate-400 uppercase">Estoque</span>
+                                <span className={`text-lg font-black ${store.qty === 0 ? 'text-slate-300' : (hasLowStockAlert ? 'text-red-600' : 'text-slate-700')}`}>{store.qty.toLocaleString('pt-BR')}</span>
+                              </div>
+                              <div className="flex justify-between items-end">
+                                <span className="text-[10px] font-bold text-slate-400 uppercase">Financeiro</span>
+                                <span className="text-sm font-bold text-indigo-600">R$ {store.value.toLocaleString('pt-BR', { notation: "compact", maximumFractionDigits: 1 })}</span>
+                              </div>
                             </div>
-                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                                {stores.map((store) => {
-                                    const hasLowStockAlert = store.lowStockCount > 0 && filter !== ''; 
-                                    return (
-                                        <div 
-                                            key={store.name} 
-                                            onClick={() => setExpandedStore(store.name)}
-                                            className={`group bg-white p-5 rounded-2xl border shadow-sm cursor-pointer transition-all hover:-translate-y-1 hover:shadow-lg relative overflow-hidden ${hasLowStockAlert ? 'border-red-300 ring-4 ring-red-50' : 'border-slate-100 hover:border-indigo-200'}`}
-                                        >
-                                            {hasLowStockAlert && <div className="absolute top-3 right-3 w-3 h-3 bg-red-500 rounded-full animate-pulse shadow-lg"></div>}
-                                            <h3 className="text-sm font-black text-slate-800 uppercase leading-tight mb-4 truncate pr-4">{store.name}</h3>
-                                            <div className="space-y-2">
-                                                <div className="flex justify-between items-end border-b border-slate-50 pb-2">
-                                                    <span className="text-[10px] font-bold text-slate-400 uppercase">Estoque</span>
-                                                    <span className={`text-lg font-black ${store.qty === 0 ? 'text-slate-300' : (hasLowStockAlert ? 'text-red-600' : 'text-slate-700')}`}>{store.qty.toLocaleString('pt-BR')}</span>
-                                                </div>
-                                                <div className="flex justify-between items-end">
-                                                    <span className="text-[10px] font-bold text-slate-400 uppercase">Financeiro</span>
-                                                    <span className="text-sm font-bold text-indigo-600">R$ {store.value.toLocaleString('pt-BR', {notation: "compact", maximumFractionDigits: 1})}</span>
-                                                </div>
-                                            </div>
-                                            <div className="absolute bottom-0 right-0 p-4 opacity-0 group-hover:opacity-100 transition-opacity transform translate-y-2 group-hover:translate-y-0"><ChevronRight className="text-indigo-600" size={20}/></div>
-                                        </div>
-                                    );
-                                })}
-                            </div>
-                        </div>
-                    )) : (
-                        <div className="col-span-full py-20 text-center">
-                            <div className="inline-block p-4 bg-slate-100 rounded-full mb-4 text-slate-300"><Package size={40}/></div>
-                            <p className="text-slate-400 font-bold uppercase text-sm">Nenhum estoque encontrado.</p>
-                        </div>
-                    )}
-                </div>
+                            <div className="absolute bottom-0 right-0 p-4 opacity-0 group-hover:opacity-100 transition-opacity transform translate-y-2 group-hover:translate-y-0"><ChevronRight className="text-indigo-600" size={20} /></div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )) : (
+                  <div className="col-span-full py-20 text-center">
+                    <div className="inline-block p-4 bg-slate-100 rounded-full mb-4 text-slate-300"><Package size={40} /></div>
+                    <p className="text-slate-400 font-bold uppercase text-sm">Nenhum estoque encontrado.</p>
+                  </div>
+                )}
+              </div>
             )}
-            </>
+          </>
         )}
       </div>
     </div>

@@ -2858,51 +2858,6 @@ app.get('/forecast/ano', async (req, res) => {
   }
 });
 
-app.get('/sales_anuais', async (req, res) => {
-  try {
-    const userId = String(req.query.userId || '');
-    const securityFilter = await getSalesFilter(userId, 'vendas');
-
-    if (!fs.existsSync(ANUAL_DB_PATH)) return res.json({ sales: [] });
-
-    const db = await open({ filename: ANUAL_DB_PATH, driver: sqlite3.Database });
-
-    // garante que a tabela existe
-    const tables = await db.all(`
-      SELECT name FROM sqlite_master WHERE type='table' AND name='vendas_anuais_raw'
-    `);
-    if (!tables || tables.length === 0) {
-      await db.close();
-      return res.json({ sales: [] });
-    }
-
-    // Agrupa por mês + loja/cnpj + categoria (familia)
-    const query = `
-      SELECT 
-        substr(data_emissao, 1, 7) || '-01' AS data_emissao,
-        cnpj_empresa AS cnpj_empresa,
-        loja AS loja,
-        regiao AS regiao,
-        COALESCE(categoria_real,'OUTROS') AS familia,
-        SUM(COALESCE(total_real,0)) AS total_liquido,
-        SUM(COALESCE(qtd_real,0)) AS quantidade
-      FROM vendas_anuais_raw
-      WHERE ${securityFilter}
-        AND data_emissao IS NOT NULL
-      GROUP BY substr(data_emissao, 1, 7), cnpj_empresa, loja, regiao, COALESCE(categoria_real,'OUTROS')
-      ORDER BY data_emissao ASC
-    `;
-
-    const rows = await db.all(query);
-    await db.close();
-
-    res.json({ sales: normalizeKeys(rows) });
-  } catch (e: any) {
-    console.error("Erro /sales_anuais:", e);
-    res.status(500).json({ error: e.message });
-  }
-});
-
 // Define a porta: Usa a do Render (process.env.PORT) ou a 3000 se for local
 const PORT = process.env.PORT || 3000;
 
