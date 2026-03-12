@@ -4,7 +4,8 @@ import {
 } from 'recharts';
 import { 
   DollarSign, TrendingUp, Trophy, LayoutGrid, Users, Calendar, Store, 
-  AlertCircle, ChevronDown, CheckSquare, Square, Filter, Footprints, MousePointerClick, ArrowRightLeft, Layers
+  AlertCircle, ChevronDown, ChevronUp, CheckSquare, Square, Filter, Footprints, MousePointerClick, ArrowRightLeft, Layers,
+  Package, X, Search, Download // NOVO: Ícone de Download adicionado
 } from 'lucide-react';
 
 const STORE_MAP: Record<string, string> = {
@@ -59,6 +60,10 @@ export default function SalesDashboard() {
   const [ranking, setRanking] = useState<any[]>([]);
   const [productRanking, setProductRanking] = useState<any[]>([]); 
   
+  const [isProductModalOpen, setIsProductModalOpen] = useState(false);
+  const [expandedProduct, setExpandedProduct] = useState<string | null>(null);
+  const [searchProduct, setSearchProduct] = useState("");
+
   const [errorMsg, setErrorMsg] = useState<string>('');
   const [loading, setLoading] = useState(false);
   
@@ -72,7 +77,6 @@ export default function SalesDashboard() {
   const [isStoreMenuOpen, setIsStoreMenuOpen] = useState(false);
   const storeMenuRef = useRef<HTMLDivElement>(null);
 
-  // NOVO: Estado para a Categoria
   const [categoryFilter, setCategoryFilter] = useState('TODAS');
 
   const [activeTab, setActiveTab] = useState('visao_geral');
@@ -149,12 +153,9 @@ export default function SalesDashboard() {
 
   useEffect(() => { loadAllData(); }, []); 
 
-  // --- MATEMÁTICA DE TENDÊNCIA CORRIGIDA ---
-  // Calcula quantos dias se passaram e quantos dias tem no mês para fazer a projeção correta
   const { diasPassados, diasNoMes } = useMemo(() => {
       const start = new Date(startDate);
       const end = new Date(endDate);
-      // Ajuste de fuso horário para não dar erro de dia
       start.setMinutes(start.getMinutes() + start.getTimezoneOffset());
       end.setMinutes(end.getMinutes() + end.getTimezoneOffset());
       
@@ -164,11 +165,9 @@ export default function SalesDashboard() {
       return { diasPassados: passados, diasNoMes: noMes };
   }, [startDate, endDate]);
 
-  // Lista dinâmica de Categorias do BD (Corrigido para ler FAMILIA)
   const uniqueCategories = useMemo(() => {
       const cats = new Set(
           rawData.map(r => {
-              // Procura por familia (maiúsculo ou minúsculo) antes de tentar categoria ou grupo
               const val = r.FAMILIA || r.familia || r.categoria || r.grupo || 'OUTROS';
               return String(val).trim().toUpperCase();
           }).filter(f => f !== 'NAN' && f !== 'UNDEFINED' && f !== '')
@@ -195,7 +194,6 @@ export default function SalesDashboard() {
               if (!selectedStores.includes(nomeLoja)) return false;
           }
 
-          // NOVO: Filtro de Categoria (Corrigido para ler FAMILIA)
           if (categoryFilter !== 'TODAS') {
               const rawCat = sale.FAMILIA || sale.familia || sale.categoria || sale.grupo || 'OUTROS';
               const cat = String(rawCat).trim().toUpperCase();
@@ -285,12 +283,11 @@ export default function SalesDashboard() {
             const totalVendedor = v.total || 0;
             const anterior = Number(kpi?.fat_anterior || 0);
             
-            // NOVO CÁLCULO DE TENDÊNCIA INDIVIDUAL
             const tendenciaMatematica = (totalVendedor / diasPassados) * diasNoMes;
 
             return {
                 ...v,
-                tendencia: Math.max(tendenciaMatematica, totalVendedor), // Garante que nunca seja menor que o atual
+                tendencia: Math.max(tendenciaMatematica, totalVendedor), 
                 seguros: Number(kpi?.seguros || 0),
                 pct_seguro: Number(kpi?.pct_seguro || 0),
                 fat_anterior: anterior,
@@ -305,15 +302,32 @@ export default function SalesDashboard() {
       const mapProd = new Map();
       filteredData.forEach(sale => {
           const desc = sale.descricao || sale.produto || "N/D";
-          if (!mapProd.has(desc)) mapProd.set(desc, { desc, qtd: 0, total: 0, estoqueAtual: 0 });
+          const rawLoja = sale.cnpj_empresa || sale.loja || "";
+          const nomeLoja = getStoreName(rawLoja);
+
+          if (!mapProd.has(desc)) {
+              mapProd.set(desc, { desc, qtd: 0, total: 0, lojas: new Map() });
+          }
+          
           const p = mapProd.get(desc);
           p.qtd += Number(sale.quantidade || 0);
           p.total += Number(sale.total_liquido || 0);
+
+          if (!p.lojas.has(nomeLoja)) {
+              p.lojas.set(nomeLoja, { nome: nomeLoja, qtd: 0, total: 0 });
+          }
+          const l = p.lojas.get(nomeLoja);
+          l.qtd += Number(sale.quantidade || 0);
+          l.total += Number(sale.total_liquido || 0);
       });
+
       const sortedProd = Array.from(mapProd.values()).map((p: any) => {
-          const stockItem = stockRawData.find((s:any) => s.description === p.desc);
-          return { ...p, estoqueAtual: stockItem ? Number(stockItem.quantity) : 0 };
+          return { 
+              ...p, 
+              lojasBreakdown: Array.from(p.lojas.values()).sort((a: any, b: any) => b.qtd - a.qtd)
+          };
       }).sort((a:any, b:any) => b.qtd - a.qtd);
+      
       setProductRanking(sortedProd);
 
   }, [filteredData, stockRawData, kpiData, diasPassados, diasNoMes]); 
@@ -336,7 +350,6 @@ export default function SalesDashboard() {
           .sort((a, b) => b.total - a.total);
   }, [filteredData]);
 
-  // NOVO CÁLCULO GERAL DE TENDÊNCIA
   const totalTendencia = useMemo(() => {
       if (diasPassados === 0) return summary.total_vendas;
       const projecao = (summary.total_vendas / diasPassados) * diasNoMes;
@@ -355,8 +368,58 @@ export default function SalesDashboard() {
       if (data && data.nome) toggleStore(data.nome);
   };
 
-  // Progresso do mês
   const perfPercent = totalTendencia > 0 ? (summary.total_vendas / totalTendencia) * 100 : 0;
+
+  const filteredProductsForModal = useMemo(() => {
+      if (!searchProduct) return productRanking;
+      const term = searchProduct.toLowerCase();
+      return productRanking.filter(p => p.desc.toLowerCase().includes(term));
+  }, [productRanking, searchProduct]);
+
+  const toggleProductExpand = (desc: string) => {
+      setExpandedProduct(prev => prev === desc ? null : desc);
+  };
+
+  // NOVO: Função para exportar os dados do modal para CSV
+  const exportToCSV = () => {
+      if (filteredProductsForModal.length === 0) return;
+
+      // Cabeçalho amigável para Excel (padrão PT-BR)
+      let csvContent = "PRODUTO;QUANTIDADE TOTAL;FATURAMENTO TOTAL;LOJA;QUANTIDADE LOJA;FATURAMENTO LOJA\n";
+
+      filteredProductsForModal.forEach(prod => {
+          if (prod.lojasBreakdown && prod.lojasBreakdown.length > 0) {
+              // Se tiver detalhamento de loja, cria uma linha para cada loja do produto
+              prod.lojasBreakdown.forEach((loja: any) => {
+                  const descSegura = `"${prod.desc.replace(/"/g, '""')}"`; // Evita quebra se tiver aspas no nome
+                  const faturamentoTotal = prod.total.toFixed(2).replace('.', ',');
+                  const nomeLoja = `"${loja.nome}"`;
+                  const faturamentoLoja = loja.total.toFixed(2).replace('.', ',');
+                  
+                  csvContent += `${descSegura};${prod.qtd};${faturamentoTotal};${nomeLoja};${loja.qtd};${faturamentoLoja}\n`;
+              });
+          } else {
+              // Fallback se não tiver loja mapeada
+              const descSegura = `"${prod.desc.replace(/"/g, '""')}"`;
+              const faturamentoTotal = prod.total.toFixed(2).replace('.', ',');
+              csvContent += `${descSegura};${prod.qtd};${faturamentoTotal};"N/D";0;0,00\n`;
+          }
+      });
+
+      // BOM (Byte Order Mark) garante que o Excel reconheça acentos (UTF-8) corretamente
+      const bom = "\uFEFF";
+      const blob = new Blob([bom + csvContent], { type: "text/csv;charset=utf-8;" });
+      
+      const link = document.createElement("a");
+      const url = URL.createObjectURL(blob);
+      link.setAttribute("href", url);
+      link.setAttribute("download", `Analise_Produtos_${new Date().toISOString().split('T')[0]}.csv`);
+      link.style.visibility = 'hidden';
+      
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+  };
 
   return (
     <div className="h-full overflow-y-auto p-4 md:p-6 bg-[#F0F2F5] font-sans text-slate-800">
@@ -381,7 +444,6 @@ export default function SalesDashboard() {
 
         <div className="flex flex-wrap gap-3 items-center w-full xl:w-auto">
             
-            {/* NOVO: FILTRO DE CATEGORIA */}
             <div className="flex items-center bg-white border border-slate-200 px-3 py-2 rounded-lg gap-2 shadow-sm">
                 <Layers size={14} className="text-blue-600"/>
                 <select 
@@ -443,11 +505,21 @@ export default function SalesDashboard() {
         </div>
       </div>
 
-      <div className="flex gap-2 mb-6">
-          <button onClick={() => setActiveTab('visao_geral')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all ${activeTab === 'visao_geral' ? 'bg-[#1428A0] text-white shadow-md' : 'bg-white text-slate-500 hover:bg-slate-50'}`}>Visão Mensal</button>
-          <button onClick={() => setActiveTab('vendedores')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all ${activeTab === 'vendedores' ? 'bg-[#1428A0] text-white shadow-md' : 'bg-white text-slate-500 hover:bg-slate-50'}`}>Vendedores</button>
-          <button onClick={() => setActiveTab('fluxo')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all flex items-center gap-2 ${activeTab === 'fluxo' ? 'bg-[#1428A0] text-white shadow-md' : 'bg-white text-slate-500 hover:bg-slate-50'}`}>
-             <Footprints size={14}/> Fluxo / Bestflow (Beta)
+      <div className="flex flex-wrap gap-2 mb-6 items-center justify-between">
+          <div className="flex gap-2">
+              <button onClick={() => setActiveTab('visao_geral')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all ${activeTab === 'visao_geral' ? 'bg-[#1428A0] text-white shadow-md' : 'bg-white text-slate-500 hover:bg-slate-50'}`}>Visão Mensal</button>
+              <button onClick={() => setActiveTab('vendedores')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all ${activeTab === 'vendedores' ? 'bg-[#1428A0] text-white shadow-md' : 'bg-white text-slate-500 hover:bg-slate-50'}`}>Vendedores</button>
+              <button onClick={() => setActiveTab('fluxo')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all flex items-center gap-2 ${activeTab === 'fluxo' ? 'bg-[#1428A0] text-white shadow-md' : 'bg-white text-slate-500 hover:bg-slate-50'}`}>
+                 <Footprints size={14}/> Fluxo / Bestflow (Beta)
+              </button>
+          </div>
+          
+          <button 
+              onClick={() => setIsProductModalOpen(true)}
+              className="px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all flex items-center gap-2 bg-emerald-500 text-white hover:bg-emerald-600 shadow-md"
+          >
+              <Package size={14} />
+              Análise de Produtos
           </button>
       </div>
 
@@ -686,6 +758,135 @@ export default function SalesDashboard() {
                 )}
             </div>
         </div>
+      )}
+
+      {/* MODAL DE PRODUTOS EXPANSÍVEL E COM EXPORTAÇÃO */}
+      {isProductModalOpen && (
+          <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex justify-center items-center p-4">
+              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[85vh] flex flex-col overflow-hidden animate-in fade-in zoom-in duration-200">
+                  
+                  {/* Cabeçalho do Modal */}
+                  <div className="p-5 border-b border-slate-100 flex flex-col sm:flex-row justify-between items-start sm:items-center bg-slate-50 gap-4">
+                      <div className="flex items-center gap-3">
+                          <div className="p-2 bg-emerald-100 text-emerald-600 rounded-lg">
+                              <Package size={20} />
+                          </div>
+                          <div>
+                              <h2 className="font-black text-slate-800 uppercase text-sm">Análise de Produtos e Lojas</h2>
+                              <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">
+                                  {filteredProductsForModal.length} Produtos (Clique para ver as lojas)
+                              </p>
+                          </div>
+                      </div>
+                      
+                      <div className="flex items-center gap-3 w-full sm:w-auto">
+                          
+                          {/* NOVO: Botão de Download de CSV */}
+                          <button 
+                              onClick={exportToCSV}
+                              title="Baixar relatório em Excel/CSV"
+                              className="flex items-center gap-2 px-3 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-lg transition-colors text-xs font-bold uppercase"
+                          >
+                              <Download size={14} />
+                              <span className="hidden sm:inline">Exportar</span>
+                          </button>
+
+                          {/* Barra de Pesquisa */}
+                          <div className="relative flex-1 sm:w-56">
+                              <Search size={14} className="absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400" />
+                              <input 
+                                  type="text" 
+                                  placeholder="Buscar produto..." 
+                                  value={searchProduct}
+                                  onChange={(e) => setSearchProduct(e.target.value)}
+                                  className="w-full pl-9 pr-3 py-2 text-xs border border-slate-200 rounded-lg outline-none focus:border-emerald-500 transition-colors"
+                              />
+                          </div>
+                          <button 
+                              onClick={() => {
+                                  setIsProductModalOpen(false);
+                                  setSearchProduct(""); 
+                                  setExpandedProduct(null); 
+                              }}
+                              className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-200 rounded-lg transition-colors"
+                          >
+                              <X size={20} />
+                          </button>
+                      </div>
+                  </div>
+
+                  {/* Lista de Produtos Expansível */}
+                  <div className="overflow-y-auto flex-1 p-0">
+                      <table className="w-full text-left border-collapse">
+                          <thead className="sticky top-0 bg-white shadow-sm z-10">
+                              <tr className="text-[10px] font-black text-slate-400 uppercase tracking-wider bg-slate-50">
+                                  <th className="p-4 text-center w-12">#</th>
+                                  <th className="p-4">Produto / Descrição</th>
+                                  <th className="p-4 text-center text-emerald-600">Qtd Total</th>
+                                  <th className="p-4 text-right text-[#1428A0]">Total Arrecadado</th>
+                              </tr>
+                          </thead>
+                          <tbody className="text-xs font-bold text-slate-700 divide-y divide-slate-100">
+                              {filteredProductsForModal.map((prod, index) => (
+                                  <React.Fragment key={index}>
+                                      {/* LINHA PRINCIPAL DO PRODUTO */}
+                                      <tr 
+                                          onClick={() => toggleProductExpand(prod.desc)} 
+                                          className={`cursor-pointer transition-colors ${expandedProduct === prod.desc ? 'bg-emerald-50/50' : 'hover:bg-slate-50'}`}
+                                      >
+                                          <td className="p-4 text-center">
+                                              <span className={`w-6 h-6 flex items-center justify-center rounded text-[10px] mx-auto ${index < 3 && !searchProduct ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-500'}`}>
+                                                  {searchProduct ? '-' : index + 1}
+                                              </span>
+                                          </td>
+                                          <td className="p-4">
+                                              <div className="flex items-center gap-2">
+                                                  {expandedProduct === prod.desc ? <ChevronUp size={16} className="text-emerald-500" /> : <ChevronDown size={16} className="text-slate-400" />}
+                                                  <span className="text-[11px] uppercase text-slate-700">{prod.desc}</span>
+                                              </div>
+                                          </td>
+                                          <td className="p-4 text-center font-black text-emerald-600 text-sm">{prod.qtd}</td>
+                                          <td className="p-4 text-right font-black text-[#1428A0] text-sm">{formatMoney(prod.total)}</td>
+                                      </tr>
+                                      
+                                      {/* ÁREA EXPANDIDA: DETALHAMENTO DE LOJAS */}
+                                      {expandedProduct === prod.desc && (
+                                          <tr className="bg-slate-50 border-b border-slate-200 shadow-inner">
+                                              <td colSpan={4} className="p-6">
+                                                  <div className="flex items-center gap-2 mb-3">
+                                                      <Store size={14} className="text-slate-400"/>
+                                                      <span className="text-[10px] font-bold text-slate-500 uppercase">Vendas por Loja</span>
+                                                  </div>
+                                                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                                                      {prod.lojasBreakdown.map((loja: any, idx: number) => (
+                                                          <div key={idx} className="flex justify-between items-center bg-white p-3 rounded-lg border border-slate-200 shadow-sm">
+                                                              <span className="text-[10px] font-bold text-slate-600 uppercase truncate pr-2 w-32" title={loja.nome}>
+                                                                  {loja.nome}
+                                                              </span>
+                                                              <div className="text-right">
+                                                                  <div className="text-xs font-black text-emerald-600">{loja.qtd} un.</div>
+                                                                  <div className="text-[9px] text-[#1428A0] font-bold">{formatMoney(loja.total)}</div>
+                                                              </div>
+                                                          </div>
+                                                      ))}
+                                                  </div>
+                                              </td>
+                                          </tr>
+                                      )}
+                                  </React.Fragment>
+                              ))}
+                              {filteredProductsForModal.length === 0 && (
+                                  <tr>
+                                      <td colSpan={4} className="p-10 text-center text-slate-400">
+                                          Nenhum produto encontrado.
+                                      </td>
+                                  </tr>
+                              )}
+                          </tbody>
+                      </table>
+                  </div>
+              </div>
+          </div>
       )}
     </div>
   );

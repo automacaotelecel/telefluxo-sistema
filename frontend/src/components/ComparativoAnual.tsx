@@ -4,7 +4,7 @@ import {
 } from 'recharts';
 import {
   Calendar, Store, AlertCircle, ChevronDown, CheckSquare, Square, Filter, Layers,
-  Activity, TrendingUp
+  Activity, TrendingUp, Package, Search, ArrowUpRight, ArrowDownRight, Minus
 } from 'lucide-react';
 
 const STORE_MAP: Record<string, string> = {
@@ -51,80 +51,37 @@ const pick = (obj: AnyRow, keys: string[], fallback: any = undefined) => {
 const toNumberSafe = (v: any) => {
   if (v === null || v === undefined) return 0;
   if (typeof v === 'number') return Number.isFinite(v) ? v : 0;
-
-  const s = String(v)
-    .trim()
-    .replace(/\s/g, '')
-    .replace(/[R$\u00A0]/g, '')
-    .replace(/\./g, '')
-    .replace(',', '.')
-    .replace(/[^0-9.\-]/g, '');
-
+  const s = String(v).trim().replace(/\s/g, '').replace(/[R$\u00A0]/g, '').replace(/\./g, '').replace(',', '.').replace(/[^0-9.\-]/g, '');
   const n = parseFloat(s);
   return Number.isFinite(n) ? n : 0;
 };
 
-const getDateValue = (sale: AnyRow) =>
-  pick(sale, ['data_emissao', 'DATA_EMISSAO', 'data', 'DATA', 'date', 'DATE'], '');
-
-const getTotal = (sale: AnyRow) =>
-  toNumberSafe(pick(sale, ['total_liquido', 'TOTAL_LIQUIDO', 'total_real', 'TOTAL_REAL', 'total', 'TOTAL', 'valor', 'VALOR'], 0));
-
-const getStoreRaw = (sale: AnyRow) =>
-  String(pick(sale, ['cnpj_empresa', 'CNPJ_EMPRESA', 'cnpjEmp', 'CNPJ', 'loja', 'LOJA'], '')).trim();
-
-const getCategory = (sale: AnyRow) =>
-  String(pick(sale, ['familia', 'FAMILIA', 'categoria_real', 'CATEGORIA_REAL', 'categoria', 'CATEGORIA', 'grupo', 'GRUPO'], 'OUTROS'))
-    .trim()
-    .toUpperCase();
+const getDateValue = (sale: AnyRow) => pick(sale, ['data_emissao', 'DATA_EMISSAO', 'data', 'DATA', 'date', 'DATE'], '');
+const getTotal = (sale: AnyRow) => toNumberSafe(pick(sale, ['total_liquido', 'TOTAL_LIQUIDO', 'total_real', 'TOTAL_REAL', 'total', 'TOTAL', 'valor', 'VALOR'], 0));
+const getStoreRaw = (sale: AnyRow) => String(pick(sale, ['cnpj_empresa', 'CNPJ_EMPRESA', 'cnpjEmp', 'CNPJ', 'loja', 'LOJA'], '')).trim();
+const getCategory = (sale: AnyRow) => String(pick(sale, ['familia', 'FAMILIA', 'categoria_real', 'CATEGORIA_REAL', 'categoria', 'CATEGORIA', 'grupo', 'GRUPO'], 'OUTROS')).trim().toUpperCase();
 
 const extractYearMonth = (raw: any): { year: string; month: string } | null => {
   if (raw === null || raw === undefined || raw === '') return null;
-
-  if (raw instanceof Date && !isNaN(raw.getTime())) {
-    const y = raw.getFullYear();
-    const m = String(raw.getMonth() + 1).padStart(2, '0');
-    return { year: String(y), month: m };
-  }
-
+  if (raw instanceof Date && !isNaN(raw.getTime())) return { year: String(raw.getFullYear()), month: String(raw.getMonth() + 1).padStart(2, '0') };
   if (typeof raw === 'number' && raw > 1000000000) {
     const d = new Date(raw);
-    if (!isNaN(d.getTime())) {
-      const y = d.getFullYear();
-      const m = String(d.getMonth() + 1).padStart(2, '0');
-      return { year: String(y), month: m };
-    }
+    if (!isNaN(d.getTime())) return { year: String(d.getFullYear()), month: String(d.getMonth() + 1).padStart(2, '0') };
   }
-
   const s = String(raw).trim();
   if (/^\d{4}$/.test(s)) return { year: s, month: '01' };
-
   const ss = s.replace(/\./g, '/').replace(/\s+/g, '');
-
   if (ss.includes('-')) {
     const parts = ss.split('-').filter(Boolean);
-    const year = parts[0];
-    const month = parts[1];
-    if (/^\d{4}$/.test(year) && /^\d{1,2}$/.test(month)) {
-      return { year, month: String(month).padStart(2, '0') };
-    }
+    if (/^\d{4}$/.test(parts[0]) && /^\d{1,2}$/.test(parts[1])) return { year: parts[0], month: String(parts[1]).padStart(2, '0') };
   }
-
   if (ss.includes('/')) {
     const parts = ss.split('/').filter(Boolean);
-
-    if (parts.length >= 2 && /^\d{4}$/.test(parts[0]) && /^\d{1,2}$/.test(parts[1])) {
-      return { year: parts[0], month: String(parts[1]).padStart(2, '0') };
-    }
-
-    if (parts.length === 3 && /^\d{1,2}$/.test(parts[0]) && /^\d{1,2}$/.test(parts[1]) && /^\d{4}$/.test(parts[2])) {
-      return { year: parts[2], month: String(parts[1]).padStart(2, '0') };
-    }
+    if (parts.length >= 2 && /^\d{4}$/.test(parts[0]) && /^\d{1,2}$/.test(parts[1])) return { year: parts[0], month: String(parts[1]).padStart(2, '0') };
+    if (parts.length === 3 && /^\d{1,2}$/.test(parts[0]) && /^\d{1,2}$/.test(parts[1]) && /^\d{4}$/.test(parts[2])) return { year: parts[2], month: String(parts[1]).padStart(2, '0') };
   }
-
   const m = ss.match(/(\d{4}).*?(\d{1,2})/);
   if (m?.[1] && m?.[2]) return { year: m[1], month: String(m[2]).padStart(2, '0') };
-
   return null;
 };
 
@@ -147,7 +104,9 @@ export default function ComparativoAnual() {
   const [yearA, setYearA] = useState<string>('');
   const [yearB, setYearB] = useState<string>('');
 
-  const [forecast, setForecast] = useState<any>(null);
+  // NOVOS ESTADOS PARA A TELA DE PRODUTOS
+  const [activeTab, setActiveTab] = useState<'geral' | 'produtos'>('geral');
+  const [searchProduct, setSearchProduct] = useState('');
 
   const API_URL = window.location.hostname === 'localhost'
     ? 'http://localhost:3000'
@@ -169,53 +128,28 @@ export default function ComparativoAnual() {
         const parsed = JSON.parse(rawUser);
         userId = parsed.id || parsed.userId || parsed._id || '';
       }
-    } catch (e) {
-      console.error(e);
-    }
+    } catch (e) { console.error(e); }
     return userId;
-  };
-
-  const loadAnnualData = async () => {
-    const userId = getUserId();
-    const resAnnual = await fetch(`${API_URL}/sales_anuais?userId=${userId}`);
-
-    if (!resAnnual.ok) {
-      throw new Error('Rota de histórico anual não encontrada no servidor.');
-    }
-
-    const dataAnnual = await resAnnual.json();
-
-    const list =
-      (dataAnnual && Array.isArray(dataAnnual.sales) && dataAnnual.sales) ||
-      (dataAnnual && Array.isArray(dataAnnual.data) && dataAnnual.data) ||
-      (Array.isArray(dataAnnual) ? dataAnnual : []);
-
-    setAnnualRawData(list);
-    setErrorMsg('');
-  };
-
-  const loadForecast = async (targetYear: number) => {
-    const userId = getUserId();
-    try {
-      const resForecast = await fetch(`${API_URL}/forecast/ano?userId=${userId}&year=${targetYear}`);
-      if (resForecast.ok) {
-        const f = await resForecast.json();
-        setForecast(f || null);
-      } else {
-        setForecast(null);
-      }
-    } catch (e) {
-      setForecast(null);
-    }
   };
 
   const loadData = async () => {
     setLoading(true);
     try {
-      await loadAnnualData();
+      const userId = getUserId();
+      const resAnnual = await fetch(`${API_URL}/sales_anuais?userId=${userId}`);
+
+      if (!resAnnual.ok) throw new Error('Rota de histórico anual não encontrada no servidor.');
+
+      const dataAnnual = await resAnnual.json();
+      const list = (dataAnnual && Array.isArray(dataAnnual.sales) && dataAnnual.sales) ||
+                   (dataAnnual && Array.isArray(dataAnnual.data) && dataAnnual.data) ||
+                   (Array.isArray(dataAnnual) ? dataAnnual : []);
+
+      setAnnualRawData(list);
+      setErrorMsg('');
     } catch (err: any) {
       console.error(err);
-      setErrorMsg(err?.message || "Erro ao carregar dados anuais. Verifique se o servidor está rodando.");
+      setErrorMsg(err?.message || "Erro ao carregar dados anuais.");
       setAnnualRawData([]);
     } finally {
       setLoading(false);
@@ -237,31 +171,17 @@ export default function ComparativoAnual() {
     if (!yearsAvailable.length) return;
     const last = yearsAvailable[yearsAvailable.length - 1];
     const prev = yearsAvailable.length >= 2 ? yearsAvailable[yearsAvailable.length - 2] : last;
-
     setYearA((cur) => cur || prev);
     setYearB((cur) => cur || last);
   }, [yearsAvailable]);
 
-  useEffect(() => {
-    if (!yearB) return;
-    loadForecast(Number(yearB));
-  }, [yearB]);
-
   const uniqueCategories = useMemo(() => {
-    const cats = new Set(
-      annualRawData
-        .map(r => getCategory(r))
-        .filter(c => c && c !== 'NAN' && c !== 'UNDEFINED')
-    );
+    const cats = new Set(annualRawData.map(r => getCategory(r)).filter(c => c && c !== 'NAN' && c !== 'UNDEFINED'));
     return Array.from(cats).sort();
   }, [annualRawData]);
 
   const uniqueStores = useMemo(() => {
-    const stores = new Set(
-      annualRawData
-        .map(r => getStoreName(getStoreRaw(r)))
-        .filter(Boolean)
-    );
+    const stores = new Set(annualRawData.map(r => getStoreName(getStoreRaw(r))).filter(Boolean));
     return Array.from(stores).sort();
   }, [annualRawData]);
 
@@ -270,15 +190,28 @@ export default function ComparativoAnual() {
     else setSelectedStores([...selectedStores, store]);
   };
 
-  const monthLabel = forecast?.month ? (MONTH_FULL[Number(forecast.month)] || `Mês ${forecast.month}`) : 'Mês atual';
-  const monthSoFar = toNumberSafe(forecast?.month_so_far);
-  const monthForecast = toNumberSafe(forecast?.month_forecast);
-  const monthRemainingForecast = toNumberSafe(forecast?.month_remaining_forecast);
-  const yearForecast = toNumberSafe(forecast?.year_forecast);
-  const ytd = toNumberSafe(forecast?.ytd);
+  // Pré-filtra os dados brutos para reutilizar na Visão Geral e Produtos
+  const filteredRawData = useMemo(() => {
+    return annualRawData.filter(sale => {
+        const storeName = getStoreName(getStoreRaw(sale)).toUpperCase();
+        if (selectedStores.length > 0 && !selectedStores.map(s=>s.toUpperCase()).includes(storeName)) return false;
+        if (categoryFilter !== 'TODAS' && getCategory(sale) !== categoryFilter) return false;
+        return true;
+    });
+  }, [annualRawData, selectedStores, categoryFilter]);
 
+  // CÁLCULOS VISÃO GERAL
   const computed = useMemo(() => {
     const mesesNomes = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+    const today = new Date();
+    const currentYearStr = today.getFullYear().toString();
+    const currentMonthStr = String(today.getMonth() + 1).padStart(2, '0');
+    const currentDay = Math.max(1, today.getDate());
+    const daysInCurrentMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
+    
+    const startOfYear = new Date(today.getFullYear(), 0, 1);
+    const daysPassedInYear = Math.max(1, Math.floor((today.getTime() - startOfYear.getTime()) / (1000 * 60 * 60 * 24)) + 1);
+    const daysInYear = (today.getFullYear() % 4 === 0) ? 366 : 365;
 
     const years = [yearA, yearB].filter(Boolean);
     const monthKeys = Array.from({ length: 12 }, (_, i) => String(i + 1).padStart(2, '0'));
@@ -295,23 +228,10 @@ export default function ComparativoAnual() {
     const totalByYear: Record<string, number> = {};
     for (const y of years) totalByYear[y] = 0;
 
-    for (const sale of annualRawData) {
+    for (const sale of filteredRawData) {
       const storeName = getStoreName(getStoreRaw(sale));
-      const storeNameU = storeName.toUpperCase();
-
-      if (selectedStores.length > 0) {
-        const selectedU = selectedStores.map(s => s.toUpperCase());
-        if (!selectedU.includes(storeNameU)) continue;
-      }
-
-      if (categoryFilter !== 'TODAS') {
-        const cat = getCategory(sale);
-        if (cat !== categoryFilter) continue;
-      }
-
       const ym = extractYearMonth(getDateValue(sale));
-      if (!ym) continue;
-      if (!years.includes(ym.year)) continue;
+      if (!ym || !years.includes(ym.year)) continue;
 
       const total = getTotal(sale);
       if (!total) continue;
@@ -321,35 +241,42 @@ export default function ComparativoAnual() {
       totalByYear[ym.year] += total;
     }
 
-    const forecastMonth = Number(forecast?.month || 0);
-    const currentReal = monthSoFar;
-    const currentProj = monthRemainingForecast;
+    let currentMonthRealB = 0;
 
     const chartData = monthKeys.map((m, idx) => {
+      const realA = yearA ? (totalsByYearMonth[yearA]?.[m] || 0) : 0;
+      const realB = yearB ? (totalsByYearMonth[yearB]?.[m] || 0) : 0;
+
+      if (yearB === currentYearStr && m === currentMonthStr) currentMonthRealB = realB;
+
       const row: any = {
-        mes: mesesNomes[idx],
-        mesNum: m,
-        [yearA || 'Ano A']: yearA ? (totalsByYearMonth[yearA]?.[m] || 0) : 0,
-        [yearB || 'Ano B']: yearB ? (totalsByYearMonth[yearB]?.[m] || 0) : 0,
-        [`${yearB || 'Ano B'}_real`]: yearB ? (totalsByYearMonth[yearB]?.[m] || 0) : 0,
-        [`${yearB || 'Ano B'}_proj`]: 0,
+        mes: mesesNomes[idx], mesNum: m,
+        [yearA || 'Ano A']: realA, [yearB || 'Ano B']: realB,
+        [`${yearB || 'Ano B'}_real`]: realB, [`${yearB || 'Ano B'}_proj`]: 0,
       };
 
-      if (
-        yearB &&
-        Number(yearB) === new Date().getFullYear() &&
-        Number(m) === forecastMonth
-      ) {
-        row[`${yearB}_real`] = currentReal;
-        row[`${yearB}_proj`] = currentProj;
-        row[yearB] = currentReal + currentProj;
+      if (yearB === currentYearStr && m === currentMonthStr) {
+          const projecaoTotalMes = (realB / currentDay) * daysInCurrentMonth;
+          const faltaVender = Math.max(0, projecaoTotalMes - realB);
+          row[`${yearB}_real`] = realB;
+          row[`${yearB}_proj`] = faltaVender;
+          row[yearB] = realB + faltaVender;
       }
-
       return row;
     });
 
     const totalA = yearA ? (totalByYear[yearA] || 0) : 0;
     const totalB = yearB ? (totalByYear[yearB] || 0) : 0;
+
+    let projecaoMensal = 0;
+    let projecaoAnual = totalB; 
+
+    if (yearB === currentYearStr) {
+        projecaoMensal = (currentMonthRealB / currentDay) * daysInCurrentMonth;
+        projecaoAnual = (totalB / daysPassedInYear) * daysInYear;
+    } else {
+        projecaoMensal = currentMonthRealB;
+    }
 
     const bestStoreByYear = (y: string) => {
       const entries = Object.entries(storeTotalsByYear[y] || {})
@@ -359,17 +286,72 @@ export default function ComparativoAnual() {
     };
 
     return {
-      chartData,
-      totalA,
-      totalB,
+      chartData, totalA, totalB,
       bestA: yearA ? bestStoreByYear(yearA) : { nome: '—', total: 0 },
       bestB: yearB ? bestStoreByYear(yearB) : { nome: '—', total: 0 },
+      localMonthSoFar: currentMonthRealB,
+      localMonthForecast: Math.max(projecaoMensal, currentMonthRealB),
+      localYearForecast: Math.max(projecaoAnual, totalB),
+      monthLabel: yearB === currentYearStr ? MONTH_FULL[today.getMonth() + 1] : 'Mês selecionado',
     };
-  }, [annualRawData, selectedStores, categoryFilter, yearA, yearB, forecast, monthSoFar, monthRemainingForecast]);
+  }, [filteredRawData, yearA, yearB]);
+
+  // CÁLCULOS TELA DE PRODUTOS (NOVO)
+  const productComparison = useMemo(() => {
+      const prodMap = new Map();
+
+      for (const sale of filteredRawData) {
+          const ym = extractYearMonth(getDateValue(sale));
+          if (!ym) continue;
+
+          const isYearA = ym.year === yearA;
+          const isYearB = ym.year === yearB;
+          if (!isYearA && !isYearB) continue;
+
+          const desc = String(sale.descricao || sale.produto || "N/D").trim().toUpperCase();
+          const total = getTotal(sale);
+          const qtd = toNumberSafe(sale.quantidade || 1);
+
+          if (!prodMap.has(desc)) {
+              prodMap.set(desc, { desc, totalA: 0, qtdA: 0, totalB: 0, qtdB: 0 });
+          }
+          
+          const p = prodMap.get(desc);
+          if (isYearA) { p.totalA += total; p.qtdA += qtd; }
+          if (isYearB) { p.totalB += total; p.qtdB += qtd; }
+      }
+
+      const arr = Array.from(prodMap.values()).map(p => {
+          let crescimentoPct = 0;
+          if (p.totalA > 0) crescimentoPct = ((p.totalB - p.totalA) / p.totalA) * 100;
+          else if (p.totalB > 0) crescimentoPct = 100; // Produto novo no Ano B
+
+          return { ...p, crescimentoPct };
+      });
+
+      // Ordena pelo maior faturamento no Ano B
+      return arr.sort((a, b) => b.totalB - a.totalB);
+  }, [filteredRawData, yearA, yearB]);
+
+  // Dados filtrados pela barra de pesquisa da Aba de Produtos
+  const searchedProducts = useMemo(() => {
+      if (!searchProduct) return productComparison;
+      const term = searchProduct.toLowerCase();
+      return productComparison.filter(p => p.desc.toLowerCase().includes(term));
+  }, [productComparison, searchProduct]);
+
+  // KPIs dos Produtos
+  const topProductA = useMemo(() => [...productComparison].sort((a, b) => b.totalA - a.totalA)[0] || null, [productComparison]);
+  const topProductB = useMemo(() => [...productComparison].sort((a, b) => b.totalB - a.totalB)[0] || null, [productComparison]);
+  const maxGrowthProduct = useMemo(() => {
+      // Filtra produtos que venderam pelo menos R$10k para evitar distorções de % (ex: vendeu 1 no ano A e 5 no ano B)
+      const valid = productComparison.filter(p => p.totalA > 10000);
+      return valid.sort((a, b) => b.crescimentoPct - a.crescimentoPct)[0] || null;
+  }, [productComparison]);
+
 
   const noData = (computed.totalA + computed.totalB) <= 0;
-
-  const trendDiff = yearForecast - computed.totalA;
+  const trendDiff = computed.localYearForecast - computed.totalA;
   const trendDiffPct = computed.totalA > 0 ? (trendDiff / computed.totalA) * 100 : 0;
 
   return (
@@ -381,7 +363,7 @@ export default function ComparativoAnual() {
         </div>
       )}
 
-      {/* HEADER */}
+      {/* HEADER PRINCIPAL */}
       <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center mb-6 gap-4 bg-white p-4 rounded-xl shadow-sm border border-slate-200">
         <div>
           <div className="flex items-center gap-2 mb-1">
@@ -391,61 +373,44 @@ export default function ComparativoAnual() {
             </h1>
           </div>
           <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-10">
-            Histórico completo • Comparativo entre anos • Desempenho das lojas
+            Histórico completo • Comparativo entre anos • Produtos
           </p>
         </div>
 
+        {/* FILTROS GLOBAIS */}
         <div className="flex flex-wrap gap-3 items-center w-full xl:w-auto">
           <div className="flex items-center bg-white border border-slate-200 px-3 py-2 rounded-lg gap-2 shadow-sm">
             <Calendar size={14} className="text-blue-600" />
-            <select
-              value={yearA}
-              onChange={e => setYearA(e.target.value)}
-              className="bg-transparent text-xs font-bold text-slate-600 uppercase outline-none cursor-pointer max-w-[120px] truncate"
-            >
+            <select value={yearA} onChange={e => setYearA(e.target.value)} className="bg-transparent text-xs font-bold text-slate-600 uppercase outline-none cursor-pointer max-w-[120px]">
               {yearsAvailable.map(y => <option key={y} value={y}>{y}</option>)}
             </select>
           </div>
 
           <div className="flex items-center bg-white border border-slate-200 px-3 py-2 rounded-lg gap-2 shadow-sm">
-            <Calendar size={14} className="text-sky-600" />
-            <select
-              value={yearB}
-              onChange={e => setYearB(e.target.value)}
-              className="bg-transparent text-xs font-bold text-slate-600 uppercase outline-none cursor-pointer max-w-[120px] truncate"
-            >
+            <span className="text-xs font-black text-slate-400">X</span>
+            <select value={yearB} onChange={e => setYearB(e.target.value)} className="bg-transparent text-xs font-bold text-sky-600 uppercase outline-none cursor-pointer max-w-[120px] ml-1">
               {yearsAvailable.map(y => <option key={y} value={y}>{y}</option>)}
             </select>
           </div>
 
           <div className="flex items-center bg-white border border-slate-200 px-3 py-2 rounded-lg gap-2 shadow-sm">
             <Layers size={14} className="text-blue-600" />
-            <select
-              value={categoryFilter}
-              onChange={e => setCategoryFilter(e.target.value)}
-              className="bg-transparent text-xs font-bold text-slate-600 uppercase outline-none cursor-pointer w-full md:w-auto max-w-[150px] truncate"
-            >
+            <select value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)} className="bg-transparent text-xs font-bold text-slate-600 uppercase outline-none cursor-pointer w-full md:w-auto max-w-[150px] truncate">
               <option value="TODAS">Todas Categorias</option>
               {uniqueCategories.map(c => <option key={c} value={c}>{c}</option>)}
             </select>
           </div>
 
           <div className="relative" ref={storeMenuRef}>
-            <button
-              onClick={() => setIsStoreMenuOpen(!isStoreMenuOpen)}
-              className="flex items-center gap-2 bg-white border border-slate-200 px-4 py-2 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-50 transition-colors min-w-[160px] justify-between shadow-sm"
-            >
+            <button onClick={() => setIsStoreMenuOpen(!isStoreMenuOpen)} className="flex items-center gap-2 bg-white border border-slate-200 px-4 py-2 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-50 transition-colors min-w-[160px] justify-between shadow-sm">
               <div className="flex items-center gap-2">
                 <Store size={14} className="text-blue-600" />
                 <span className="truncate max-w-[120px] uppercase">
-                  {selectedStores.length === 0 ? "Todas Lojas" :
-                    selectedStores.length === 1 ? selectedStores[0] :
-                      `${selectedStores.length} Lojas`}
+                  {selectedStores.length === 0 ? "Todas Lojas" : selectedStores.length === 1 ? selectedStores[0] : `${selectedStores.length} Lojas`}
                 </span>
               </div>
               <ChevronDown size={14} className="text-slate-400" />
             </button>
-
             {isStoreMenuOpen && (
               <div className="absolute top-full right-0 mt-2 w-64 bg-white rounded-xl shadow-xl border border-slate-100 z-50 p-2 max-h-80 overflow-y-auto">
                 <div onClick={() => setSelectedStores([])} className="flex items-center gap-3 p-3 hover:bg-slate-50 rounded-lg cursor-pointer border-b border-slate-50 mb-1">
@@ -462,159 +427,280 @@ export default function ComparativoAnual() {
             )}
           </div>
 
-          <button
-            onClick={loadData}
-            disabled={loading}
-            className="bg-[#1428A0] hover:bg-blue-900 text-white px-4 py-2 rounded-lg text-xs font-bold transition-all shadow-md shadow-blue-900/10 flex items-center gap-2 disabled:opacity-50"
-          >
-            <Filter size={14} /> {loading ? 'Carregando...' : 'Atualizar'}
+          <button onClick={loadData} disabled={loading} className="bg-[#1428A0] hover:bg-blue-900 text-white px-4 py-2 rounded-lg text-xs font-bold transition-all shadow-md shadow-blue-900/10 flex items-center gap-2 disabled:opacity-50">
+            <Filter size={14} /> {loading ? 'Atualizando...' : 'Atualizar'}
           </button>
         </div>
+      </div>
+
+      {/* CONTROLE DE ABAS (TABS) */}
+      <div className="flex gap-2 mb-6">
+          <button 
+              onClick={() => setActiveTab('geral')} 
+              className={`px-5 py-2.5 rounded-lg text-xs font-bold uppercase transition-all flex items-center gap-2 ${activeTab === 'geral' ? 'bg-[#1428A0] text-white shadow-md' : 'bg-white text-slate-500 hover:bg-slate-50 border border-slate-200'}`}
+          >
+              <Activity size={16}/> Visão Geral
+          </button>
+          <button 
+              onClick={() => setActiveTab('produtos')} 
+              className={`px-5 py-2.5 rounded-lg text-xs font-bold uppercase transition-all flex items-center gap-2 ${activeTab === 'produtos' ? 'bg-emerald-600 text-white shadow-md' : 'bg-white text-slate-500 hover:bg-slate-50 border border-slate-200'}`}
+          >
+              <Package size={16}/> Comparativo de Produtos
+          </button>
       </div>
 
       {noData && !loading && !errorMsg && (
         <div className="bg-yellow-50 border border-yellow-200 text-yellow-700 p-4 rounded-xl flex items-center gap-3 mb-6">
           <AlertCircle size={20} />
-          <div className="text-sm font-bold">
-            Nenhuma venda encontrada para os anos selecionados com os filtros atuais.
-            {yearsAvailable.length > 0 && (
-              <div className="text-[12px] font-bold mt-1">
-                Anos encontrados no banco: {yearsAvailable.join(', ')}.
-              </div>
-            )}
-          </div>
+          <div className="text-sm font-bold">Nenhuma venda encontrada para os anos selecionados com os filtros atuais.</div>
         </div>
       )}
 
-      {/* CARDS */}
-      <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-6">
-        <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
-          <div className="flex justify-between items-start mb-2">
-            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Total ({yearA || '—'})</span>
-            <Calendar size={16} className="text-indigo-600" />
+      {/* ==========================================================
+          ABA 1: VISÃO GERAL (O Dashboard Original)
+      ========================================================== */}
+      {activeTab === 'geral' && (
+        <>
+          <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-6">
+            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+              <div className="flex justify-between items-start mb-2">
+                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Total ({yearA || '—'})</span>
+                <Calendar size={16} className="text-indigo-600" />
+              </div>
+              <h3 className="text-2xl font-black text-indigo-900 mt-1">{formatMoney(computed.totalA)}</h3>
+              <div className="text-[10px] font-bold text-slate-400 uppercase mt-1">Melhor loja: {computed.bestA.nome}</div>
+            </div>
+
+            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+              <div className="flex justify-between items-start mb-2">
+                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Total ({yearB || '—'})</span>
+                <Calendar size={16} className="text-sky-600" />
+              </div>
+              <h3 className="text-2xl font-black text-sky-700 mt-1">{formatMoney(computed.totalB)}</h3>
+              <div className="text-[10px] font-bold text-slate-400 uppercase mt-1">Melhor loja: {computed.bestB.nome}</div>
+            </div>
+
+            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+              <div className="flex justify-between items-start mb-2">
+                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Tendência Final x Ano Ant.</span>
+                <TrendingUp size={16} className={trendDiff >= 0 ? 'text-teal-600' : 'text-red-600'} />
+              </div>
+              <h3 className={`text-2xl font-black mt-1 ${trendDiff >= 0 ? 'text-teal-700' : 'text-red-700'}`}>
+                {formatMoney(trendDiff)}
+              </h3>
+              <div className="text-[10px] font-bold text-slate-400 uppercase mt-1">
+                {trendDiff >= 0 ? '+' : ''}{trendDiffPct.toFixed(1)}% de crescimento proj.
+              </div>
+            </div>
+
+            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+              <div className="flex justify-between items-start mb-2">
+                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                  Previsão ({yearB || '—'})
+                </span>
+                <TrendingUp size={16} className="text-sky-600" />
+              </div>
+
+              <div className="text-[10px] font-black text-slate-500 uppercase">
+                {computed.monthLabel}: real / proj.
+              </div>
+              <div className="text-[12px] font-black text-slate-700 mt-1">
+                {formatMoney(computed.localMonthSoFar)} <span className="text-slate-400">/</span> {formatMoney(computed.localMonthForecast)}
+              </div>
+
+              <h3 className="text-xl font-black text-sky-700 mt-3">
+                {formatMoney(computed.localYearForecast)}
+              </h3>
+              <div className="text-[10px] font-bold text-slate-400 uppercase mt-1">
+                YTD Real: {formatMoney(computed.totalB)}
+              </div>
+            </div>
+
+            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+              <div className="flex justify-between items-start mb-2">
+                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Melhor Loja ({yearB})</span>
+                <Store size={16} className="text-sky-600" />
+              </div>
+              <h3 className="text-lg font-black text-slate-800 mt-1 uppercase truncate" title={computed.bestB.nome}>
+                {computed.bestB.nome}
+              </h3>
+              <div className="text-[12px] font-black text-sky-700 mt-1">{formatMoney(computed.bestB.total)}</div>
+            </div>
           </div>
-          <h3 className="text-2xl font-black text-indigo-900 mt-1">{formatMoney(computed.totalA)}</h3>
-          <div className="text-[10px] font-bold text-slate-400 uppercase mt-1">Melhor loja: {computed.bestA.nome}</div>
+
+          <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm h-[380px] mb-6">
+            <div className="flex items-center gap-2 mb-6">
+              <Activity size={16} className="text-indigo-600" />
+              <h3 className="font-black text-slate-700 uppercase text-xs">Vendas por Mês ({yearA || '—'} x {yearB || '—'})</h3>
+            </div>
+            <div className="h-[300px] min-h-[300px] w-full min-w-0">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={computed.chartData} margin={{ top: 10, right: 10, left: 10, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                  <XAxis dataKey="mes" tick={{ fontSize: 12, fontWeight: 'bold', fill: '#64748b' }} axisLine={false} tickLine={false} />
+                  <YAxis hide />
+                  <Tooltip cursor={{ fill: '#f8fafc' }} contentStyle={{ backgroundColor: '#1e293b', borderRadius: '8px', border: 'none', color: '#fff' }} formatter={(val: any) => [formatMoney(Number(val) || 0), 'Faturamento']} />
+                  <Legend />
+                  <Bar dataKey={yearA || 'Ano A'} name={`${yearA || 'Ano A'} Real`} fill="#1428A0" radius={[4, 4, 0, 0]}>
+                    <LabelList dataKey={yearA || 'Ano A'} position="top" formatter={(val: any) => (Number(val) > 0 ? formatMoneyShort(Number(val)) : '')} style={{ fontSize: '10px', fill: '#1428A0', fontWeight: '900' }} />
+                  </Bar>
+                  <Bar dataKey={`${yearB || 'Ano B'}_real`} name={`${yearB || 'Ano B'} Real (Até Agora)`} stackId="yearB" fill="#7DD3FC" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey={`${yearB || 'Ano B'}_proj`} name={`${yearB || 'Ano B'} Tendência Restante`} stackId="yearB" fill="#0284C7" radius={[4, 4, 0, 0]}>
+                    <LabelList dataKey={yearB || 'Ano B'} position="top" formatter={(val: any) => (Number(val) > 0 ? formatMoneyShort(Number(val)) : '')} style={{ fontSize: '10px', fill: '#0369A1', fontWeight: '900' }} />
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* ==========================================================
+          ABA 2: COMPARATIVO DE PRODUTOS (NOVO)
+      ========================================================== */}
+      {activeTab === 'produtos' && (
+        <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+            
+            {/* Cards de KPIs dos Produtos */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-4">
+                    <div className="p-3 bg-indigo-50 text-indigo-600 rounded-xl"><Package size={24}/></div>
+                    <div className="overflow-hidden">
+                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest truncate">Mais Vendido ({yearA})</p>
+                        <h3 className="text-sm font-black text-slate-800 mt-1 truncate" title={topProductA?.desc}>{topProductA?.desc || 'N/D'}</h3>
+                        <p className="text-xs text-indigo-600 font-bold mt-0.5">{topProductA ? formatMoney(topProductA.totalA) : 'R$ 0'}</p>
+                    </div>
+                </div>
+
+                <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-4">
+                    <div className="p-3 bg-sky-50 text-sky-600 rounded-xl"><Package size={24}/></div>
+                    <div className="overflow-hidden">
+                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest truncate">Mais Vendido ({yearB})</p>
+                        <h3 className="text-sm font-black text-slate-800 mt-1 truncate" title={topProductB?.desc}>{topProductB?.desc || 'N/D'}</h3>
+                        <p className="text-xs text-sky-600 font-bold mt-0.5">{topProductB ? formatMoney(topProductB.totalB) : 'R$ 0'}</p>
+                    </div>
+                </div>
+
+                <div className="bg-white p-5 rounded-2xl border border-emerald-100 shadow-sm flex items-center gap-4 relative overflow-hidden">
+                    <div className="absolute top-0 right-0 p-4 opacity-5"><TrendingUp size={60}/></div>
+                    <div className="p-3 bg-emerald-50 text-emerald-600 rounded-xl z-10"><ArrowUpRight size={24}/></div>
+                    <div className="z-10 overflow-hidden">
+                        <p className="text-[10px] font-black text-emerald-600/70 uppercase tracking-widest truncate">Destaque de Crescimento</p>
+                        <h3 className="text-sm font-black text-emerald-900 mt-1 truncate" title={maxGrowthProduct?.desc}>{maxGrowthProduct?.desc || 'N/D'}</h3>
+                        <p className="text-xs text-emerald-600 font-bold mt-0.5">
+                            {maxGrowthProduct ? `+${maxGrowthProduct.crescimentoPct.toFixed(1)}% vs Ano Anterior` : '-'}
+                        </p>
+                    </div>
+                </div>
+            </div>
+
+            {/* Tabela Comparativa de Produtos */}
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden flex flex-col">
+                <div className="p-4 border-b border-slate-100 flex flex-col sm:flex-row justify-between items-center bg-slate-50 gap-4">
+                    <div className="flex items-center gap-2">
+                        <Layers size={18} className="text-slate-500"/>
+                        <h3 className="font-black text-slate-700 uppercase text-xs">Ranking de Produtos</h3>
+                    </div>
+                    
+                    <div className="relative w-full sm:w-72">
+                        <Search size={14} className="absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400" />
+                        <input 
+                            type="text" 
+                            placeholder="Buscar modelo..." 
+                            value={searchProduct}
+                            onChange={(e) => setSearchProduct(e.target.value)}
+                            className="w-full pl-9 pr-3 py-2 text-xs font-bold text-slate-700 bg-white border border-slate-200 rounded-lg outline-none focus:border-emerald-500 transition-colors uppercase shadow-sm"
+                        />
+                    </div>
+                </div>
+
+                <div className="overflow-x-auto max-h-[600px]">
+                    <table className="w-full text-left border-collapse min-w-[800px]">
+                        <thead className="sticky top-0 bg-slate-50 shadow-sm z-10 border-b border-slate-200">
+                            <tr>
+                                <th className="p-3 text-center text-[9px] font-black text-slate-400 uppercase">#</th>
+                                <th className="p-3 text-[9px] font-black text-slate-400 uppercase">Produto</th>
+                                
+                                {/* Header Agrupado Ano A */}
+                                <th className="p-3 text-center border-l border-slate-200 bg-indigo-50/30 text-indigo-800 text-[10px] font-black uppercase" colSpan={2}>
+                                    {yearA || 'Ano A'}
+                                </th>
+                                
+                                {/* Header Agrupado Ano B */}
+                                <th className="p-3 text-center border-l border-slate-200 bg-sky-50/30 text-sky-800 text-[10px] font-black uppercase" colSpan={2}>
+                                    {yearB || 'Ano B'}
+                                </th>
+
+                                <th className="p-3 text-right border-l border-slate-200 text-[9px] font-black text-slate-400 uppercase">
+                                    Crescimento
+                                </th>
+                            </tr>
+                            <tr className="text-[9px] font-black text-slate-400 uppercase tracking-wider bg-white">
+                                <th></th>
+                                <th></th>
+                                <th className="p-2 text-center border-l border-slate-100">Qtd</th>
+                                <th className="p-2 text-right border-r border-slate-100">Valor (R$)</th>
+                                <th className="p-2 text-center">Qtd</th>
+                                <th className="p-2 text-right border-r border-slate-100">Valor (R$)</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody className="text-xs font-bold text-slate-700 divide-y divide-slate-50">
+                            {searchedProducts.map((p, i) => {
+                                const isPositive = p.crescimentoPct > 0;
+                                const isNegative = p.crescimentoPct < 0;
+                                const isNeutral = p.crescimentoPct === 0;
+
+                                return (
+                                    <tr key={i} className="hover:bg-slate-50/80 transition-colors group">
+                                        <td className="p-3 text-center">
+                                            <span className={`w-5 h-5 flex items-center justify-center rounded mx-auto text-[9px] ${i<3 ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-500'}`}>
+                                                {i+1}
+                                            </span>
+                                        </td>
+                                        <td className="p-3 uppercase text-[10px] max-w-[200px] truncate" title={p.desc}>
+                                            {p.desc}
+                                        </td>
+                                        
+                                        {/* ANO A */}
+                                        <td className="p-3 text-center border-l border-slate-50 text-slate-500 bg-indigo-50/10 group-hover:bg-indigo-50/30 transition-colors">{p.qtdA}</td>
+                                        <td className="p-3 text-right font-mono text-indigo-700 bg-indigo-50/10 group-hover:bg-indigo-50/30 transition-colors">{formatMoney(p.totalA)}</td>
+                                        
+                                        {/* ANO B */}
+                                        <td className="p-3 text-center border-l border-slate-50 bg-sky-50/10 group-hover:bg-sky-50/30 transition-colors">{p.qtdB}</td>
+                                        <td className="p-3 text-right font-mono text-sky-700 font-black bg-sky-50/10 group-hover:bg-sky-50/30 transition-colors">{formatMoney(p.totalB)}</td>
+                                        
+                                        {/* CRESCIMENTO */}
+                                        <td className="p-3 text-right border-l border-slate-50">
+                                            <div className="flex justify-end">
+                                                <div className={`flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-black
+                                                    ${isPositive ? 'bg-emerald-100 text-emerald-700' : 
+                                                      isNegative ? 'bg-red-100 text-red-700' : 
+                                                      'bg-slate-100 text-slate-500'}`}
+                                                >
+                                                    {isPositive && <ArrowUpRight size={12}/>}
+                                                    {isNegative && <ArrowDownRight size={12}/>}
+                                                    {isNeutral && <Minus size={12}/>}
+                                                    {isFinite(p.crescimentoPct) ? `${p.crescimentoPct > 0 ? '+' : ''}${p.crescimentoPct.toFixed(1)}%` : 'NOVO'}
+                                                </div>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                );
+                            })}
+                            {searchedProducts.length === 0 && (
+                                <tr>
+                                    <td colSpan={7} className="p-10 text-center text-slate-400 text-sm font-bold">
+                                        Nenhum produto encontrado com os filtros atuais.
+                                    </td>
+                                </tr>
+                            )}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
         </div>
-
-        <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
-          <div className="flex justify-between items-start mb-2">
-            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Total ({yearB || '—'})</span>
-            <Calendar size={16} className="text-sky-600" />
-          </div>
-          <h3 className="text-2xl font-black text-sky-700 mt-1">{formatMoney(computed.totalB)}</h3>
-          <div className="text-[10px] font-bold text-slate-400 uppercase mt-1">Melhor loja: {computed.bestB.nome}</div>
-        </div>
-
-        <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
-          <div className="flex justify-between items-start mb-2">
-            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Tendência 2026 - Real 2025</span>
-            <TrendingUp size={16} className={trendDiff >= 0 ? 'text-teal-600' : 'text-red-600'} />
-          </div>
-          <h3 className={`text-2xl font-black mt-1 ${trendDiff >= 0 ? 'text-teal-700' : 'text-red-700'}`}>
-            {formatMoney(trendDiff)}
-          </h3>
-          <div className="text-[10px] font-bold text-slate-400 uppercase mt-1">
-            {trendDiff >= 0 ? '+' : ''}{trendDiffPct.toFixed(1)}%
-          </div>
-        </div>
-
-        <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
-          <div className="flex justify-between items-start mb-2">
-            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
-              Previsão ({yearB || '—'})
-            </span>
-            <TrendingUp size={16} className="text-sky-600" />
-          </div>
-
-          <div className="text-[10px] font-black text-slate-500 uppercase">
-            {monthLabel}: até agora / projeção final
-          </div>
-          <div className="text-[12px] font-black text-slate-700 mt-1">
-            {formatMoney(monthSoFar)} <span className="text-slate-400">/</span> {formatMoney(monthForecast)}
-          </div>
-
-          <h3 className="text-xl font-black text-sky-700 mt-3">
-            {formatMoney(yearForecast)}
-          </h3>
-          <div className="text-[10px] font-bold text-slate-400 uppercase mt-1">
-            YTD: {formatMoney(ytd)}
-          </div>
-        </div>
-
-        <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
-          <div className="flex justify-between items-start mb-2">
-            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Melhor Loja (Ano B)</span>
-            <Store size={16} className="text-sky-600" />
-          </div>
-          <h3 className="text-lg font-black text-slate-800 mt-1 uppercase truncate" title={computed.bestB.nome}>
-            {computed.bestB.nome}
-          </h3>
-          <div className="text-[12px] font-black text-sky-700 mt-1">{formatMoney(computed.bestB.total)}</div>
-        </div>
-      </div>
-
-      {/* GRÁFICO */}
-      <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm h-[380px] mb-6">
-        <div className="flex items-center gap-2 mb-6">
-          <Activity size={16} className="text-indigo-600" />
-          <h3 className="font-black text-slate-700 uppercase text-xs">
-            Vendas por Mês ({yearA || '—'} x {yearB || '—'})
-          </h3>
-        </div>
-
-        <div className="h-[300px] min-h-[300px] w-full min-w-0">
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={computed.chartData} margin={{ top: 10, right: 10, left: 10, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-              <XAxis dataKey="mes" tick={{ fontSize: 12, fontWeight: 'bold', fill: '#64748b' }} axisLine={false} tickLine={false} />
-              <YAxis hide />
-              <Tooltip
-                cursor={{ fill: '#f8fafc' }}
-                contentStyle={{ backgroundColor: '#1e293b', borderRadius: '8px', border: 'none', color: '#fff' }}
-                formatter={(val: any) => [formatMoney(Number(val) || 0), 'Faturamento']}
-              />
-              <Legend />
-
-              <Bar dataKey={yearA || 'Ano A'} name={`${yearA || 'Ano A'} Real`} fill="#1428A0" radius={[4, 4, 0, 0]}>
-                <LabelList
-                  dataKey={yearA || 'Ano A'}
-                  position="top"
-                  formatter={(val: any) => (Number(val) > 0 ? formatMoneyShort(Number(val)) : '')}
-                  style={{ fontSize: '10px', fill: '#1428A0', fontWeight: '900' }}
-                />
-              </Bar>
-
-              <Bar
-                dataKey={`${yearB || 'Ano B'}_real`}
-                name={`${yearB || 'Ano B'} Real`}
-                stackId="yearB"
-                fill="#0EA5E9"
-                radius={[4, 4, 0, 0]}
-              />
-
-              <Bar
-                dataKey={`${yearB || 'Ano B'}_proj`}
-                name={`${yearB || 'Ano B'} Tendência`}
-                stackId="yearB"
-                fill="#7DD3FC"
-                radius={[4, 4, 0, 0]}
-              >
-                <LabelList
-                  dataKey={yearB || 'Ano B'}
-                  position="top"
-                  formatter={(val: any) => (Number(val) > 0 ? formatMoneyShort(Number(val)) : '')}
-                  style={{ fontSize: '10px', fill: '#0369A1', fontWeight: '900' }}
-                />
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
-
-      {/* (Opcional) você pode manter seu ranking/tabela aqui se quiser,
-          mas agora precisa decidir: ranking de qual ano? A/B ou combinado.
-          Se quiser, eu adapto pra mostrar duas tabs: "Ano A" e "Ano B". */}
+      )}
     </div>
   );
 }
