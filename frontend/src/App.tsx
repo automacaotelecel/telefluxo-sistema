@@ -16,6 +16,7 @@ import StockModule from "./components/StockModule";
 import PriceTablePage from './components/PriceTablePage';
 import { EstoqueVendas } from './components/EstoqueVendas';
 import EstoqueInteligente from './components/EstoqueInteligente';
+import EstoqueDetalhado from './components/EstoqueDetalhado'; // <-- ADICIONADO AQUI
 import ComparativoAnual from './components/ComparativoAnual';
 import AuditoriaLojas from './components/AuditoriaLojas';
 import { 
@@ -198,7 +199,7 @@ function App() {
             <div>
               <div 
                 onClick={() => setExpanded({...expanded, stock: !expanded.stock})} 
-                className={`p-3 rounded-xl cursor-pointer flex items-center justify-between transition-all ${['stock', 'estoque_vendas', 'estoque_inteligente', 'auditoria_lojas'].includes(currentView) ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:bg-slate-800'}`}
+                className={`p-3 rounded-xl cursor-pointer flex items-center justify-between transition-all ${['stock', 'estoque_vendas', 'estoque_inteligente', 'auditoria_lojas', 'estoque_detalhado'].includes(currentView) ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:bg-slate-800'}`}
               >
                 <div className="flex gap-3 items-center font-bold text-sm">
                   <Package size={18} /> Controle de Estoque
@@ -213,6 +214,14 @@ function App() {
                     className={`pl-12 pr-4 py-2 cursor-pointer flex items-center gap-2 text-[11px] font-black uppercase tracking-tighter transition-all hover:text-white ${currentView === 'stock' ? 'text-orange-500' : 'text-slate-500'}`}
                   >
                     <Circle size={6} fill={currentView === 'stock' ? "currentColor" : "transparent"} /> Visão Geral
+                  </div>
+
+                  {/* <-- ADICIONADO AQUI: VISÃO DETALHADA --> */}
+                  <div 
+                    onClick={() => handleNavigate('estoque_detalhado')} 
+                    className={`pl-12 pr-4 py-2 cursor-pointer flex items-center gap-2 text-[11px] font-black uppercase tracking-tighter transition-all hover:text-white ${currentView === 'estoque_detalhado' ? 'text-orange-500' : 'text-slate-500'}`}
+                  >
+                    <Circle size={6} fill={currentView === 'estoque_detalhado' ? "currentColor" : "transparent"} /> Visão Detalhada
                   </div>
 
                   <div 
@@ -356,6 +365,8 @@ function App() {
                 <ComparativoAnual />
             ) : currentView === 'estoque_vendas' ? (
                 <EstoqueVendas />
+            ) : currentView === 'estoque_detalhado' ? ( // <-- ADICIONADO AQUI: ROTA DA TELA
+                <EstoqueDetalhado />
             ) : currentView === 'estoque_inteligente' ? ( 
                 <EstoqueInteligente />
             ) : currentView === 'auditoria_lojas' ? ( 
