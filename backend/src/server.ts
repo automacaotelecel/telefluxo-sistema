@@ -1642,7 +1642,7 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // ============================================================
-// ⚠️ ROTA DO HISTÓRICO ANUAL OTIMIZADA (COM LOGS DE DETETIVE)
+// ⚠️ ROTA DO HISTÓRICO ANUAL OTIMIZADA (CORRIGIDA)
 // ============================================================
 app.get('/sales_anuais', async (req, res) => {
   try {
@@ -1674,17 +1674,19 @@ app.get('/sales_anuais', async (req, res) => {
         ? `SUM(COALESCE(quantidade,0))`
         : `0`;
 
+    // 🔥 CORREÇÃO AQUI: Adicionado 'descricao' no SELECT e no GROUP BY
     const query = `
       SELECT 
         substr(data_emissao, 1, 7) || '-01' as data_emissao,
         cnpj_empresa,
+        descricao,
         COALESCE(familia,'OUTROS') as familia,
         ${totalExpr} as total_liquido,
         ${qtdExpr} as quantidade
       FROM vendas_anuais
       WHERE ${securityFilter}
         AND data_emissao IS NOT NULL
-      GROUP BY substr(data_emissao, 1, 7), cnpj_empresa, COALESCE(familia,'OUTROS')
+      GROUP BY substr(data_emissao, 1, 7), cnpj_empresa, descricao, COALESCE(familia,'OUTROS')
       ORDER BY data_emissao ASC
     `;
 

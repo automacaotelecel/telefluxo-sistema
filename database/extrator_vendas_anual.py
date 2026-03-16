@@ -1,6 +1,8 @@
 import os
 import re
 import sqlite3
+import time
+import requests
 from typing import Any
 
 import pandas as pd
@@ -242,6 +244,78 @@ def recreate_db_schema(con: sqlite3.Connection) -> None:
         """
     )
     con.commit()
+
+
+# ============================================================
+# ✅ FUNÇÕES DE SINCRONIZAÇÃO (ADICIONADAS AQUI)
+# ============================================================
+URL_BACKEND = "https://telefluxo-aplicacao.onrender.com"
+MAX_RETRIES = 6
+BASE_WAIT_SECONDS = 8
+RETRY_STATUS = {502, 503, 504}
+
+def limpar_valores_json(dados):
+    cleaned = []
+    for row in dados:
+        new_row = {}
+        for k, v in row.items():
+            new_row[k] = None if pd.isna(v) else v
+        cleaned.append(new_row)
+    return cleaned
+
+def enviar_dados_para_api(endpoint: str, dados: list) -> bool:
+    if not dados:
+        print(f"⚠️ Nenhum registro para enviar em {endpoint}.")
+        return True
+
+    dados = limpar_valores_json(dados)
+    
+    # Lotes maiores para o anual já que é histórico pesado
+    BATCH_SIZE = 250
+    total_lotes = (len(dados) // BATCH_SIZE) + 1
+    
+    print(f"📡 Preparando envio de {len(dados)} registros em {total_lotes} lotes...")
+    headers = {"Content-Type": "application/json"}
+
+    for i in range(0, len(dados), BATCH_SIZE):
+        lote = dados[i : i + BATCH_SIZE]
+        lote_num = (i // BATCH_SIZE) + 1
+        
+        # O primeiro lote reseta o banco anual na nuvem, os demais empilham
+        param_reset = "true" if i == 0 else "false"
+        url_lote = f"{URL_BACKEND}{endpoint}?reset={param_reset}"
+
+        print(f"   📦 Enviando Lote {lote_num}/{total_lotes} ({len(lote)} itens)...")
+
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                response = requests.post(url_lote, json=lote, headers=headers, timeout=120)
+                
+                if 200 <= response.status_code < 300:
+                    break 
+                
+                if response.status_code == 413:
+                    print("   ❌ ERRO 413: Lote muito grande. Diminua o BATCH_SIZE.")
+                    return False
+
+                if response.status_code in RETRY_STATUS or "SQLITE_BUSY" in response.text:
+                    wait_time = BASE_WAIT_SECONDS * attempt
+                    print(f"      ⏳ Servidor ocupado ({response.status_code})... Aguardando {wait_time}s")
+                    time.sleep(wait_time)
+                    continue
+                
+                print(f"   ❌ Erro Fatal no Lote {lote_num}: {response.status_code} - {response.text[:200]}")
+                return False 
+
+            except Exception as e:
+                print(f"   ⚠️ Erro conexão Lote {lote_num}: {e}")
+                time.sleep(BASE_WAIT_SECONDS * attempt)
+        else:
+            print(f"   ❌ Falha fatal no Lote {lote_num} após todas tentativas.")
+            return False
+
+    print("✅ Todos os lotes anuais enviados com sucesso!")
+    return True
 
 
 def build_db(excel_path: str, db_path: str) -> None:
@@ -499,6 +573,21 @@ def build_db(excel_path: str, db_path: str) -> None:
 
     finally:
         con.close()
+
+    # ============================================================
+    # ✅ NOVO: SINCRONIZAÇÃO COM A NUVEM (RENDER)
+    # ============================================================
+    print("\n🚀 Iniciando sincronização do Banco Anual com a Nuvem...")
+    
+    dados_anuais = vendas_out.to_dict(orient="records")
+    
+    # Envia para a API (Atenção: Garanta que esta rota existe no seu backend!)
+    ok = enviar_dados_para_api("/api/sync/vendas_anuais", dados_anuais)
+    
+    if ok:
+        print("✅ Base Anual sincronizada com sucesso na nuvem!")
+    else:
+        print("❌ Falha ao enviar Base Anual para a nuvem.")
 
 
 if __name__ == "__main__":
