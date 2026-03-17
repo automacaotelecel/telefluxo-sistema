@@ -19,7 +19,7 @@ import EstoqueInteligente from './components/EstoqueInteligente';
 import ComparativoAnual from './components/ComparativoAnual';
 import AuditoriaLojas from './components/AuditoriaLojas';
 import EstoqueDetalhado from './components/EstoqueDetalhado';
-import Stockout from './components/Stockout'; // <-- ADICIONADO IMPORT DO STOCKOUT
+import Stockout from './components/StockOut';
 import { 
   FileText, CheckCircle, LayoutDashboard, Users, LogOut, 
   Calendar, BarChart3, ChevronDown, ChevronRight, Circle, Plus,
