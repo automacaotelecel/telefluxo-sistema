@@ -7,6 +7,67 @@ import {
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
+// --- COMPONENTE AUXILIAR PARA MULTI-SELECT ---
+const MultiSelectDropdown = ({ options, selected, onChange, placeholder }: any) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const wrapperRef = React.useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClickOutside(event: any) {
+      if (wrapperRef.current && !wrapperRef.current.contains(event.target)) {
+        setIsOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  const toggleOption = (opt: string) => {
+    if (selected.includes(opt)) {
+      onChange(selected.filter((item: string) => item !== opt));
+    } else {
+      onChange([...selected, opt]);
+    }
+  };
+
+  const clear = (e: any) => {
+    e.stopPropagation();
+    onChange([]);
+  };
+
+  return (
+    <div ref={wrapperRef} className="relative w-full md:w-auto shrink-0 z-20">
+      <div
+        onClick={() => setIsOpen(!isOpen)}
+        className="bg-white border border-slate-200 text-slate-600 text-[10px] md:text-xs font-bold uppercase px-3 md:px-4 py-2 md:py-2.5 rounded-xl outline-none cursor-pointer hover:border-indigo-300 shadow-sm flex items-center justify-between gap-2 min-w-[160px] h-full"
+      >
+        <span className="truncate">
+          {selected.length === 0 ? placeholder : `${selected.length} selecionado(s)`}
+        </span>
+        {selected.length > 0 && (
+           <X size={14} className="hover:text-red-500 shrink-0" onClick={clear} />
+        )}
+      </div>
+      {isOpen && (
+        <div className="absolute top-full left-0 mt-1 w-64 bg-white border border-slate-200 shadow-xl rounded-xl max-h-60 overflow-y-auto flex flex-col p-2 z-50">
+          {options.map((opt: string) => (
+            <label key={opt} className="flex items-center gap-2 px-2 py-2 hover:bg-slate-50 rounded cursor-pointer">
+              <input
+                type="checkbox"
+                checked={selected.includes(opt)}
+                onChange={() => toggleOption(opt)}
+                className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer"
+              />
+              <span className="text-xs font-bold text-slate-700 uppercase">{opt}</span>
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+
 // --- 1. CONFIGURAÇÕES E MAPAS ---
 
 const STORE_REGIONS: Record<string, string> = {
@@ -80,12 +141,19 @@ export default function StockModule() {
   const [loading, setLoading] = useState(false);
   const [showDebug, setShowDebug] = useState(false);
   const [filter, setFilter] = useState('');
-  const [categoryFilter, setCategoryFilter] = useState('TODAS');
-  const [regionFilter, setRegionFilter] = useState('TODAS');
+  
+  // Modificado: Estados para Multi-select
+  const [categoryFilter, setCategoryFilter] = useState<string[]>([]);
+  const [regionFilter, setRegionFilter] = useState<string[]>([]);
+  const [lineFilter, setLineFilter] = useState<string[]>([]);
+  const [clusterFilter, setClusterFilter] = useState<string[]>([]);
+  const [maloteCategoryFilter, setMaloteCategoryFilter] = useState<string[]>([]);
+  
   const [expandedStore, setExpandedStore] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
+  const [storeViewMode, setStoreViewMode] = useState<'grid' | 'list'>('grid'); // Novo: toggle de lojas
+
   const [maloteSearch, setMaloteSearch] = useState('');
-  const [maloteCategory, setMaloteCategory] = useState('TODAS');
   const [analysisData, setAnalysisData] = useState<any[]>([]);
   const [analysisSearch, setAnalysisSearch] = useState('');
   const [analysisStatusFilter, setAnalysisStatusFilter] = useState('TODOS');
@@ -93,8 +161,6 @@ export default function StockModule() {
   const [stockViewFilter, setStockViewFilter] = useState<'TODOS' | 'COM_GIRO' | 'SEM_GIRO' | 'ESTOQUE_BAIXO'>('TODOS');
   const [showInsightsPanel, setShowInsightsPanel] = useState(false);
   const [insightCategory, setInsightCategory] = useState('TODAS');
-  const [lineFilter, setLineFilter] = useState('TODAS');
-  const [clusterFilter, setClusterFilter] = useState('TODOS');
 
   // NOVO: calendário de período
   const today = new Date();
@@ -269,7 +335,7 @@ export default function StockModule() {
 
     stockData.forEach(item => {
       const region = STORE_REGIONS[item.storeName] || "OUTROS";
-      if (regionFilter !== 'TODAS' && region !== regionFilter) return;
+      if (regionFilter.length > 0 && !regionFilter.includes(region)) return;
 
       const key = `${region}|${item.description}|${item.productCode}`;
       if (!productGroups[key]) {
@@ -432,7 +498,7 @@ export default function StockModule() {
     const groups: Record<string, any[]> = {};
     purchaseData.forEach(p => {
       const regiao = (p.regiao || "OUTROS").toUpperCase();
-      if (regionFilter !== 'TODAS' && regiao !== regionFilter) return;
+      if (regionFilter.length > 0 && !regionFilter.includes(regiao)) return;
       if (!groups[regiao]) groups[regiao] = [];
       groups[regiao].push(p);
     });
@@ -447,17 +513,11 @@ export default function StockModule() {
         ((item.description || '').toLowerCase().includes(filter.toLowerCase()) ||
         (item.productCode || '').toString().includes(filter));
 
-      const matchesCategory =
-        categoryFilter === 'TODAS' || (item.category || 'GERAL') === categoryFilter;
-
-      const matchesRegion =
-        regionFilter === 'TODAS' || itemRegion === regionFilter;
-
-      const matchesLine =
-        lineFilter === 'TODAS' || getLineValue(item) === lineFilter;
-
-      const matchesCluster =
-        clusterFilter === 'TODOS' || getClusterValue(item) === clusterFilter;
+      // Lógica atualizada para Arrays de Multi-select
+      const matchesCategory = categoryFilter.length === 0 || categoryFilter.includes(item.category || 'GERAL');
+      const matchesRegion = regionFilter.length === 0 || regionFilter.includes(itemRegion);
+      const matchesLine = lineFilter.length === 0 || lineFilter.includes(getLineValue(item));
+      const matchesCluster = clusterFilter.length === 0 || clusterFilter.includes(getClusterValue(item));
 
       const productSales = getProductSales(item.storeName, item.description);
       const stockQty = Number(item.quantity) || 0;
@@ -675,7 +735,7 @@ export default function StockModule() {
     else if (moduleMode === 'malote') {
       headers = ["Produto", "Categoria", "Destino", "Estoque Atual (Loja)", "Vendas no Período", "Qtd a Enviar (Malote)"];
       const filteredMalote = calculatedMalote.filter(item =>
-        (maloteCategory === 'TODAS' || item.category === maloteCategory) &&
+        (maloteCategoryFilter.length === 0 || maloteCategoryFilter.includes(item.category)) &&
         item.modelo.toLowerCase().includes(maloteSearch.toLowerCase())
       );
       filteredMalote.forEach((prod: any) => {
@@ -958,17 +1018,19 @@ export default function StockModule() {
         {/* ================= MÓDULO DE COMPRAS ================= */}
         {moduleMode === 'purchases' && (
           <div className="space-y-6 animate-fadeIn">
-            <div className="flex justify-between items-center bg-white p-4 rounded-xl border border-slate-200">
+            <div className="flex justify-between items-center bg-white p-4 rounded-xl border border-slate-200 z-20 relative">
               <div className="flex items-center gap-2">
                 <MapPin className="text-indigo-600" size={20} />
                 <span className="text-sm font-bold text-slate-700 uppercase">Filtrar Região:</span>
-                <select value={regionFilter} onChange={e => setRegionFilter(e.target.value)} className="bg-white border border-slate-200 text-slate-600 text-xs font-bold uppercase px-3 py-2 rounded-lg outline-none cursor-pointer hover:border-indigo-300">
-                  <option value="TODAS">Todas as Regiões</option>
-                  {purchaseRegions.map(r => <option key={r} value={r}>{r}</option>)}
-                </select>
+                <MultiSelectDropdown
+                  options={purchaseRegions}
+                  selected={regionFilter}
+                  onChange={setRegionFilter}
+                  placeholder="Todas as Regiões"
+                />
               </div>
               <div className="text-right">
-                <span className="text-2xl font-black text-slate-800">{purchaseData.filter(p => regionFilter === 'TODAS' || (p.regiao || 'OUTROS').toUpperCase() === regionFilter).reduce((acc, curr) => acc + curr.qtd_total, 0)}</span>
+                <span className="text-2xl font-black text-slate-800">{purchaseData.filter(p => regionFilter.length === 0 || regionFilter.includes((p.regiao || 'OUTROS').toUpperCase())).reduce((acc, curr) => acc + curr.qtd_total, 0)}</span>
                 <span className="block text-[9px] font-bold text-slate-400 uppercase">Peças a receber</span>
               </div>
             </div>
@@ -989,7 +1051,7 @@ export default function StockModule() {
             )}
 
             {Object.keys(groupedPurchases).length > 0 ? Object.entries(groupedPurchases).map(([region, items]) => (
-              <div key={region} className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+              <div key={region} className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden z-10">
                 <div className="bg-slate-50 px-6 py-3 border-b border-slate-200 flex justify-between items-center">
                   <h3 className="font-black text-slate-700 uppercase flex items-center gap-2"><MapPin size={16} /> {region}</h3>
                   <span className="text-xs font-bold bg-indigo-100 text-indigo-700 px-3 py-1 rounded-full">{items.reduce((acc, i) => acc + i.qtd_total, 0)} un</span>
@@ -1024,7 +1086,7 @@ export default function StockModule() {
               </div>
             )) : (
               purchaseData.length > 0 && (
-                <div className="p-20 text-center text-slate-400 font-bold uppercase text-sm bg-white rounded-2xl border border-dashed">
+                <div className="p-20 text-center text-slate-400 font-bold uppercase text-sm bg-white rounded-2xl border border-dashed z-10 relative">
                   Filtro atual ocultou todos os {purchaseData.length} itens. Tente mudar a região.
                 </div>
               )
@@ -1091,7 +1153,7 @@ export default function StockModule() {
             <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
 
               <div className="flex flex-col md:flex-row justify-between items-center gap-4 mb-8">
-                <div className="flex flex-1 gap-2 w-full">
+                <div className="flex flex-col md:flex-row flex-1 gap-3 w-full">
                   <div className="relative flex-1 max-w-sm">
                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
                     <input
@@ -1102,14 +1164,12 @@ export default function StockModule() {
                       className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold uppercase outline-none focus:ring-2 focus:ring-indigo-500"
                     />
                   </div>
-                  <select
-                    value={maloteCategory}
-                    onChange={(e) => setMaloteCategory(e.target.value)}
-                    className="bg-slate-50 border border-slate-200 text-slate-600 text-[10px] font-black uppercase px-4 py-2 rounded-xl outline-none cursor-pointer hover:bg-slate-100"
-                  >
-                    <option value="TODAS">Todas as Categorias</option>
-                    {uniqueCategories.map(c => <option key={c} value={c}>{c}</option>)}
-                  </select>
+                  <MultiSelectDropdown
+                    options={uniqueCategories}
+                    selected={maloteCategoryFilter}
+                    onChange={setMaloteCategoryFilter}
+                    placeholder="Todas as Categorias"
+                  />
                 </div>
 
                 <div className="flex bg-slate-100 p-1 rounded-xl">
@@ -1137,7 +1197,7 @@ export default function StockModule() {
                   <p className="text-[10px] font-bold text-slate-400 uppercase">Total a Despachar</p>
                   <p className="text-3xl font-black text-indigo-600">
                     {calculatedMalote
-                      .filter(item => (maloteCategory === 'TODAS' || item.category === maloteCategory) && item.modelo.toLowerCase().includes(maloteSearch.toLowerCase()))
+                      .filter(item => (maloteCategoryFilter.length === 0 || maloteCategoryFilter.includes(item.category)) && item.modelo.toLowerCase().includes(maloteSearch.toLowerCase()))
                       .reduce((acc, item) => acc + (item.lojas?.reduce((sum: number, l: any) => sum + (l.sugestaoEnvio || 0), 0) || 0), 0)} un
                   </p>
                 </div>
@@ -1155,7 +1215,7 @@ export default function StockModule() {
                     </thead>
                     <tbody className="divide-y divide-slate-50">
                       {calculatedMalote
-                        .filter(item => (maloteCategory === 'TODAS' || item.category === maloteCategory) && item.modelo.toLowerCase().includes(maloteSearch.toLowerCase()))
+                        .filter(item => (maloteCategoryFilter.length === 0 || maloteCategoryFilter.includes(item.category)) && item.modelo.toLowerCase().includes(maloteSearch.toLowerCase()))
                         .map((item, idx) => {
                           const totalEnvio = item.lojas?.reduce((acc: number, l: any) => acc + (l.sugestaoEnvio || 0), 0) || 0;
                           return (
@@ -1189,7 +1249,7 @@ export default function StockModule() {
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                   {calculatedMalote
-                    .filter(item => (maloteCategory === 'TODAS' || item.category === maloteCategory) && item.modelo.toLowerCase().includes(maloteSearch.toLowerCase()))
+                    .filter(item => (maloteCategoryFilter.length === 0 || maloteCategoryFilter.includes(item.category)) && item.modelo.toLowerCase().includes(maloteSearch.toLowerCase()))
                     .map((item, idx) => (
                       item.lojas?.filter((l: any) => l.sugestaoEnvio > 0).map((loja: any, lidx: number) => (
                         <div key={`${idx}-${lidx}`} className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition-all relative overflow-hidden group">
@@ -1421,75 +1481,87 @@ export default function StockModule() {
             )}
 
             {!expandedStore && (
-              <div className="flex flex-col md:flex-row gap-3 mb-4">
-                <div className="relative flex-1">
+              <div className="flex flex-col md:flex-row gap-3 mb-4 flex-wrap">
+                <div className="relative flex-1 min-w-[250px]">
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
                   <input
                     type="text"
                     placeholder="BUSCAR POR PRODUTO OU CÓDIGO..."
                     value={filter}
                     onChange={(e) => setFilter(e.target.value)}
-                    className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 text-slate-700 text-xs font-bold uppercase rounded-xl outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-50/50 transition-all shadow-sm"
+                    className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 text-slate-700 text-[10px] md:text-xs font-bold uppercase rounded-xl outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-50/50 transition-all shadow-sm h-full"
                   />
                 </div>
-                <div className="flex gap-2 overflow-x-auto pb-2 md:pb-0 scrollbar-hide">
-                  <select value={regionFilter} onChange={e => setRegionFilter(e.target.value)} className="bg-white border border-slate-200 text-slate-600 text-xs font-bold uppercase px-4 py-2.5 rounded-xl outline-none cursor-pointer hover:border-indigo-300 shadow-sm whitespace-nowrap">
-                    <option value="TODAS">Todas as Regiões</option>
-                    {uniqueRegions.map(r => <option key={r} value={r}>{r}</option>)}
-                  </select>
+                <div className="flex gap-2 flex-wrap md:flex-nowrap pb-2 md:pb-0 z-10 w-full md:w-auto">
+                  <MultiSelectDropdown
+                    options={uniqueRegions}
+                    selected={regionFilter}
+                    onChange={setRegionFilter}
+                    placeholder="Todas Regiões"
+                  />
+                  <MultiSelectDropdown
+                    options={uniqueCategories}
+                    selected={categoryFilter}
+                    onChange={setCategoryFilter}
+                    placeholder="Todas Categorias"
+                  />
+                  <MultiSelectDropdown
+                    options={uniqueLines}
+                    selected={lineFilter}
+                    onChange={setLineFilter}
+                    placeholder="Todas Linhas"
+                  />
+                  <MultiSelectDropdown
+                    options={uniqueClusters}
+                    selected={clusterFilter}
+                    onChange={setClusterFilter}
+                    placeholder="Todos Clusters"
+                  />
 
-                  <select value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)} className="bg-white border border-slate-200 text-slate-600 text-xs font-bold uppercase px-4 py-2.5 rounded-xl outline-none cursor-pointer hover:border-indigo-300 shadow-sm whitespace-nowrap">
-                    <option value="TODAS">Todas as Categorias</option>
-                    {uniqueCategories.map(c => <option key={c} value={c}>{c}</option>)}
-                  </select>
-
-                  <select
-                    value={lineFilter}
-                    onChange={e => setLineFilter(e.target.value)}
-                    className="bg-white border border-slate-200 text-slate-600 text-xs font-bold uppercase px-4 py-2.5 rounded-xl outline-none cursor-pointer hover:border-indigo-300 shadow-sm whitespace-nowrap"
+                  <select 
+                    value={stockViewFilter} 
+                    onChange={e => setStockViewFilter(e.target.value as any)} 
+                    className="bg-white border border-slate-200 text-slate-600 text-[10px] md:text-xs font-bold uppercase px-3 md:px-4 py-2 md:py-2.5 rounded-xl outline-none cursor-pointer hover:border-indigo-300 shadow-sm shrink-0"
                   >
-                    <option value="TODAS">Todas as Linhas</option>
-                    {uniqueLines.map(line => (
-                      <option key={line} value={line}>{line}</option>
-                    ))}
-                  </select>
-
-                  <select
-                    value={clusterFilter}
-                    onChange={e => setClusterFilter(e.target.value)}
-                    className="bg-white border border-slate-200 text-slate-600 text-xs font-bold uppercase px-4 py-2.5 rounded-xl outline-none cursor-pointer hover:border-indigo-300 shadow-sm whitespace-nowrap"
-                  >
-                    <option value="TODOS">Todos os Clusters</option>
-                    {uniqueClusters.map(cluster => (
-                      <option key={cluster} value={cluster}>{cluster}</option>
-                    ))}
-                  </select>
-
-                  <select value={stockViewFilter} onChange={e => setStockViewFilter(e.target.value as any)} className="bg-white border border-slate-200 text-slate-600 text-xs font-bold uppercase px-4 py-2.5 rounded-xl outline-none cursor-pointer hover:border-indigo-300 shadow-sm whitespace-nowrap">
-                    <option value="TODOS">Todos</option>
+                    <option value="TODOS">Todos (Giro)</option>
                     <option value="COM_GIRO">Com Giro</option>
                     <option value="SEM_GIRO">Sem Giro</option>
                     <option value="ESTOQUE_BAIXO">Estoque Baixo</option>
                   </select>
 
+                  <div className="flex bg-slate-100 p-1 rounded-xl shrink-0 h-full">
+                    <button
+                      onClick={() => setStoreViewMode('list')}
+                      className={`p-2 rounded-lg transition-all ${storeViewMode === 'list' ? 'bg-white shadow text-indigo-600' : 'text-slate-400'}`}
+                    >
+                      <ListIcon size={16} />
+                    </button>
+                    <button
+                      onClick={() => setStoreViewMode('grid')}
+                      className={`p-2 rounded-lg transition-all ${storeViewMode === 'grid' ? 'bg-white shadow text-indigo-600' : 'text-slate-400'}`}
+                    >
+                      <LayoutGrid size={16} />
+                    </button>
+                  </div>
+
                   {(
-                    regionFilter !== 'TODAS' ||
-                    categoryFilter !== 'TODAS' ||
-                    lineFilter !== 'TODAS' ||
-                    clusterFilter !== 'TODOS' ||
+                    regionFilter.length > 0 ||
+                    categoryFilter.length > 0 ||
+                    lineFilter.length > 0 ||
+                    clusterFilter.length > 0 ||
                     filter !== '' ||
                     stockViewFilter !== 'TODOS'
                   ) && (
                     <button
                       onClick={() => {
-                        setRegionFilter('TODAS');
-                        setCategoryFilter('TODAS');
-                        setLineFilter('TODAS');
-                        setClusterFilter('TODOS');
+                        setRegionFilter([]);
+                        setCategoryFilter([]);
+                        setLineFilter([]);
+                        setClusterFilter([]);
                         setFilter('');
                         setStockViewFilter('TODOS');
                       }}
-                      className="bg-red-50 border border-red-100 text-red-600 hover:bg-red-100 text-xs font-bold px-4 py-2.5 rounded-xl transition-colors shadow-sm flex items-center gap-1"
+                      className="bg-red-50 border border-red-100 text-red-600 hover:bg-red-100 text-[10px] md:text-xs font-bold px-3 py-2 md:py-2.5 rounded-xl transition-colors shadow-sm flex items-center gap-1 shrink-0"
                     >
                       <X size={14} /> LIMPAR
                     </button>
@@ -1608,38 +1680,86 @@ export default function StockModule() {
                       <MapPin className="text-indigo-600" size={20} />
                       <h2 className="text-lg font-black text-slate-700 uppercase tracking-wide">{region}</h2>
                       <span className="text-xs font-bold bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full">{stores.length} Lojas</span>
+                      <span className="text-xs font-bold bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full">
+                        {stores.reduce((acc, s) => acc + s.qty, 0).toLocaleString('pt-BR')} un
+                      </span>
                     </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                      {stores.map((store) => {
-                        const hasLowStockAlert = store.lowStockCount > 0 && filter !== '';
-                        return (
-                          <div
-                            key={store.name}
-                            onClick={() => setExpandedStore(store.name)}
-                            className={`group bg-white p-5 rounded-2xl border shadow-sm cursor-pointer transition-all hover:-translate-y-1 hover:shadow-lg relative overflow-hidden ${hasLowStockAlert ? 'border-red-300 ring-4 ring-red-50' : 'border-slate-100 hover:border-indigo-200'}`}
-                          >
-                            {hasLowStockAlert && <div className="absolute top-3 right-3 w-3 h-3 bg-red-500 rounded-full animate-pulse shadow-lg"></div>}
-                            <h3 className="text-sm font-black text-slate-800 uppercase leading-tight mb-2 truncate pr-4">{store.name}</h3>
-                            <div className="mb-3">
-                              <span className="text-[9px] font-bold bg-purple-50 text-purple-700 px-2 py-1 rounded uppercase border border-purple-100">
-                                {store.cluster || 'SEM CLUSTER'}
-                              </span>
-                            </div>
-                            <div className="space-y-2">
-                              <div className="flex justify-between items-end border-b border-slate-50 pb-2">
-                                <span className="text-[10px] font-bold text-slate-400 uppercase">Estoque</span>
-                                <span className={`text-lg font-black ${store.qty === 0 ? 'text-slate-300' : (hasLowStockAlert ? 'text-red-600' : 'text-slate-700')}`}>{store.qty.toLocaleString('pt-BR')}</span>
+
+                    {storeViewMode === 'grid' ? (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                        {stores.map((store) => {
+                          const hasLowStockAlert = store.lowStockCount > 0 && filter !== '';
+                          return (
+                            <div
+                              key={store.name}
+                              onClick={() => setExpandedStore(store.name)}
+                              className={`group bg-white p-5 rounded-2xl border shadow-sm cursor-pointer transition-all hover:-translate-y-1 hover:shadow-lg relative overflow-hidden ${hasLowStockAlert ? 'border-red-300 ring-4 ring-red-50' : 'border-slate-100 hover:border-indigo-200'}`}
+                            >
+                              {hasLowStockAlert && <div className="absolute top-3 right-3 w-3 h-3 bg-red-500 rounded-full animate-pulse shadow-lg"></div>}
+                              <h3 className="text-sm font-black text-slate-800 uppercase leading-tight mb-2 truncate pr-4">{store.name}</h3>
+                              <div className="mb-3">
+                                <span className="text-[9px] font-bold bg-purple-50 text-purple-700 px-2 py-1 rounded uppercase border border-purple-100">
+                                  {store.cluster || 'SEM CLUSTER'}
+                                </span>
                               </div>
-                              <div className="flex justify-between items-end">
-                                <span className="text-[10px] font-bold text-slate-400 uppercase">Financeiro</span>
-                                <span className="text-sm font-bold text-indigo-600">R$ {store.value.toLocaleString('pt-BR', { notation: "compact", maximumFractionDigits: 1 })}</span>
+                              <div className="space-y-2">
+                                <div className="flex justify-between items-end border-b border-slate-50 pb-2">
+                                  <span className="text-[10px] font-bold text-slate-400 uppercase">Estoque</span>
+                                  <span className={`text-lg font-black ${store.qty === 0 ? 'text-slate-300' : (hasLowStockAlert ? 'text-red-600' : 'text-slate-700')}`}>{store.qty.toLocaleString('pt-BR')}</span>
+                                </div>
+                                <div className="flex justify-between items-end">
+                                  <span className="text-[10px] font-bold text-slate-400 uppercase">Financeiro</span>
+                                  <span className="text-sm font-bold text-indigo-600">R$ {store.value.toLocaleString('pt-BR', { notation: "compact", maximumFractionDigits: 1 })}</span>
+                                </div>
                               </div>
+                              <div className="absolute bottom-0 right-0 p-4 opacity-0 group-hover:opacity-100 transition-opacity transform translate-y-2 group-hover:translate-y-0"><ChevronRight className="text-indigo-600" size={20} /></div>
                             </div>
-                            <div className="absolute bottom-0 right-0 p-4 opacity-0 group-hover:opacity-100 transition-opacity transform translate-y-2 group-hover:translate-y-0"><ChevronRight className="text-indigo-600" size={20} /></div>
-                          </div>
-                        );
-                      })}
-                    </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="overflow-x-auto bg-white rounded-2xl border border-slate-200 shadow-sm">
+                        <table className="w-full text-left border-collapse">
+                          <thead className="bg-slate-50 text-[10px] font-black uppercase text-slate-400 border-b border-slate-200">
+                            <tr>
+                              <th className="p-4">Loja</th>
+                              <th className="p-4">Cluster</th>
+                              <th className="p-4 text-right">Estoque Geral</th>
+                              <th className="p-4 text-right">Financeiro Geral</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {stores.map(store => {
+                               const hasLowStockAlert = store.lowStockCount > 0 && filter !== '';
+                               return (
+                                 <tr
+                                   key={store.name}
+                                   onClick={() => setExpandedStore(store.name)}
+                                   className={`hover:bg-slate-50 cursor-pointer transition-colors group ${hasLowStockAlert ? 'bg-red-50/20' : ''}`}
+                                 >
+                                   <td className="p-4 text-xs font-black text-slate-800 uppercase flex items-center gap-3">
+                                     {hasLowStockAlert && <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse shrink-0"></div>}
+                                     {store.name}
+                                     <ChevronRight className="text-slate-300 group-hover:text-indigo-600 opacity-0 group-hover:opacity-100 transition-all ml-2" size={16} />
+                                   </td>
+                                   <td className="p-4">
+                                     <span className="text-[9px] font-bold bg-purple-50 text-purple-700 px-2 py-1 rounded uppercase border border-purple-100 whitespace-nowrap">
+                                       {store.cluster || 'SEM CLUSTER'}
+                                     </span>
+                                   </td>
+                                   <td className={`p-4 text-right text-sm font-black whitespace-nowrap ${store.qty === 0 ? 'text-slate-300' : (hasLowStockAlert ? 'text-red-600' : 'text-slate-700')}`}>
+                                     {store.qty.toLocaleString('pt-BR')} un
+                                   </td>
+                                   <td className="p-4 text-right text-sm font-bold text-indigo-600 whitespace-nowrap">
+                                     R$ {store.value.toLocaleString('pt-BR', { notation: "compact", maximumFractionDigits: 1 })}
+                                   </td>
+                                 </tr>
+                               )
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
                   </div>
                 )) : (
                   <div className="col-span-full py-20 text-center">
