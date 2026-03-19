@@ -125,19 +125,18 @@ const anualInit = new sqlite3.Database(ANUAL_DB_PATH);
 anualInit.serialize(() => {
   // RAW VENDAS
   anualInit.run(`
-    CREATE TABLE IF NOT EXISTS vendas_anuais (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      data_emissao TEXT,
-      ano INTEGER,
-      mes INTEGER,
-      loja TEXT,
-      cnpj_empresa TEXT,
-      nome_vendedor TEXT,
-      familia TEXT,
-      total_venda_real REAL,
-      qtd REAL,
-      regiao TEXT
-    )
+  CREATE TABLE IF NOT EXISTS agg_lojas_mensal (
+    ano INTEGER,
+    mes INTEGER,
+    loja TEXT,
+    cnpj_empresa TEXT,
+    regiao TEXT,
+    vendas_total REAL,
+    vendas_qtd REAL,
+    seguros_total REAL,
+    seguros_qtd REAL,
+    PRIMARY KEY (ano, mes, loja)
+  )
   `);
 
   // RAW SEGUROS
@@ -174,20 +173,20 @@ anualInit.serialize(() => {
 
   // AGG VENDEDOR/MÊS/ANO (pronto pro comparativo)
   anualInit.run(`
-    CREATE TABLE IF NOT EXISTS agg_vendedores_mensal (
-      ano INTEGER,
-      mes INTEGER,
-      loja TEXT,
-      cnpj_empresa TEXT,
-      regiao TEXT,
-      vendedor TEXT,
-      venda_total REAL,
-      venda_qtd REAL,
-      seguro_total REAL,
-      seguro_qtd REAL,
-      PRIMARY KEY (ano, mes, loja, vendedor)
-    )
-  `);
+  CREATE TABLE IF NOT EXISTS agg_vendedores_mensal (
+    ano INTEGER,
+    mes INTEGER,
+    loja TEXT,
+    cnpj_empresa TEXT,
+    regiao TEXT,
+    vendedor TEXT,
+    vendas_total REAL,
+    vendas_qtd REAL,
+    seguros_total REAL,
+    seguros_qtd REAL,
+    PRIMARY KEY (ano, mes, loja, vendedor)
+  )
+ `);
 
   console.log("📦 Tabelas ANUAIS garantidas!");
 });
@@ -1649,44 +1648,24 @@ app.get('/sales_anuais', async (req, res) => {
     const userId = String(req.query.userId || '');
     const securityFilter = await getSalesFilter(userId, 'vendas');
 
-    if (!fs.existsSync(ANUAL_DB_PATH)) return res.json({ sales: [] });
+    if (!fs.existsSync(ANUAL_DB_PATH)) {
+      return res.json({ sales: [] });
+    }
 
     const db = await open({ filename: ANUAL_DB_PATH, driver: sqlite3.Database });
 
-    // Descobre schema real
-    const cols = await db.all(`PRAGMA table_info(vendas_anuais)`);
-    const colNames = new Set((cols || []).map((c: any) => String(c.name || '').toLowerCase()));
-
-    const hasTotalVendaReal = colNames.has('total_venda_real');
-    const hasQtd = colNames.has('qtd');
-    const hasTotalLiquido = colNames.has('total_liquido');
-    const hasQuantidade = colNames.has('quantidade');
-
-    const totalExpr = hasTotalVendaReal
-      ? `SUM(COALESCE(total_venda_real,0))`
-      : hasTotalLiquido
-        ? `SUM(COALESCE(total_liquido,0))`
-        : `0`;
-
-    const qtdExpr = hasQtd
-      ? `SUM(COALESCE(qtd,0))`
-      : hasQuantidade
-        ? `SUM(COALESCE(quantidade,0))`
-        : `0`;
-
-    // 🔥 CORREÇÃO AQUI: Adicionado 'descricao' no SELECT e no GROUP BY
     const query = `
-      SELECT 
+      SELECT
         substr(data_emissao, 1, 7) || '-01' as data_emissao,
         cnpj_empresa,
         descricao,
-        COALESCE(familia,'OUTROS') as familia,
-        ${totalExpr} as total_liquido,
-        ${qtdExpr} as quantidade
+        COALESCE(familia, 'OUTROS') as familia,
+        SUM(COALESCE(total_liquido, 0)) as total_liquido,
+        SUM(COALESCE(quantidade, 0)) as quantidade
       FROM vendas_anuais
       WHERE ${securityFilter}
         AND data_emissao IS NOT NULL
-      GROUP BY substr(data_emissao, 1, 7), cnpj_empresa, descricao, COALESCE(familia,'OUTROS')
+      GROUP BY substr(data_emissao, 1, 7), cnpj_empresa, descricao, COALESCE(familia, 'OUTROS')
       ORDER BY data_emissao ASC
     `;
 
@@ -1702,30 +1681,32 @@ app.get('/sales_anuais', async (req, res) => {
 
 // --- ROTA DE RAIO-X (DEBUG MELHORADO) ---
 app.get('/api/debug', async (req, res) => {
-    try {
-        const db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
-        
-        const totalVendas = await db.get("SELECT count(*) as total FROM vendas");
-        const totalKPI = await db.get("SELECT count(*) as total FROM vendedores_kpi");
-        
-        // NOVO: Conta a tabela anual
-        let totalAnual: any = { total: 0 };
-        try { 
-            totalAnual = (await db.get("SELECT count(*) as total FROM vendas_anuais")) || { total: 0 }; 
-        } catch(e) {}
-        
-        await db.close();
+  try {
+    const db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+    const dbAnual = await open({ filename: ANUAL_DB_PATH, driver: sqlite3.Database });
 
-        res.json({
-            status: "Online",
-            banco_vendas_existe: fs.existsSync(GLOBAL_DB_PATH),
-            total_linhas_vendas: totalVendas?.total || 0,
-            total_linhas_kpi: totalKPI?.total || 0,
-            total_linhas_anuais: totalAnual?.total || 0
-        });
-    } catch (e: any) {
-        res.json({ erro: e.message });
-    }
+    const totalVendas = await db.get("SELECT count(*) as total FROM vendas");
+    const totalKPI = await db.get("SELECT count(*) as total FROM vendedores_kpi");
+
+    let totalAnual: any = { total: 0 };
+    try {
+      totalAnual = (await dbAnual.get("SELECT count(*) as total FROM vendas_anuais")) || { total: 0 };
+    } catch (e) {}
+
+    await db.close();
+    await dbAnual.close();
+
+    res.json({
+      status: "Online",
+      banco_vendas_existe: fs.existsSync(GLOBAL_DB_PATH),
+      banco_anual_existe: fs.existsSync(ANUAL_DB_PATH),
+      total_linhas_vendas: totalVendas?.total || 0,
+      total_linhas_kpi: totalKPI?.total || 0,
+      total_linhas_anuais: totalAnual?.total || 0
+    });
+  } catch (e: any) {
+    res.json({ erro: e.message });
+  }
 });
 
 // 🛒 ROTA DE SINCRONIZAÇÃO DE VENDAS (RECEBE DO PYTHON)
@@ -1871,47 +1852,103 @@ app.post('/api/sync/vendedores', async (req, res) => {
 
 // 1. Recebe Lotes de Vendas Anuais
 app.post('/api/sync/vendas_anuais', async (req, res) => {
-    const dados = req.body;
-    const shouldReset = req.query.reset !== 'false'; 
-  
-    if (!dados || !Array.isArray(dados)) return res.status(400).json({ error: "Formato inválido." });
-  
-    const fixDate = (d: string) => {
-        if (!d) return null;
-        if (d.includes('/')) {
-            const parts = d.split('/'); 
-            if (parts.length === 3) return `${parts[2]}-${parts[1]}-${parts[0]}`;
-        }
-        return d; 
-    };
-  
-    try {
-      await enqueueWrite(() => new Promise<void>((resolve, reject) => {
-        const db = new sqlite3.Database(GLOBAL_DB_PATH);
-        db.configure("busyTimeout", 15000);
-        db.serialize(() => {
-          db.run("PRAGMA journal_mode=WAL;");
-          db.run("BEGIN IMMEDIATE TRANSACTION");
-  
-          const preQuery = shouldReset ? "DELETE FROM vendas_anuais" : "SELECT 1"; 
-          
-          db.run(preQuery, (err) => {
-            if (err) { db.run("ROLLBACK"); return reject(err); }
-            
-            const stmt = db.prepare(`INSERT INTO vendas_anuais (data_emissao, nome_vendedor, descricao, quantidade, total_liquido, cnpj_empresa, familia, regiao) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
-            for (const item of dados) {
-              stmt.run(fixDate(item.data_emissao), item.nome_vendedor, item.descricao, item.quantidade, item.total_liquido, item.cnpj_empresa, item.familia, item.regiao);
+  const dados = req.body;
+  const shouldReset = req.query.reset !== 'false';
+
+  if (!dados || !Array.isArray(dados)) {
+    return res.status(400).json({ error: "Formato inválido." });
+  }
+
+  const fixDate = (d: string) => {
+    if (!d) return null;
+    if (d.includes('/')) {
+      const parts = d.split('/');
+      if (parts.length === 3) return `${parts[2]}-${parts[1]}-${parts[0]}`;
+    }
+    return d;
+  };
+
+  try {
+    await enqueueWrite(() => new Promise<void>((resolve, reject) => {
+      const db = new sqlite3.Database(ANUAL_DB_PATH);
+      db.configure("busyTimeout", 15000);
+
+      db.serialize(() => {
+        db.run("PRAGMA journal_mode=WAL;");
+        db.run("PRAGMA synchronous=NORMAL;");
+        db.run("BEGIN IMMEDIATE TRANSACTION");
+
+        const preQuery = shouldReset ? "DELETE FROM vendas_anuais" : "SELECT 1";
+
+        db.run(preQuery, (err) => {
+          if (err) {
+            db.run("ROLLBACK", () => db.close(() => reject(err)));
+            return;
+          }
+
+          const stmt = db.prepare(`
+            INSERT INTO vendas_anuais (
+              data_emissao,
+              ano,
+              mes,
+              loja,
+              cnpj_empresa,
+              nome_vendedor,
+              descricao,
+              familia,
+              regiao,
+              quantidade,
+              total_liquido
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `);
+
+          for (const item of dados) {
+            const data = fixDate(item.data_emissao);
+            const ano = data ? Number(String(data).slice(0, 4)) : null;
+            const mes = data ? Number(String(data).slice(5, 7)) : null;
+
+            stmt.run(
+              data,
+              ano,
+              mes,
+              item.loja || null,
+              item.cnpj_empresa || null,
+              item.nome_vendedor || null,
+              item.descricao || null,
+              item.familia || 'OUTROS',
+              item.regiao || null,
+              Number(item.quantidade || 0),
+              Number(item.total_liquido || 0)
+            );
+          }
+
+          stmt.finalize((err2) => {
+            if (err2) {
+              db.run("ROLLBACK", () => db.close(() => reject(err2)));
+              return;
             }
-            stmt.finalize();
+
             db.run("COMMIT", (err3) => {
-                if (err3) { db.run("ROLLBACK"); return reject(err3); }
-                db.close(); resolve();
+              if (err3) {
+                db.run("ROLLBACK", () => db.close(() => reject(err3)));
+                return;
+              }
+
+              db.close((err4) => {
+                if (err4) return reject(err4);
+                resolve();
+              });
             });
           });
         });
-      }));
-      res.json({ message: `Lote de Vendas Anuais Sincronizado (Reset: ${shouldReset})` });
-    } catch (e: any) { res.status(500).json({ error: "Erro banco anual" }); }
+      });
+    }));
+
+    res.json({ message: `Lote de Vendas Anuais Sincronizado (Reset: ${shouldReset})` });
+  } catch (e: any) {
+    console.error("Erro /api/sync/vendas_anuais:", e);
+    res.status(500).json({ error: "Erro banco anual", details: e.message });
+  }
 });
 
 // 2. Recebe Lotes de KPI Anuais (Vendedores)
