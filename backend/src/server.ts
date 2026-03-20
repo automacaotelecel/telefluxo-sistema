@@ -2930,6 +2930,153 @@ app.get('/forecast/ano', async (req, res) => {
   }
 });
 
+// ==========================================================
+// 🚀 INTEGRAÇÃO LINX (PYTHON -> SERVER -> REACT)
+// ==========================================================
+
+// Função Mágica Dinâmica: Lê o JSON do Python e cria a tabela automaticamente (Versão TypeScript)
+async function handleLinxSync(req: any, res: any, tableName: string) {
+    const dados = req.body;
+    const reset = req.query.reset === 'true';
+
+    if (!Array.isArray(dados) || dados.length === 0) {
+        return res.json({ success: true, gravados: 0 }); 
+    }
+
+    try {
+        const db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+        await db.exec("BEGIN TRANSACTION");
+
+        // Se for o primeiro lote de uma atualização, apaga a tabela velha
+        if (reset) {
+            await db.exec(`DROP TABLE IF EXISTS ${tableName}`);
+        }
+
+        // 1. Descobre as colunas lendo o primeiro item do pacote
+        const colunas = Object.keys(dados[0]);
+        
+        // 2. Cria a tabela dinamicamente com essas colunas
+        const createTableSql = `CREATE TABLE IF NOT EXISTS ${tableName} (${colunas.map(c => `${c} TEXT`).join(', ')})`;
+        await db.exec(createTableSql);
+
+        // 3. Prepara o comando de inserção
+        const placeholders = colunas.map(() => '?').join(', ');
+        const insertSql = `INSERT INTO ${tableName} (${colunas.join(', ')}) VALUES (${placeholders})`;
+        const stmt = await db.prepare(insertSql);
+        
+        // 4. Salva todos os 100 itens do lote
+        for (const item of dados) {
+            const valores = colunas.map(c => item[c] !== undefined && item[c] !== null ? String(item[c]) : null);
+            await stmt.run(valores);
+        }
+
+        await stmt.finalize();
+        await db.exec("COMMIT");
+        await db.close();
+
+        res.json({ success: true, gravados: dados.length });
+    } catch (e: any) { // <-- Correção do tipo de erro (e: any)
+        console.error(`❌ Erro Sync Linx (${tableName}):`, e);
+        res.status(500).json({ error: e.message });
+    }
+}
+
+// AS 4 PORTAS DE ENTRADA PARA O PYTHON (POST)
+app.post('/api/sync/linx_movimento_resumo', (req: any, res: any) => handleLinxSync(req, res, 'linx_movimento_resumo'));
+app.post('/api/sync/linx_movimento_planos', (req: any, res: any) => handleLinxSync(req, res, 'linx_movimento_planos'));
+app.post('/api/sync/linx_movimento_cartoes', (req: any, res: any) => handleLinxSync(req, res, 'linx_movimento_cartoes'));
+app.post('/api/sync/linx_planos_parcelas', (req: any, res: any) => handleLinxSync(req, res, 'linx_planos_parcelas'));
+
+// A PORTA DE SAÍDA PARA O FRONTEND REACT (GET)
+app.get('/api/linx/pagamentos', async (req: any, res: any) => {
+    try {
+        const db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+
+        const tableCheck = await db.all(`
+            SELECT name
+            FROM sqlite_master
+            WHERE type='table'
+              AND name IN ('linx_movimento_planos', 'linx_movimento_resumo', 'linx_movimento_cartoes')
+        `);
+
+        if (tableCheck.length < 2) {
+            await db.close();
+            return res.json([]);
+        }
+
+        const query = `
+            WITH resumo_unico AS (
+                SELECT
+                    cnpj_emp,
+                    identificador,
+                    MAX(data_lancamento) AS data_lancamento
+                FROM linx_movimento_resumo
+                GROUP BY cnpj_emp, identificador
+            ),
+            planos_unicos AS (
+                SELECT DISTINCT
+                    mp.cnpj_emp,
+                    mp.identificador,
+                    mp.plano,
+                    mp.desc_plano,
+                    mp.total,
+                    mp.qtde_parcelas,
+                    mp.forma_pgto,
+                    mp.tipo_transacao,
+                    mp.ordem_cartao
+                FROM linx_movimento_planos mp
+            ),
+            cartoes_unicos AS (
+                SELECT DISTINCT
+                    mc.cnpj_emp,
+                    mc.identificador,
+                    mc.ordem_cartao,
+                    mc.credito_debito,
+                    mc.descricao_bandeira,
+                    mc.valor,
+                    mc.nsu_host,
+                    mc.nsu_sitef,
+                    mc.cod_autorizacao
+                FROM linx_movimento_cartoes mc
+            )
+            SELECT
+                p.cnpj_emp,
+                p.identificador,
+                p.plano,
+                p.desc_plano,
+                CAST(REPLACE(COALESCE(p.total, '0'), ',', '.') AS REAL) AS valor_pagamento,
+                CAST(COALESCE(NULLIF(p.qtde_parcelas, ''), '1') AS INTEGER) AS qtde_parcelas,
+                p.forma_pgto,
+                p.tipo_transacao,
+                CAST(COALESCE(NULLIF(p.ordem_cartao, ''), '0') AS INTEGER) AS ordem_cartao,
+                r.data_lancamento,
+                c.credito_debito,
+                c.descricao_bandeira,
+                CAST(REPLACE(COALESCE(c.valor, '0'), ',', '.') AS REAL) AS valor_cartao,
+                c.nsu_host,
+                c.nsu_sitef,
+                c.cod_autorizacao
+            FROM planos_unicos p
+            LEFT JOIN resumo_unico r
+                ON r.cnpj_emp = p.cnpj_emp
+               AND r.identificador = p.identificador
+            LEFT JOIN cartoes_unicos c
+                ON c.cnpj_emp = p.cnpj_emp
+               AND c.identificador = p.identificador
+               AND COALESCE(c.ordem_cartao, '0') = COALESCE(p.ordem_cartao, '0')
+            ORDER BY r.data_lancamento DESC, p.identificador DESC
+        `;
+
+        const pagamentos = await db.all(query);
+        await db.close();
+
+        res.status(200).json(pagamentos);
+    } catch (error: any) {
+        console.error("Erro ao buscar pagamentos Linx:", error);
+        res.status(500).json({ error: "Erro interno ao buscar pagamentos" });
+    }
+});
+
 // Define a porta: Usa a do Render (process.env.PORT) ou a 3000 se for local
 const PORT = process.env.PORT || 3000;
 
