@@ -59,27 +59,7 @@ dbInit.serialize(() => {
         )
     `);
     
-    // 3. (IMPORTANTE) Cria a tabela 'vendedores' se o Python usar esse nome simples
-    // Isso garante que se o script Python salvar como "vendedores", o sistema lê
-    dbInit.run(`
-        CREATE TABLE IF NOT EXISTS vendedores (
-            loja TEXT, vendedor TEXT, fat_atual REAL, tendencia REAL,
-            fat_anterior REAL, crescimento REAL, pa REAL, ticket REAL,
-            qtd REAL, regiao TEXT, pct_seguro REAL, seguros REAL
-        )
-    `);
-
-    // ... (código existente da tabela vendedores) ...
-    dbInit.run(`
-        CREATE TABLE IF NOT EXISTS vendedores (
-            loja TEXT, vendedor TEXT, fat_atual REAL, tendencia REAL,
-            fat_anterior REAL, crescimento REAL, pa REAL, ticket REAL,
-            qtd REAL, regiao TEXT, pct_seguro REAL, seguros REAL
-        )
-    `);
-    
-    // --- [NOVO] TABELAS PARA ESTOQUE X VENDAS ---
-    
+       
     // 4. Tabela de Inputs Manuais (Faturado, Sugestão, Pedido)
     dbInit.run(`
         CREATE TABLE IF NOT EXISTS sugestao_compras_manual (
