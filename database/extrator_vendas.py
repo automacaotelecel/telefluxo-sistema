@@ -33,7 +33,11 @@ DB_COPIA_PATH = os.path.join(DB_COPIA_DIR, "samsung_vendas.db")
 
 # --- CONFIGURAÇÕES ---
 CAMINHO_EXCEL = r"C:\Users\Usuario\Desktop\BI AUTOMATICO\BI_SAMSUNG\Vendas_Diarias_2.0.xlsm"
-URL_BACKEND = get_backend_url() # Usa a função automática
+
+# ✅ FORÇADO PARA PRODUÇÃO
+URL_BACKEND = "https://telefluxo-aplicacao.onrender.com"
+print("🚀 ENVIO FORÇADO PARA:", URL_BACKEND)
+
 TIMEOUT = (10, 180)  # (conexão, resposta) em segundos
 
 # ✅ política de retry
@@ -273,6 +277,7 @@ def criar_tabelas_copia(db_path: str) -> None:
         cur.execute("""
         CREATE TABLE IF NOT EXISTS vendedores (
             loja            TEXT,
+            cnpj_empresa    TEXT,
             vendedor        TEXT,
             faturamento     REAL,
             tendencia       REAL,
@@ -355,6 +360,7 @@ def salvar_copia_vendedores(dados_vendedores: List[Dict[str, Any]], db_path: str
         for r in dados_vendedores:
             rows.append((
                 r.get("loja"),
+                r.get("cnpj_empresa"),
                 r.get("vendedor"),
                 r.get("faturamento", 0),
                 r.get("tendencia", 0),
@@ -375,11 +381,11 @@ def salvar_copia_vendedores(dados_vendedores: List[Dict[str, Any]], db_path: str
 
         cur.executemany("""
             INSERT INTO vendedores (
-                loja, vendedor, faturamento, tendencia, mes_anterior,
+                loja, cnpj_empresa, vendedor, faturamento, tendencia, mes_anterior,
                 crescimento, pct_acessorios, conv_peliculas, seguros, pct_seguro, pa,
                 ticket_medio, pct_wearable, rs_aparelho, rs_acessorio,
                 rs_tablet, rs_wearable
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, rows)
 
         cur.execute("""
@@ -414,7 +420,7 @@ def integrar_vendas_geral():
     col_data = "DATA_EMISSAO"
     col_vendedor = "NOME_VENDEDOR"
     col_desc = "MODELOS" if "MODELOS" in df.columns else "modelos"
-    col_qtd = col_qtd = "QTD REAL" if "QTD REAL" in df.columns else "QUANTIDADE"
+    col_qtd = "QTD REAL" if "QTD REAL" in df.columns else "QUANTIDADE"
     col_loja = "LOJA SISTEMA" if "LOJA SISTEMA" in df.columns else "NOME_FANTASIA"
     col_familia = "CATEGORIA REAL" if "CATEGORIA REAL" in df.columns else "CATEGORIA"
     col_regiao = "REGIAO"
@@ -478,6 +484,58 @@ def clean_number(val) -> float:
     except:
         return 0.0
 
+def montar_mapa_vendedor_loja_pelas_vendas() -> Dict[str, str]:
+    """
+    Usa a aba VENDAS como fonte principal para descobrir a loja canônica de cada vendedor.
+    Se um vendedor tiver vendas em mais de uma loja no período, escolhe a loja com maior faturamento.
+    """
+    if not os.path.exists(CAMINHO_EXCEL):
+        return {}
+
+    try:
+        df = pd.read_excel(CAMINHO_EXCEL, sheet_name="VENDAS", engine="openpyxl")
+    except Exception as e:
+        print(f"⚠️ Não foi possível montar mapa vendedor->loja pelas vendas: {e}")
+        return {}
+
+    if "CANCELADO" in df.columns:
+        df = df[df["CANCELADO"].astype(str).str.strip().str.upper() == "N"].copy()
+
+    col_vendedor = "NOME_VENDEDOR"
+    col_loja = "LOJA SISTEMA" if "LOJA SISTEMA" in df.columns else "NOME_FANTASIA"
+
+    try:
+        work = pd.DataFrame()
+        work["vendedor"] = df[col_vendedor].astype(str).str.strip().str.upper()
+        work["cnpj_empresa"] = df[col_loja].map(loja_para_cnpj)
+        work["loja"] = work["cnpj_empresa"].map(LOJAS_MAP)
+
+        # usa a mesma coluna de valor já usada em vendas
+        work["total_liquido"] = pd.to_numeric(df.iloc[:, 18], errors="coerce").fillna(0)
+
+        work = work.dropna(subset=["vendedor", "loja"]).copy()
+        work = work[~work["vendedor"].isin(["", "NAN", "NONE"])]
+
+        if work.empty:
+            return {}
+
+        resumo = (
+            work.groupby(["vendedor", "loja"], as_index=False)["total_liquido"]
+            .sum()
+            .sort_values(["vendedor", "total_liquido"], ascending=[True, False])
+        )
+
+        mapa = {}
+        for vendedor, grupo in resumo.groupby("vendedor"):
+            mapa[vendedor] = str(grupo.iloc[0]["loja"]).strip().upper()
+
+        print(f"🧭 Mapa vendedor->loja montado pelas vendas: {len(mapa)} vendedores")
+        return mapa
+
+    except Exception as e:
+        print(f"⚠️ Erro ao montar mapa vendedor->loja: {e}")
+        return {}
+
 
 def integrar_kpi_vendedores():
     print("🏆 Lendo KPIs dos Vendedores (Aba API VENDEDORES)...")
@@ -490,6 +548,9 @@ def integrar_kpi_vendedores():
 
     # Padroniza todas as colunas do Excel para maiúsculo para evitar erros de digitação
     df_meta.columns = df_meta.columns.astype(str).str.strip().str.upper()
+
+    # ✅ NOVO: prioriza a loja canônica descoberta pela aba VENDAS
+    mapa_vendedor_loja = montar_mapa_vendedor_loja_pelas_vendas()
 
     output_list = []
     lojas_salvas = set()
@@ -504,8 +565,17 @@ def integrar_kpi_vendedores():
         nome_loja_sujo = str(row.get("LOJA", "")).strip()
         nome_loja_limpo = get_clean_store_name(nome_loja_sujo)
 
-        if norm(nome_loja_limpo) != norm(nome_loja_sujo):
-            lojas_salvas.add(f"{nome_loja_sujo} -> {nome_loja_limpo}")
+        # ✅ PRIORIDADE: loja das VENDAS
+        loja_pelas_vendas = mapa_vendedor_loja.get(vendedor)
+
+        if loja_pelas_vendas:
+            if norm(loja_pelas_vendas) != norm(nome_loja_limpo):
+                lojas_salvas.add(f"{vendedor}: KPI={nome_loja_limpo} -> VENDAS={loja_pelas_vendas}")
+            nome_loja_final = loja_pelas_vendas
+        else:
+            nome_loja_final = nome_loja_limpo
+            if norm(nome_loja_limpo) != norm(nome_loja_sujo):
+                lojas_salvas.add(f"{nome_loja_sujo} -> {nome_loja_limpo}")
 
         # Função auxiliar para buscar o valor tentando variações do nome da coluna
         def get_val(variacoes_coluna):
@@ -516,7 +586,8 @@ def integrar_kpi_vendedores():
 
         # ✅ MAPEAMENTO EXATO COM AS COLUNAS SOLICITADAS
         output_list.append({
-            "loja": nome_loja_limpo,
+            "loja": nome_loja_final,
+            "cnpj_empresa": REVERSE_LOJAS.get(norm(nome_loja_final)),
             "vendedor": vendedor,
             "faturamento": get_val(["FATURAMENTO"]),
             "tendencia": get_val(["TENDENCIA MÊS", "TENDENCIA MES"]),
@@ -543,8 +614,8 @@ def integrar_kpi_vendedores():
         })
 
     if lojas_salvas:
-        print("🔎 DEBUG: Algumas lojas precisaram ser padronizadas:")
-        for l in list(lojas_salvas)[:5]:
+        print("🔎 DEBUG: Algumas lojas precisaram ser padronizadas/alinhadas:")
+        for l in list(lojas_salvas)[:20]:
             print(f"   {l}")
 
     print(f"📊 Processados {len(output_list)} registros de Vendedores.")
