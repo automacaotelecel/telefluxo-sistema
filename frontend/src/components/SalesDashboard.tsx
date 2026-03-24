@@ -5,7 +5,7 @@ import {
 import { 
   DollarSign, TrendingUp, Trophy, LayoutGrid, Users, Calendar, Store, 
   AlertCircle, ChevronDown, ChevronUp, CheckSquare, Square, Filter, Footprints, MousePointerClick, ArrowRightLeft, Layers,
-  Package, X, Search, Download // NOVO: Ícone de Download adicionado
+  Package, X, Search, Download, Target, Smartphone, Watch, MonitorSmartphone, Headphones
 } from 'lucide-react';
 
 const STORE_MAP: Record<string, string> = {
@@ -63,6 +63,9 @@ export default function SalesDashboard() {
   const [isProductModalOpen, setIsProductModalOpen] = useState(false);
   const [expandedProduct, setExpandedProduct] = useState<string | null>(null);
   const [searchProduct, setSearchProduct] = useState("");
+
+  // NOVO ESTADO: Vendedor Expandido
+  const [expandedSeller, setExpandedSeller] = useState<string | null>(null);
 
   const [errorMsg, setErrorMsg] = useState<string>('');
   const [loading, setLoading] = useState(false);
@@ -281,23 +284,43 @@ export default function SalesDashboard() {
             );
 
             const totalVendedor = v.total || 0;
-            const anterior = Number(kpi?.fat_anterior || 0);
-            
+            const anterior = Number(kpi?.mes_anterior || kpi?.fat_anterior || 0);
             const tendenciaMatematica = (totalVendedor / diasPassados) * diasNoMes;
 
+            // ✅ MAPEAMENTO DAS NOVAS COLUNAS DO BANCO DE DADOS
             return {
                 ...v,
-                tendencia: Math.max(tendenciaMatematica, totalVendedor), 
+                faturamento: Number(kpi?.faturamento || totalVendedor), // Se não vier do banco, usa o filtrado
+                tendencia: Number(kpi?.tendencia || Math.max(tendenciaMatematica, totalVendedor)), 
+                mes_anterior: anterior,
+                crescimento: Number(kpi?.crescimento || (anterior > 0 ? (totalVendedor - anterior) / anterior : 0)),
+                pct_acessorios: Number(kpi?.pct_acessorios || 0),
+                conv_peliculas: Number(kpi?.conv_peliculas || 0),
                 seguros: Number(kpi?.seguros || 0),
-                pct_seguro: Number(kpi?.pct_seguro || 0),
-                fat_anterior: anterior,
-                crescimento: anterior > 0 ? (totalVendedor - anterior) / anterior : 0,
+                pct_seguro: Number(kpi?.pct_seguros || kpi?.pct_seguro || 0),
+                // Extras para o modal detalhado
+                rs_aparelho: Number(kpi?.rs_aparelho || 0),
+                rs_acessorio: Number(kpi?.rs_acessorio || 0),
+                rs_tablet: Number(kpi?.rs_tablet || 0),
+                rs_wearable: Number(kpi?.rs_wearable || 0),
                 pa: kpi?.pa || (v.qtd / 50).toFixed(2), 
                 ticket: v.qtd > 0 ? totalVendedor / v.qtd : 0,
             };
         })
         .sort((a: any, b: any) => b.total - a.total);
-      setRanking(sortedRanking);
+      
+      // ✅ CALCULAR A PORCENTAGEM DO VENDEDOR DENTRO DA LOJA
+      const storeTotals: Record<string, number> = {};
+      sortedRanking.forEach((v: any) => {
+          storeTotals[v.loja] = (storeTotals[v.loja] || 0) + v.total;
+      });
+
+      const finalRanking = sortedRanking.map((v: any) => ({
+          ...v,
+          pct_loja: storeTotals[v.loja] > 0 ? (v.total / storeTotals[v.loja]) : 0
+      }));
+
+      setRanking(finalRanking);
         
       const mapProd = new Map();
       filteredData.forEach(sale => {
@@ -380,33 +403,45 @@ export default function SalesDashboard() {
       setExpandedProduct(prev => prev === desc ? null : desc);
   };
 
-  // NOVO: Função para exportar os dados do modal para CSV
+  // ✅ NOVO: Função para buscar o top 5 de produtos do vendedor filtrado
+  const getTopProductsBySeller = (sellerName: string) => {
+      const productsMap = new Map();
+      filteredData
+          .filter(sale => (sale.nome_vendedor || sale.vendedor || "").toUpperCase() === sellerName.toUpperCase())
+          .forEach(sale => {
+              const desc = sale.descricao || sale.produto || "N/D";
+              if (!productsMap.has(desc)) productsMap.set(desc, { desc, qtd: 0, total: 0 });
+              const p = productsMap.get(desc);
+              p.qtd += Number(sale.quantidade || 0);
+              p.total += Number(sale.total_liquido || 0);
+          });
+      
+      return Array.from(productsMap.values())
+          .sort((a: any, b: any) => b.qtd - a.qtd)
+          .slice(0, 5); // Retorna os Top 5
+  };
+
   const exportToCSV = () => {
       if (filteredProductsForModal.length === 0) return;
 
-      // Cabeçalho amigável para Excel (padrão PT-BR)
       let csvContent = "PRODUTO;QUANTIDADE TOTAL;FATURAMENTO TOTAL;LOJA;QUANTIDADE LOJA;FATURAMENTO LOJA\n";
 
       filteredProductsForModal.forEach(prod => {
           if (prod.lojasBreakdown && prod.lojasBreakdown.length > 0) {
-              // Se tiver detalhamento de loja, cria uma linha para cada loja do produto
               prod.lojasBreakdown.forEach((loja: any) => {
-                  const descSegura = `"${prod.desc.replace(/"/g, '""')}"`; // Evita quebra se tiver aspas no nome
+                  const descSegura = `"${prod.desc.replace(/"/g, '""')}"`;
                   const faturamentoTotal = prod.total.toFixed(2).replace('.', ',');
                   const nomeLoja = `"${loja.nome}"`;
                   const faturamentoLoja = loja.total.toFixed(2).replace('.', ',');
-                  
                   csvContent += `${descSegura};${prod.qtd};${faturamentoTotal};${nomeLoja};${loja.qtd};${faturamentoLoja}\n`;
               });
           } else {
-              // Fallback se não tiver loja mapeada
               const descSegura = `"${prod.desc.replace(/"/g, '""')}"`;
               const faturamentoTotal = prod.total.toFixed(2).replace('.', ',');
               csvContent += `${descSegura};${prod.qtd};${faturamentoTotal};"N/D";0;0,00\n`;
           }
       });
 
-      // BOM (Byte Order Mark) garante que o Excel reconheça acentos (UTF-8) corretamente
       const bom = "\uFEFF";
       const blob = new Blob([bom + csvContent], { type: "text/csv;charset=utf-8;" });
       
@@ -628,37 +663,115 @@ export default function SalesDashboard() {
       {activeTab === 'vendedores' && (
         <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
             <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
-                <div className="flex items-center gap-2"><Users size={14} className="text-slate-500"/><h3 className="font-black text-slate-700 uppercase text-xs">Ranking Detalhado</h3></div>
-                <span className="text-[10px] font-bold text-slate-400 uppercase">{ranking.length} RESULTADOS</span>
+                <div className="flex items-center gap-2"><Users size={14} className="text-slate-500"/><h3 className="font-black text-slate-700 uppercase text-xs">Controle Detalhado por Vendedor</h3></div>
+                <span className="text-[10px] font-bold text-slate-400 uppercase">{ranking.length} RESULTADOS (Clique no vendedor para expandir)</span>
             </div>
-            <div className="overflow-x-auto max-h-[600px]">
+            <div className="overflow-x-auto max-h-[700px]">
                 <table className="w-full text-left border-collapse">
                     <thead className="sticky top-0 bg-white shadow-sm z-10">
                         <tr className="text-[9px] font-black text-slate-400 uppercase tracking-wider">
                             <th className="p-3 text-center">#</th>
-                            <th className="p-3">Vendedor</th>
                             <th className="p-3">Loja</th>
+                            <th className="p-3">Vendedor</th>
                             <th className="p-3 text-right text-[#1428A0]">Faturamento</th>
-                            <th className="p-3 text-right text-purple-600">Projeção Fim do Mês</th>
-                            <th className="p-3 text-right">Mês Anterior.</th>
+                            <th className="p-3 text-right text-purple-600">Tendência</th>
+                            <th className="p-3 text-right">Mês Ant.</th>
                             <th className="p-3 text-right">Cresc.</th>
-                            <th className="p-3 text-right text-emerald-600">Seguros (R$)</th>
-                            <th className="p-3 text-right text-purple-600">% Seg</th>
+                            <th className="p-3 text-right text-indigo-500">Conv Acess</th>
+                            <th className="p-3 text-right text-amber-500">Conv Películas</th>
+                            <th className="p-3 text-right text-emerald-600">R$ Seguros</th>
+                            <th className="p-3 text-right text-emerald-600">% Seg</th>
                         </tr>
                     </thead>
                     <tbody className="text-xs font-bold text-slate-700">
                         {ranking.map((v, i) => (
-                            <tr key={i} className="border-b border-slate-50 hover:bg-blue-50/30 transition-colors">
-                                <td className="p-3 text-center"><span className={`w-5 h-5 flex items-center justify-center rounded text-[9px] ${i<3 ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-500'}`}>{i+1}</span></td>
-                                <td className="p-3 uppercase">{v.nome}</td>
-                                <td className="p-3 text-slate-400 text-[10px] uppercase">{v.loja}</td>
-                                <td className="p-3 text-right font-black text-slate-800">{formatMoney(v.total)}</td>
-                                <td className="p-3 text-right text-purple-600">{formatMoney(v.tendencia)}</td>
-                                <td className="p-3 text-right text-slate-400">{formatMoney(v.fat_anterior)}</td>
-                                <td className={`p-3 text-right ${v.crescimento >= 0 ? 'text-green-600' : 'text-red-500'}`}>{formatPercent(v.crescimento)}</td>
-                                <td className="p-3 text-right text-emerald-600">{formatMoney(v.seguros)}</td>
-                                <td className="p-3 text-right font-black text-purple-600">{formatPercent(v.pct_seguro)}</td>
-                            </tr>
+                            <React.Fragment key={i}>
+                                {/* LINHA PRINCIPAL DO VENDEDOR */}
+                                <tr 
+                                    onClick={() => setExpandedSeller(expandedSeller === v.nome ? null : v.nome)}
+                                    className={`border-b border-slate-50 transition-colors cursor-pointer ${expandedSeller === v.nome ? 'bg-blue-50/50' : 'hover:bg-slate-50'}`}
+                                >
+                                    <td className="p-3 text-center">
+                                        <span className={`w-5 h-5 flex items-center justify-center rounded text-[9px] mx-auto ${i<3 ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-500'}`}>{i+1}</span>
+                                    </td>
+                                    <td className="p-3 text-slate-400 text-[10px] uppercase whitespace-nowrap">{v.loja}</td>
+                                    <td className="p-3 uppercase whitespace-nowrap flex items-center gap-2">
+                                        {expandedSeller === v.nome ? <ChevronUp size={14} className="text-[#1428A0]" /> : <ChevronDown size={14} className="text-slate-300" />}
+                                        {v.nome}
+                                        <span className="text-[9px] bg-[#1428A0]/10 text-[#1428A0] px-1.5 py-0.5 rounded ml-1" title="Participação na Loja">
+                                            {formatPercent(v.pct_loja)} loja
+                                        </span>
+                                    </td>
+                                    <td className="p-3 text-right font-black text-slate-800 whitespace-nowrap">{formatMoney(v.faturamento)}</td>
+                                    <td className="p-3 text-right text-purple-600 whitespace-nowrap">{formatMoney(v.tendencia)}</td>
+                                    <td className="p-3 text-right text-slate-400 whitespace-nowrap">{formatMoney(v.mes_anterior)}</td>
+                                    <td className={`p-3 text-right ${v.crescimento >= 0 ? 'text-green-600' : 'text-red-500'} whitespace-nowrap`}>{formatPercent(v.crescimento)}</td>
+                                    <td className="p-3 text-right text-indigo-500 whitespace-nowrap">{formatPercent(v.pct_acessorios)}</td>
+                                    <td className="p-3 text-right text-amber-500 whitespace-nowrap">{formatPercent(v.conv_peliculas)}</td>
+                                    <td className="p-3 text-right text-emerald-600 whitespace-nowrap">{formatMoney(v.seguros)}</td>
+                                    <td className="p-3 text-right font-black text-emerald-600 whitespace-nowrap">{formatPercent(v.pct_seguro)}</td>
+                                </tr>
+                                
+                                {/* ✅ ÁREA EXPANDIDA DO VENDEDOR (DETALHAMENTO PROFISSIONAL) */}
+                                {expandedSeller === v.nome && (
+                                    <tr className="bg-slate-50 border-b border-slate-200 shadow-inner">
+                                        <td colSpan={11} className="p-4 md:p-6">
+                                            <div className="flex items-center gap-2 mb-4 border-b border-slate-200 pb-2">
+                                                <Target size={16} className="text-[#1428A0]"/>
+                                                <h4 className="text-xs font-black uppercase tracking-wider text-slate-700">Análise de Performance - {v.nome}</h4>
+                                            </div>
+                                            
+                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                                {/* BLOCO 1: COMPOSIÇÃO DA RECEITA */}
+                                                <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                                                    <h5 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">Composição de Vendas (R$)</h5>
+                                                    <div className="space-y-3">
+                                                        <div className="flex justify-between items-center p-2 rounded hover:bg-slate-50 transition-colors">
+                                                            <div className="flex items-center gap-2 text-xs font-bold text-slate-600"><Smartphone size={14} className="text-blue-500"/> Aparelhos</div>
+                                                            <div className="text-xs font-black text-slate-800">{formatMoney(v.rs_aparelho)}</div>
+                                                        </div>
+                                                        <div className="flex justify-between items-center p-2 rounded hover:bg-slate-50 transition-colors">
+                                                            <div className="flex items-center gap-2 text-xs font-bold text-slate-600"><Headphones size={14} className="text-indigo-500"/> Acessórios</div>
+                                                            <div className="text-xs font-black text-slate-800">{formatMoney(v.rs_acessorio)}</div>
+                                                        </div>
+                                                        <div className="flex justify-between items-center p-2 rounded hover:bg-slate-50 transition-colors">
+                                                            <div className="flex items-center gap-2 text-xs font-bold text-slate-600"><MonitorSmartphone size={14} className="text-purple-500"/> Tablets</div>
+                                                            <div className="text-xs font-black text-slate-800">{formatMoney(v.rs_tablet)}</div>
+                                                        </div>
+                                                        <div className="flex justify-between items-center p-2 rounded hover:bg-slate-50 transition-colors">
+                                                            <div className="flex items-center gap-2 text-xs font-bold text-slate-600"><Watch size={14} className="text-emerald-500"/> Wearables</div>
+                                                            <div className="text-xs font-black text-slate-800">{formatMoney(v.rs_wearable)}</div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+
+                                                {/* BLOCO 2: TOP MODELOS VENDIDOS */}
+                                                <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                                                    <h5 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">Top 5 Modelos Vendidos (Filtrado)</h5>
+                                                    <div className="space-y-2">
+                                                        {getTopProductsBySeller(v.nome).length > 0 ? (
+                                                            getTopProductsBySeller(v.nome).map((prod: any, idx: number) => (
+                                                                <div key={idx} className="flex justify-between items-center p-2 rounded border border-slate-100 hover:border-emerald-200 hover:bg-emerald-50/30 transition-colors">
+                                                                    <div className="flex items-center gap-2 overflow-hidden pr-2">
+                                                                        <span className="text-[10px] font-black text-slate-400">{idx + 1}º</span>
+                                                                        <span className="text-[10px] font-bold text-slate-700 uppercase truncate" title={prod.desc}>{prod.desc}</span>
+                                                                    </div>
+                                                                    <div className="flex flex-col items-end min-w-[70px]">
+                                                                        <span className="text-xs font-black text-emerald-600">{prod.qtd} un.</span>
+                                                                        <span className="text-[9px] font-bold text-slate-400">{formatMoney(prod.total)}</span>
+                                                                    </div>
+                                                                </div>
+                                                            ))
+                                                        ) : (
+                                                            <div className="text-xs text-center text-slate-400 py-4 font-bold">Nenhum produto vendido no período filtrado.</div>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                )}
+                            </React.Fragment>
                         ))}
                     </tbody>
                 </table>
@@ -780,8 +893,6 @@ export default function SalesDashboard() {
                       </div>
                       
                       <div className="flex items-center gap-3 w-full sm:w-auto">
-                          
-                          {/* NOVO: Botão de Download de CSV */}
                           <button 
                               onClick={exportToCSV}
                               title="Baixar relatório em Excel/CSV"
@@ -791,7 +902,6 @@ export default function SalesDashboard() {
                               <span className="hidden sm:inline">Exportar</span>
                           </button>
 
-                          {/* Barra de Pesquisa */}
                           <div className="relative flex-1 sm:w-56">
                               <Search size={14} className="absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400" />
                               <input 
@@ -829,7 +939,6 @@ export default function SalesDashboard() {
                           <tbody className="text-xs font-bold text-slate-700 divide-y divide-slate-100">
                               {filteredProductsForModal.map((prod, index) => (
                                   <React.Fragment key={index}>
-                                      {/* LINHA PRINCIPAL DO PRODUTO */}
                                       <tr 
                                           onClick={() => toggleProductExpand(prod.desc)} 
                                           className={`cursor-pointer transition-colors ${expandedProduct === prod.desc ? 'bg-emerald-50/50' : 'hover:bg-slate-50'}`}
@@ -849,7 +958,6 @@ export default function SalesDashboard() {
                                           <td className="p-4 text-right font-black text-[#1428A0] text-sm">{formatMoney(prod.total)}</td>
                                       </tr>
                                       
-                                      {/* ÁREA EXPANDIDA: DETALHAMENTO DE LOJAS */}
                                       {expandedProduct === prod.desc && (
                                           <tr className="bg-slate-50 border-b border-slate-200 shadow-inner">
                                               <td colSpan={4} className="p-6">

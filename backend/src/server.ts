@@ -1607,34 +1607,36 @@ app.post('/sales/refresh', (req, res) => {
 // =======================================================
 // ROTA /sellers-kpi (CORRIGIDA E LIMPA)
 // =======================================================
+// =======================================================
+// ROTA /sellers-kpi (O Front-end chama essa!)
+// =======================================================
 app.get('/sellers-kpi', async (req, res) => {
-    // Verifica o banco global
     if (!fs.existsSync(GLOBAL_DB_PATH)) return res.json([]);
-
     const userId = String(req.query.userId || '');
-    const db = new sqlite3.Database(GLOBAL_DB_PATH); // <--- Use a global
+    const db = new sqlite3.Database(GLOBAL_DB_PATH); 
     
-    // Busca usuário (com tipagem any para evitar erro)
     const user: any = await prisma.user.findUnique({ where: { id: userId } });
     
-    let kpiSql = `SELECT * FROM vendedores_kpi ORDER BY FAT_ATUAL DESC`;
+    // 🔥 MUDANÇA 1: Lendo da tabela certa ('vendedores') e não 'vendedores_kpi'
+    let kpiSql = `SELECT * FROM vendedores ORDER BY fat_atual DESC`;
 
-    // (Mantenha sua lógica de filtro de lojas aqui... if (user && !user.isAdmin...) { ... } )
     if (user && !user.isAdmin && !['CEO', 'DIRETOR', 'ADM'].includes(user.role)) {
         if (user.allowedStores) {
             const stores = user.allowedStores.split(',').map((s: string) => `'${s.trim()}'`).join(',');
-            kpiSql = `SELECT * FROM vendedores_kpi WHERE LOJA IN (${stores}) ORDER BY FAT_ATUAL DESC`;
+            kpiSql = `SELECT * FROM vendedores WHERE loja IN (${stores}) ORDER BY fat_atual DESC`;
         } else {
-            kpiSql = `SELECT * FROM vendedores_kpi WHERE 1=0`;
+            kpiSql = `SELECT * FROM vendedores WHERE 1=0`;
         }
     }
 
     db.all(kpiSql, [], (err, rows) => {
         db.close();
         if (err) return res.status(400).json({ "error": err.message });
-        res.json(rows);
+        
+        // 🔥 MUDANÇA 2: normalizeKeys garante que o React ache 'pct_acessorios' certinho
+        res.json(normalizeKeys(rows)); 
     });
-});;
+});
 
 // Aumentamos o limite para 50mb para aguentar o Excel
 app.use(express.json({ limit: '50mb' }));
@@ -1770,80 +1772,6 @@ app.post('/api/sync/vendas', async (req, res) => {
         console.error("Erro Sync Vendas:", e);
         res.status(500).json({ error: e.message });
     }
-});
-
-
-// Rota 2: Receber KPI Vendedores
-app.post('/api/sync/vendedores', async (req, res) => {
-  const dados = req.body;
-
-  if (!dados || !Array.isArray(dados)) {
-    return res.status(400).json({ error: "Dados inválidos" });
-  }
-
-  console.log(`🏆 Recebendo ${dados.length} KPIs de vendedores...`);
-
-  try {
-    await enqueueWrite(() => new Promise<void>((resolve, reject) => {
-      const db = new sqlite3.Database(GLOBAL_DB_PATH);
-      db.configure("busyTimeout", 15000);
-
-      db.serialize(() => {
-        db.run("PRAGMA journal_mode=WAL;");
-        db.run("PRAGMA synchronous=NORMAL;");
-
-        db.run("BEGIN IMMEDIATE TRANSACTION");
-        db.run("DELETE FROM vendedores_kpi", (err) => {
-          if (err) {
-            db.run("ROLLBACK", () => db.close(() => reject(err)));
-            return;
-          }
-
-          const stmt = db.prepare(`
-            INSERT INTO vendedores_kpi (
-              loja, vendedor, fat_atual, tendencia, fat_anterior,
-              crescimento, seguros, pa, qtd, ticket, regiao, pct_seguro
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          `);
-
-          for (const item of dados) {
-            stmt.run(
-              item.loja, item.vendedor, item.fat_atual, item.tendencia,
-              item.fat_anterior, item.crescimento, item.seguros, item.pa,
-              item.qtd, item.ticket, item.regiao, item.pct_seguro
-            );
-          }
-
-          stmt.finalize((err2) => {
-            if (err2) {
-              db.run("ROLLBACK", () => db.close(() => reject(err2)));
-              return;
-            }
-
-            db.run("COMMIT", (err3) => {
-              if (err3) {
-                db.run("ROLLBACK", () => db.close(() => reject(err3)));
-                return;
-              }
-              db.close((err4) => {
-                if (err4) return reject(err4);
-                resolve();
-              });
-            });
-          });
-        });
-      });
-    }));
-
-    res.json({ message: "KPIs atualizados com sucesso!" });
-
-  } catch (e: any) {
-    console.error("❌ Erro ao salvar KPI:", e);
-    if (String(e?.message || "").includes("SQLITE_BUSY")) {
-      return res.status(503).json({ error: "Banco ocupado (SQLITE_BUSY). Tente novamente em alguns segundos." });
-    }
-    res.status(500).json({ error: "Erro no banco de dados" });
-  }
 });
 
 // ============================================================
@@ -2160,19 +2088,15 @@ app.get('/api/bestflow', async (req, res) => {
         res.json([]);
     }
 });
+
 // --- ROTA DE KPIS (TENDÊNCIA, SEGUROS) ---
 app.get('/api/kpi-vendedores', async (req, res) => {
     try {
         const db = await open({ filename: SAMSUNG_DB_PATH, driver: sqlite3.Database });
         
-        // Tenta ler da tabela 'vendedores_kpi' (padrão do sistema novo)
-        let kpis = [];
-        try {
-            kpis = await db.all("SELECT * FROM vendedores_kpi");
-        } catch (e) {
-            // Se falhar, tenta ler da tabela 'vendedores' (padrão do script Python antigo)
-            kpis = await db.all("SELECT * FROM vendedores");
-        }
+        // Lendo DIRETAMENTE E APENAS da tabela 'vendedores' conforme solicitado
+        const kpis = await db.all("SELECT * FROM vendedores");
+        
         await db.close();
         res.json(normalizeKeys(kpis));
     } catch (error) {
@@ -2219,43 +2143,55 @@ app.post('/api/sync/bestflow', async (req, res) => {
     }
 });
 
-// 2. Recebe VENDEDORES (KPIs)
+// ==========================================
+// 🛒 SINCRONIZAÇÃO DE VENDEDORES (Para o Python)
+// ==========================================
 app.post('/api/sync/vendedores', async (req, res) => {
     try {
         const dados = req.body;
-        // Salva no banco de VENDAS (samsung_vendas.db)
         const db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
         
         await db.exec("BEGIN TRANSACTION");
-        // Limpa a tabela antiga para atualizar os KPIs do mês
-        await db.exec("DELETE FROM vendedores_kpi"); 
         
-        // Garante que a tabela existe com a estrutura certa
+        // Destrói a tabela antiga para recriar com as colunas novas
+        await db.exec("DROP TABLE IF EXISTS vendedores"); 
+        
+        // Recria com os nomes EXATOS que o seu front-end já usa + colunas novas
         await db.exec(`
-            CREATE TABLE IF NOT EXISTS vendedores_kpi (
+            CREATE TABLE vendedores (
                 loja TEXT, vendedor TEXT, fat_atual REAL, tendencia REAL,
-                fat_anterior REAL, crescimento REAL, seguros REAL, pa REAL, 
-                qtd REAL, ticket REAL, regiao TEXT, pct_seguro REAL
+                fat_anterior REAL, crescimento REAL, pa REAL, ticket REAL,
+                qtd REAL, regiao TEXT, pct_seguro REAL, seguros REAL,
+                pct_acessorios REAL, conv_peliculas REAL,
+                rs_aparelho REAL, rs_acessorio REAL, rs_tablet REAL, rs_wearable REAL
             )
         `);
 
         const stmt = await db.prepare(`
-            INSERT INTO vendedores_kpi (loja, vendedor, fat_atual, tendencia, fat_anterior, crescimento, seguros, pa, qtd, ticket, regiao, pct_seguro)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO vendedores (
+                loja, vendedor, fat_atual, tendencia, fat_anterior, crescimento, 
+                pa, ticket, qtd, regiao, pct_seguro, seguros,
+                pct_acessorios, conv_peliculas, rs_aparelho, rs_acessorio, rs_tablet, rs_wearable
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
 
         for (const r of dados) {
             await stmt.run(
-                r.loja, r.vendedor, r.fat_atual, r.tendencia, r.fat_anterior,
-                r.crescimento, r.seguros, r.pa, r.qtd, r.ticket, r.regiao, r.pct_seguro
+                r.loja, r.vendedor, r.fat_atual || r.faturamento || 0, r.tendencia || 0, 
+                r.fat_anterior || r.mes_anterior || 0, r.crescimento || 0, 
+                r.pa || 0, r.ticket || 0, r.qtd || 0, r.regiao, 
+                r.pct_seguro || r.pct_seguros || 0, r.seguros || 0,
+                r.pct_acessorios || r.conv_acessorios || 0, r.conv_peliculas || 0,
+                r.rs_aparelho || 0, r.rs_acessorio || 0, r.rs_tablet || 0, r.rs_wearable || 0
             );
         }
         await stmt.finalize();
         await db.exec("COMMIT");
         await db.close();
 
-        console.log(`✅ KPIs Sync: ${dados.length} vendedores.`);
-        res.json({ success: true });
+        console.log(`✅ KPIs Sync: ${dados.length} vendedores atualizados com sucesso!`);
+        res.json({ success: true, gravados: dados.length });
     } catch (e: any) {
         console.error("Erro sync Vendedores:", e);
         res.status(500).json({ error: e.message });
