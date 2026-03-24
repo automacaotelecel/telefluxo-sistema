@@ -2201,12 +2201,12 @@ app.post('/api/sync/vendedores', async (req, res) => {
     db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
 
     await db.exec("BEGIN TRANSACTION");
-
     await db.exec("DROP TABLE IF EXISTS vendedores");
 
     await db.exec(`
       CREATE TABLE vendedores (
         loja TEXT,
+        cnpj_empresa TEXT,
         vendedor TEXT,
         fat_atual REAL,
         tendencia REAL,
@@ -2230,6 +2230,7 @@ app.post('/api/sync/vendedores', async (req, res) => {
     const stmt = await db.prepare(`
       INSERT INTO vendedores (
         loja,
+        cnpj_empresa,
         vendedor,
         fat_atual,
         tendencia,
@@ -2248,29 +2249,30 @@ app.post('/api/sync/vendedores', async (req, res) => {
         rs_tablet,
         rs_wearable
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
-    for (const r of dados) {
+    for (const item of dados) {
       await stmt.run(
-        r.loja ?? null,
-        r.vendedor ?? null,
-        Number(r.fat_atual ?? r.faturamento ?? 0),
-        Number(r.tendencia ?? 0),
-        Number(r.fat_anterior ?? r.mes_anterior ?? 0),
-        Number(r.crescimento ?? 0),
-        Number(r.pa ?? 0),
-        Number(r.ticket ?? r.ticket_medio ?? 0),
-        Number(r.qtd ?? 0),
-        r.regiao ?? null,
-        Number(r.pct_seguro ?? r.pct_seguros ?? 0),
-        Number(r.seguros ?? 0),
-        Number(r.pct_acessorios ?? r.conv_acessorios ?? 0),
-        Number(r.conv_peliculas ?? 0),
-        Number(r.rs_aparelho ?? 0),
-        Number(r.rs_acessorio ?? 0),
-        Number(r.rs_tablet ?? 0),
-        Number(r.rs_wearable ?? 0)
+        item.loja ?? null,
+        item.cnpj_empresa ?? null,
+        item.vendedor ?? null,
+        Number(item.fat_atual ?? item.faturamento ?? 0),
+        Number(item.tendencia ?? 0),
+        Number(item.fat_anterior ?? item.mes_anterior ?? 0),
+        Number(item.crescimento ?? 0),
+        Number(item.pa ?? 0),
+        Number(item.ticket ?? item.ticket_medio ?? 0),
+        Number(item.qtd ?? 0),
+        item.regiao ?? null,
+        Number(item.pct_seguro ?? item.pct_seguros ?? 0),
+        Number(item.seguros ?? 0),
+        Number(item.pct_acessorios ?? 0),
+        Number(item.conv_peliculas ?? 0),
+        Number(item.rs_aparelho ?? 0),
+        Number(item.rs_acessorio ?? 0),
+        Number(item.rs_tablet ?? 0),
+        Number(item.rs_wearable ?? 0)
       );
     }
 
@@ -2278,14 +2280,12 @@ app.post('/api/sync/vendedores', async (req, res) => {
     await db.exec("COMMIT");
     await db.close();
 
-    console.log(`✅ KPIs Sync: ${dados.length} vendedores atualizados com sucesso!`);
     return res.json({ success: true, gravados: dados.length });
   } catch (e: any) {
     if (db) {
       try { await db.exec("ROLLBACK"); } catch {}
       try { await db.close(); } catch {}
     }
-
     console.error("Erro sync Vendedores:", e);
     return res.status(500).json({ error: e.message });
   }
