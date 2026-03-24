@@ -39,9 +39,20 @@ const STORE_MAP: Record<string, string> = {
 
 const getStoreName = (raw: string) => {
     if (!raw) return "N/D";
-    const clean = raw.replace(/\D/g, ''); 
-    return STORE_MAP[clean] || STORE_MAP[raw] || raw;
+    const clean = String(raw).replace(/\D/g, ''); 
+    return STORE_MAP[clean] || STORE_MAP[String(raw)] || String(raw);
 };
+
+const normalizeText = (value: any) =>
+    String(value || "")
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .toUpperCase();
+
+const buildSellerKey = (sellerName: any, storeName: any) =>
+    `${normalizeText(storeName)}__${normalizeText(sellerName)}`;
 
 const formatMoneyShort = (val: number) => {
     if (val >= 1000000) return `R$ ${(val / 1000000).toFixed(1)}M`;
@@ -64,7 +75,6 @@ export default function SalesDashboard() {
   const [expandedProduct, setExpandedProduct] = useState<string | null>(null);
   const [searchProduct, setSearchProduct] = useState("");
 
-  // NOVO ESTADO: Vendedor Expandido
   const [expandedSeller, setExpandedSeller] = useState<string | null>(null);
 
   const [errorMsg, setErrorMsg] = useState<string>('');
@@ -89,7 +99,7 @@ export default function SalesDashboard() {
     : 'https://telefluxo-aplicacao.onrender.com';
   
   const formatMoney = (val: number) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val || 0);
-  const formatPercent = (val: number) => `${((val || 0) * 100).toFixed(1)}%`;
+  const formatPercent = (val: number) => `${((Number(val) || 0) * 100).toFixed(1)}%`;
 
   useEffect(() => {
     function handleClickOutside(event: any) {
@@ -110,15 +120,23 @@ export default function SalesDashboard() {
             const parsed = JSON.parse(rawUser);
             userId = parsed.id || parsed.userId || parsed._id || '';
         }
-    } catch (e) { console.error(e); }
+    } catch (e) { 
+        console.error(e); 
+    }
 
-    if (!userId) { setErrorMsg("Usuário não identificado."); setLoading(false); return; }
+    if (!userId) { 
+        setErrorMsg("Usuário não identificado."); 
+        setLoading(false); 
+        return; 
+    }
 
     try {
         const resSales = await fetch(`${API_URL}/sales?userId=${userId}`);
         if (resSales.ok) {
             const data = await resSales.json();
             setRawData(data.sales || (Array.isArray(data) ? data : []));
+        } else {
+            setRawData([]);
         }
 
         try {
@@ -126,24 +144,48 @@ export default function SalesDashboard() {
             if (resFlow.ok) {
                 const dataFlow = await resFlow.json();
                 setFlowRawData(Array.isArray(dataFlow) ? dataFlow : []);
+            } else {
+                setFlowRawData([]);
             }
-        } catch (e) { console.warn("Erro fluxo", e); }
+        } catch (e) { 
+            console.warn("Erro fluxo", e); 
+            setFlowRawData([]);
+        }
 
         try {
             const resStock = await fetch(`${API_URL}/stock`);
             if (resStock.ok) {
                 const dataStock = await resStock.json();
                 setStockRawData(Array.isArray(dataStock) ? dataStock : []);
+            } else {
+                setStockRawData([]);
             }
-        } catch(e) { console.warn("Erro estoque", e); }
+        } catch(e) { 
+            console.warn("Erro estoque", e); 
+            setStockRawData([]);
+        }
 
         try {
-            const resKpi = await fetch(`${API_URL}/api/kpi-vendedores`);
-            if (resKpi.ok) {
+            const resKpi = await fetch(`${API_URL}/sellers-kpi?userId=${userId}`);
+            if (!resKpi.ok) {
+                console.error("Erro KPI:", resKpi.status, resKpi.statusText);
+                setKpiData([]);
+            } else {
                 const dataKpi = await resKpi.json();
-                setKpiData(Array.isArray(dataKpi) ? dataKpi : []);
+                console.log("KPI RAW:", dataKpi?.[0]);
+                console.log("TOTAL KPI:", Array.isArray(dataKpi) ? dataKpi.length : dataKpi?.data?.length);
+                setKpiData(
+                    Array.isArray(dataKpi)
+                        ? dataKpi
+                        : Array.isArray(dataKpi?.data)
+                        ? dataKpi.data
+                        : []
+                );
             }
-        } catch (e) { console.warn("Erro KPI", e); }
+        } catch (e) { 
+            console.warn("Erro KPI", e); 
+            setKpiData([]);
+        }
 
         setErrorMsg(''); 
     } catch (err: any) { 
@@ -154,7 +196,9 @@ export default function SalesDashboard() {
     }
   };
 
-  useEffect(() => { loadAllData(); }, []); 
+  useEffect(() => { 
+    loadAllData(); 
+  }, []); 
 
   const { diasPassados, diasNoMes } = useMemo(() => {
       const start = new Date(startDate);
@@ -167,6 +211,20 @@ export default function SalesDashboard() {
       
       return { diasPassados: passados, diasNoMes: noMes };
   }, [startDate, endDate]);
+
+  const kpiIndex = useMemo(() => {
+      const map = new Map<string, any>();
+
+      kpiData.forEach((k: any) => {
+          const rawLoja = k.loja || k.cnpj_empresa || "";
+          const nomeLoja = getStoreName(rawLoja);
+          const nomeVendedor = k.vendedor || k.nome_vendedor || "";
+          const key = buildSellerKey(nomeVendedor, nomeLoja);
+          map.set(key, k);
+      });
+
+      return map;
+  }, [kpiData]);
 
   const uniqueCategories = useMemo(() => {
       const cats = new Set(
@@ -182,6 +240,7 @@ export default function SalesDashboard() {
       return rawData.filter(sale => {
           const dataVenda = sale.data_emissao || "";
           let dataISO = dataVenda;
+
           if (dataVenda.includes('/')) {
               const parts = dataVenda.split('/');
               if (parts.length === 3) dataISO = `${parts[2]}-${parts[1]}-${parts[0]}`;
@@ -271,45 +330,151 @@ export default function SalesDashboard() {
           const nome = sale.nome_vendedor || sale.vendedor || "N/D";
           const rawLoja = sale.cnpj_empresa || sale.loja || "";
           const nomeLoja = getStoreName(rawLoja);
-          if (!mapRanking.has(nome)) mapRanking.set(nome, { nome, loja: nomeLoja, total: 0, qtd: 0 });
-          const item = mapRanking.get(nome);
+          const sellerKey = buildSellerKey(nome, nomeLoja);
+
+          if (!mapRanking.has(sellerKey)) {
+              mapRanking.set(sellerKey, { 
+                  key: sellerKey,
+                  nome, 
+                  loja: nomeLoja, 
+                  total: 0, 
+                  qtd: 0 
+              });
+          }
+
+          const item = mapRanking.get(sellerKey);
           item.total += Number(sale.total_liquido || 0);
           item.qtd += Number(sale.quantidade || 1);
       });
 
       const sortedRanking = Array.from(mapRanking.values())
         .map((v: any) => {
-            const kpi = kpiData.find(k => 
-                (k.vendedor || "").trim().toUpperCase() === v.nome.trim().toUpperCase()
+            const directKpi = kpiIndex.get(v.key);
+
+            const fallbackKpi = kpiData.find((item: any) => {
+            const vendedorItem = normalizeText(item?.vendedor || item?.nome_vendedor || "");
+            const vendedorAtual = normalizeText(v?.nome || "");
+
+            if (vendedorItem !== vendedorAtual) return false;
+
+            const lojaItem = normalizeText(getStoreName(item?.loja || item?.cnpj_empresa || ""));
+            const lojaAtual = normalizeText(v?.loja || "");
+
+            return (
+                lojaItem === lojaAtual ||
+                lojaItem.includes(lojaAtual) ||
+                lojaAtual.includes(lojaItem)
             );
+        });
 
-            const totalVendedor = v.total || 0;
-            const anterior = Number(kpi?.mes_anterior || kpi?.fat_anterior || 0);
-            const tendenciaMatematica = (totalVendedor / diasPassados) * diasNoMes;
+    const kpi = directKpi || fallbackKpi;
 
-            // ✅ MAPEAMENTO DAS NOVAS COLUNAS DO BANCO DE DADOS
-            return {
-                ...v,
-                faturamento: Number(kpi?.faturamento || totalVendedor), // Se não vier do banco, usa o filtrado
-                tendencia: Number(kpi?.tendencia || Math.max(tendenciaMatematica, totalVendedor)), 
-                mes_anterior: anterior,
-                crescimento: Number(kpi?.crescimento || (anterior > 0 ? (totalVendedor - anterior) / anterior : 0)),
-                pct_acessorios: Number(kpi?.pct_acessorios || 0),
-                conv_peliculas: Number(kpi?.conv_peliculas || 0),
-                seguros: Number(kpi?.seguros || 0),
-                pct_seguro: Number(kpi?.pct_seguros || kpi?.pct_seguro || 0),
-                // Extras para o modal detalhado
-                rs_aparelho: Number(kpi?.rs_aparelho || 0),
-                rs_acessorio: Number(kpi?.rs_acessorio || 0),
-                rs_tablet: Number(kpi?.rs_tablet || 0),
-                rs_wearable: Number(kpi?.rs_wearable || 0),
-                pa: kpi?.pa || (v.qtd / 50).toFixed(2), 
-                ticket: v.qtd > 0 ? totalVendedor / v.qtd : 0,
-            };
-        })
+    if (!kpi) {
+      console.warn("KPI NÃO ENCONTRADO PARA:", {
+        vendedor: v.nome,
+        loja: v.loja,
+        key: v.key,
+        exemploKpi: kpiData?.[0]
+      });
+    }
+
+      const totalVendedor = v.total || 0;
+
+      const anterior = Number(
+        kpi?.fat_anterior ??
+        kpi?.fatAnterior ??
+        kpi?.mes_anterior ??
+        kpi?.mesAnterior ??
+        0
+      );
+
+      const tendenciaMatematica = (totalVendedor / diasPassados) * diasNoMes;
+
+      return {
+          ...v,
+          faturamento: Number(
+            kpi?.fat_atual ??
+            kpi?.fatAtual ??
+            kpi?.faturamento ??
+            totalVendedor
+          ),
+
+          tendencia: Number(
+            kpi?.tendencia ??
+            Math.max(tendenciaMatematica, totalVendedor)
+          ),
+
+          mes_anterior: anterior,
+
+          crescimento: Number(
+            kpi?.crescimento ??
+            (anterior > 0 ? (totalVendedor - anterior) / anterior : 0)
+          ),
+
+          pct_acessorios: Number(
+            kpi?.pct_acessorios ??
+            kpi?.pctAcessorios ??
+            0
+          ),
+
+          conv_peliculas: Number(
+            kpi?.conv_peliculas ??
+            kpi?.convPeliculas ??
+            0
+          ),
+
+          seguros: Number(
+            kpi?.seguros ??
+            0
+          ),
+
+          pct_seguro: Number(
+            kpi?.pct_seguro ??
+            kpi?.pctSeguro ??
+            kpi?.pct_seguros ??
+            kpi?.pctSeguros ??
+            0
+          ),
+
+          rs_aparelho: Number(
+            kpi?.rs_aparelho ??
+            kpi?.rsAparelho ??
+            0
+          ),
+
+          rs_acessorio: Number(
+            kpi?.rs_acessorio ??
+            kpi?.rsAcessorio ??
+            0
+          ),
+
+          rs_tablet: Number(
+            kpi?.rs_tablet ??
+            kpi?.rsTablet ??
+            0
+          ),
+
+          rs_wearable: Number(
+            kpi?.rs_wearable ??
+            kpi?.rsWearable ??
+            0
+          ),
+
+          pa: Number(
+            kpi?.pa ??
+            (v.qtd / 50)
+          ),
+
+          ticket: Number(
+            kpi?.ticket ??
+            kpi?.ticket_medio ??
+            kpi?.ticketMedio ??
+            (v.qtd > 0 ? totalVendedor / v.qtd : 0)
+          ),
+        };
+      })
         .sort((a: any, b: any) => b.total - a.total);
       
-      // ✅ CALCULAR A PORCENTAGEM DO VENDEDOR DENTRO DA LOJA
       const storeTotals: Record<string, number> = {};
       sortedRanking.forEach((v: any) => {
           storeTotals[v.loja] = (storeTotals[v.loja] || 0) + v.total;
@@ -320,6 +485,9 @@ export default function SalesDashboard() {
           pct_loja: storeTotals[v.loja] > 0 ? (v.total / storeTotals[v.loja]) : 0
       }));
 
+      console.log("EXEMPLO RANKING:", finalRanking[0]);
+      console.log("KPIS CARREGADOS:", kpiData.slice(0, 3));
+      
       setRanking(finalRanking);
         
       const mapProd = new Map();
@@ -353,7 +521,7 @@ export default function SalesDashboard() {
       
       setProductRanking(sortedProd);
 
-  }, [filteredData, stockRawData, kpiData, diasPassados, diasNoMes]); 
+  }, [filteredData, stockRawData, kpiIndex, diasPassados, diasNoMes]); 
 
   const uniqueStores = useMemo(() => {
       const stores = new Set(rawData.map(r => getStoreName(r.cnpj_empresa || r.loja)).filter(Boolean));
@@ -403,11 +571,16 @@ export default function SalesDashboard() {
       setExpandedProduct(prev => prev === desc ? null : desc);
   };
 
-  // ✅ NOVO: Função para buscar o top 5 de produtos do vendedor filtrado
-  const getTopProductsBySeller = (sellerName: string) => {
+  const getTopProductsBySeller = (sellerName: string, storeName: string) => {
       const productsMap = new Map();
+      const sellerKey = buildSellerKey(sellerName, storeName);
+
       filteredData
-          .filter(sale => (sale.nome_vendedor || sale.vendedor || "").toUpperCase() === sellerName.toUpperCase())
+          .filter(sale => {
+              const saleSellerName = sale.nome_vendedor || sale.vendedor || "";
+              const saleStoreName = getStoreName(sale.cnpj_empresa || sale.loja || "");
+              return buildSellerKey(saleSellerName, saleStoreName) === sellerKey;
+          })
           .forEach(sale => {
               const desc = sale.descricao || sale.produto || "N/D";
               if (!productsMap.has(desc)) productsMap.set(desc, { desc, qtd: 0, total: 0 });
@@ -418,7 +591,7 @@ export default function SalesDashboard() {
       
       return Array.from(productsMap.values())
           .sort((a: any, b: any) => b.qtd - a.qtd)
-          .slice(0, 5); // Retorna os Top 5
+          .slice(0, 5);
   };
 
   const exportToCSV = () => {
@@ -466,7 +639,6 @@ export default function SalesDashboard() {
         </div>
       )}
 
-      {/* HEADER DE FILTROS */}
       <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center mb-6 gap-4 bg-white p-4 rounded-xl shadow-sm border border-slate-200">
         <div>
             <div className="flex items-center gap-2 mb-1">
@@ -643,7 +815,7 @@ export default function SalesDashboard() {
                         <table className="w-full text-left border-collapse">
                             <tbody>
                                 {ranking.slice(0, 50).map((v, i) => (
-                                    <tr key={i} className="border-b border-slate-50 hover:bg-blue-50/30 transition-colors">
+                                    <tr key={v.key || i} className="border-b border-slate-50 hover:bg-blue-50/30 transition-colors">
                                         <td className="p-2 w-6"><span className={`w-5 h-5 flex items-center justify-center rounded text-[9px] font-bold ${i<3 ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-500'}`}>{i+1}</span></td>
                                         <td className="p-2">
                                             <div className="text-[10px] font-bold text-slate-700 uppercase truncate w-32" title={v.nome}>{v.nome}</div>
@@ -684,95 +856,96 @@ export default function SalesDashboard() {
                         </tr>
                     </thead>
                     <tbody className="text-xs font-bold text-slate-700">
-                        {ranking.map((v, i) => (
-                            <React.Fragment key={i}>
-                                {/* LINHA PRINCIPAL DO VENDEDOR */}
-                                <tr 
-                                    onClick={() => setExpandedSeller(expandedSeller === v.nome ? null : v.nome)}
-                                    className={`border-b border-slate-50 transition-colors cursor-pointer ${expandedSeller === v.nome ? 'bg-blue-50/50' : 'hover:bg-slate-50'}`}
-                                >
-                                    <td className="p-3 text-center">
-                                        <span className={`w-5 h-5 flex items-center justify-center rounded text-[9px] mx-auto ${i<3 ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-500'}`}>{i+1}</span>
-                                    </td>
-                                    <td className="p-3 text-slate-400 text-[10px] uppercase whitespace-nowrap">{v.loja}</td>
-                                    <td className="p-3 uppercase whitespace-nowrap flex items-center gap-2">
-                                        {expandedSeller === v.nome ? <ChevronUp size={14} className="text-[#1428A0]" /> : <ChevronDown size={14} className="text-slate-300" />}
-                                        {v.nome}
-                                        <span className="text-[9px] bg-[#1428A0]/10 text-[#1428A0] px-1.5 py-0.5 rounded ml-1" title="Participação na Loja">
-                                            {formatPercent(v.pct_loja)} loja
-                                        </span>
-                                    </td>
-                                    <td className="p-3 text-right font-black text-slate-800 whitespace-nowrap">{formatMoney(v.faturamento)}</td>
-                                    <td className="p-3 text-right text-purple-600 whitespace-nowrap">{formatMoney(v.tendencia)}</td>
-                                    <td className="p-3 text-right text-slate-400 whitespace-nowrap">{formatMoney(v.mes_anterior)}</td>
-                                    <td className={`p-3 text-right ${v.crescimento >= 0 ? 'text-green-600' : 'text-red-500'} whitespace-nowrap`}>{formatPercent(v.crescimento)}</td>
-                                    <td className="p-3 text-right text-indigo-500 whitespace-nowrap">{formatPercent(v.pct_acessorios)}</td>
-                                    <td className="p-3 text-right text-amber-500 whitespace-nowrap">{formatPercent(v.conv_peliculas)}</td>
-                                    <td className="p-3 text-right text-emerald-600 whitespace-nowrap">{formatMoney(v.seguros)}</td>
-                                    <td className="p-3 text-right font-black text-emerald-600 whitespace-nowrap">{formatPercent(v.pct_seguro)}</td>
-                                </tr>
-                                
-                                {/* ✅ ÁREA EXPANDIDA DO VENDEDOR (DETALHAMENTO PROFISSIONAL) */}
-                                {expandedSeller === v.nome && (
-                                    <tr className="bg-slate-50 border-b border-slate-200 shadow-inner">
-                                        <td colSpan={11} className="p-4 md:p-6">
-                                            <div className="flex items-center gap-2 mb-4 border-b border-slate-200 pb-2">
-                                                <Target size={16} className="text-[#1428A0]"/>
-                                                <h4 className="text-xs font-black uppercase tracking-wider text-slate-700">Análise de Performance - {v.nome}</h4>
-                                            </div>
-                                            
-                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                                {/* BLOCO 1: COMPOSIÇÃO DA RECEITA */}
-                                                <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-                                                    <h5 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">Composição de Vendas (R$)</h5>
-                                                    <div className="space-y-3">
-                                                        <div className="flex justify-between items-center p-2 rounded hover:bg-slate-50 transition-colors">
-                                                            <div className="flex items-center gap-2 text-xs font-bold text-slate-600"><Smartphone size={14} className="text-blue-500"/> Aparelhos</div>
-                                                            <div className="text-xs font-black text-slate-800">{formatMoney(v.rs_aparelho)}</div>
-                                                        </div>
-                                                        <div className="flex justify-between items-center p-2 rounded hover:bg-slate-50 transition-colors">
-                                                            <div className="flex items-center gap-2 text-xs font-bold text-slate-600"><Headphones size={14} className="text-indigo-500"/> Acessórios</div>
-                                                            <div className="text-xs font-black text-slate-800">{formatMoney(v.rs_acessorio)}</div>
-                                                        </div>
-                                                        <div className="flex justify-between items-center p-2 rounded hover:bg-slate-50 transition-colors">
-                                                            <div className="flex items-center gap-2 text-xs font-bold text-slate-600"><MonitorSmartphone size={14} className="text-purple-500"/> Tablets</div>
-                                                            <div className="text-xs font-black text-slate-800">{formatMoney(v.rs_tablet)}</div>
-                                                        </div>
-                                                        <div className="flex justify-between items-center p-2 rounded hover:bg-slate-50 transition-colors">
-                                                            <div className="flex items-center gap-2 text-xs font-bold text-slate-600"><Watch size={14} className="text-emerald-500"/> Wearables</div>
-                                                            <div className="text-xs font-black text-slate-800">{formatMoney(v.rs_wearable)}</div>
-                                                        </div>
-                                                    </div>
-                                                </div>
+                        {ranking.map((v, i) => {
+                            const rowKey = v.key || `${v.loja}-${v.nome}-${i}`;
+                            const isExpanded = expandedSeller === rowKey;
 
-                                                {/* BLOCO 2: TOP MODELOS VENDIDOS */}
-                                                <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-                                                    <h5 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">Top 5 Modelos Vendidos (Filtrado)</h5>
-                                                    <div className="space-y-2">
-                                                        {getTopProductsBySeller(v.nome).length > 0 ? (
-                                                            getTopProductsBySeller(v.nome).map((prod: any, idx: number) => (
-                                                                <div key={idx} className="flex justify-between items-center p-2 rounded border border-slate-100 hover:border-emerald-200 hover:bg-emerald-50/30 transition-colors">
-                                                                    <div className="flex items-center gap-2 overflow-hidden pr-2">
-                                                                        <span className="text-[10px] font-black text-slate-400">{idx + 1}º</span>
-                                                                        <span className="text-[10px] font-bold text-slate-700 uppercase truncate" title={prod.desc}>{prod.desc}</span>
+                            return (
+                                <React.Fragment key={rowKey}>
+                                    <tr 
+                                        onClick={() => setExpandedSeller(isExpanded ? null : rowKey)}
+                                        className={`border-b border-slate-50 transition-colors cursor-pointer ${isExpanded ? 'bg-blue-50/50' : 'hover:bg-slate-50'}`}
+                                    >
+                                        <td className="p-3 text-center">
+                                            <span className={`w-5 h-5 flex items-center justify-center rounded text-[9px] mx-auto ${i<3 ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-500'}`}>{i+1}</span>
+                                        </td>
+                                        <td className="p-3 text-slate-400 text-[10px] uppercase whitespace-nowrap">{v.loja}</td>
+                                        <td className="p-3 uppercase whitespace-nowrap flex items-center gap-2">
+                                            {isExpanded ? <ChevronUp size={14} className="text-[#1428A0]" /> : <ChevronDown size={14} className="text-slate-300" />}
+                                            {v.nome}
+                                            <span className="text-[9px] bg-[#1428A0]/10 text-[#1428A0] px-1.5 py-0.5 rounded ml-1" title="Participação na Loja">
+                                                {formatPercent(v.pct_loja)} loja
+                                            </span>
+                                        </td>
+                                        <td className="p-3 text-right font-black text-slate-800 whitespace-nowrap">{formatMoney(v.faturamento)}</td>
+                                        <td className="p-3 text-right text-purple-600 whitespace-nowrap">{formatMoney(v.tendencia)}</td>
+                                        <td className="p-3 text-right text-slate-400 whitespace-nowrap">{formatMoney(v.mes_anterior)}</td>
+                                        <td className={`p-3 text-right ${v.crescimento >= 0 ? 'text-green-600' : 'text-red-500'} whitespace-nowrap`}>{formatPercent(v.crescimento)}</td>
+                                        <td className="p-3 text-right text-indigo-500 whitespace-nowrap">{formatPercent(v.pct_acessorios)}</td>
+                                        <td className="p-3 text-right text-amber-500 whitespace-nowrap">{formatPercent(v.conv_peliculas)}</td>
+                                        <td className="p-3 text-right text-emerald-600 whitespace-nowrap">{formatMoney(v.seguros)}</td>
+                                        <td className="p-3 text-right font-black text-emerald-600 whitespace-nowrap">{formatPercent(v.pct_seguro)}</td>
+                                    </tr>
+                                    
+                                    {isExpanded && (
+                                        <tr className="bg-slate-50 border-b border-slate-200 shadow-inner">
+                                            <td colSpan={11} className="p-4 md:p-6">
+                                                <div className="flex items-center gap-2 mb-4 border-b border-slate-200 pb-2">
+                                                    <Target size={16} className="text-[#1428A0]"/>
+                                                    <h4 className="text-xs font-black uppercase tracking-wider text-slate-700">Análise de Performance - {v.nome}</h4>
+                                                </div>
+                                                
+                                                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                                    <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                                                        <h5 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">Composição de Vendas (R$)</h5>
+                                                        <div className="space-y-3">
+                                                            <div className="flex justify-between items-center p-2 rounded hover:bg-slate-50 transition-colors">
+                                                                <div className="flex items-center gap-2 text-xs font-bold text-slate-600"><Smartphone size={14} className="text-blue-500"/> Aparelhos</div>
+                                                                <div className="text-xs font-black text-slate-800">{formatMoney(v.rs_aparelho)}</div>
+                                                            </div>
+                                                            <div className="flex justify-between items-center p-2 rounded hover:bg-slate-50 transition-colors">
+                                                                <div className="flex items-center gap-2 text-xs font-bold text-slate-600"><Headphones size={14} className="text-indigo-500"/> Acessórios</div>
+                                                                <div className="text-xs font-black text-slate-800">{formatMoney(v.rs_acessorio)}</div>
+                                                            </div>
+                                                            <div className="flex justify-between items-center p-2 rounded hover:bg-slate-50 transition-colors">
+                                                                <div className="flex items-center gap-2 text-xs font-bold text-slate-600"><MonitorSmartphone size={14} className="text-purple-500"/> Tablets</div>
+                                                                <div className="text-xs font-black text-slate-800">{formatMoney(v.rs_tablet)}</div>
+                                                            </div>
+                                                            <div className="flex justify-between items-center p-2 rounded hover:bg-slate-50 transition-colors">
+                                                                <div className="flex items-center gap-2 text-xs font-bold text-slate-600"><Watch size={14} className="text-emerald-500"/> Wearables</div>
+                                                                <div className="text-xs font-black text-slate-800">{formatMoney(v.rs_wearable)}</div>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+
+                                                    <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                                                        <h5 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">Top 5 Modelos Vendidos (Filtrado)</h5>
+                                                        <div className="space-y-2">
+                                                            {getTopProductsBySeller(v.nome, v.loja).length > 0 ? (
+                                                                getTopProductsBySeller(v.nome, v.loja).map((prod: any, idx: number) => (
+                                                                    <div key={idx} className="flex justify-between items-center p-2 rounded border border-slate-100 hover:border-emerald-200 hover:bg-emerald-50/30 transition-colors">
+                                                                        <div className="flex items-center gap-2 overflow-hidden pr-2">
+                                                                            <span className="text-[10px] font-black text-slate-400">{idx + 1}º</span>
+                                                                            <span className="text-[10px] font-bold text-slate-700 uppercase truncate" title={prod.desc}>{prod.desc}</span>
+                                                                        </div>
+                                                                        <div className="flex flex-col items-end min-w-[70px]">
+                                                                            <span className="text-xs font-black text-emerald-600">{prod.qtd} un.</span>
+                                                                            <span className="text-[9px] font-bold text-slate-400">{formatMoney(prod.total)}</span>
+                                                                        </div>
                                                                     </div>
-                                                                    <div className="flex flex-col items-end min-w-[70px]">
-                                                                        <span className="text-xs font-black text-emerald-600">{prod.qtd} un.</span>
-                                                                        <span className="text-[9px] font-bold text-slate-400">{formatMoney(prod.total)}</span>
-                                                                    </div>
-                                                                </div>
-                                                            ))
-                                                        ) : (
-                                                            <div className="text-xs text-center text-slate-400 py-4 font-bold">Nenhum produto vendido no período filtrado.</div>
-                                                        )}
+                                                                ))
+                                                            ) : (
+                                                                <div className="text-xs text-center text-slate-400 py-4 font-bold">Nenhum produto vendido no período filtrado.</div>
+                                                            )}
+                                                        </div>
                                                     </div>
                                                 </div>
-                                            </div>
-                                        </td>
-                                    </tr>
-                                )}
-                            </React.Fragment>
-                        ))}
+                                            </td>
+                                        </tr>
+                                    )}
+                                </React.Fragment>
+                            );
+                        })}
                     </tbody>
                 </table>
             </div>
@@ -873,12 +1046,10 @@ export default function SalesDashboard() {
         </div>
       )}
 
-      {/* MODAL DE PRODUTOS EXPANSÍVEL E COM EXPORTAÇÃO */}
       {isProductModalOpen && (
           <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex justify-center items-center p-4">
               <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[85vh] flex flex-col overflow-hidden animate-in fade-in zoom-in duration-200">
                   
-                  {/* Cabeçalho do Modal */}
                   <div className="p-5 border-b border-slate-100 flex flex-col sm:flex-row justify-between items-start sm:items-center bg-slate-50 gap-4">
                       <div className="flex items-center gap-3">
                           <div className="p-2 bg-emerald-100 text-emerald-600 rounded-lg">
@@ -925,7 +1096,6 @@ export default function SalesDashboard() {
                       </div>
                   </div>
 
-                  {/* Lista de Produtos Expansível */}
                   <div className="overflow-y-auto flex-1 p-0">
                       <table className="w-full text-left border-collapse">
                           <thead className="sticky top-0 bg-white shadow-sm z-10">

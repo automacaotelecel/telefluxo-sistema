@@ -1605,38 +1605,80 @@ app.post('/sales/refresh', (req, res) => {
 });
 
 // =======================================================
-// ROTA /sellers-kpi (CORRIGIDA E LIMPA)
-// =======================================================
-// =======================================================
 // ROTA /sellers-kpi (O Front-end chama essa!)
 // =======================================================
-app.get('/sellers-kpi', async (req, res) => {
-    if (!fs.existsSync(GLOBAL_DB_PATH)) return res.json([]);
-    const userId = String(req.query.userId || '');
-    const db = new sqlite3.Database(GLOBAL_DB_PATH); 
-    
-    const user: any = await prisma.user.findUnique({ where: { id: userId } });
-    
-    // 🔥 MUDANÇA 1: Lendo da tabela certa ('vendedores') e não 'vendedores_kpi'
-    let kpiSql = `SELECT * FROM vendedores ORDER BY fat_atual DESC`;
-
-    if (user && !user.isAdmin && !['CEO', 'DIRETOR', 'ADM'].includes(user.role)) {
-        if (user.allowedStores) {
-            const stores = user.allowedStores.split(',').map((s: string) => `'${s.trim()}'`).join(',');
-            kpiSql = `SELECT * FROM vendedores WHERE loja IN (${stores}) ORDER BY fat_atual DESC`;
-        } else {
-            kpiSql = `SELECT * FROM vendedores WHERE 1=0`;
-        }
+const handleSellersKpi = async (req: Request, res: Response) => {
+  try {
+    if (!fs.existsSync(GLOBAL_DB_PATH)) {
+      return res.json([]);
     }
 
-    db.all(kpiSql, [], (err, rows) => {
-        db.close();
-        if (err) return res.status(400).json({ "error": err.message });
-        
-        // 🔥 MUDANÇA 2: normalizeKeys garante que o React ache 'pct_acessorios' certinho
-        res.json(normalizeKeys(rows)); 
-    });
-});
+    const userId = String(req.query.userId || "");
+    const user: any = await prisma.user.findUnique({ where: { id: userId } });
+
+    const db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+
+    const baseSelect = `
+      SELECT
+        loja,
+        vendedor,
+        fat_atual,
+        fat_atual AS faturamento,
+        tendencia,
+        fat_anterior,
+        fat_anterior AS mes_anterior,
+        crescimento,
+        pct_acessorios,
+        conv_peliculas,
+        seguros,
+        pct_seguro,
+        pa,
+        ticket,
+        ticket AS ticket_medio,
+        qtd,
+        regiao,
+        rs_aparelho,
+        rs_acessorio,
+        rs_tablet,
+        rs_wearable
+      FROM vendedores
+    `;
+
+    let query = `${baseSelect} ORDER BY fat_atual DESC, vendedor ASC`;
+    let params: any[] = [];
+
+    const isPrivileged =
+      user &&
+      (user.isAdmin || ['CEO', 'DIRETOR', 'ADM'].includes(user.role));
+
+    if (!isPrivileged) {
+      const allowedStores = String(user?.allowedStores || "")
+        .split(",")
+        .map((s: string) => s.trim())
+        .filter(Boolean);
+
+      if (allowedStores.length === 0) {
+        await db.close();
+        return res.json([]);
+      }
+
+      const placeholders = allowedStores.map(() => "?").join(", ");
+      query = `${baseSelect} WHERE loja IN (${placeholders}) ORDER BY fat_atual DESC, vendedor ASC`;
+      params = allowedStores;
+    }
+
+    const rows = await db.all(query, params);
+    await db.close();
+
+    return res.json(rows || []);
+  } catch (e: any) {
+    console.error("Erro /sellers-kpi:", e);
+    return res.status(500).json({ error: e.message || "Erro ao buscar KPI de vendedores" });
+  }
+};
+
+app.get('/sellers-kpi', handleSellersKpi);
+app.get('/api/kpi-vendedores', handleSellersKpi);
 
 // Aumentamos o limite para 50mb para aguentar o Excel
 app.use(express.json({ limit: '50mb' }));
@@ -2147,55 +2189,106 @@ app.post('/api/sync/bestflow', async (req, res) => {
 // 🛒 SINCRONIZAÇÃO DE VENDEDORES (Para o Python)
 // ==========================================
 app.post('/api/sync/vendedores', async (req, res) => {
-    try {
-        const dados = req.body;
-        const db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
-        
-        await db.exec("BEGIN TRANSACTION");
-        
-        // Destrói a tabela antiga para recriar com as colunas novas
-        await db.exec("DROP TABLE IF EXISTS vendedores"); 
-        
-        // Recria com os nomes EXATOS que o seu front-end já usa + colunas novas
-        await db.exec(`
-            CREATE TABLE vendedores (
-                loja TEXT, vendedor TEXT, fat_atual REAL, tendencia REAL,
-                fat_anterior REAL, crescimento REAL, pa REAL, ticket REAL,
-                qtd REAL, regiao TEXT, pct_seguro REAL, seguros REAL,
-                pct_acessorios REAL, conv_peliculas REAL,
-                rs_aparelho REAL, rs_acessorio REAL, rs_tablet REAL, rs_wearable REAL
-            )
-        `);
+  let db: any;
 
-        const stmt = await db.prepare(`
-            INSERT INTO vendedores (
-                loja, vendedor, fat_atual, tendencia, fat_anterior, crescimento, 
-                pa, ticket, qtd, regiao, pct_seguro, seguros,
-                pct_acessorios, conv_peliculas, rs_aparelho, rs_acessorio, rs_tablet, rs_wearable
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `);
+  try {
+    const dados = req.body;
 
-        for (const r of dados) {
-            await stmt.run(
-                r.loja, r.vendedor, r.fat_atual || r.faturamento || 0, r.tendencia || 0, 
-                r.fat_anterior || r.mes_anterior || 0, r.crescimento || 0, 
-                r.pa || 0, r.ticket || 0, r.qtd || 0, r.regiao, 
-                r.pct_seguro || r.pct_seguros || 0, r.seguros || 0,
-                r.pct_acessorios || r.conv_acessorios || 0, r.conv_peliculas || 0,
-                r.rs_aparelho || 0, r.rs_acessorio || 0, r.rs_tablet || 0, r.rs_wearable || 0
-            );
-        }
-        await stmt.finalize();
-        await db.exec("COMMIT");
-        await db.close();
-
-        console.log(`✅ KPIs Sync: ${dados.length} vendedores atualizados com sucesso!`);
-        res.json({ success: true, gravados: dados.length });
-    } catch (e: any) {
-        console.error("Erro sync Vendedores:", e);
-        res.status(500).json({ error: e.message });
+    if (!Array.isArray(dados)) {
+      return res.status(400).json({ error: "Dados inválidos" });
     }
+
+    db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+
+    await db.exec("BEGIN TRANSACTION");
+
+    await db.exec("DROP TABLE IF EXISTS vendedores");
+
+    await db.exec(`
+      CREATE TABLE vendedores (
+        loja TEXT,
+        vendedor TEXT,
+        fat_atual REAL,
+        tendencia REAL,
+        fat_anterior REAL,
+        crescimento REAL,
+        pa REAL,
+        ticket REAL,
+        qtd REAL,
+        regiao TEXT,
+        pct_seguro REAL,
+        seguros REAL,
+        pct_acessorios REAL,
+        conv_peliculas REAL,
+        rs_aparelho REAL,
+        rs_acessorio REAL,
+        rs_tablet REAL,
+        rs_wearable REAL
+      )
+    `);
+
+    const stmt = await db.prepare(`
+      INSERT INTO vendedores (
+        loja,
+        vendedor,
+        fat_atual,
+        tendencia,
+        fat_anterior,
+        crescimento,
+        pa,
+        ticket,
+        qtd,
+        regiao,
+        pct_seguro,
+        seguros,
+        pct_acessorios,
+        conv_peliculas,
+        rs_aparelho,
+        rs_acessorio,
+        rs_tablet,
+        rs_wearable
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    for (const r of dados) {
+      await stmt.run(
+        r.loja ?? null,
+        r.vendedor ?? null,
+        Number(r.fat_atual ?? r.faturamento ?? 0),
+        Number(r.tendencia ?? 0),
+        Number(r.fat_anterior ?? r.mes_anterior ?? 0),
+        Number(r.crescimento ?? 0),
+        Number(r.pa ?? 0),
+        Number(r.ticket ?? r.ticket_medio ?? 0),
+        Number(r.qtd ?? 0),
+        r.regiao ?? null,
+        Number(r.pct_seguro ?? r.pct_seguros ?? 0),
+        Number(r.seguros ?? 0),
+        Number(r.pct_acessorios ?? r.conv_acessorios ?? 0),
+        Number(r.conv_peliculas ?? 0),
+        Number(r.rs_aparelho ?? 0),
+        Number(r.rs_acessorio ?? 0),
+        Number(r.rs_tablet ?? 0),
+        Number(r.rs_wearable ?? 0)
+      );
+    }
+
+    await stmt.finalize();
+    await db.exec("COMMIT");
+    await db.close();
+
+    console.log(`✅ KPIs Sync: ${dados.length} vendedores atualizados com sucesso!`);
+    return res.json({ success: true, gravados: dados.length });
+  } catch (e: any) {
+    if (db) {
+      try { await db.exec("ROLLBACK"); } catch {}
+      try { await db.close(); } catch {}
+    }
+
+    console.error("Erro sync Vendedores:", e);
+    return res.status(500).json({ error: e.message });
+  }
 });
 
 // --- ROTA DE RAIO-X (DEBUG) ---

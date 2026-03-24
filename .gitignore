@@ -5,3 +5,4 @@ dist
 backend/dev.db
 backend/dev.db-journal
 database/samsung_vendas.db
+database/*.db

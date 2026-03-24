@@ -303,8 +303,47 @@ def criar_tabelas_copia(db_path: str) -> None:
     finally:
         con.close()
 
+def salvar_copia_vendas(dados_vendas: List[Dict[str, Any]], db_path: str = DB_COPIA_PATH) -> None:
+    criar_tabelas_copia(db_path)
 
-def salvar_copia_vendedores(dados_vendedores, db_path: str = DB_COPIA_PATH) -> None:
+    con = _sqlite_connect(db_path)
+    try:
+        cur = con.cursor()
+        cur.execute("DELETE FROM vendas")
+
+        rows = []
+        for r in dados_vendas:
+            rows.append((
+                r.get("data_emissao"),
+                r.get("nome_vendedor"),
+                r.get("descricao"),
+                r.get("quantidade") if r.get("quantidade") is not None else 0,
+                r.get("total_liquido") if r.get("total_liquido") is not None else 0,
+                r.get("cnpj_empresa"),
+                r.get("familia"),
+                r.get("regiao"),
+            ))
+
+        cur.executemany("""
+            INSERT INTO vendas (
+                data_emissao, nome_vendedor, descricao, quantidade,
+                total_liquido, cnpj_empresa, familia, regiao
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, rows)
+
+        cur.execute("""
+            INSERT INTO _sync_meta (chave, valor)
+            VALUES ('vendas_last_write', ?)
+            ON CONFLICT(chave) DO UPDATE SET valor=excluded.valor
+        """, (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),))
+
+        con.commit()
+        print(f"💾 Cópia local salva (vendas): {db_path} | Registros: {len(rows)}")
+    finally:
+        con.close()
+
+#DADOS VENDEDORES
+def salvar_copia_vendedores(dados_vendedores: List[Dict[str, Any]], db_path: str = DB_COPIA_PATH) -> None:
     criar_tabelas_copia(db_path)
 
     con = _sqlite_connect(db_path)
@@ -353,97 +392,6 @@ def salvar_copia_vendedores(dados_vendedores, db_path: str = DB_COPIA_PATH) -> N
         print(f"💾 Cópia local salva (vendedores): {db_path} | Registros: {len(rows)}")
     finally:
         con.close()
-
-
-def salvar_copia_vendas(dados_vendas: List[Dict[str, Any]], db_path: str = DB_COPIA_PATH) -> None:
-    criar_tabelas_copia(db_path)
-
-    con = _sqlite_connect(db_path)
-    try:
-        cur = con.cursor()
-        cur.execute("DELETE FROM vendas")
-
-        rows = []
-        for r in dados_vendas:
-            rows.append((
-                r.get("data_emissao"),
-                r.get("nome_vendedor"),
-                r.get("descricao"),
-                r.get("quantidade") if r.get("quantidade") is not None else 0,
-                r.get("total_liquido") if r.get("total_liquido") is not None else 0,
-                r.get("cnpj_empresa"),
-                r.get("familia"),
-                r.get("regiao"),
-            ))
-
-        cur.executemany("""
-            INSERT INTO vendas (
-                data_emissao, nome_vendedor, descricao, quantidade,
-                total_liquido, cnpj_empresa, familia, regiao
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, rows)
-
-        cur.execute("""
-            INSERT INTO _sync_meta (chave, valor)
-            VALUES ('vendas_last_write', ?)
-            ON CONFLICT(chave) DO UPDATE SET valor=excluded.valor
-        """, (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),))
-
-        con.commit()
-        print(f"💾 Cópia local salva (vendas): {db_path} | Registros: {len(rows)}")
-    finally:
-        con.close()
-
-
-def salvar_copia_vendedores(dados_vendedores: List[Dict[str, Any]], db_path: str = DB_COPIA_PATH) -> None:
-    criar_tabelas_copia(db_path)
-
-    con = _sqlite_connect(db_path)
-    try:
-        cur = con.cursor()
-        cur.execute("DELETE FROM vendedores")
-
-        rows = []
-        for r in dados_vendedores:
-            rows.append((
-                r.get("loja"),
-                r.get("vendedor"),
-                r.get("faturamento", 0),
-                r.get("tendencia", 0),
-                r.get("mes_anterior", 0),
-                r.get("crescimento", 0),
-                r.get("conv_peliculas", 0),
-                r.get("seguros", 0),
-                r.get("pct_seguro", 0),
-                r.get("pa", 0),
-                r.get("ticket_medio", 0),
-                r.get("pct_wearable", 0),
-                r.get("rs_aparelho", 0),
-                r.get("rs_acessorio", 0),
-                r.get("rs_tablet", 0),
-                r.get("rs_wearable", 0),
-            ))
-
-        cur.executemany("""
-            INSERT INTO vendedores (
-                loja, vendedor, faturamento, tendencia, mes_anterior,
-                crescimento, conv_peliculas, seguros, pct_seguro, pa,
-                ticket_medio, pct_wearable, rs_aparelho, rs_acessorio,
-                rs_tablet, rs_wearable
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, rows)
-
-        cur.execute("""
-            INSERT INTO _sync_meta (chave, valor)
-            VALUES ('vendedores_last_write', ?)
-            ON CONFLICT(chave) DO UPDATE SET valor=excluded.valor
-        """, (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),))
-
-        con.commit()
-        print(f"💾 Cópia local salva (vendedores): {db_path} | Registros: {len(rows)}")
-    finally:
-        con.close()
-
 
 # =========================
 # INTEGRAÇÕES
@@ -584,7 +532,14 @@ def integrar_kpi_vendedores():
             "rs_acessorio": get_val(["R$ ACESSORIO", "R$ ACESSÓRIO"]),
             "rs_tablet": get_val(["R$ TABLET"]),
             "rs_wearable": get_val(["R$ WEARABLE"]),
-            "pct_acessorios": get_val(["% ACESSORIOS"]), #qualquer coisa o problema esta nessa coluna
+            "pct_acessorios": get_val([
+                "% ACESSORIOS",
+                "% ACESSÓRIOS",
+                "% CONV ACESSORIOS",
+                "% CONV ACESSÓRIOS",
+                "CONV ACESSORIOS",
+                "CONV ACESSÓRIOS"
+            ]),
         })
 
     if lojas_salvas:
