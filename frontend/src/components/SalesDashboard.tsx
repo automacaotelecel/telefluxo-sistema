@@ -325,170 +325,55 @@ export default function SalesDashboard() {
       });
       setChartData(sortedChart);
 
-      const mapRanking = new Map();
-      filteredData.forEach(sale => {
-          const nome = sale.nome_vendedor || sale.vendedor || "N/D";
-          const rawLoja = sale.cnpj_empresa || sale.loja || "";
-          const nomeLoja = getStoreName(rawLoja);
-          const sellerKey = buildSellerKey(nome, nomeLoja);
+        const sortedRanking = (kpiData || [])
+    .map((k: any) => {
+        const loja = getStoreName(k.loja || k.cnpj_empresa || "");
+        const nome = k.vendedor || k.nome_vendedor || "N/D";
+        const faturamento = Number(k.fat_atual ?? k.fatAtual ?? k.faturamento ?? 0);
 
-          if (!mapRanking.has(sellerKey)) {
-              mapRanking.set(sellerKey, { 
-                  key: sellerKey,
-                  nome, 
-                  loja: nomeLoja, 
-                  total: 0, 
-                  qtd: 0 
-              });
-          }
-
-          const item = mapRanking.get(sellerKey);
-          item.total += Number(sale.total_liquido || 0);
-          item.qtd += Number(sale.quantidade || 1);
-      });
-
-      const sortedRanking = Array.from(mapRanking.values())
-        .map((v: any) => {
-            const directKpi = kpiIndex.get(v.key);
-
-            const fallbackKpi = kpiData.find((item: any) => {
-            const vendedorItem = normalizeText(item?.vendedor || item?.nome_vendedor || "");
-            const vendedorAtual = normalizeText(v?.nome || "");
-
-            if (vendedorItem !== vendedorAtual) return false;
-
-            const lojaItem = normalizeText(getStoreName(item?.loja || item?.cnpj_empresa || ""));
-            const lojaAtual = normalizeText(v?.loja || "");
-
-            return (
-                lojaItem === lojaAtual ||
-                lojaItem.includes(lojaAtual) ||
-                lojaAtual.includes(lojaItem)
-            );
-        });
-
-    const kpi = directKpi || fallbackKpi;
-
-    if (!kpi) {
-      console.warn("KPI NÃO ENCONTRADO PARA:", {
-        vendedor: v.nome,
-        loja: v.loja,
-        key: v.key,
-        exemploKpi: kpiData?.[0]
-      });
-    }
-
-      const totalVendedor = v.total || 0;
-
-      const anterior = Number(
-        kpi?.fat_anterior ??
-        kpi?.fatAnterior ??
-        kpi?.mes_anterior ??
-        kpi?.mesAnterior ??
-        0
-      );
-
-      const tendenciaMatematica = (totalVendedor / diasPassados) * diasNoMes;
-
-      return {
-          ...v,
-          faturamento: Number(
-            kpi?.fat_atual ??
-            kpi?.fatAtual ??
-            kpi?.faturamento ??
-            totalVendedor
-          ),
-
-          tendencia: Number(
-            kpi?.tendencia ??
-            Math.max(tendenciaMatematica, totalVendedor)
-          ),
-
-          mes_anterior: anterior,
-
-          crescimento: Number(
-            kpi?.crescimento ??
-            (anterior > 0 ? (totalVendedor - anterior) / anterior : 0)
-          ),
-
-          pct_acessorios: Number(
-            kpi?.pct_acessorios ??
-            kpi?.pctAcessorios ??
-            0
-          ),
-
-          conv_peliculas: Number(
-            kpi?.conv_peliculas ??
-            kpi?.convPeliculas ??
-            0
-          ),
-
-          seguros: Number(
-            kpi?.seguros ??
-            0
-          ),
-
-          pct_seguro: Number(
-            kpi?.pct_seguro ??
-            kpi?.pctSeguro ??
-            kpi?.pct_seguros ??
-            kpi?.pctSeguros ??
-            0
-          ),
-
-          rs_aparelho: Number(
-            kpi?.rs_aparelho ??
-            kpi?.rsAparelho ??
-            0
-          ),
-
-          rs_acessorio: Number(
-            kpi?.rs_acessorio ??
-            kpi?.rsAcessorio ??
-            0
-          ),
-
-          rs_tablet: Number(
-            kpi?.rs_tablet ??
-            kpi?.rsTablet ??
-            0
-          ),
-
-          rs_wearable: Number(
-            kpi?.rs_wearable ??
-            kpi?.rsWearable ??
-            0
-          ),
-
-          pa: Number(
-            kpi?.pa ??
-            (v.qtd / 50)
-          ),
-
-          ticket: Number(
-            kpi?.ticket ??
-            kpi?.ticket_medio ??
-            kpi?.ticketMedio ??
-            (v.qtd > 0 ? totalVendedor / v.qtd : 0)
-          ),
+        return {
+        key: buildSellerKey(nome, loja),
+        loja,
+        nome,
+        total: faturamento,
+        faturamento,
+        tendencia: Number(k.tendencia ?? 0),
+        mes_anterior: Number(k.fat_anterior ?? k.fatAnterior ?? k.mes_anterior ?? k.mesAnterior ?? 0),
+        crescimento: Number(k.crescimento ?? 0),
+        pct_acessorios: Number(k.pct_acessorios ?? k.pctAcessorios ?? 0),
+        conv_peliculas: Number(k.conv_peliculas ?? k.convPeliculas ?? 0),
+        seguros: Number(k.seguros ?? 0),
+        pct_seguro: Number(k.pct_seguro ?? k.pctSeguro ?? k.pct_seguros ?? k.pctSeguros ?? 0),
+        rs_aparelho: Number(k.rs_aparelho ?? k.rsAparelho ?? 0),
+        rs_acessorio: Number(k.rs_acessorio ?? k.rsAcessorio ?? 0),
+        rs_tablet: Number(k.rs_tablet ?? k.rsTablet ?? 0),
+        rs_wearable: Number(k.rs_wearable ?? k.rsWearable ?? 0),
+        pa: Number(k.pa ?? 0),
+        ticket: Number(k.ticket ?? k.ticket_medio ?? k.ticketMedio ?? 0),
+        qtd: Number(k.qtd ?? 0),
         };
-      })
-        .sort((a: any, b: any) => b.total - a.total);
-      
-      const storeTotals: Record<string, number> = {};
-      sortedRanking.forEach((v: any) => {
-          storeTotals[v.loja] = (storeTotals[v.loja] || 0) + v.total;
-      });
+    })
+    .filter((v: any) => {
+        if (!v.nome || v.nome === "N/D" || normalizeText(v.nome) === "NAN") return false;
+        if (selectedStores.length > 0 && !selectedStores.includes(v.loja)) return false;
+        return true;
+    })
+    .sort((a: any, b: any) => b.faturamento - a.faturamento);
 
-      const finalRanking = sortedRanking.map((v: any) => ({
-          ...v,
-          pct_loja: storeTotals[v.loja] > 0 ? (v.total / storeTotals[v.loja]) : 0
-      }));
+    const storeTotals: Record<string, number> = {};
+    sortedRanking.forEach((v: any) => {
+    storeTotals[v.loja] = (storeTotals[v.loja] || 0) + v.faturamento;
+});
 
-      console.log("EXEMPLO RANKING:", finalRanking[0]);
-      console.log("KPIS CARREGADOS:", kpiData.slice(0, 3));
-      
-      setRanking(finalRanking);
+const finalRanking = sortedRanking.map((v: any) => ({
+  ...v,
+  pct_loja: storeTotals[v.loja] > 0 ? (v.faturamento / storeTotals[v.loja]) : 0
+}));
+
+console.log("EXEMPLO RANKING KPI DIRETO:", finalRanking[0]);
+console.log("TOTAL KPI USADO NO RANKING:", finalRanking.length);
+
+setRanking(finalRanking);
         
       const mapProd = new Map();
       filteredData.forEach(sale => {
@@ -521,7 +406,7 @@ export default function SalesDashboard() {
       
       setProductRanking(sortedProd);
 
-  }, [filteredData, stockRawData, kpiIndex, diasPassados, diasNoMes]); 
+  }, [filteredData, stockRawData, kpiData, selectedStores, diasPassados, diasNoMes]);
 
   const uniqueStores = useMemo(() => {
       const stores = new Set(rawData.map(r => getStoreName(r.cnpj_empresa || r.loja)).filter(Boolean));
