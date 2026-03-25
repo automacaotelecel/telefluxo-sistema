@@ -2168,11 +2168,13 @@ app.post('/api/sync/bestflow', async (req, res) => {
 // ==========================================
 // 🛒 SINCRONIZAÇÃO DE VENDEDORES (Para o Python)
 // ==========================================
+
 app.post('/api/sync/vendedores', async (req, res) => {
   let db: any;
 
   try {
     const dados = req.body;
+    const reset = String(req.query.reset || "true") !== "false";
 
     if (!Array.isArray(dados)) {
       return res.status(400).json({ error: "Dados inválidos" });
@@ -2181,31 +2183,58 @@ app.post('/api/sync/vendedores', async (req, res) => {
     db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
 
     await db.exec("BEGIN TRANSACTION");
-    await db.exec("DROP TABLE IF EXISTS vendedores");
 
-    await db.exec(`
-      CREATE TABLE vendedores (
-        loja TEXT,
-        cnpj_empresa TEXT,
-        vendedor TEXT,
-        fat_atual REAL,
-        tendencia REAL,
-        fat_anterior REAL,
-        crescimento REAL,
-        pa REAL,
-        ticket REAL,
-        qtd REAL,
-        regiao TEXT,
-        pct_seguro REAL,
-        seguros REAL,
-        pct_acessorios REAL,
-        conv_peliculas REAL,
-        rs_aparelho REAL,
-        rs_acessorio REAL,
-        rs_tablet REAL,
-        rs_wearable REAL
-      )
-    `);
+    if (reset) {
+      await db.exec("DROP TABLE IF EXISTS vendedores");
+
+      await db.exec(`
+        CREATE TABLE vendedores (
+          loja TEXT,
+          cnpj_empresa TEXT,
+          vendedor TEXT,
+          fat_atual REAL,
+          tendencia REAL,
+          fat_anterior REAL,
+          crescimento REAL,
+          pa REAL,
+          ticket REAL,
+          qtd REAL,
+          regiao TEXT,
+          pct_seguro REAL,
+          seguros REAL,
+          pct_acessorios REAL,
+          conv_peliculas REAL,
+          rs_aparelho REAL,
+          rs_acessorio REAL,
+          rs_tablet REAL,
+          rs_wearable REAL
+        )
+      `);
+    } else {
+      await db.exec(`
+        CREATE TABLE IF NOT EXISTS vendedores (
+          loja TEXT,
+          cnpj_empresa TEXT,
+          vendedor TEXT,
+          fat_atual REAL,
+          tendencia REAL,
+          fat_anterior REAL,
+          crescimento REAL,
+          pa REAL,
+          ticket REAL,
+          qtd REAL,
+          regiao TEXT,
+          pct_seguro REAL,
+          seguros REAL,
+          pct_acessorios REAL,
+          conv_peliculas REAL,
+          rs_aparelho REAL,
+          rs_acessorio REAL,
+          rs_tablet REAL,
+          rs_wearable REAL
+        )
+      `);
+    }
 
     const stmt = await db.prepare(`
       INSERT INTO vendedores (
@@ -2259,26 +2288,18 @@ app.post('/api/sync/vendedores', async (req, res) => {
     await stmt.finalize();
     await db.exec("COMMIT");
 
-    // ✅ ESCREVA EXATAMENTE AQUI
     const resumoSync = await db.get(`
       SELECT COUNT(*) as total, COUNT(DISTINCT loja) as lojas
       FROM vendedores
     `);
 
-    const amostraSync = await db.all(`
-      SELECT loja, vendedor, fat_atual, pct_acessorios
-      FROM vendedores
-      ORDER BY loja, vendedor
-      LIMIT 5
-    `);
-
+    console.log("SYNC /api/sync/vendedores -> reset:", reset);
     console.log("SYNC /api/sync/vendedores -> DB:", GLOBAL_DB_PATH);
     console.log("SYNC /api/sync/vendedores -> RESUMO:", resumoSync);
-    console.log("SYNC /api/sync/vendedores -> AMOSTRA:", amostraSync);
 
     await db.close();
 
-    return res.json({ success: true, gravados: dados.length });
+    return res.json({ success: true, gravados: dados.length, reset });
   } catch (e: any) {
     if (db) {
       try { await db.exec("ROLLBACK"); } catch {}
@@ -2288,6 +2309,7 @@ app.post('/api/sync/vendedores', async (req, res) => {
     return res.status(500).json({ error: e.message });
   }
 });
+
 // --- ROTA DE RAIO-X (DEBUG) ---
 app.get('/api/debug', async (req, res) => {
     try {
