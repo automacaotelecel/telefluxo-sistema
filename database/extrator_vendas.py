@@ -8,7 +8,7 @@ from datetime import datetime
 import time
 
 # ============================================================
-# ✅ CONFIGURAÇÃO DE URL AUTOMÁTICA (HÍBRIDA)
+# ✅ CONFIGURAÇÃO DE URL
 # ============================================================
 def get_backend_url():
     """
@@ -17,15 +17,16 @@ def get_backend_url():
     """
     local_url = "http://localhost:3000"
     prod_url = "https://telefluxo-aplicacao.onrender.com"
-    
+
     print("🔍 Detectando ambiente...")
     try:
         requests.get(local_url, timeout=1)
         print(f"🏠 Servidor Local encontrado! Usando: {local_url}")
         return local_url
-    except:
+    except Exception:
         print(f"☁️ Servidor Local offline. Usando PRODUÇÃO: {prod_url}")
         return prod_url
+
 
 # SALVAR O BANCO DE DADOS (CÓPIA LOCAL)
 DB_COPIA_DIR = r"C:\Users\Usuario\Desktop\TeleFluxo_Instalador\database"
@@ -88,14 +89,16 @@ CORRECAO_NOMES = {
     "CD": "CD TAGUATINGA",
     "PASSEIO DAS ÁGUAS": "PASSEIO DAS AGUAS",
     "TERRACO SHOPPING": "TERRAÇO SHOPPING",
-    "PARK": "PARK SHOPPING"
+    "PARK": "PARK SHOPPING",
 }
+
 
 def norm(s: Any) -> str:
     s = "" if s is None else str(s)
     s = s.strip().upper()
     s = re.sub(r"\s+", " ", s)
     return s
+
 
 # Reverse map: NOME -> CNPJ
 REVERSE_LOJAS = {norm(nome): cnpj for cnpj, nome in LOJAS_MAP.items()}
@@ -116,7 +119,7 @@ ALIASES = {
 ALIASES_N = {norm(k): norm(v) for k, v in ALIASES.items()}
 
 
-def loja_para_cnpj(loja: Any) -> str | None:
+def loja_para_cnpj(loja: Any):
     t = norm(loja)
 
     if t in CORRECAO_NOMES:
@@ -165,7 +168,7 @@ def parse_data_emissao(series: pd.Series) -> pd.Series:
         return s
 
     s_str = s.astype(str).str.strip()
-    s_date_only = s_str.str.split(' ').str[0]
+    s_date_only = s_str.str.split(" ").str[0]
 
     dt1 = pd.to_datetime(s_date_only, format="%Y-%m-%d", errors="coerce")
     mask_iso = dt1.isna()
@@ -194,18 +197,18 @@ def enviar_dados_para_api(endpoint: str, dados: List[Dict[str, Any]]) -> bool:
         return True
 
     dados = limpar_valores_json(dados)
-    
+
     BATCH_SIZE = 100
-    total_lotes = (len(dados) // BATCH_SIZE) + 1
-    
+    total_lotes = (len(dados) // BATCH_SIZE) + (1 if len(dados) % BATCH_SIZE != 0 else 0)
+
     print(f"📡 Preparando envio de {len(dados)} registros em {total_lotes} lotes...")
 
     headers = {"Content-Type": "application/json"}
 
     for i in range(0, len(dados), BATCH_SIZE):
-        lote = dados[i : i + BATCH_SIZE]
+        lote = dados[i:i + BATCH_SIZE]
         lote_num = (i // BATCH_SIZE) + 1
-        
+
         param_reset = "true" if i == 0 else "false"
         url_lote = f"{URL_BACKEND}{endpoint}?reset={param_reset}"
 
@@ -214,10 +217,10 @@ def enviar_dados_para_api(endpoint: str, dados: List[Dict[str, Any]]) -> bool:
         for attempt in range(1, MAX_RETRIES + 1):
             try:
                 response = requests.post(url_lote, json=lote, headers=headers, timeout=TIMEOUT)
-                
+
                 if 200 <= response.status_code < 300:
-                    break 
-                
+                    break
+
                 if response.status_code == 413:
                     print("   ❌ ERRO 413: O pacote ainda está muito grande.")
                     return False
@@ -227,9 +230,9 @@ def enviar_dados_para_api(endpoint: str, dados: List[Dict[str, Any]]) -> bool:
                     print(f"      ⏳ Servidor ocupado ({response.status_code})... Aguardando {wait_time}s")
                     time.sleep(wait_time)
                     continue
-                
+
                 print(f"   ❌ Erro Fatal no Lote {lote_num}: {response.status_code} - {response.text[:200]}")
-                return False 
+                return False
 
             except Exception as e:
                 print(f"   ⚠️ Erro conexão Lote {lote_num}: {e}")
@@ -308,6 +311,7 @@ def criar_tabelas_copia(db_path: str) -> None:
     finally:
         con.close()
 
+
 def salvar_copia_vendas(dados_vendas: List[Dict[str, Any]], db_path: str = DB_COPIA_PATH) -> None:
     criar_tabelas_copia(db_path)
 
@@ -347,7 +351,7 @@ def salvar_copia_vendas(dados_vendas: List[Dict[str, Any]], db_path: str = DB_CO
     finally:
         con.close()
 
-#DADOS VENDEDORES
+
 def salvar_copia_vendedores(dados_vendedores: List[Dict[str, Any]], db_path: str = DB_COPIA_PATH) -> None:
     criar_tabelas_copia(db_path)
 
@@ -399,6 +403,7 @@ def salvar_copia_vendedores(dados_vendedores: List[Dict[str, Any]], db_path: str
     finally:
         con.close()
 
+
 # =========================
 # INTEGRAÇÕES
 # =========================
@@ -429,22 +434,23 @@ def integrar_vendas_geral():
         treated = pd.DataFrame()
 
         treated["data_emissao"] = parse_data_emissao(df[col_data])
-        treated = treated.dropna(subset=["data_emissao"])
+        treated = treated.dropna(subset=["data_emissao"]).copy()
         treated["data_emissao"] = treated["data_emissao"].dt.strftime("%Y-%m-%d")
 
-        treated["nome_vendedor"] = df[col_vendedor].astype(str).str.strip().str.upper()
-        treated["descricao"] = df[col_desc].astype(str).str.strip().str.upper()
+        treated["nome_vendedor"] = df.loc[treated.index, col_vendedor].astype(str).str.strip().str.upper()
+        treated["descricao"] = df.loc[treated.index, col_desc].astype(str).str.strip().str.upper()
+        treated["quantidade"] = pd.to_numeric(df.loc[treated.index, col_qtd], errors="coerce").fillna(0)
+        treated["total_liquido"] = pd.to_numeric(df.loc[treated.index, df.columns[18]], errors="coerce").fillna(0)
 
-        treated["quantidade"] = pd.to_numeric(df[col_qtd], errors="coerce").fillna(0)
-
-        treated["total_liquido"] = pd.to_numeric(df.iloc[:, 18], errors="coerce").fillna(0)
-
-        treated["cnpj_empresa"] = df[col_loja].map(loja_para_cnpj)
-        treated["familia"] = df[col_familia].astype(str).str.strip().str.upper()
-        treated["regiao"] = df[col_regiao].astype(str).str.strip().str.upper()
+        treated["cnpj_empresa"] = df.loc[treated.index, col_loja].map(loja_para_cnpj)
+        treated["familia"] = df.loc[treated.index, col_familia].astype(str).str.strip().str.upper()
+        treated["regiao"] = df.loc[treated.index, col_regiao].astype(str).str.strip().str.upper()
 
         treated = treated.dropna(subset=["cnpj_empresa"])
-        treated = treated[(treated["total_liquido"].abs() > 0.01) | (treated["quantidade"].abs() > 0.001)].copy()
+        treated = treated[
+            (treated["total_liquido"].abs() > 0.01) |
+            (treated["quantidade"].abs() > 0.001)
+        ].copy()
 
     except Exception as e:
         print(f"❌ Erro tratamento VENDAS: {e}")
@@ -459,9 +465,9 @@ def integrar_vendas_geral():
         print("✅ Vendas enviadas e sincronizadas com sucesso.")
         time.sleep(5)
         return True
-    else:
-        print("❌ Falha ao enviar vendas.")
-        return False
+
+    print("❌ Falha ao enviar vendas.")
+    return False
 
 
 def clean_number(val) -> float:
@@ -470,19 +476,19 @@ def clean_number(val) -> float:
         return 0.0
     if isinstance(val, (int, float)):
         return float(val)
-    
-    val_str = str(val).upper().replace('R$', '').replace('%', '').strip()
-    
-    # Lida com separadores numéricos padrão Brasil (ex: 1.500,50 -> 1500.50)
-    if ',' in val_str and '.' in val_str:
-        val_str = val_str.replace('.', '').replace(',', '.')
-    elif ',' in val_str:
-        val_str = val_str.replace(',', '.')
-        
+
+    val_str = str(val).upper().replace("R$", "").replace("%", "").strip()
+
+    if "," in val_str and "." in val_str:
+        val_str = val_str.replace(".", "").replace(",", ".")
+    elif "," in val_str:
+        val_str = val_str.replace(",", ".")
+
     try:
         return float(val_str)
-    except:
+    except Exception:
         return 0.0
+
 
 def montar_mapa_vendedor_loja_pelas_vendas() -> Dict[str, str]:
     """
@@ -509,8 +515,6 @@ def montar_mapa_vendedor_loja_pelas_vendas() -> Dict[str, str]:
         work["vendedor"] = df[col_vendedor].astype(str).str.strip().str.upper()
         work["cnpj_empresa"] = df[col_loja].map(loja_para_cnpj)
         work["loja"] = work["cnpj_empresa"].map(LOJAS_MAP)
-
-        # usa a mesma coluna de valor já usada em vendas
         work["total_liquido"] = pd.to_numeric(df.iloc[:, 18], errors="coerce").fillna(0)
 
         work = work.dropna(subset=["vendedor", "loja"]).copy()
@@ -549,23 +553,20 @@ def integrar_kpi_vendedores():
     # Padroniza todas as colunas do Excel para maiúsculo para evitar erros de digitação
     df_meta.columns = df_meta.columns.astype(str).str.strip().str.upper()
 
-    # ✅ NOVO: prioriza a loja canônica descoberta pela aba VENDAS
+    # ✅ prioridade: loja canônica da aba VENDAS
     mapa_vendedor_loja = montar_mapa_vendedor_loja_pelas_vendas()
 
     output_list = []
     lojas_salvas = set()
 
     for _, row in df_meta.iterrows():
-        # Busca o Vendedor
         vendedor = str(row.get("VENDEDOR", "")).strip().upper()
         if vendedor in ("NAN", "NONE", ""):
             continue
 
-        # Busca e limpa a Loja
         nome_loja_sujo = str(row.get("LOJA", "")).strip()
         nome_loja_limpo = get_clean_store_name(nome_loja_sujo)
 
-        # ✅ PRIORIDADE: loja das VENDAS
         loja_pelas_vendas = mapa_vendedor_loja.get(vendedor)
 
         if loja_pelas_vendas:
@@ -577,14 +578,12 @@ def integrar_kpi_vendedores():
             if norm(nome_loja_limpo) != norm(nome_loja_sujo):
                 lojas_salvas.add(f"{nome_loja_sujo} -> {nome_loja_limpo}")
 
-        # Função auxiliar para buscar o valor tentando variações do nome da coluna
         def get_val(variacoes_coluna):
             for col in variacoes_coluna:
                 if col in df_meta.columns:
                     return clean_number(row[col])
             return 0.0
 
-        # ✅ MAPEAMENTO EXATO COM AS COLUNAS SOLICITADAS
         output_list.append({
             "loja": nome_loja_final,
             "cnpj_empresa": REVERSE_LOJAS.get(norm(nome_loja_final)),
@@ -609,9 +608,16 @@ def integrar_kpi_vendedores():
                 "% CONV ACESSORIOS",
                 "% CONV ACESSÓRIOS",
                 "CONV ACESSORIOS",
-                "CONV ACESSÓRIOS"
+                "CONV ACESSÓRIOS",
             ]),
         })
+
+    print("TOTAL KPI GERADO:", len(output_list))
+    print("LOJAS KPI:", sorted(set(str(x.get("loja", "")).strip().upper() for x in output_list)))
+
+    print("PRIMEIROS 5 KPIs:")
+    for item in output_list[:5]:
+        print(item)
 
     if lojas_salvas:
         print("🔎 DEBUG: Algumas lojas precisaram ser padronizadas/alinhadas:")
@@ -626,9 +632,9 @@ def integrar_kpi_vendedores():
     if ok:
         print("✅ KPIs de Vendedores sincronizados com sucesso!")
         return True
-    else:
-        print("❌ Falha ao enviar KPIs.")
-        return False
+
+    print("❌ Falha ao enviar KPIs.")
+    return False
 
 
 if __name__ == "__main__":

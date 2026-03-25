@@ -2258,6 +2258,24 @@ app.post('/api/sync/vendedores', async (req, res) => {
 
     await stmt.finalize();
     await db.exec("COMMIT");
+
+    // ✅ ESCREVA EXATAMENTE AQUI
+    const resumoSync = await db.get(`
+      SELECT COUNT(*) as total, COUNT(DISTINCT loja) as lojas
+      FROM vendedores
+    `);
+
+    const amostraSync = await db.all(`
+      SELECT loja, vendedor, fat_atual, pct_acessorios
+      FROM vendedores
+      ORDER BY loja, vendedor
+      LIMIT 5
+    `);
+
+    console.log("SYNC /api/sync/vendedores -> DB:", GLOBAL_DB_PATH);
+    console.log("SYNC /api/sync/vendedores -> RESUMO:", resumoSync);
+    console.log("SYNC /api/sync/vendedores -> AMOSTRA:", amostraSync);
+
     await db.close();
 
     return res.json({ success: true, gravados: dados.length });
@@ -2270,7 +2288,6 @@ app.post('/api/sync/vendedores', async (req, res) => {
     return res.status(500).json({ error: e.message });
   }
 });
-
 // --- ROTA DE RAIO-X (DEBUG) ---
 app.get('/api/debug', async (req, res) => {
     try {
