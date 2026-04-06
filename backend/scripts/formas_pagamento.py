@@ -29,6 +29,7 @@ import sys
 import time
 import sqlite3
 import logging
+import math
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 
@@ -75,6 +76,76 @@ def limpar_valores_json(dados: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 new_row[k] = v
         cleaned.append(new_row)
     return cleaned
+
+
+def limpar_lote_dataframe(df_lote: pd.DataFrame) -> List[Dict[str, Any]]:
+    records = df_lote.to_dict(orient="records")
+    return limpar_valores_json(records)
+
+
+def enviar_dataframe_para_api(
+    endpoint: str,
+    df: pd.DataFrame,
+    batch_size: int = 25,
+    pausa_entre_lotes: float = 0.35
+) -> bool:
+    if df is None or df.empty:
+        print(f"⚠️ Nenhum registro para enviar em {endpoint}.")
+        return True
+
+    total_registros = len(df)
+    total_lotes = math.ceil(total_registros / batch_size)
+    headers = {"Content-Type": "application/json"}
+
+    print(f"📡 Preparando envio de {total_registros} registros em {total_lotes} lotes para {endpoint}...")
+
+    for lote_idx, inicio in enumerate(range(0, total_registros, batch_size), start=1):
+        fim = inicio + batch_size
+        df_lote = df.iloc[inicio:fim].copy()
+        lote = limpar_lote_dataframe(df_lote)
+
+        param_reset = "true" if lote_idx == 1 else "false"
+        param_last_batch = "true" if lote_idx == total_lotes else "false"
+        url_lote = f"{URL_BACKEND}{endpoint}?reset={param_reset}&last_batch={param_last_batch}"
+
+        print(f"   📦 Enviando Lote {lote_idx}/{total_lotes} ({len(lote)} itens)...")
+
+        ok_lote = False
+
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                response = requests.post(url_lote, json=lote, headers=headers, timeout=TIMEOUT)
+
+                if 200 <= response.status_code < 300:
+                    ok_lote = True
+                    break
+
+                if response.status_code == 413:
+                    print("   ❌ ERRO 413: O pacote ainda está muito grande. Diminua o batch_size.")
+                    return False
+
+                if response.status_code in RETRY_STATUS or "SQLITE_BUSY" in response.text:
+                    wait_time = BASE_WAIT_SECONDS * attempt
+                    print(f"      ⏳ Servidor ocupado ({response.status_code})... Aguardando {wait_time}s")
+                    time.sleep(wait_time)
+                    continue
+
+                print(f"   ❌ Erro Fatal no Lote {lote_idx}: {response.status_code} - {response.text[:300]}")
+                return False
+
+            except Exception as e:
+                wait_time = BASE_WAIT_SECONDS * attempt
+                print(f"   ⚠️ Erro conexão Lote {lote_idx}: {e}")
+                time.sleep(wait_time)
+
+        if not ok_lote:
+            print(f"   ❌ Falha fatal no Lote {lote_idx} após todas tentativas.")
+            return False
+
+        time.sleep(pausa_entre_lotes)
+
+    print(f"✅ Todos os lotes de {endpoint} enviados com sucesso!")
+    return True
 
 
 def enviar_dados_para_api(endpoint: str, dados: List[Dict[str, Any]]) -> bool:
@@ -168,15 +239,18 @@ os.makedirs(DB_DIR, exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)
 
 # ===========================================
-# 🏪 CNPJs
+# 🏪 CNPJs - Colar todos os CNPJS quando finalizar o teste
+#CNPJS = [
+#    "12309173001732","12309173001066","12309173001651","12309173000841","12309173001813",
+#    "12309173000507","12309173000175","12309173000337","12309173000922","12309173000256",
+#    "12309173001228","12309173000760","12309173001309","12309173001147","12309173000680",
+#    "12309173000418","12309173002461","12309173002208","12309173001570","12309173001902",
+#    "12309173002119","12309173002038","12309173002380","12309173002542","12309173002895",
+#    "12309173002976", 
+#]
 # ===========================================
 CNPJS = [
-    "12309173001732","12309173001066","12309173001651","12309173000841","12309173001813",
-    "12309173000507","12309173000175","12309173000337","12309173000922","12309173000256",
-    "12309173001228","12309173000760","12309173001309","12309173001147","12309173000680",
-    "12309173000418","12309173002461","12309173002208","12309173001570","12309173001902",
-    "12309173002119","12309173002038","12309173002380","12309173002542","12309173002895",
-    "12309173002976", 
+    "12309173000175",
 ]
 
 # ===========================================
@@ -1038,21 +1112,47 @@ if __name__ == "__main__":
     # ===========================================
     # ☁️ ENVIO PARA A API (Sincronização Nuvem)
     # ===========================================
+    ok_sync = True
+
     if not URL_BACKEND:
         print("❌ ERRO FATAL: Não foi possível definir a URL do backend. Dados salvos apenas no SQLite local.")
+        ok_sync = False
     else:
         print("\n🚀 Iniciando Sincronização com o Servidor (TeleFluxo)...\n")
 
         if not df_mov_resumo_final.empty:
-            enviar_dados_para_api("/api/sync/linx_movimento_resumo", df_mov_resumo_final.to_dict(orient="records"))
+            ok_sync = ok_sync and enviar_dataframe_para_api(
+                "/api/sync/linx_movimento_resumo",
+                df_mov_resumo_final,
+                batch_size=25,
+                pausa_entre_lotes=0.35
+            )
 
-        if not df_mov_planos_final.empty:
-            enviar_dados_para_api("/api/sync/linx_movimento_planos", df_mov_planos_final.to_dict(orient="records"))
+        if ok_sync and not df_mov_planos_final.empty:
+            ok_sync = ok_sync and enviar_dataframe_para_api(
+                "/api/sync/linx_movimento_planos",
+                df_mov_planos_final,
+                batch_size=25,
+                pausa_entre_lotes=0.35
+            )
 
-        if not df_mov_cartoes_final.empty:
-            enviar_dados_para_api("/api/sync/linx_movimento_cartoes", df_mov_cartoes_final.to_dict(orient="records"))
+        if ok_sync and not df_mov_cartoes_final.empty:
+            ok_sync = ok_sync and enviar_dataframe_para_api(
+                "/api/sync/linx_movimento_cartoes",
+                df_mov_cartoes_final,
+                batch_size=25,
+                pausa_entre_lotes=0.35
+            )
 
-        if not df_planos_parcelas_final.empty:
-            enviar_dados_para_api("/api/sync/linx_planos_parcelas", df_planos_parcelas_final.to_dict(orient="records"))
+        if ok_sync and not df_planos_parcelas_final.empty:
+            ok_sync = ok_sync and enviar_dataframe_para_api(
+                "/api/sync/linx_planos_parcelas",
+                df_planos_parcelas_final,
+                batch_size=20,
+                pausa_entre_lotes=0.50
+            )
 
-    print("✅ Processo 100% finalizado!")
+    if ok_sync:
+        print("✅ Processo 100% finalizado!")
+    else:
+        print("❌ Processo finalizado com falhas na sincronização.")

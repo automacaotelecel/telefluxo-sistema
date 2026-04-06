@@ -5,15 +5,15 @@ import UserList from "./components/UserList";
 import NewUserModal from "./components/NewUserModal";
 import NewTaskModal from "./components/NewTaskModal";
 import Login from "./components/Login";
-import Agenda from "./components/Agenda"; 
-import ManagerDashboard from "./components/ManagerDashboard"; 
-import SalesDashboard from "./components/SalesDashboard"; 
+import Agenda from "./components/Agenda";
+import ManagerDashboard from "./components/ManagerDashboard";
+import SalesDashboard from "./components/SalesDashboard";
 import NotificationBell from "./components/NotificationBell";
 import Home from "./components/home";
 import DeptBulletin from "./components/DeptBulletin";
-import FinanceModule from "./components/FinanceModule"; 
+import FinanceModule from "./components/FinanceModule";
 import ControleStone from "./components/ControleStone";
-import StockModule from "./components/StockModule"; 
+import StockModule from "./components/StockModule";
 import PriceTablePage from './components/PriceTablePage';
 import { EstoqueVendas } from './components/EstoqueVendas';
 import EstoqueInteligente from './components/EstoqueInteligente';
@@ -21,21 +21,22 @@ import ComparativoAnual from './components/ComparativoAnual';
 import AuditoriaLojas from './components/AuditoriaLojas';
 import EstoqueDetalhado from './components/EstoqueDetalhado';
 import Stockout from './components/StockOut';
-import { 
-  FileText, CheckCircle, LayoutDashboard, Users, LogOut, 
+import SacolasModule from './components/SacolasModule';
+import {
+  FileText, CheckCircle, LayoutDashboard, Users, LogOut,
   Calendar, BarChart3, ChevronDown, ChevronRight, Circle, Plus,
   TrendingUp, Home as HomeIcon, MessageSquare, DollarSign,
-  Package, Menu, X, Tag, Activity
+  Package, Menu, X, Tag
 } from 'lucide-react';
 
 function App() {
   const [user, setUser] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [currentView, setCurrentView] = useState('home'); 
+  const [currentView, setCurrentView] = useState('home');
   const [selectedTask, setSelectedTask] = useState<any>(null);
   const [isUserModalOpen, setIsUserModalOpen] = useState(false);
   const [isNewTaskModalOpen, setIsNewTaskModalOpen] = useState(false);
-  
+
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   const [expanded, setExpanded] = useState({ general: false, mine: true, info: false, stock: false, sales: false, finance: false });
@@ -43,12 +44,12 @@ function App() {
   useEffect(() => {
     const savedUser = localStorage.getItem('telefluxo_user');
     if (savedUser && savedUser !== "undefined") {
-      try { 
+      try {
         const parsedUser = JSON.parse(savedUser);
-        setUser(parsedUser); 
-        setCurrentView('home'); 
-      } catch (e) { 
-        localStorage.removeItem('telefluxo_user'); 
+        setUser(parsedUser);
+        setCurrentView('home');
+      } catch (e) {
+        localStorage.removeItem('telefluxo_user');
       }
     }
     setIsLoading(false);
@@ -76,14 +77,14 @@ function App() {
   const handleLogout = () => { localStorage.clear(); window.location.reload(); };
 
   const handleNavigate = (view: string) => {
-      setCurrentView(view);
-      setIsMobileMenuOpen(false);
+    setCurrentView(view);
+    setIsMobileMenuOpen(false);
   };
 
   if (isLoading) return <div className="h-screen bg-slate-900 flex items-center justify-center text-white font-black uppercase tracking-widest animate-pulse">Iniciando TeleFluxo...</div>;
-  
-  if (!user) return <Login onLogin={(data:any) => { 
-    setUser(data); 
+
+  if (!user) return <Login onLogin={(data: any) => {
+    setUser(data);
     localStorage.setItem('telefluxo_user', JSON.stringify(data));
     setCurrentView('home');
   }} />;
@@ -96,11 +97,11 @@ function App() {
 
   return (
     <div className="flex h-screen bg-slate-50 font-sans text-slate-800 overflow-hidden">
-      
+
       {isMobileMenuOpen && (
-        <div 
-            className="fixed inset-0 bg-black/60 z-30 md:hidden backdrop-blur-sm transition-opacity"
-            onClick={() => setIsMobileMenuOpen(false)}
+        <div
+          className="fixed inset-0 bg-black/60 z-30 md:hidden backdrop-blur-sm transition-opacity"
+          onClick={() => setIsMobileMenuOpen(false)}
         />
       )}
 
@@ -111,25 +112,25 @@ function App() {
       `}>
         <div className="p-6 text-xl font-bold border-b border-slate-800 flex items-center justify-between">
           <div className="flex items-center gap-2">
-              <div className="w-8 h-8 bg-orange-600 rounded text-white flex items-center justify-center font-black italic shadow-lg">T</div>
-              <span className="tracking-tighter font-black">TELE<span className="text-orange-500">FLUXO</span></span>
+            <div className="w-8 h-8 bg-orange-600 rounded text-white flex items-center justify-center font-black italic shadow-lg">T</div>
+            <span className="tracking-tighter font-black">TELE<span className="text-orange-500">FLUXO</span></span>
           </div>
           <button onClick={() => setIsMobileMenuOpen(false)} className="md:hidden text-slate-400 hover:text-white">
-              <X size={24} />
+            <X size={24} />
           </button>
         </div>
-        
+
         <nav className="flex-1 p-4 space-y-1 mt-2 overflow-y-auto custom-scrollbar">
-          
+
           <div onClick={() => handleNavigate('home')} className={`p-3 rounded-xl cursor-pointer flex items-center gap-3 font-bold text-sm transition-all ${currentView === 'home' ? 'bg-orange-600 text-white shadow-lg' : 'text-slate-400 hover:bg-slate-800'}`}>
             <HomeIcon size={18} /> Início
           </div>
 
           {(isAdmin || isManager) && !isStoreOnly && (
             <div>
-              <div onClick={() => setExpanded({...expanded, general: !expanded.general})} className={`p-3 rounded-xl cursor-pointer flex items-center justify-between transition-all ${currentView.startsWith('all') ? 'bg-slate-800 text-white' : 'text-slate-400 hover:bg-slate-800'}`}>
+              <div onClick={() => setExpanded({ ...expanded, general: !expanded.general })} className={`p-3 rounded-xl cursor-pointer flex items-center justify-between transition-all ${currentView.startsWith('all') ? 'bg-slate-800 text-white' : 'text-slate-400 hover:bg-slate-800'}`}>
                 <div className="flex gap-3 items-center font-bold text-sm"><LayoutDashboard size={18} /> Visão Geral</div>
-                {expanded.general ? <ChevronDown size={14}/> : <ChevronRight size={14}/>}
+                {expanded.general ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
               </div>
               {expanded.general && (
                 <div className="mt-1 space-y-1">
@@ -143,9 +144,9 @@ function App() {
           )}
 
           <div>
-            <div onClick={() => setExpanded({...expanded, mine: !expanded.mine})} className={`p-3 rounded-xl cursor-pointer flex items-center justify-between transition-all ${currentView.startsWith('mine_') ? 'bg-slate-800 text-white' : 'text-slate-400 hover:bg-slate-800'}`}>
+            <div onClick={() => setExpanded({ ...expanded, mine: !expanded.mine })} className={`p-3 rounded-xl cursor-pointer flex items-center justify-between transition-all ${currentView.startsWith('mine_') ? 'bg-slate-800 text-white' : 'text-slate-400 hover:bg-slate-800'}`}>
               <div className="flex gap-3 items-center font-bold text-sm"><FileText size={18} /> Minhas Demandas</div>
-              {expanded.mine ? <ChevronDown size={14}/> : <ChevronRight size={14}/>}
+              {expanded.mine ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
             </div>
             {expanded.mine && (
               <div className="mt-1 space-y-1">
@@ -161,11 +162,11 @@ function App() {
           </div>
 
           <div>
-            <div onClick={() => setExpanded({...expanded, info: !expanded.info})} className={`p-3 rounded-xl cursor-pointer flex items-center justify-between transition-all ${currentView.startsWith('dept_') ? 'bg-slate-800 text-white' : 'text-slate-400 hover:bg-slate-800'}`}>
+            <div onClick={() => setExpanded({ ...expanded, info: !expanded.info })} className={`p-3 rounded-xl cursor-pointer flex items-center justify-between transition-all ${currentView.startsWith('dept_') ? 'bg-slate-800 text-white' : 'text-slate-400 hover:bg-slate-800'}`}>
               <div className="flex gap-3 items-center font-bold text-sm"><MessageSquare size={18} /> Informativos</div>
-              {expanded.info ? <ChevronDown size={14}/> : <ChevronRight size={14}/>}
+              {expanded.info ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
             </div>
-            
+
             {expanded.info && (
               <div className="mt-1 space-y-1">
                 {(isAdmin || isManager) ? (
@@ -177,10 +178,10 @@ function App() {
                     <SubMenuItem label="Financeiro" view="dept_Financeiro" active={currentView === 'dept_Financeiro'} />
                   </>
                 ) : (
-                  <SubMenuItem 
-                    label={user.operation || "Meu Setor"} 
-                    view={`dept_${user.operation}`} 
-                    active={currentView === `dept_${user.operation}`} 
+                  <SubMenuItem
+                    label={user.operation || "Meu Setor"}
+                    view={`dept_${user.operation}`}
+                    active={currentView === `dept_${user.operation}`}
                   />
                 )}
               </div>
@@ -189,27 +190,27 @@ function App() {
 
           {canViewFinance && (
             <div>
-              <div 
-                onClick={() => setExpanded({...expanded, finance: !expanded.finance})} 
+              <div
+                onClick={() => setExpanded({ ...expanded, finance: !expanded.finance })}
                 className={`p-3 rounded-xl cursor-pointer flex items-center justify-between transition-all ${['finance', 'controle_stone'].includes(currentView) ? 'bg-emerald-600 text-white shadow-lg' : 'text-slate-400 hover:bg-slate-800'}`}
               >
                 <div className="flex gap-3 items-center font-bold text-sm">
                   <DollarSign size={18} /> Controle Financeiro
                 </div>
-                {expanded.finance ? <ChevronDown size={14}/> : <ChevronRight size={14}/>}
+                {expanded.finance ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
               </div>
 
               {expanded.finance && (
                 <div className="mt-1 space-y-1">
-                  <div 
-                    onClick={() => handleNavigate('finance')} 
+                  <div
+                    onClick={() => handleNavigate('finance')}
                     className={`pl-12 pr-4 py-2 cursor-pointer flex items-center gap-2 text-[11px] font-black uppercase tracking-tighter transition-all hover:text-white ${currentView === 'finance' ? 'text-orange-500' : 'text-slate-500'}`}
                   >
                     <Circle size={6} fill={currentView === 'finance' ? "currentColor" : "transparent"} /> Visão Geral
                   </div>
 
-                  <div 
-                    onClick={() => handleNavigate('controle_stone')} 
+                  <div
+                    onClick={() => handleNavigate('controle_stone')}
                     className={`pl-12 pr-4 py-2 cursor-pointer flex items-center gap-2 text-[11px] font-black uppercase tracking-tighter transition-all hover:text-white ${currentView === 'controle_stone' ? 'text-orange-500' : 'text-slate-500'}`}
                   >
                     <Circle size={6} fill={currentView === 'controle_stone' ? "currentColor" : "transparent"} /> Controle Stone
@@ -221,58 +222,65 @@ function App() {
 
           {canViewStock && (
             <div>
-              <div 
-                onClick={() => setExpanded({...expanded, stock: !expanded.stock})} 
-                className={`p-3 rounded-xl cursor-pointer flex items-center justify-between transition-all ${['stock', 'estoque_vendas', 'estoque_inteligente', 'auditoria_lojas', 'estoque_detalhado', 'stockout'].includes(currentView) ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:bg-slate-800'}`}
+              <div
+                onClick={() => setExpanded({ ...expanded, stock: !expanded.stock })}
+                className={`p-3 rounded-xl cursor-pointer flex items-center justify-between transition-all ${['stock', 'estoque_vendas', 'estoque_inteligente', 'auditoria_lojas', 'estoque_detalhado', 'stockout', 'sacolas'].includes(currentView) ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:bg-slate-800'}`}
               >
                 <div className="flex gap-3 items-center font-bold text-sm">
                   <Package size={18} /> Controle de Estoque
                 </div>
-                {expanded.stock ? <ChevronDown size={14}/> : <ChevronRight size={14}/>}
+                {expanded.stock ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
               </div>
 
               {expanded.stock && (
                 <div className="mt-1 space-y-1">
-                  <div 
-                    onClick={() => handleNavigate('stock')} 
+                  <div
+                    onClick={() => handleNavigate('stock')}
                     className={`pl-12 pr-4 py-2 cursor-pointer flex items-center gap-2 text-[11px] font-black uppercase tracking-tighter transition-all hover:text-white ${currentView === 'stock' ? 'text-orange-500' : 'text-slate-500'}`}
                   >
                     <Circle size={6} fill={currentView === 'stock' ? "currentColor" : "transparent"} /> Visão Geral
                   </div>
 
-                  <div 
-                    onClick={() => handleNavigate('estoque_detalhado')} 
+                  <div
+                    onClick={() => handleNavigate('estoque_detalhado')}
                     className={`pl-12 pr-4 py-2 cursor-pointer flex items-center gap-2 text-[11px] font-black uppercase tracking-tighter transition-all hover:text-white ${currentView === 'estoque_detalhado' ? 'text-orange-500' : 'text-slate-500'}`}
                   >
                     <Circle size={6} fill={currentView === 'estoque_detalhado' ? "currentColor" : "transparent"} /> Visão Detalhada
                   </div>
 
-                  <div 
-                    onClick={() => handleNavigate('estoque_vendas')} 
+                  <div
+                    onClick={() => handleNavigate('estoque_vendas')}
                     className={`pl-12 pr-4 py-2 cursor-pointer flex items-center gap-2 text-[11px] font-black uppercase tracking-tighter transition-all hover:text-white ${currentView === 'estoque_vendas' ? 'text-orange-500' : 'text-slate-500'}`}
                   >
                     <Circle size={6} fill={currentView === 'estoque_vendas' ? "currentColor" : "transparent"} /> Estoque x Vendas
                   </div>
 
-                  <div 
-                    onClick={() => handleNavigate('estoque_inteligente')} 
+                  <div
+                    onClick={() => handleNavigate('estoque_inteligente')}
                     className={`pl-12 pr-4 py-2 cursor-pointer flex items-center gap-2 text-[11px] font-black uppercase tracking-tighter transition-all hover:text-white ${currentView === 'estoque_inteligente' ? 'text-orange-500' : 'text-slate-500'}`}
                   >
                     <Circle size={6} fill={currentView === 'estoque_inteligente' ? "currentColor" : "transparent"} /> Estoque Inteligente
                   </div>
 
-                  <div 
-                    onClick={() => handleNavigate('stockout')} 
+                  <div
+                    onClick={() => handleNavigate('stockout')}
                     className={`pl-12 pr-4 py-2 cursor-pointer flex items-center gap-2 text-[11px] font-black uppercase tracking-tighter transition-all hover:text-white ${currentView === 'stockout' ? 'text-orange-500' : 'text-slate-500'}`}
                   >
                     <Circle size={6} fill={currentView === 'stockout' ? "currentColor" : "transparent"} /> Stockout
                   </div>
 
-                  <div 
-                    onClick={() => handleNavigate('auditoria_lojas')} 
+                  <div
+                    onClick={() => handleNavigate('auditoria_lojas')}
                     className={`pl-12 pr-4 py-2 cursor-pointer flex items-center gap-2 text-[11px] font-black uppercase tracking-tighter transition-all hover:text-white ${currentView === 'auditoria_lojas' ? 'text-orange-500' : 'text-slate-500'}`}
                   >
                     <Circle size={6} fill={currentView === 'auditoria_lojas' ? "currentColor" : "transparent"} /> Auditoria Lojas
+                  </div>
+
+                  <div
+                    onClick={() => handleNavigate('sacolas')}
+                    className={`pl-12 pr-4 py-2 cursor-pointer flex items-center gap-2 text-[11px] font-black uppercase tracking-tighter transition-all hover:text-white ${currentView === 'sacolas' ? 'text-orange-500' : 'text-slate-500'}`}
+                  >
+                    <Circle size={6} fill={currentView === 'sacolas' ? "currentColor" : "transparent"} /> Sacolas
                   </div>
                 </div>
               )}
@@ -281,27 +289,27 @@ function App() {
 
           {canViewSales && (
             <div>
-              <div 
-                onClick={() => setExpanded({...expanded, sales: !expanded.sales})} 
+              <div
+                onClick={() => setExpanded({ ...expanded, sales: !expanded.sales })}
                 className={`p-3 rounded-xl cursor-pointer flex items-center justify-between transition-all ${['sales_dash', 'comparativo'].includes(currentView) ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-400 hover:bg-slate-800'}`}
               >
                 <div className="flex gap-3 items-center font-bold text-sm">
                   <TrendingUp size={18} /> Controle de Vendas
                 </div>
-                {expanded.sales ? <ChevronDown size={14}/> : <ChevronRight size={14}/>}
+                {expanded.sales ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
               </div>
 
               {expanded.sales && (
                 <div className="mt-1 space-y-1">
-                  <div 
-                    onClick={() => handleNavigate('sales_dash')} 
+                  <div
+                    onClick={() => handleNavigate('sales_dash')}
                     className={`pl-12 pr-4 py-2 cursor-pointer flex items-center gap-2 text-[11px] font-black uppercase tracking-tighter transition-all hover:text-white ${currentView === 'sales_dash' ? 'text-orange-500' : 'text-slate-500'}`}
                   >
                     <Circle size={6} fill={currentView === 'sales_dash' ? "currentColor" : "transparent"} /> Vendas Mensal
                   </div>
 
-                  <div 
-                    onClick={() => handleNavigate('comparativo')} 
+                  <div
+                    onClick={() => handleNavigate('comparativo')}
                     className={`pl-12 pr-4 py-2 cursor-pointer flex items-center gap-2 text-[11px] font-black uppercase tracking-tighter transition-all hover:text-white ${currentView === 'comparativo' ? 'text-orange-500' : 'text-slate-500'}`}
                   >
                     <Circle size={6} fill={currentView === 'comparativo' ? "currentColor" : "transparent"} /> Comparativo Anual
@@ -312,8 +320,8 @@ function App() {
           )}
 
           {canViewSales && (
-            <div 
-              onClick={() => handleNavigate('price_table')} 
+            <div
+              onClick={() => handleNavigate('price_table')}
               className={`p-3 rounded-xl cursor-pointer flex items-center gap-3 font-bold text-sm transition-all ${currentView === 'price_table' ? 'bg-indigo-500 text-white shadow-lg' : 'text-slate-400 hover:bg-slate-800'}`}
             >
               <Tag size={18} /> Tabelas de Preço
@@ -326,105 +334,107 @@ function App() {
 
           {(isAdmin || isManager) && (
             <>
-                <div onClick={() => handleNavigate('manager_dash')} className={`p-3 rounded-xl cursor-pointer flex items-center gap-3 font-bold text-sm transition-all ${currentView === 'manager_dash' ? 'bg-orange-600 text-white shadow-lg' : 'text-slate-400 hover:bg-slate-800'}`}>
-                    <BarChart3 size={18} /> Produtividade Equipe
-                </div>
+              <div onClick={() => handleNavigate('manager_dash')} className={`p-3 rounded-xl cursor-pointer flex items-center gap-3 font-bold text-sm transition-all ${currentView === 'manager_dash' ? 'bg-orange-600 text-white shadow-lg' : 'text-slate-400 hover:bg-slate-800'}`}>
+                <BarChart3 size={18} /> Produtividade Equipe
+              </div>
             </>
           )}
 
           {canViewTeam && (
             <div className="pt-4 mt-4 border-t border-slate-800">
-                <p className="px-3 text-[10px] font-black text-slate-500 uppercase mb-2 tracking-widest">Configurações</p>
-                <div onClick={() => handleNavigate('team')} className={`p-3 rounded-xl cursor-pointer flex gap-3 font-bold text-sm transition-all ${currentView === 'team' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:bg-slate-800'}`}>
-                  <Users size={18} /> Equipe
-               </div>
+              <p className="px-3 text-[10px] font-black text-slate-500 uppercase mb-2 tracking-widest">Configurações</p>
+              <div onClick={() => handleNavigate('team')} className={`p-3 rounded-xl cursor-pointer flex gap-3 font-bold text-sm transition-all ${currentView === 'team' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:bg-slate-800'}`}>
+                <Users size={18} /> Equipe
+              </div>
             </div>
           )}
         </nav>
 
         <div className="p-4 border-t border-slate-800 flex items-center gap-3 bg-slate-950/20">
-            <div className="w-10 h-10 rounded-full bg-orange-600 flex items-center justify-center text-sm font-black border-2 border-slate-700 shadow-inner shrink-0">{user?.name?.charAt(0)}</div>
-            <div className="flex-1 overflow-hidden">
-              <span className="text-sm font-bold truncate block uppercase tracking-tighter">{user?.name}</span>
-              <span className="text-[9px] text-slate-500 font-black uppercase truncate block tracking-widest italic">{user?.role}</span>
-            </div>
-            <button onClick={handleLogout} className="text-slate-500 hover:text-red-500"><LogOut size={18}/></button>
+          <div className="w-10 h-10 rounded-full bg-orange-600 flex items-center justify-center text-sm font-black border-2 border-slate-700 shadow-inner shrink-0">{user?.name?.charAt(0)}</div>
+          <div className="flex-1 overflow-hidden">
+            <span className="text-sm font-bold truncate block uppercase tracking-tighter">{user?.name}</span>
+            <span className="text-[9px] text-slate-500 font-black uppercase truncate block tracking-widest italic">{user?.role}</span>
+          </div>
+          <button onClick={handleLogout} className="text-slate-500 hover:text-red-500"><LogOut size={18} /></button>
         </div>
       </aside>
 
       <main className="flex-1 flex flex-col overflow-hidden w-full">
         <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-4 md:px-8 shadow-sm shrink-0">
-            <div className="flex items-center gap-3">
-                <button 
-                    onClick={() => setIsMobileMenuOpen(true)} 
-                    className="md:hidden text-slate-600 hover:text-orange-600 transition-colors"
-                >
-                    <Menu size={24} />
-                </button>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setIsMobileMenuOpen(true)}
+              className="md:hidden text-slate-600 hover:text-orange-600 transition-colors"
+            >
+              <Menu size={24} />
+            </button>
 
-                <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
-                    <span className="w-2 h-2 rounded-full bg-orange-500 animate-pulse"></span> 
-                    <span className="hidden md:inline">Grupo Telecel •</span> 
-                    {currentView.replace(/_/g, ' ').toUpperCase()}
-                </div>
+            <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-orange-500 animate-pulse"></span>
+              <span className="hidden md:inline">Grupo Telecel •</span>
+              {currentView.replace(/_/g, ' ').toUpperCase()}
             </div>
-            <NotificationBell currentUser={user} />
+          </div>
+          <NotificationBell currentUser={user} />
         </header>
 
         <div className="flex-1 overflow-hidden relative flex flex-col">
-            
-            {currentView === 'home' ? (
-                <Home currentUser={user} />
-            ) : currentView === 'finance' ? (
-                <FinanceModule />
-            ) : currentView === 'controle_stone' ? ( 
-                <ControleStone />
-            ) : currentView === 'stock' ? ( 
-                <StockModule />
-            ) : currentView.startsWith('dept_') ? (
-                <DeptBulletin department={currentView.replace('dept_', '')} currentUser={user} />
-            ) : currentView === 'detail' && selectedTask ? (
-                <TaskDashboard task={selectedTask} currentUser={user} onBack={() => setCurrentView('home')} />
-            ) : currentView === 'agenda' ? ( 
-                <Agenda currentUser={user} />
-            ) : currentView === 'manager_dash' ? (
-                <ManagerDashboard currentUser={user} />
-            ) : currentView === 'sales_dash' ? (
-                <SalesDashboard />
-            ) : currentView === 'comparativo' ? (
-                <ComparativoAnual />
-            ) : currentView === 'estoque_vendas' ? (
-                <EstoqueVendas />
-            ) : currentView === 'estoque_inteligente' ? (  
-                <EstoqueInteligente />
-            ) : currentView === 'estoque_detalhado' ? (  
-                <EstoqueDetalhado />
-            ) : currentView === 'stockout' ? (         
-                <Stockout />
-            ) : currentView === 'auditoria_lojas' ? ( 
-                <AuditoriaLojas />
-            ) : currentView === 'price_table' ? (
-                <PriceTablePage />
-            ) : currentView === 'team' ? (
-                <div className="flex-1 p-4 md:p-8 overflow-y-auto">
-                    <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
-                        <div>
-                            <h2 className="text-2xl font-black uppercase tracking-tight">Equipe Telecel</h2>
-                            <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest">Gestão de acessos e cargos do sistema.</p>
-                        </div>
-                        <button onClick={() => setIsUserModalOpen(true)} className="w-full md:w-auto bg-slate-900 text-white px-6 py-3 rounded-2xl font-black text-xs uppercase flex gap-2 hover:bg-slate-800 shadow-lg transition-all active:scale-95 justify-center items-center">
-                            <Plus size={16} /> Novo Membro
-                        </button>
-                    </div>
-                    <UserList />
+
+          {currentView === 'home' ? (
+            <Home currentUser={user} />
+          ) : currentView === 'finance' ? (
+            <FinanceModule />
+          ) : currentView === 'controle_stone' ? (
+            <ControleStone />
+          ) : currentView === 'stock' ? (
+            <StockModule />
+          ) : currentView.startsWith('dept_') ? (
+            <DeptBulletin department={currentView.replace('dept_', '')} currentUser={user} />
+          ) : currentView === 'detail' && selectedTask ? (
+            <TaskDashboard task={selectedTask} currentUser={user} onBack={() => setCurrentView('home')} />
+          ) : currentView === 'agenda' ? (
+            <Agenda currentUser={user} />
+          ) : currentView === 'manager_dash' ? (
+            <ManagerDashboard currentUser={user} />
+          ) : currentView === 'sales_dash' ? (
+            <SalesDashboard />
+          ) : currentView === 'comparativo' ? (
+            <ComparativoAnual />
+          ) : currentView === 'estoque_vendas' ? (
+            <EstoqueVendas />
+          ) : currentView === 'estoque_inteligente' ? (
+            <EstoqueInteligente />
+          ) : currentView === 'estoque_detalhado' ? (
+            <EstoqueDetalhado />
+          ) : currentView === 'stockout' ? (
+            <Stockout />
+          ) : currentView === 'auditoria_lojas' ? (
+            <AuditoriaLojas />
+          ) : currentView === 'sacolas' ? (
+            <SacolasModule currentUser={user} />
+          ) : currentView === 'price_table' ? (
+            <PriceTablePage />
+          ) : currentView === 'team' ? (
+            <div className="flex-1 p-4 md:p-8 overflow-y-auto">
+              <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
+                <div>
+                  <h2 className="text-2xl font-black uppercase tracking-tight">Equipe Telecel</h2>
+                  <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest">Gestão de acessos e cargos do sistema.</p>
                 </div>
-                
-            ) : (
-                <TaskList onOpenTask={(task:any) => { setSelectedTask(task); setCurrentView('detail'); }} viewMode={currentView} currentUser={user} />
-            )}
+                <button onClick={() => setIsUserModalOpen(true)} className="w-full md:w-auto bg-slate-900 text-white px-6 py-3 rounded-2xl font-black text-xs uppercase flex gap-2 hover:bg-slate-800 shadow-lg transition-all active:scale-95 justify-center items-center">
+                  <Plus size={16} /> Novo Membro
+                </button>
+              </div>
+              <UserList />
+            </div>
+
+          ) : (
+            <TaskList onOpenTask={(task: any) => { setSelectedTask(task); setCurrentView('detail'); }} viewMode={currentView} currentUser={user} />
+          )}
         </div>
       </main>
-      
+
       <NewUserModal isOpen={isUserModalOpen} onClose={() => setIsUserModalOpen(false)} />
       {isNewTaskModalOpen && (
         <NewTaskModal isOpen={isNewTaskModalOpen} onClose={() => setIsNewTaskModalOpen(false)} currentUser={user} onTaskCreated={() => { setIsNewTaskModalOpen(false); window.location.reload(); }} />

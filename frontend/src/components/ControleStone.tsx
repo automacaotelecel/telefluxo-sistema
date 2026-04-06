@@ -61,7 +61,6 @@ export default function ControleStone() {
   };
 
   const formatNumberToBRL = (val: number) => {
-    // Se vier vazio, nulo ou não for número, retorna 0 garantindo que a tela não quebre
     if (val === undefined || val === null || isNaN(val)) return 'R$ 0,00';
     return val.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
   };
@@ -132,17 +131,15 @@ export default function ControleStone() {
         const key = curr.previsaoDate;
         if (!acc[key]) acc[key] = { records: [], totalDia: 0, totalRetidoDia: 0 };
         acc[key].records.push(curr);
-        acc[key].totalDia      += curr.valorReceberNum;
+        acc[key].totalDia += curr.valorReceberNum;
         acc[key].totalRetidoDia += Math.abs(curr.valorRetidoNum);
         return acc;
       }, {});
 
-      // ORDENAÇÃO ALTERADA: Agora do maior para o menor (Decrescente)
       const sortedGrouped = Object.keys(grouped)
         .sort((a, b) => {
           const [dayA, monthA, yearA] = a.split('/');
           const [dayB, monthB, yearB] = b.split('/');
-          // Date B menos Date A traz as maiores datas primeiro
           return new Date(`${yearB}-${monthB}-${dayB}`).getTime() - new Date(`${yearA}-${monthA}-${dayA}`).getTime();
         })
         .reduce((acc: any, key) => { acc[key] = grouped[key]; return acc; }, {});
@@ -161,12 +158,12 @@ export default function ControleStone() {
     Object.keys(groupedData).forEach((dateKey) => {
       groupedData[dateKey].records.forEach((record: any) => {
         excelData.push({
-          "Data de Retenção":      record.dataRetencao,
+          "Data de Retenção": record.dataRetencao,
           "Previsão de Liberação": record.previsaoDate,
-          "CNPJ":                  record.cnpj,
-          "Mês/Ano":               record.mes,
-          "Valor Retido":          Math.abs(record.valorRetidoNum),
-          "Valor a Receber":       Math.abs(record.valorReceberNum)
+          "CNPJ": record.cnpj,
+          "Mês/Ano": record.mes,
+          "Valor Retido": Math.abs(record.valorRetidoNum),
+          "Valor a Receber": Math.abs(record.valorReceberNum)
         });
       });
     });
@@ -185,15 +182,22 @@ export default function ControleStone() {
 
   const isWeekend = (date: Date) => date.getDay() === 0 || date.getDay() === 6;
   const addBusinessDays = (date: Date, days: number) => {
-    let result = new Date(date); let added = 0;
-    while (added < days) { result.setDate(result.getDate() + 1); if (!isWeekend(result)) added++; }
+    let result = new Date(date); 
+    let added = 0;
+    while (added < days) {
+      result.setDate(result.getDate() + 1);
+      if (!isWeekend(result)) added++;
+    }
     return result;
   };
   const addCalendarDays = (date: Date, days: number) => {
-    let result = new Date(date); result.setDate(result.getDate() + days); return result;
+    let result = new Date(date);
+    result.setDate(result.getDate() + days);
+    return result;
   };
   const formatVisualDate = (isoString: string) => {
-    const [year, month, day] = isoString.split('-'); return `${day}/${month}/${year}`;
+    const [year, month, day] = isoString.split('-');
+    return `${day}/${month}/${year}`;
   };
 
   const parseMoney = (value: any) => {
@@ -247,7 +251,6 @@ export default function ControleStone() {
       let pagamentosPorTipo: Record<string, number> = {};
       let parcelasCount: Record<string, number> = {};
       let projecaoRecebimento: Record<string, number> = {};
-
       let mapProjecaoFormatada: Record<string, number> = {};
 
       let categoriaGeral: Record<string, number> = {
@@ -349,10 +352,18 @@ export default function ControleStone() {
         mediaProjetada,
         categoriaGeral: Object.keys(categoriaGeral)
           .filter(k => categoriaGeral[k] > 0)
-          .map(k => ({ name: k, value: categoriaGeral[k], pct: totalCategoria > 0 ? Math.round((categoriaGeral[k] / totalCategoria) * 100) : 0 }))
+          .map(k => ({
+            name: k,
+            value: categoriaGeral[k],
+            pct: totalCategoria > 0 ? Math.round((categoriaGeral[k] / totalCategoria) * 100) : 0
+          }))
           .sort((a, b) => b.value - a.value),
         chartTipo: Object.keys(pagamentosPorTipo)
-          .map(k => ({ name: k, value: pagamentosPorTipo[k], pct: totalTipo > 0 ? Math.round((pagamentosPorTipo[k] / totalTipo) * 100) : 0 }))
+          .map(k => ({
+            name: k,
+            value: pagamentosPorTipo[k],
+            pct: totalTipo > 0 ? Math.round((pagamentosPorTipo[k] / totalTipo) * 100) : 0
+          }))
           .sort((a, b) => b.value - a.value),
         chartParcelas: Object.keys(parcelasCount)
           .sort((a, b) => Number(a.replace('x', '')) - Number(b.replace('x', '')))
@@ -374,14 +385,13 @@ export default function ControleStone() {
     }
   };
 
-  const stoneDates      = Object.keys(groupedData);
+  const stoneDates = Object.keys(groupedData);
   const stoneTotalGeral = stoneDates.reduce((s, d) => s + groupedData[d].totalDia, 0);
   const stoneTotalRetido = stoneDates.reduce((s, d) => s + groupedData[d].totalRetidoDia, 0);
   const stoneTotalRegistros = stoneDates.reduce((s, d) => s + groupedData[d].records.length, 0);
   const stoneTaxaEfetiva = stoneTotalRetido > 0 ? ((stoneTotalRetido - stoneTotalGeral) / stoneTotalRetido) * 100 : 0;
   const stoneProximaData = stoneDates.length > 0 ? stoneDates[0] : null;
   const stoneProximoValor = stoneProximaData ? groupedData[stoneProximaData].totalDia : 0;
-
 
   // ==========================================
   // LÓGICA DO EXTRATO BANCÁRIO (EXCEL)
@@ -409,10 +419,10 @@ export default function ControleStone() {
         if (dateKey && credKey) {
           let rawDate = row[dateKey];
           let formattedDate = '';
-          
+
           if (typeof rawDate === 'number') {
             const d = new Date(Math.round((rawDate - 25569) * 86400 * 1000));
-            formattedDate = `${String(d.getUTCDate()).padStart(2, '0')}/${String(d.getUTCMonth()+1).padStart(2, '0')}/${d.getUTCFullYear()}`;
+            formattedDate = `${String(d.getUTCDate()).padStart(2, '0')}/${String(d.getUTCMonth() + 1).padStart(2, '0')}/${d.getUTCFullYear()}`;
           } else if (typeof rawDate === 'string') {
             if (rawDate.includes('-')) {
               const parts = rawDate.split('-');
@@ -434,7 +444,7 @@ export default function ControleStone() {
       });
 
       if (Object.keys(extratoMap).length === 0) throw new Error("Não encontrei as colunas 'DATA' e 'CREDITO' no Excel.");
-      
+
       setExtratoData(extratoMap);
     } catch (error: any) {
       setErrorMsgExtrato(`Erro no Extrato: ${error.message}`);
@@ -468,7 +478,7 @@ export default function ControleStone() {
         const rowTime = parseBrDateToTime(date);
         return rowTime >= startFilter && rowTime <= endFilter;
       })
-      .sort((a, b) => parseBrDateToTime(b) - parseBrDateToTime(a)) // Decrescente
+      .sort((a, b) => parseBrDateToTime(b) - parseBrDateToTime(a))
       .map(date => {
         const vLinx = linxData?.mapProjecao?.[date] || 0;
         const vStone = groupedData[date]?.totalDia || 0;
@@ -481,18 +491,21 @@ export default function ControleStone() {
         const bateuStone = diffLinxStone < 2.00 && vLinx > 0;
 
         return {
-          date, vLinx, vStone, vBanco, bateuBanco, bateuStone,
+          date,
+          vLinx,
+          vStone,
+          vBanco,
+          bateuBanco,
+          bateuStone,
           isGhost: vLinx === 0 && vStone === 0 && vBanco > 0,
           diffBancoValue: vStone > 0 && !bateuBanco ? (vStone - vBanco) : 0
         };
       });
   }, [linxData, groupedData, extratoData, filterStartDate, filterEndDate]);
 
-  // Totais da Conciliação (Calculados em cima da tabela filtrada)
   const conciliacaoTotais = useMemo(() => {
-    // CORREÇÃO: Nome da variável agora é tDivergencias
     let tLinx = 0, tStone = 0, tBanco = 0, tDivergencias = 0;
-    
+
     conciliacaoResult.forEach(r => {
       tLinx += r.vLinx;
       tStone += r.vStone;
@@ -501,15 +514,49 @@ export default function ControleStone() {
         tDivergencias += Math.abs(r.vStone - r.vBanco);
       }
     });
-    
+
     return { tLinx, tStone, tBanco, tDivergencias };
+  }, [conciliacaoResult]);
+
+  // ==========================================
+  // MINI TOTAIS GERENCIAIS DA CONCILIAÇÃO
+  // ==========================================
+  const conciliacaoResumo = useMemo(() => {
+    let totalRecebido = 0;
+    let totalAReceber = 0;
+    let totalConciliado = 0;
+    let totalDepositoSolto = 0;
+    let totalRecebidoAMaior = 0;
+    let qtdDiasPendentes = 0;
+
+    conciliacaoResult.forEach((r) => {
+      const recebidoRelacionado = r.vStone > 0 ? Math.min(r.vStone, r.vBanco) : 0;
+      const pendente = Math.max(r.vStone - r.vBanco, 0);
+      const recebidoAMaior = r.vStone > 0 ? Math.max(r.vBanco - r.vStone, 0) : 0;
+
+      totalRecebido += recebidoRelacionado;
+      totalAReceber += pendente;
+      totalRecebidoAMaior += recebidoAMaior;
+
+      if (r.bateuBanco) totalConciliado += r.vStone;
+      if (r.isGhost) totalDepositoSolto += r.vBanco;
+      if (pendente > 0) qtdDiasPendentes += 1;
+    });
+
+    return {
+      totalRecebido,
+      totalAReceber,
+      totalConciliado,
+      totalDepositoSolto,
+      totalRecebidoAMaior,
+      qtdDiasPendentes,
+    };
   }, [conciliacaoResult]);
 
   const clearFilters = () => {
     setFilterStartDate('');
     setFilterEndDate('');
   };
-
 
   return (
     <div className="flex-1 overflow-y-auto bg-[#f8fafc] flex flex-col h-full font-sans antialiased">
@@ -557,7 +604,7 @@ export default function ControleStone() {
         ══════════════════════════════════════════ */}
         {activeTab === 'conciliacao' && (
           <div className="max-w-7xl mx-auto space-y-6 animate-in fade-in duration-500">
-            
+
             {/* Seção de Ações Principais */}
             <section className="bg-white p-6 rounded-[2rem] border border-slate-200 shadow-sm flex flex-col md:flex-row justify-between items-center gap-6">
               <div>
@@ -652,70 +699,140 @@ export default function ControleStone() {
                </div>
             </div>
 
+            {/* MINI TOTAIS GERENCIAIS */}
+            <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+              <div className="bg-white border border-slate-200 rounded-2xl px-4 py-4 shadow-sm">
+                <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">
+                  Total Conciliado
+                </p>
+                <p className="text-lg font-black text-emerald-600">
+                  {formatNumberToBRL(conciliacaoResumo.totalConciliado)}
+                </p>
+                <p className="text-[10px] text-slate-400 mt-1">Valores que bateram 100%</p>
+              </div>
+
+              <div className="bg-white border border-slate-200 rounded-2xl px-4 py-4 shadow-sm">
+                <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">
+                  Total Recebido
+                </p>
+                <p className="text-lg font-black text-blue-600">
+                  {formatNumberToBRL(conciliacaoResumo.totalRecebido)}
+                </p>
+                <p className="text-[10px] text-slate-400 mt-1">Recebido contra o previsto</p>
+              </div>
+
+              <div className="bg-white border border-slate-200 rounded-2xl px-4 py-4 shadow-sm">
+                <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">
+                  Total a Receber
+                </p>
+                <p className="text-lg font-black text-orange-600">
+                  {formatNumberToBRL(conciliacaoResumo.totalAReceber)}
+                </p>
+                <p className="text-[10px] text-slate-400 mt-1">Ainda pendente no banco</p>
+              </div>
+
+              <div className="bg-white border border-slate-200 rounded-2xl px-4 py-4 shadow-sm">
+                <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">
+                  Recebido a Maior
+                </p>
+                <p className="text-lg font-black text-violet-600">
+                  {formatNumberToBRL(conciliacaoResumo.totalRecebidoAMaior)}
+                </p>
+                <p className="text-[10px] text-slate-400 mt-1">Entradas acima do previsto</p>
+              </div>
+
+              <div className="bg-white border border-slate-200 rounded-2xl px-4 py-4 shadow-sm">
+                <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">
+                  Depósito Solto
+                </p>
+                <p className="text-lg font-black text-red-500">
+                  {formatNumberToBRL(conciliacaoResumo.totalDepositoSolto)}
+                </p>
+                <p className="text-[10px] text-slate-400 mt-1">Banco sem Stone/Linx</p>
+              </div>
+
+              <div className="bg-white border border-slate-200 rounded-2xl px-4 py-4 shadow-sm">
+                <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">
+                  Dias Pendentes
+                </p>
+                <p className="text-lg font-black text-slate-700">
+                  {conciliacaoResumo.qtdDiasPendentes}
+                </p>
+                <p className="text-[10px] text-slate-400 mt-1">Datas com saldo a receber</p>
+              </div>
+            </div>
+
             {/* TABELA DE AUDITORIA */}
             {conciliacaoResult.length > 0 ? (
               <div className="bg-white rounded-[2rem] border border-slate-200 shadow-sm overflow-hidden">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left">
-                    <thead className="bg-slate-50 border-b border-slate-100">
+                <div className="overflow-auto max-h-[70vh]">
+                  <table className="w-full min-w-[980px] text-left">
+                    <thead className="sticky top-0 z-10 bg-slate-50 border-b border-slate-100 shadow-sm">
                       <tr className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">
-                        <th className="py-6 px-6">Data Evento</th>
-                        <th className="py-6 px-4 text-right">1. Vendido (Linx)</th>
-                        <th className="py-6 px-4 text-right border-l border-slate-200">2. A Receber (Stone)</th>
-                        <th className="py-6 px-4 text-right">3. Na Conta (Banco)</th>
-                        <th className="py-6 px-6 text-center border-l border-slate-200">Status Conciliação</th>
+                        <th className="sticky top-0 bg-slate-50 py-6 px-6">Data Evento</th>
+                        <th className="sticky top-0 bg-slate-50 py-6 px-4 text-right">1. Vendido (Linx)</th>
+                        <th className="sticky top-0 bg-slate-50 py-6 px-4 text-right border-l border-slate-200">2. A Receber (Stone)</th>
+                        <th className="sticky top-0 bg-slate-50 py-6 px-4 text-right">3. Na Conta (Banco)</th>
+                        <th className="sticky top-0 bg-slate-50 py-6 px-6 text-center border-l border-slate-200">Status Conciliação</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {conciliacaoResult.map((row, idx) => (
-                        <tr key={idx} className="hover:bg-slate-50 transition-colors group">
-                          <td className="py-5 px-6">
-                            <span className="font-black text-slate-700 text-sm">{row.date}</span>
-                          </td>
-                          <td className="py-5 px-4 text-right font-bold text-blue-600 bg-blue-50/10 group-hover:bg-blue-50/50 transition-colors">
-                            {row.vLinx > 0 ? formatNumberToBRL(row.vLinx) : '-'}
-                          </td>
-                          <td className="py-5 px-4 text-right font-bold text-orange-600 border-l border-slate-100 bg-orange-50/10 group-hover:bg-orange-50/50 transition-colors">
-                            {row.vStone > 0 ? formatNumberToBRL(row.vStone) : '-'}
-                          </td>
-                          <td className="py-5 px-4 text-right font-black text-emerald-600 bg-emerald-50/10 group-hover:bg-emerald-50/50 transition-colors">
-                            {row.vBanco > 0 ? formatNumberToBRL(row.vBanco) : '-'}
-                          </td>
-                          <td className="py-5 px-6 border-l border-slate-100">
-                             <div className="flex flex-col items-center gap-2">
-                                {/* Badge Principal */}
+                      {conciliacaoResult.map((row, idx) => {
+                        const faltaValor = Math.max(row.vStone - row.vBanco, 0);
+                        const sobraValor = row.vStone > 0 ? Math.max(row.vBanco - row.vStone, 0) : 0;
+
+                        return (
+                          <tr key={idx} className="hover:bg-slate-50 transition-colors group">
+                            <td className="py-5 px-6">
+                              <span className="font-black text-slate-700 text-sm">{row.date}</span>
+                            </td>
+                            <td className="py-5 px-4 text-right font-bold text-blue-600 bg-blue-50/10 group-hover:bg-blue-50/50 transition-colors">
+                              {row.vLinx > 0 ? formatNumberToBRL(row.vLinx) : '-'}
+                            </td>
+                            <td className="py-5 px-4 text-right font-bold text-orange-600 border-l border-slate-100 bg-orange-50/10 group-hover:bg-orange-50/50 transition-colors">
+                              {row.vStone > 0 ? formatNumberToBRL(row.vStone) : '-'}
+                            </td>
+                            <td className="py-5 px-4 text-right font-black text-emerald-600 bg-emerald-50/10 group-hover:bg-emerald-50/50 transition-colors">
+                              {row.vBanco > 0 ? formatNumberToBRL(row.vBanco) : '-'}
+                            </td>
+                            <td className="py-5 px-6 border-l border-slate-100">
+                              <div className="flex flex-col items-center gap-2">
                                 {row.vStone > 0 && row.vBanco > 0 ? (
-                                   row.bateuBanco ? (
-                                     <div className="flex items-center gap-1.5 text-[10px] font-bold text-emerald-600 bg-emerald-50 px-3 py-1.5 rounded-lg uppercase border border-emerald-100">
-                                       <CheckCircle size={14}/> Recebido Ok
-                                     </div>
-                                   ) : (
-                                     <div className="flex items-center gap-1.5 text-[10px] font-bold text-red-600 bg-red-50 px-3 py-1.5 rounded-lg uppercase border border-red-100">
-                                       <XCircle size={14}/> Falta: {formatNumberToBRL(row.vStone - row.vBanco)}
-                                     </div>
-                                   )
+                                  row.bateuBanco ? (
+                                    <div className="flex items-center gap-1.5 text-[10px] font-bold text-emerald-600 bg-emerald-50 px-3 py-1.5 rounded-lg uppercase border border-emerald-100">
+                                      <CheckCircle size={14}/> Recebido Ok
+                                    </div>
+                                  ) : sobraValor > 0 ? (
+                                    <div className="flex items-center gap-1.5 text-[10px] font-bold text-violet-600 bg-violet-50 px-3 py-1.5 rounded-lg uppercase border border-violet-100">
+                                      <ArrowUpRight size={14}/> Sobra: {formatNumberToBRL(sobraValor)}
+                                    </div>
+                                  ) : (
+                                    <div className="flex items-center gap-1.5 text-[10px] font-bold text-red-600 bg-red-50 px-3 py-1.5 rounded-lg uppercase border border-red-100">
+                                      <XCircle size={14}/> Falta: {formatNumberToBRL(faltaValor)}
+                                    </div>
+                                  )
                                 ) : row.vStone > 0 && row.vBanco === 0 ? (
-                                   <div className="flex items-center gap-1.5 text-[10px] font-bold text-orange-600 bg-orange-50 px-3 py-1.5 rounded-lg uppercase border border-orange-100">
-                                      <CalendarIcon size={14}/> Aguardando Conta
-                                   </div>
+                                  <div className="flex items-center gap-1.5 text-[10px] font-bold text-orange-600 bg-orange-50 px-3 py-1.5 rounded-lg uppercase border border-orange-100">
+                                    <CalendarIcon size={14}/> Aguardando Conta
+                                  </div>
                                 ) : row.isGhost ? (
-                                   <div className="flex items-center gap-1.5 text-[10px] font-bold text-violet-600 bg-violet-50 px-3 py-1.5 rounded-lg uppercase border border-violet-100">
-                                      <AlertTriangle size={14}/> Depósito Solto
-                                   </div>
+                                  <div className="flex items-center gap-1.5 text-[10px] font-bold text-violet-600 bg-violet-50 px-3 py-1.5 rounded-lg uppercase border border-violet-100">
+                                    <AlertTriangle size={14}/> Depósito Solto
+                                  </div>
                                 ) : (
-                                   <span className="text-[10px] text-slate-300 font-bold uppercase">-</span>
+                                  <span className="text-[10px] text-slate-300 font-bold uppercase">-</span>
                                 )}
 
-                                {/* Aviso Secundário: API x Stone */}
                                 {!row.bateuStone && row.vLinx > 0 && row.vStone > 0 && (
-                                   <span className="text-[9px] font-bold text-slate-400 uppercase">
-                                     Quebra API: {formatNumberToBRL(Math.abs(row.vLinx - row.vStone))}
-                                   </span>
+                                  <span className="text-[9px] font-bold text-slate-400 uppercase">
+                                    Quebra API: {formatNumberToBRL(Math.abs(row.vLinx - row.vStone))}
+                                  </span>
                                 )}
-                             </div>
-                          </td>
-                        </tr>
-                      ))}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -768,78 +885,74 @@ export default function ControleStone() {
 
             {stoneDates.length > 0 && (
               <>
-              <section className="grid grid-cols-2 md:grid-cols-4 gap-4">
-
-                <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
-                  <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Total a Receber</p>
-                  <p className="text-2xl font-black text-emerald-600 leading-none">{formatNumberToBRL(stoneTotalGeral)}</p>
-                  <p className="text-[10px] text-slate-400 mt-1.5 font-medium">Soma líquida de todas as liberações</p>
-                </div>
-
-                <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
-                  <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Total Retido (Bruto)</p>
-                  <p className="text-2xl font-black text-slate-700 leading-none">{formatNumberToBRL(stoneTotalRetido)}</p>
-                  <p className="text-[10px] text-slate-400 mt-1.5 font-medium">Valor original antes das taxas Stone</p>
-                </div>
-
-                <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
-                  <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Desconto Aplicado</p>
-                  <div className="flex items-end gap-2 leading-none">
-                    <p className="text-2xl font-black text-red-500">{stoneTaxaEfetiva.toFixed(2)}%</p>
-                    <p className="text-sm font-bold text-red-400 mb-0.5">taxa</p>
-                  </div>
-                  <p className="text-[10px] text-slate-400 mt-1.5 font-medium">
-                    {formatNumberToBRL(stoneTotalRetido - stoneTotalGeral)} descontados pela Stone
-                  </p>
-                </div>
-
-                {stoneProximaData ? (
-                  <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-5 shadow-sm">
-                    <p className="text-[10px] font-black uppercase tracking-widest text-emerald-600 mb-2">Maior Data de Liberação</p>
-                    <p className="text-lg font-black text-slate-800 leading-none">{stoneProximaData}</p>
-                    <p className="text-[10px] text-emerald-700 mt-1.5 font-black">{formatNumberToBRL(stoneProximoValor)}</p>
-                  </div>
-                ) : (
+                <section className="grid grid-cols-2 md:grid-cols-4 gap-4">
                   <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
-                    <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Lançamentos</p>
+                    <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Total a Receber</p>
+                    <p className="text-2xl font-black text-emerald-600 leading-none">{formatNumberToBRL(stoneTotalGeral)}</p>
+                    <p className="text-[10px] text-slate-400 mt-1.5 font-medium">Soma líquida de todas as liberações</p>
+                  </div>
+
+                  <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Total Retido (Bruto)</p>
+                    <p className="text-2xl font-black text-slate-700 leading-none">{formatNumberToBRL(stoneTotalRetido)}</p>
+                    <p className="text-[10px] text-slate-400 mt-1.5 font-medium">Valor original antes das taxas Stone</p>
+                  </div>
+
+                  <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Desconto Aplicado</p>
+                    <div className="flex items-end gap-2 leading-none">
+                      <p className="text-2xl font-black text-red-500">{stoneTaxaEfetiva.toFixed(2)}%</p>
+                      <p className="text-sm font-bold text-red-400 mb-0.5">taxa</p>
+                    </div>
+                    <p className="text-[10px] text-slate-400 mt-1.5 font-medium">
+                      {formatNumberToBRL(stoneTotalRetido - stoneTotalGeral)} descontados pela Stone
+                    </p>
+                  </div>
+
+                  {stoneProximaData ? (
+                    <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-5 shadow-sm">
+                      <p className="text-[10px] font-black uppercase tracking-widest text-emerald-600 mb-2">Maior Data de Liberação</p>
+                      <p className="text-lg font-black text-slate-800 leading-none">{stoneProximaData}</p>
+                      <p className="text-[10px] text-emerald-700 mt-1.5 font-black">{formatNumberToBRL(stoneProximoValor)}</p>
+                    </div>
+                  ) : (
+                    <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+                      <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Lançamentos</p>
+                      <p className="text-2xl font-black text-slate-700 leading-none">{stoneTotalRegistros}</p>
+                      <p className="text-[10px] text-slate-400 mt-1.5 font-medium">Registros processados dos PDFs</p>
+                    </div>
+                  )}
+                </section>
+
+                <section className="grid grid-cols-2 md:grid-cols-4 gap-4 -mt-2">
+                  <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Datas de Liberação</p>
+                    <p className="text-2xl font-black text-blue-600 leading-none">{stoneDates.length}</p>
+                    <p className="text-[10px] text-slate-400 mt-1.5 font-medium">Datas distintas mapeadas</p>
+                  </div>
+
+                  <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Total de Lançamentos</p>
                     <p className="text-2xl font-black text-slate-700 leading-none">{stoneTotalRegistros}</p>
                     <p className="text-[10px] text-slate-400 mt-1.5 font-medium">Registros processados dos PDFs</p>
                   </div>
-                )}
 
-              </section>
+                  <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Ticket Médio / Lançamento</p>
+                    <p className="text-2xl font-black text-slate-700 leading-none">
+                      {stoneTotalRegistros > 0 ? formatNumberToBRL(stoneTotalGeral / stoneTotalRegistros) : '—'}
+                    </p>
+                    <p className="text-[10px] text-slate-400 mt-1.5 font-medium">Valor líquido médio por registro</p>
+                  </div>
 
-              <section className="grid grid-cols-2 md:grid-cols-4 gap-4 -mt-2">
-
-                <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
-                  <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Datas de Liberação</p>
-                  <p className="text-2xl font-black text-blue-600 leading-none">{stoneDates.length}</p>
-                  <p className="text-[10px] text-slate-400 mt-1.5 font-medium">Datas distintas mapeadas</p>
-                </div>
-
-                <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
-                  <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Total de Lançamentos</p>
-                  <p className="text-2xl font-black text-slate-700 leading-none">{stoneTotalRegistros}</p>
-                  <p className="text-[10px] text-slate-400 mt-1.5 font-medium">Registros processados dos PDFs</p>
-                </div>
-
-                <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
-                  <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Ticket Médio / Lançamento</p>
-                  <p className="text-2xl font-black text-slate-700 leading-none">
-                    {stoneTotalRegistros > 0 ? formatNumberToBRL(stoneTotalGeral / stoneTotalRegistros) : '—'}
-                  </p>
-                  <p className="text-[10px] text-slate-400 mt-1.5 font-medium">Valor líquido médio por registro</p>
-                </div>
-
-                <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
-                  <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Média por Liberação</p>
-                  <p className="text-2xl font-black text-slate-700 leading-none">
-                    {stoneDates.length > 0 ? formatNumberToBRL(stoneTotalGeral / stoneDates.length) : '—'}
-                  </p>
-                  <p className="text-[10px] text-slate-400 mt-1.5 font-medium">Valor médio por data de liberação</p>
-                </div>
-
-              </section>
+                  <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Média por Liberação</p>
+                    <p className="text-2xl font-black text-slate-700 leading-none">
+                      {stoneDates.length > 0 ? formatNumberToBRL(stoneTotalGeral / stoneDates.length) : '—'}
+                    </p>
+                    <p className="text-[10px] text-slate-400 mt-1.5 font-medium">Valor médio por data de liberação</p>
+                  </div>
+                </section>
               </>
             )}
 
@@ -853,10 +966,10 @@ export default function ControleStone() {
                 </div>
 
                 {stoneDates.map((date) => {
-                  const isOpen      = !!expandedDates[date];
-                  const grupo       = groupedData[date];
-                  const qtd         = grupo.records.length;
-                  const mediaValor  = grupo.totalDia / qtd;
+                  const isOpen = !!expandedDates[date];
+                  const grupo = groupedData[date];
+                  const qtd = grupo.records.length;
+                  const mediaValor = grupo.totalDia / qtd;
 
                   return (
                     <div key={date} className="bg-white rounded-2xl border border-slate-200 overflow-hidden hover:border-blue-200 transition-all shadow-sm">
@@ -1196,8 +1309,11 @@ export default function ControleStone() {
                             <PieChart>
                               <Pie
                                 data={linxData.categoriaGeral}
-                                innerRadius={45} outerRadius={68}
-                                paddingAngle={3} dataKey="value" stroke="none"
+                                innerRadius={45}
+                                outerRadius={68}
+                                paddingAngle={3}
+                                dataKey="value"
+                                stroke="none"
                                 onClick={(entry: any) => {
                                   if (entry.name === 'Crédito Parcelado' && linxData.parcelasOrdenadas?.length > 0) {
                                     setSelectedCategoria('Crédito Parcelado');
@@ -1267,29 +1383,45 @@ export default function ControleStone() {
                           </span>
                         </div>
 
-                        <div className="space-y-1">
-                          {linxData.parcelasOrdenadas.map((p: any, i: number) => (
-                            <div key={i} className="flex items-center gap-3 py-2.5 px-3 rounded-xl hover:bg-slate-50 transition-colors">
-                              <div className="w-10 h-10 bg-blue-50 rounded-xl flex items-center justify-center shrink-0">
-                                <span className="text-xs font-black text-blue-600">{p.label.replace('À Vista (', '').replace(')', '')}</span>
+                        <div className="space-y-3">
+                          {linxData.parcelasOrdenadas.map((item: any, i: number) => (
+                            <div key={i} className="border border-slate-200 rounded-2xl p-4 hover:border-blue-200 transition-colors">
+                              <div className="flex items-center justify-between gap-3 mb-3">
+                                <div className="flex items-center gap-3">
+                                  <div className="w-10 h-10 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center font-black text-sm">
+                                    {item.label}
+                                  </div>
+                                  <div>
+                                    <p className="text-sm font-black text-slate-800">{item.label}</p>
+                                    <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">
+                                      {item.qtd} {item.qtd === 1 ? 'transação' : 'transações'}
+                                    </p>
+                                  </div>
+                                </div>
+                                <div className="text-right">
+                                  <p className="text-lg font-black text-slate-800">{formatNumberToBRL(item.total)}</p>
+                                  <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">
+                                    {item.pctDoParccelado}% do parcelado
+                                  </p>
+                                </div>
                               </div>
 
-                              <div className="flex-1 min-w-0">
-                                <div className="flex items-center justify-between mb-1">
-                                  <p className="text-xs font-bold text-slate-700">{p.label}</p>
-                                  <p className="text-xs font-black text-slate-800">{formatNumberToBRL(p.total)}</p>
-                                </div>
-                                <div className="flex items-center gap-2">
-                                  <div className="flex-1 h-1.5 bg-slate-100 rounded-full overflow-hidden">
-                                    <div
-                                      className="h-full rounded-full bg-blue-500"
-                                      style={{ width: `${p.pctDoParccelado}%` }}
-                                    />
-                                  </div>
-                                  <span className="text-[10px] font-black text-slate-400 shrink-0 w-14 text-right">
-                                    {p.qtd} vend. · {p.pctDoParccelado}%
-                                  </span>
-                                </div>
+                              <div className="grid grid-cols-1 gap-2">
+                                <StatusBadge
+                                  label="Participação"
+                                  status={`${item.pct}% do total`}
+                                  color="blue"
+                                />
+                                <StatusBadge
+                                  label="No parcelado"
+                                  status={`${item.pctDoParccelado}%`}
+                                  color="emerald"
+                                />
+                                <StatusBadge
+                                  label="Operações"
+                                  status={`${item.qtd}`}
+                                  color="slate"
+                                />
                               </div>
                             </div>
                           ))}

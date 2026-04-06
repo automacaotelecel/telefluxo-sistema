@@ -1,5 +1,5 @@
 # ===========================================
-# 📦 SINCRONIZADOR DE ESTOQUE v8.0 (COM EXTRAÇÃO DE IMEI/SERIAL)
+# 📦 SINCRONIZADOR DE ESTOQUE v8.1 (COM EXTRAÇÃO DE IMEI/SERIAL)
 # ===========================================
 
 import requests
@@ -48,6 +48,10 @@ LOJAS_NOME = {
 CNPJS = list(LOJAS_NOME.keys())
 JANELA_DIAS_MOV = 365
 
+# ✅ NOVO: comportamento padrão do estoque
+ESTOQUE_MODO_COMPLETO = True
+TEMPO_ESPERA_API = 0.1
+
 # ===========================================
 # 🛠️ FUNÇÕES AUXILIARES
 # ===========================================
@@ -72,6 +76,23 @@ def normalizar_loja(s):
 
 def normalizar_referencia(s):
     return str(s or "").strip().upper()
+
+# ✅ NOVO: helper para paginação segura por timestamp
+def obter_proximo_timestamp(df, timestamp_atual):
+    if df is None or df.empty or "timestamp" not in df.columns:
+        return None
+
+    ts_series = pd.to_numeric(df["timestamp"], errors="coerce").dropna()
+    if ts_series.empty:
+        return None
+
+    novo_ts = int(ts_series.max())
+
+    # proteção contra loop infinito
+    if novo_ts <= timestamp_atual:
+        return None
+
+    return novo_ts
 
 # ✅ NOVO: leitor das abas em_linha e cluster
 def carregar_classificacoes_excel():
@@ -257,60 +278,121 @@ def chamar_api_detalhes(parametros):
         <Parameters><Parameter id="chave">{CHAVE}</Parameter>{params_xml}</Parameters>
       </Command>
     </LinxMicrovix>"""
+
     try:
         r = requests.post(URL, data=xml.encode("utf-8"), headers=headers, auth=auth, timeout=120)
+
         if r.status_code != 200:
+            log(f"❌ HTTP {r.status_code} em LinxProdutosDetalhes | params={parametros}")
+            try:
+                log(r.text[:1000])
+            except:
+                pass
             return pd.DataFrame()
+
         root = etree.fromstring(r.content)
+
+        success = root.xpath(".//ResponseSuccess/text()")
+        if success and success[0].strip().lower() == "false":
+            msg = root.xpath(".//ResponseMessage/text()")
+            erro = msg[0] if msg else "Sem mensagem"
+            log(f"❌ ResponseSuccess=false em LinxProdutosDetalhes | params={parametros} | msg={erro}")
+            try:
+                log(r.text[:1000])
+            except:
+                pass
+            return pd.DataFrame()
+
         cols = [d.text for d in root.xpath(".//C[last()]/D")]
         rows = root.xpath(".//R")
+
+        if not rows:
+            log(f"⚠️ LinxProdutosDetalhes sem linhas | params={parametros}")
+            return pd.DataFrame()
+
         data = [dict(zip(cols, [d.text for d in rr.xpath('./D')])) for rr in rows]
         return pd.DataFrame(data)
-    except:
+
+    except Exception as e:
+        log(f"❌ Exceção em chamar_api_detalhes: {e} | params={parametros}")
         return pd.DataFrame()
 
-def extrair_estoque(cnpj):
+def extrair_estoque(cnpj, modo_completo=False):
+    """
+    modo_completo=False -> modo principal e mais seguro:
+                           busca por movimentação no período
+    modo_completo=True  -> tenta carga completa com retornar_saldo_zero=1
+    """
     hoje = datetime.now().date()
     mov_ini = hoje - timedelta(days=JANELA_DIAS_MOV)
     dfs = []
     ts = 0
-    teve_retorno = False
 
-    while True:
-        params = {"cnpjEmp": cnpj, "data_mov_ini": iso(mov_ini), "data_mov_fim": iso(hoje), "timestamp": str(ts)}
-        df = chamar_api_detalhes(params)
-        if df.empty:
-            break
-        teve_retorno = True
-        df.columns = [c.lower() for c in df.columns]
-        dfs.append(df)
-        try:
-            ts = int(pd.to_numeric(df.get("timestamp"), errors="coerce").max())
-        except:
-            break
-        time.sleep(0.1)
-
-    if not teve_retorno:
-        ts = 0
+    if modo_completo:
+        log(f"   📦 Extraindo estoque COMPLETO da loja {LOJAS_NOME.get(cnpj, cnpj)}...")
         while True:
-            params = {"cnpjEmp": cnpj, "timestamp": str(ts), "retornar_saldo_zero": "1"}
+            params = {
+                "cnpjEmp": cnpj,
+                "timestamp": str(ts),
+                "retornar_saldo_zero": "1"
+            }
+
             df = chamar_api_detalhes(params)
             if df.empty:
                 break
+
             df.columns = [c.lower() for c in df.columns]
             dfs.append(df)
-            try:
-                ts = int(pd.to_numeric(df.get("timestamp"), errors="coerce").max())
-            except:
+
+            novo_ts = obter_proximo_timestamp(df, ts)
+            if novo_ts is None:
                 break
-            time.sleep(0.1)
+
+            ts = novo_ts
+            time.sleep(TEMPO_ESPERA_API)
+
+    else:
+        log(f"   📅 Extraindo estoque por movimentação ({JANELA_DIAS_MOV} dias) da loja {LOJAS_NOME.get(cnpj, cnpj)}...")
+        while True:
+            params = {
+                "cnpjEmp": cnpj,
+                "data_mov_ini": iso(mov_ini),
+                "data_mov_fim": iso(hoje),
+                "timestamp": str(ts)
+            }
+
+            df = chamar_api_detalhes(params)
+            if df.empty:
+                break
+
+            df.columns = [c.lower() for c in df.columns]
+            dfs.append(df)
+
+            novo_ts = obter_proximo_timestamp(df, ts)
+            if novo_ts is None:
+                break
+
+            ts = novo_ts
+            time.sleep(TEMPO_ESPERA_API)
+
+        # fallback automático pro modo completo
+        if not dfs:
+            log(f"   🔁 Sem retorno por movimentação para {LOJAS_NOME.get(cnpj, cnpj)}. Tentando modo completo...")
+            return extrair_estoque(cnpj, modo_completo=True)
 
     if not dfs:
         return pd.DataFrame()
+
     base = pd.concat(dfs, ignore_index=True)
+
     if "timestamp" in base.columns:
+        base["timestamp"] = pd.to_numeric(base["timestamp"], errors="coerce")
         base = base.sort_values("timestamp", ascending=False)
-    base = base.drop_duplicates(subset=["cod_produto"])
+
+    if "cod_produto" in base.columns:
+        base["cod_produto"] = pd.to_numeric(base["cod_produto"], errors="coerce")
+
+    base = base.drop_duplicates(subset=["cod_produto"], keep="first")
     base["CNPJ_ORIGEM"] = cnpj
     base["NOME_FANTASIA"] = LOJAS_NOME.get(cnpj, f"LOJA {cnpj[-4:]}")
     base.rename(columns={
@@ -320,6 +402,8 @@ def extrair_estoque(cnpj):
         "preco_venda": "PRECO_VENDA",
         "custo_medio": "CUSTO_MEDIO"
     }, inplace=True)
+
+    log(f"   ✅ {LOJAS_NOME.get(cnpj, cnpj)}: {len(base)} produtos no estoque")
     return base
 
 # ===========================================
@@ -359,22 +443,28 @@ def extrair_seriais_loja(cnpj):
         df.columns = [c.lower() for c in df.columns]
 
         # Filtra apenas IMEIs que estão efetivamente em estoque (saldo = True ou 1)
-        if 'saldo' in df.columns:
-            df = df[df['saldo'].astype(str).str.lower().isin(['true', '1', 's', 'sim', '1.0'])]
+        if "saldo" in df.columns:
+            df = df[df["saldo"].astype(str).str.lower().isin(["true", "1", "s", "sim", "1.0"])]
 
         dfs.append(df)
-        try:
-            ts = int(pd.to_numeric(df.get("timestamp"), errors="coerce").max())
-        except:
+
+        novo_ts = obter_proximo_timestamp(df, ts)
+        if novo_ts is None:
             break
-        time.sleep(0.1)
+
+        ts = novo_ts
+        time.sleep(TEMPO_ESPERA_API)
 
     if not dfs:
         return pd.DataFrame()
+
     base = pd.concat(dfs, ignore_index=True)
+
     if "timestamp" in base.columns:
+        base["timestamp"] = pd.to_numeric(base["timestamp"], errors="coerce")
         base = base.sort_values("timestamp", ascending=False)
-    base = base.drop_duplicates(subset=["serial"])  # Garante 1 registro por IMEI
+
+    base = base.drop_duplicates(subset=["serial"], keep="first")  # Garante 1 registro por IMEI
     base["CNPJ_ORIGEM"] = cnpj
     return base
 
@@ -428,7 +518,7 @@ def enviar_para_api(dataframe):
 # ▶ EXECUÇÃO PRINCIPAL
 # ===========================================
 def main():
-    log("🚀 Iniciando Sincronização v8.0 (Auditoria com IMEI)...")
+    log("🚀 Iniciando Sincronização v8.1 (Auditoria com IMEI)...")
 
     # ✅ NOVO: carrega classificações do Excel
     mapa_em_linha, mapa_cluster = carregar_classificacoes_excel()
@@ -447,8 +537,8 @@ def main():
     for i, cnpj in enumerate(CNPJS):
         log(f"[{i+1}/{len(CNPJS)}] CNPJ: {cnpj}...")
 
-        # Puxa o estoque agregado (quantidades)
-        df_est = extrair_estoque(cnpj)
+        # ✅ ALTERADO: agora busca estoque completo por padrão, sem quebrar o modo antigo
+        df_est = extrair_estoque(cnpj, modo_completo=False)
         if not df_est.empty:
             todos_dados.append(df_est)
 
@@ -493,18 +583,30 @@ def main():
             (df_seriais["codigoproduto"] == cod)
         ]["serial"].tolist()
 
-        if len(seriais_produto) > 0:
-            # Aparelho com IMEI encontrado! Quebra em 1 linha para cada IMEI
-            for s in seriais_produto:
+        # ✅ NOVO: limpa, deduplica e evita serial vazio
+        seriais_produto = list(dict.fromkeys(
+            [str(s).strip() for s in seriais_produto if str(s).strip()]
+        ))
+
+        if len(seriais_produto) > 0 and qtd_total > 0:
+            # ✅ NOVO: limita o número de seriais ao saldo da API, para não inflar quantidade
+            qtd_serializada = min(len(seriais_produto), int(qtd_total))
+
+            if len(seriais_produto) > int(qtd_total):
+                log(f"⚠️ Divergência de serial x saldo | Loja: {row['NOME_FANTASIA']} | Produto: {cod} | Saldo API: {qtd_total} | Seriais: {len(seriais_produto)}")
+
+            # Aparelho com IMEI encontrado! Quebra em 1 linha para cada IMEI válido até o saldo da API
+            for s in seriais_produto[:qtd_serializada]:
                 nova_linha = row.copy()
                 nova_linha["QUANTIDADE"] = 1.0  # Cada IMEI é 1 unidade
-                nova_linha["SERIAL"] = str(s).strip()
+                nova_linha["SERIAL"] = s
                 linhas_expandidas.append(nova_linha)
 
             # Se o sistema diz que tem 5, mas só achou 4 IMEIs, cria uma linha pro restante
-            if qtd_total > len(seriais_produto):
+            qtd_restante = max(qtd_total - qtd_serializada, 0)
+            if qtd_restante > 0:
                 nova_linha = row.copy()
-                nova_linha["QUANTIDADE"] = qtd_total - len(seriais_produto)
+                nova_linha["QUANTIDADE"] = qtd_restante
                 nova_linha["SERIAL"] = ""
                 linhas_expandidas.append(nova_linha)
         else:

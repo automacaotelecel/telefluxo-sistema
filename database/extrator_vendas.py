@@ -440,7 +440,8 @@ def integrar_vendas_geral():
         treated["nome_vendedor"] = df.loc[treated.index, col_vendedor].astype(str).str.strip().str.upper()
         treated["descricao"] = df.loc[treated.index, col_desc].astype(str).str.strip().str.upper()
         treated["quantidade"] = pd.to_numeric(df.loc[treated.index, col_qtd], errors="coerce").fillna(0)
-        treated["total_liquido"] = pd.to_numeric(df.loc[treated.index, df.columns[18]], errors="coerce").fillna(0)
+        col_total = "TOTAL REAL" if "TOTAL REAL" in df.columns else "TOTAL_LIQUIDO"
+        treated["total_liquido"] = pd.to_numeric(df.loc[treated.index, col_total], errors="coerce").fillna(0)
 
         treated["cnpj_empresa"] = df.loc[treated.index, col_loja].map(loja_para_cnpj)
         treated["familia"] = df.loc[treated.index, col_familia].astype(str).str.strip().str.upper()
@@ -515,7 +516,8 @@ def montar_mapa_vendedor_loja_pelas_vendas() -> Dict[str, str]:
         work["vendedor"] = df[col_vendedor].astype(str).str.strip().str.upper()
         work["cnpj_empresa"] = df[col_loja].map(loja_para_cnpj)
         work["loja"] = work["cnpj_empresa"].map(LOJAS_MAP)
-        work["total_liquido"] = pd.to_numeric(df.iloc[:, 18], errors="coerce").fillna(0)
+        col_total = "TOTAL REAL" if "TOTAL REAL" in df.columns else "TOTAL_LIQUIDO"
+        work["total_liquido"] = pd.to_numeric(df[col_total], errors="coerce").fillna(0)
 
         work = work.dropna(subset=["vendedor", "loja"]).copy()
         work = work[~work["vendedor"].isin(["", "NAN", "NONE"])]
