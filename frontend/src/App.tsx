@@ -20,8 +20,10 @@ import EstoqueInteligente from './components/EstoqueInteligente';
 import ComparativoAnual from './components/ComparativoAnual';
 import AuditoriaLojas from './components/AuditoriaLojas';
 import EstoqueDetalhado from './components/EstoqueDetalhado';
+import SolicitacoesModule from './components/SolicitacoesModule';
 import Stockout from './components/StockOut';
 import SacolasModule from './components/SacolasModule';
+import ComparativosModule from './components/ComparativosModule';
 import {
   FileText, CheckCircle, LayoutDashboard, Users, LogOut,
   Calendar, BarChart3, ChevronDown, ChevronRight, Circle, Plus,
@@ -80,6 +82,15 @@ function App() {
     setCurrentView(view);
     setIsMobileMenuOpen(false);
   };
+
+  const viewTitles: Record<string, string> = {
+    finance: 'CONTAS A PAGAR E RECEBER',
+    controle_stone: 'CONCILIAÇÃO STONE',
+    comparativos_pdf: 'COMPARATIVOS',
+  };
+
+  const currentViewLabel = viewTitles[currentView] || currentView.replace(/_/g, ' ').toUpperCase();
+  const canViewComparativos = userRole === 'ADM' || isAdmin;
 
   if (isLoading) return <div className="h-screen bg-slate-900 flex items-center justify-center text-white font-black uppercase tracking-widest animate-pulse">Iniciando TeleFluxo...</div>;
 
@@ -188,6 +199,15 @@ function App() {
             )}
           </div>
 
+          {canViewComparativos && (
+            <div
+              onClick={() => handleNavigate('comparativos_pdf')}
+              className={`p-3 rounded-xl cursor-pointer flex items-center gap-3 font-bold text-sm transition-all ${currentView === 'comparativos_pdf' ? 'bg-slate-800 text-white shadow-lg' : 'text-slate-400 hover:bg-slate-800'}`}
+            >
+              <BarChart3 size={18} /> Comparativos
+            </div>
+          )}
+
           {canViewFinance && (
             <div>
               <div
@@ -206,14 +226,14 @@ function App() {
                     onClick={() => handleNavigate('finance')}
                     className={`pl-12 pr-4 py-2 cursor-pointer flex items-center gap-2 text-[11px] font-black uppercase tracking-tighter transition-all hover:text-white ${currentView === 'finance' ? 'text-orange-500' : 'text-slate-500'}`}
                   >
-                    <Circle size={6} fill={currentView === 'finance' ? "currentColor" : "transparent"} /> Visão Geral
+                    <Circle size={6} fill={currentView === 'finance' ? "currentColor" : "transparent"} /> Contas a pagar e receber
                   </div>
 
                   <div
                     onClick={() => handleNavigate('controle_stone')}
                     className={`pl-12 pr-4 py-2 cursor-pointer flex items-center gap-2 text-[11px] font-black uppercase tracking-tighter transition-all hover:text-white ${currentView === 'controle_stone' ? 'text-orange-500' : 'text-slate-500'}`}
                   >
-                    <Circle size={6} fill={currentView === 'controle_stone' ? "currentColor" : "transparent"} /> Controle Stone
+                    <Circle size={6} fill={currentView === 'controle_stone' ? "currentColor" : "transparent"} /> Conciliação Stone
                   </div>
                 </div>
               )}
@@ -340,6 +360,17 @@ function App() {
             </>
           )}
 
+           <div
+              onClick={() => handleNavigate('solicitacoes')}
+              className={`p-3 rounded-xl cursor-pointer flex items-center gap-3 font-bold text-sm transition-all ${
+                currentView === 'solicitacoes'
+                  ? 'bg-fuchsia-600 text-white shadow-lg'
+                  : 'text-slate-400 hover:bg-slate-800'
+              }`}
+>
+            <MessageSquare size={18} /> Solicitações
+          </div>
+
           {canViewTeam && (
             <div className="pt-4 mt-4 border-t border-slate-800">
               <p className="px-3 text-[10px] font-black text-slate-500 uppercase mb-2 tracking-widest">Configurações</p>
@@ -373,7 +404,7 @@ function App() {
             <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-orange-500 animate-pulse"></span>
               <span className="hidden md:inline">Grupo Telecel •</span>
-              {currentView.replace(/_/g, ' ').toUpperCase()}
+              {currentViewLabel}
             </div>
           </div>
           <NotificationBell currentUser={user} />
@@ -387,6 +418,8 @@ function App() {
             <FinanceModule />
           ) : currentView === 'controle_stone' ? (
             <ControleStone />
+          ) : currentView === 'comparativos_pdf' ? (
+            <ComparativosModule />
           ) : currentView === 'stock' ? (
             <StockModule />
           ) : currentView.startsWith('dept_') ? (
@@ -415,6 +448,8 @@ function App() {
             <SacolasModule currentUser={user} />
           ) : currentView === 'price_table' ? (
             <PriceTablePage />
+          ) : currentView === 'solicitacoes' ? (
+            <SolicitacoesModule currentUser={user} />  
           ) : currentView === 'team' ? (
             <div className="flex-1 p-4 md:p-8 overflow-y-auto">
               <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">

@@ -39,7 +39,7 @@ CACHE_VENDEDORES = r"C:\Users\Usuario\Desktop\API_LINX\data_bases\vendedores_cac
 # === DESTINO DO SQLITE FINAL ===
 DB_DEST_DIR  = r"C:\Users\Usuario\Desktop\TeleFluxo_Instalador\database"
 os.makedirs(DB_DEST_DIR, exist_ok=True)
-DB_DEST_PATH = os.path.join(DB_DEST_DIR, "samsung_anual.db")
+DB_DEST_PATH = os.path.join(DB_DEST_DIR, "samsung_anual.db") #samsung_anual.db - estava salvando nesse DB, tentar outro. #samsung_vendas_anuais.db (outro banco)
 
 # === LISTA DE CNPJs ===
 CNPJS = [

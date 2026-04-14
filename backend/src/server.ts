@@ -1,15 +1,38 @@
 import express, { Request, Response } from 'express';
-import cors from 'cors'; 
+import cors from 'cors';
 import { PrismaClient } from '@prisma/client';
 import multer from 'multer';
 import fs from 'fs';
-import crypto from 'crypto'; 
+import crypto from 'crypto';
 import csv from 'csv-parser';
 import * as XLSX from 'xlsx';
 import { open } from 'sqlite';
 import bcrypt from 'bcryptjs';
 import sqlite3 from 'sqlite3';
 import path from 'path';
+import https from 'https';
+import nodemailer from 'nodemailer';
+import dotenv from 'dotenv';
+
+dotenv.config();
+
+const uploadSolicitacao = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 8 * 1024 * 1024 }, // 8 MB
+});
+
+const mailTransporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: process.env.GMAIL_USER,
+    pass: process.env.GMAIL_APP_PASSWORD,
+  },
+});
+
+mailTransporter.verify()
+  .then(() => console.log('📧 SMTP Gmail pronto para envio'))
+  .catch((err) => console.error('❌ Erro no SMTP Gmail:', err));
+  
 
 // --- CONFIGURAÇÃO CENTRALIZADA DE CAMINHOS (CORREÇÃO) ---
 const ROOT_DIR = process.cwd(); 
@@ -214,6 +237,165 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
+
+const GSHEET_TRANSLATION_URL =
+  'https://docs.google.com/spreadsheets/d/e/2PACX-1vS96tjslp46EX-F8-Q8AfYfanS_DzG-2XpUJ6bjK7xTE73m-7LdsX59sTjRnyPMWcE8niiHpJa-A4pX/pub?output=csv';
+
+type TranslationRow = {
+  basicModel: string;
+  marketingName: string;
+  descricao2: string;
+  referencia2: string;
+};
+
+function fetchText(url: string, redirectCount = 0): Promise<string> {
+  return new Promise((resolve, reject) => {
+    if (redirectCount > 5) {
+      return reject(new Error('Muitos redirecionamentos ao carregar Google Sheets.'));
+    }
+
+    https
+      .get(url, (resp) => {
+        const statusCode = resp.statusCode || 0;
+        const location = resp.headers.location;
+
+        // segue redirecionamentos do Google
+        if ([301, 302, 303, 307, 308].includes(statusCode) && location) {
+          const nextUrl = location.startsWith('http')
+            ? location
+            : new URL(location, url).toString();
+
+          resp.resume();
+          return resolve(fetchText(nextUrl, redirectCount + 1));
+        }
+
+        let data = '';
+
+        resp.on('data', (chunk) => {
+          data += chunk;
+        });
+
+        resp.on('end', () => {
+          if (statusCode >= 400) {
+            return reject(new Error(`Falha ao carregar URL (${statusCode})`));
+          }
+
+          resolve(data);
+        });
+      })
+      .on('error', reject);
+  });
+}
+
+function splitCsvLine(line: string): string[] {
+  const result: string[] = [];
+  let current = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    const next = line[i + 1];
+
+    if (ch === '"') {
+      if (inQuotes && next === '"') {
+        current += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (ch === ',' && !inQuotes) {
+      result.push(current);
+      current = '';
+    } else {
+      current += ch;
+    }
+  }
+
+  result.push(current);
+  return result.map((s) => s.trim());
+}
+
+function normalizeBasicModel(value: any): string {
+  return String(value || '')
+    .toUpperCase()
+    .replace(/\u00A0/g, '')
+    .replace(/[‐-–—−]/g, '-')
+    .replace(/[\uFFFE\uFEFF]/g, '')
+    .replace(/\s+/g, '')
+    .replace(/[^A-Z0-9\/-]/g, '')
+    .replace(/^BSM(?!-)/, 'BSM-')
+    .replace(/^BSM\/?/, 'BSM-')
+    .replace(/-+/g, '-')
+    .trim();
+}
+
+function normalizeReferencePrefix(value: any): string {
+  return String(value || '')
+    .toUpperCase()
+    .replace(/\u00A0/g, '')
+    .replace(/[‐-–—−]/g, '-')
+    .replace(/[\uFFFE\uFEFF]/g, '')
+    .replace(/\s+/g, '')
+    .trim();
+}
+
+async function loadGoogleSheetTranslations(): Promise<TranslationRow[]> {
+  const csvText = await fetchText(GSHEET_TRANSLATION_URL);
+
+  const workbook = XLSX.read(csvText, { type: 'string' });
+    const firstSheetName = workbook.SheetNames[0];
+    if (!firstSheetName) return [];
+
+    const sheet = workbook.Sheets[firstSheetName];
+    if (!sheet) {
+    throw new Error(`Não consegui abrir a primeira aba da planilha: ${firstSheetName}`);
+    }
+
+    const rawRows = XLSX.utils.sheet_to_json(sheet, {
+    header: 1,
+    defval: '',
+    blankrows: false,
+    }) as any[][];
+
+  if (rawRows.length < 2) return [];
+
+  const headers = (rawRows[0] || []).map((h: any) =>
+    String(h || '')
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .trim()
+  );
+
+  const findHeader = (...names: string[]) =>
+    headers.findIndex((h) => names.includes(h));
+
+  const idxBasic = findHeader('basic model', 'basicmodel');
+  const idxMarketing = findHeader('marketing name', 'marketingname');
+  const idxDescricao = findHeader('descrição 2', 'descricao 2', 'descrição2', 'descricao2');
+  const idxReferencia = findHeader('referência 2', 'referencia 2', 'referência2', 'referencia2');
+
+  if (idxBasic < 0) {
+    throw new Error(`Não encontrei a coluna Basic Model na planilha publicada. Cabeçalhos encontrados: ${headers.join(' | ')}`);
+  }
+
+  const rows: TranslationRow[] = [];
+
+  for (let i = 1; i < rawRows.length; i++) {
+    const cols = rawRows[i] || [];
+
+    const basicModel = normalizeBasicModel(cols[idxBasic] || '');
+    if (!basicModel) continue;
+
+    rows.push({
+      basicModel,
+      marketingName: String(cols[idxMarketing] || '').trim(),
+      descricao2: String(cols[idxDescricao] || '').trim(),
+      referencia2: normalizeReferencePrefix(cols[idxReferencia] || ''),
+    });
+  }
+
+  return rows;
+}
 
 // ==========================================
 // 1. SISTEMA OPERACIONAL (USUÁRIOS E LOGIN)
@@ -1502,20 +1684,56 @@ app.post('/stock/sync', async (req, res) => {
   }
 });
 
+
 // ==========================================
-// 📦 ROTA QUE O REACT USA PARA LER O ESTOQUE (FALTAVA ISSO)
+// 📦 ROTA QUE O REACT USA PARA LER O ESTOQUE
 // ==========================================
 app.get('/stock', async (req, res) => {
-    try {
-        // Busca todo o estoque salvo pelo Python
-        const stock = await prisma.stock.findMany();
-        
-        // Retorna para o Frontend
-        res.json(stock);
-    } catch (error) {
-        console.error("Erro ao buscar estoque:", error);
-        res.status(500).json({ error: "Erro ao carregar estoque" });
-    }
+  try {
+    const stock = await prisma.stock.findMany();
+    res.json(stock);
+  } catch (error) {
+    console.error("Erro ao buscar estoque:", error);
+    res.status(500).json({ error: "Erro ao carregar estoque" });
+  }
+});
+
+app.get('/comparativos/google-sheet-base', async (_req, res) => {
+  try {
+    const rows = await loadGoogleSheetTranslations();
+
+    res.json({
+      success: true,
+      total: rows.length,
+      rows,
+    });
+  } catch (error: any) {
+    console.error('Erro ao carregar Google Sheets:', error);
+
+    res.status(500).json({
+      success: false,
+      error: error?.message || 'Erro ao carregar base do Google Sheets.',
+    });
+  }
+});
+
+app.get('/api/comparativos/mkt-base', async (_req, res) => {
+  try {
+    const rows = await loadGoogleSheetTranslations();
+
+    res.json({
+      success: true,
+      total: rows.length,
+      rows,
+    });
+  } catch (error: any) {
+    console.error('Erro ao carregar Google Sheets:', error);
+
+    res.status(500).json({
+      success: false,
+      error: error?.message || 'Erro ao carregar base do Google Sheets.',
+    });
+  }
 });
 
 // --- ROTA DE ANÁLISE (AGING DE ESTOQUE) ---
@@ -1559,6 +1777,27 @@ app.get('/stock/analysis', async (req, res) => {
         console.error("Erro na rota de análise:", error);
         res.status(500).json({ error: "Erro ao buscar análise de IMEI." });
     }
+});
+
+
+
+app.get('/api/comparativos/mkt-base', async (_req, res) => {
+  try {
+    const rows = await loadGoogleSheetTranslations();
+
+    res.json({
+      success: true,
+      total: rows.length,
+      rows,
+    });
+  } catch (error: any) {
+    console.error('Erro ao carregar Google Sheets:', error);
+
+    res.status(500).json({
+      success: false,
+      error: error?.message || 'Erro ao carregar base do Google Sheets.',
+    });
+  }
 });
 // ROTA /sales (VERSÃO BLINDADA & DETETIVE)
 
@@ -3123,6 +3362,144 @@ app.get('/api/linx/pagamentos', async (req: any, res: any) => {
         console.error("Erro ao buscar pagamentos Linx:", error);
         res.status(500).json({ error: "Erro interno ao buscar pagamentos" });
     }
+});
+
+app.post('/api/solicitacoes', uploadSolicitacao.single('referenciaFile'), async (req, res) => {
+  try {
+    const {
+      lojaSolicitante,
+      emailOrigem,
+      tipoArte,
+      tipoArteOutro,
+      produtoFoco,
+      precoVista,
+      precoParcelado,
+      quantidadeParcelas,
+      validadeOferta,
+      destaqueObrigatorio,
+      referenciaLink,
+      solicitanteNome,
+      solicitanteCargo,
+      solicitanteSetor,
+      solicitanteEmailSistema,
+    } = req.body;
+
+    if (!lojaSolicitante || !produtoFoco || !validadeOferta || !emailOrigem) {
+      return res.status(400).json({
+        error: 'Campos obrigatórios não preenchidos.',
+      });
+    }
+
+    const tipoArteFinal =
+      tipoArte === 'Outro' && tipoArteOutro?.trim()
+        ? `Outro - ${tipoArteOutro}`
+        : tipoArte;
+
+    const emailResposta = String(emailOrigem || solicitanteEmailSistema || '').trim();
+
+    const html = `
+      <div style="font-family: Arial, sans-serif; color: #0f172a;">
+        <h2 style="margin-bottom: 16px;">Nova solicitação enviada pelo TeleFluxo</h2>
+
+        <table cellpadding="8" cellspacing="0" border="0" style="border-collapse: collapse; width: 100%; max-width: 760px;">
+          <tr>
+            <td style="font-weight: bold; width: 220px; border-bottom: 1px solid #e2e8f0;">Loja solicitante</td>
+            <td style="border-bottom: 1px solid #e2e8f0;">${lojaSolicitante || '-'}</td>
+          </tr>
+          <tr>
+            <td style="font-weight: bold; border-bottom: 1px solid #e2e8f0;">E-mail de origem</td>
+            <td style="border-bottom: 1px solid #e2e8f0;">${emailOrigem || '-'}</td>
+          </tr>
+          <tr>
+            <td style="font-weight: bold; border-bottom: 1px solid #e2e8f0;">Tipo de arte</td>
+            <td style="border-bottom: 1px solid #e2e8f0;">${tipoArteFinal || '-'}</td>
+          </tr>
+          <tr>
+            <td style="font-weight: bold; border-bottom: 1px solid #e2e8f0;">Produto foco</td>
+            <td style="border-bottom: 1px solid #e2e8f0;">${produtoFoco || '-'}</td>
+          </tr>
+          <tr>
+            <td style="font-weight: bold; border-bottom: 1px solid #e2e8f0;">Preço à vista</td>
+            <td style="border-bottom: 1px solid #e2e8f0;">${precoVista || '-'}</td>
+          </tr>
+          <tr>
+            <td style="font-weight: bold; border-bottom: 1px solid #e2e8f0;">Preço parcelado</td>
+            <td style="border-bottom: 1px solid #e2e8f0;">${precoParcelado || '-'}</td>
+          </tr>
+          <tr>
+            <td style="font-weight: bold; border-bottom: 1px solid #e2e8f0;">Parcelamento</td>
+            <td style="border-bottom: 1px solid #e2e8f0;">${quantidadeParcelas || '-'}</td>
+          </tr>
+          <tr>
+            <td style="font-weight: bold; border-bottom: 1px solid #e2e8f0;">Validade da oferta</td>
+            <td style="border-bottom: 1px solid #e2e8f0;">${validadeOferta || '-'}</td>
+          </tr>
+          <tr>
+            <td style="font-weight: bold; border-bottom: 1px solid #e2e8f0;">Destaque obrigatório</td>
+            <td style="border-bottom: 1px solid #e2e8f0;">${destaqueObrigatorio || '-'}</td>
+          </tr>
+          <tr>
+            <td style="font-weight: bold; border-bottom: 1px solid #e2e8f0;">Link de referência</td>
+            <td style="border-bottom: 1px solid #e2e8f0;">${referenciaLink || '-'}</td>
+          </tr>
+        </table>
+
+        <h3 style="margin-top: 28px;">Dados do solicitante</h3>
+
+        <table cellpadding="8" cellspacing="0" border="0" style="border-collapse: collapse; width: 100%; max-width: 760px;">
+          <tr>
+            <td style="font-weight: bold; width: 220px; border-bottom: 1px solid #e2e8f0;">Nome</td>
+            <td style="border-bottom: 1px solid #e2e8f0;">${solicitanteNome || '-'}</td>
+          </tr>
+          <tr>
+            <td style="font-weight: bold; border-bottom: 1px solid #e2e8f0;">Cargo</td>
+            <td style="border-bottom: 1px solid #e2e8f0;">${solicitanteCargo || '-'}</td>
+          </tr>
+          <tr>
+            <td style="font-weight: bold; border-bottom: 1px solid #e2e8f0;">Setor</td>
+            <td style="border-bottom: 1px solid #e2e8f0;">${solicitanteSetor || '-'}</td>
+          </tr>
+          <tr>
+            <td style="font-weight: bold; border-bottom: 1px solid #e2e8f0;">E-mail do sistema</td>
+            <td style="border-bottom: 1px solid #e2e8f0;">${solicitanteEmailSistema || '-'}</td>
+          </tr>
+        </table>
+
+        <p style="margin-top: 20px; font-size: 12px; color: #64748b;">
+          Enviado automaticamente pelo módulo Solicitações do TeleFluxo.
+        </p>
+      </div>
+    `;
+
+    const attachments = req.file
+      ? [
+          {
+            filename: req.file.originalname,
+            content: req.file.buffer,
+            contentType: req.file.mimetype,
+          },
+        ]
+      : [];
+
+    await mailTransporter.sendMail({
+      from: `"TeleFluxo Solicitações" <${process.env.GMAIL_USER}>`,
+      to: 'marketinggrupotelecel@gmail.com',
+      subject: `[TeleFluxo] Nova solicitação - ${lojaSolicitante}`,
+      html,
+      attachments,
+      replyTo: emailResposta || undefined,
+    });
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Solicitação enviada com sucesso.',
+    });
+  } catch (error: any) {
+    console.error('Erro ao enviar solicitação:', error);
+    return res.status(500).json({
+      error: error?.message || 'Erro interno ao enviar e-mail da solicitação.',
+    });
+  }
 });
 
 // Define a porta: Usa a do Render (process.env.PORT) ou a 3000 se for local
