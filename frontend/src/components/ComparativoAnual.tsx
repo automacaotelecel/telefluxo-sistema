@@ -1,104 +1,92 @@
+
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ResponsiveContainer,
+  CartesianGrid,
   BarChart,
   Bar,
   XAxis,
   YAxis,
   Tooltip,
-  CartesianGrid,
   Legend,
-  PieChart,
+  LabelList,
+  PieChart as RechartsPieChart,
   Pie,
   Cell,
 } from 'recharts';
 import {
+  Activity,
+  AlertCircle,
+  ArrowDownRight,
+  ArrowUpRight,
+  BarChart3,
   Calendar,
-  ChevronDown,
   CheckSquare,
-  Square,
+  ChevronDown,
   Filter,
   Layers,
-  Activity,
-  TrendingUp,
+  Minus,
+  Package,
+  PieChart,
+  Search,
   ShieldCheck,
-  PieChart as PieChartIcon,
-  BarChart3,
-  RefreshCw,
+  Square,
   Store,
+  TrendingUp,
 } from 'lucide-react';
 
-type AnyRow = Record<string, any>;
-type CompareRow = {
-  ano: number;
-  mes: number;
-  loja: string;
-  cnpj_empresa?: string;
-  regiao?: string;
-  venda_total: number;
-  venda_qtd: number;
-  seguro_total: number;
-  seguro_qtd: number;
-};
-
 const STORE_MAP: Record<string, string> = {
-  '12309173001309': 'ARAGUAIA SHOPPING',
-  '12309173000418': 'BOULEVARD SHOPPING',
-  '12309173000175': 'BRASILIA SHOPPING',
-  '12309173000680': 'CONJUNTO NACIONAL',
-  '12309173001228': 'CONJUNTO NACIONAL QUIOSQUE',
-  '12309173000507': 'GOIANIA SHOPPING',
-  '12309173000256': 'IGUATEMI SHOPPING',
-  '12309173000841': 'JK SHOPPING',
-  '12309173000337': 'PARK SHOPPING',
-  '12309173000922': 'PATIO BRASIL',
-  '12309173000760': 'TAGUATINGA SHOPPING',
-  '12309173001147': 'TERRAÇO SHOPPING',
-  '12309173001651': 'TAGUATINGA SHOPPING QQ',
-  '12309173001732': 'UBERLÂNDIA SHOPPING',
-  '12309173001813': 'UBERABA SHOPPING',
-  '12309173001570': 'FLAMBOYANT SHOPPING',
-  '12309173002119': 'BURITI SHOPPING',
-  '12309173002461': 'PASSEIO DAS AGUAS',
-  '12309173002038': 'PORTAL SHOPPING',
-  '12309173002208': 'SHOPPING SUL',
-  '12309173001902': 'BURITI RIO VERDE',
-  '12309173002380': 'PARK ANAPOLIS',
-  '12309173002542': 'SHOPPING RECIFE',
-  '12309173002895': 'MANAIRA SHOPPING',
-  '12309173002976': 'IGUATEMI FORTALEZA',
-  '12309173001066': 'CD TAGUATINGA',
+  "12309173001309": "ARAGUAIA SHOPPING",
+  "12309173000418": "BOULEVARD SHOPPING",
+  "12309173000175": "BRASILIA SHOPPING",
+  "12309173000680": "CONJUNTO NACIONAL",
+  "12309173001228": "CONJUNTO NACIONAL QUIOSQUE",
+  "12309173000507": "GOIANIA SHOPPING",
+  "12309173000256": "IGUATEMI SHOPPING",
+  "12309173000841": "JK SHOPPING",
+  "12309173000337": "PARK SHOPPING",
+  "12309173000922": "PATIO BRASIL",
+  "12309173000760": "TAGUATINGA SHOPPING",
+  "12309173001147": "TERRAÇO SHOPPING",
+  "12309173001651": "TAGUATINGA SHOPPING QQ",
+  "12309173001732": "UBERLÂNDIA SHOPPING",
+  "12309173001813": "UBERABA SHOPPING",
+  "12309173001570": "FLAMBOYANT SHOPPING",
+  "12309173002119": "BURITI SHOPPING",
+  "12309173002461": "PASSEIO DAS AGUAS",
+  "12309173002038": "PORTAL SHOPPING",
+  "12309173002208": "SHOPPING SUL",
+  "12309173001902": "BURITI RIO VERDE",
+  "12309173002380": "PARK ANAPOLIS",
+  "12309173002542": "SHOPPING RECIFE",
+  "12309173002895": "MANAIRA SHOPPING",
+  "12309173002976": "IGUATEMI FORTALEZA",
+  "12309173001066": "CD TAGUATINGA",
 };
 
 const MONTH_LABELS = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
 const MONTH_FULL: Record<number, string> = {
-  1: 'Janeiro',
-  2: 'Fevereiro',
-  3: 'Março',
-  4: 'Abril',
-  5: 'Maio',
-  6: 'Junho',
-  7: 'Julho',
-  8: 'Agosto',
-  9: 'Setembro',
-  10: 'Outubro',
-  11: 'Novembro',
-  12: 'Dezembro',
+  1: 'Janeiro', 2: 'Fevereiro', 3: 'Março', 4: 'Abril', 5: 'Maio', 6: 'Junho',
+  7: 'Julho', 8: 'Agosto', 9: 'Setembro', 10: 'Outubro', 11: 'Novembro', 12: 'Dezembro',
 };
-const PIE_COLORS = ['#1d4ed8', '#0ea5e9', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444', '#14b8a6'];
 
-const API_URL =
-  typeof window !== 'undefined' && window.location.hostname === 'localhost'
-    ? 'http://localhost:3000'
-    : 'https://telefluxo-aplicacao.onrender.com';
+const CHART_COLORS = {
+  yearA: '#1428A0',
+  yearBReal: '#7DD3FC',
+  yearBProjection: '#0F766E',
+};
 
-const formatMoney = (value: number) =>
-  new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(Number(value || 0));
+const PIE_COLORS = ['#1428A0', '#2563EB', '#0EA5E9', '#14B8A6', '#F59E0B', '#EF4444', '#8B5CF6', '#64748B'];
+
+type AnyRow = Record<string, any>;
+
+const formatMoney = (val: number) =>
+  new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val || 0);
 
 const formatMoneyShort = (val: number) => {
   if (!val) return 'R$ 0';
-  if (Math.abs(val) >= 1000000) return `R$ ${(val / 1000000).toFixed(1)}M`;
-  if (Math.abs(val) >= 1000) return `R$ ${(val / 1000).toFixed(0)}k`;
+  if (val >= 1_000_000) return `R$ ${(val / 1_000_000).toFixed(1)}M`;
+  if (val >= 1_000) return `R$ ${(val / 1_000).toFixed(0)}k`;
   return `R$ ${val.toFixed(0)}`;
 };
 
@@ -129,188 +117,214 @@ const getStoreName = (raw: string) => {
   return STORE_MAP[clean] || STORE_MAP[raw] || raw;
 };
 
-const getDateValue = (sale: AnyRow) => pick(sale, ['data_emissao', 'DATA_EMISSAO', 'data', 'DATA', 'date', 'DATE'], '');
+const getDateValue = (sale: AnyRow) =>
+  pick(sale, ['data_emissao', 'DATA_EMISSAO', 'data', 'DATA', 'date', 'DATE'], '');
+
 const getTotal = (sale: AnyRow) =>
-  toNumberSafe(pick(sale, ['total_liquido', 'TOTAL_LIQUIDO', 'total_real', 'TOTAL_REAL', 'total', 'TOTAL', 'valor', 'VALOR'], 0));
-const getStoreRaw = (sale: AnyRow) => String(pick(sale, ['cnpj_empresa', 'CNPJ_EMPRESA', 'cnpjEmp', 'CNPJ', 'loja', 'LOJA'], '')).trim();
+  toNumberSafe(
+    pick(sale, ['total_liquido', 'TOTAL_LIQUIDO', 'total_real', 'TOTAL_REAL', 'total', 'TOTAL', 'valor', 'VALOR'], 0)
+  );
+
+const getStoreRaw = (sale: AnyRow) =>
+  String(pick(sale, ['cnpj_empresa', 'CNPJ_EMPRESA', 'cnpjEmp', 'CNPJ', 'loja', 'LOJA'], '')).trim();
+
 const getCategory = (sale: AnyRow) =>
-  String(pick(sale, ['familia', 'FAMILIA', 'categoria_real', 'CATEGORIA_REAL', 'categoria', 'CATEGORIA', 'grupo', 'GRUPO'], 'OUTROS'))
+  String(
+    pick(sale, ['familia', 'FAMILIA', 'categoria_real', 'CATEGORIA_REAL', 'categoria', 'CATEGORIA', 'grupo', 'GRUPO'], 'OUTROS')
+  )
     .trim()
     .toUpperCase();
-const getDescription = (sale: AnyRow) => String(pick(sale, ['descricao', 'DESCRICAO', 'produto', 'PRODUTO'], 'N/D')).trim().toUpperCase();
-const getQuantity = (sale: AnyRow) => toNumberSafe(pick(sale, ['quantidade', 'QUANTIDADE', 'qtd', 'QTD'], 0));
-const getRegion = (sale: AnyRow) => String(pick(sale, ['regiao', 'REGIAO'], 'N/D')).trim().toUpperCase() || 'N/D';
 
-const extractYearMonth = (raw: any): { year: string; month: string; day: string } | null => {
+const getRegion = (sale: AnyRow) =>
+  String(pick(sale, ['regiao', 'REGIAO'], 'SEM REGIÃO')).trim().toUpperCase() || 'SEM REGIÃO';
+
+const getDescription = (sale: AnyRow) =>
+  String(pick(sale, ['descricao', 'DESCRICAO', 'produto', 'PRODUTO'], 'N/D')).trim().toUpperCase();
+
+const getQuantity = (sale: AnyRow) =>
+  toNumberSafe(pick(sale, ['quantidade', 'QUANTIDADE', 'qtd', 'QTD'], 0));
+
+const extractYearMonth = (raw: any): { year: string; month: string } | null => {
   if (raw === null || raw === undefined || raw === '') return null;
 
   if (raw instanceof Date && !isNaN(raw.getTime())) {
     return {
       year: String(raw.getFullYear()),
       month: String(raw.getMonth() + 1).padStart(2, '0'),
-      day: String(raw.getDate()).padStart(2, '0'),
     };
   }
 
-  const s = String(raw).trim().replace(/\./g, '/');
+  const s = String(raw).trim();
+  if (/^\d{4}$/.test(s)) return { year: s, month: '01' };
 
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
-    const [year, month, day] = s.split('-');
-    return { year, month, day };
+  const normalized = s.replace(/\./g, '/').replace(/\s+/g, '');
+
+  if (normalized.includes('-')) {
+    const parts = normalized.split('-').filter(Boolean);
+    if (/^\d{4}$/.test(parts[0]) && /^\d{1,2}$/.test(parts[1])) {
+      return { year: parts[0], month: String(parts[1]).padStart(2, '0') };
+    }
+    if (
+      parts.length === 3 &&
+      /^\d{4}$/.test(parts[0]) &&
+      /^\d{1,2}$/.test(parts[1]) &&
+      /^\d{1,2}$/.test(parts[2])
+    ) {
+      return { year: parts[0], month: String(parts[1]).padStart(2, '0') };
+    }
   }
 
-  if (/^\d{2}\/\d{2}\/\d{4}$/.test(s)) {
-    const [day, month, year] = s.split('/');
-    return { year, month, day };
+  if (normalized.includes('/')) {
+    const parts = normalized.split('/').filter(Boolean);
+    if (parts.length >= 2 && /^\d{4}$/.test(parts[0]) && /^\d{1,2}$/.test(parts[1])) {
+      return { year: parts[0], month: String(parts[1]).padStart(2, '0') };
+    }
+    if (
+      parts.length === 3 &&
+      /^\d{1,2}$/.test(parts[0]) &&
+      /^\d{1,2}$/.test(parts[1]) &&
+      /^\d{4}$/.test(parts[2])
+    ) {
+      return { year: parts[2], month: String(parts[1]).padStart(2, '0') };
+    }
   }
 
-  if (/^\d{4}-\d{2}$/.test(s)) {
-    const [year, month] = s.split('-');
-    return { year, month, day: '01' };
-  }
-
-  const m = s.match(/(\d{4}).*?(\d{1,2}).*?(\d{1,2})?/);
-  if (m?.[1] && m?.[2]) {
-    return {
-      year: m[1],
-      month: String(m[2]).padStart(2, '0'),
-      day: String(m[3] || '01').padStart(2, '0'),
-    };
-  }
+  const m = normalized.match(/(\d{4}).*?(\d{1,2})/);
+  if (m?.[1] && m?.[2]) return { year: m[1], month: String(m[2]).padStart(2, '0') };
 
   return null;
 };
 
-const buildDate = (year: string, month: string, day: string) => new Date(`${year}-${month}-${day}T00:00:00`);
+const parseDateLoose = (raw: any): Date | null => {
+  if (!raw) return null;
+  if (raw instanceof Date && !isNaN(raw.getTime())) return raw;
 
-const StatCard = ({
+  const s = String(raw).trim();
+  if (!s) return null;
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    const d = new Date(`${s}T00:00:00`);
+    return isNaN(d.getTime()) ? null : d;
+  }
+
+  if (/^\d{4}-\d{2}$/.test(s)) {
+    const d = new Date(`${s}-01T00:00:00`);
+    return isNaN(d.getTime()) ? null : d;
+  }
+
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(s)) {
+    const [dd, mm, yyyy] = s.split('/');
+    const d = new Date(`${yyyy}-${mm}-${dd}T00:00:00`);
+    return isNaN(d.getTime()) ? null : d;
+  }
+
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+};
+
+const isWithinDateRange = (raw: any, startDate: string, endDate: string) => {
+  const value = parseDateLoose(raw);
+  if (!value) return false;
+
+  if (startDate) {
+    const start = new Date(`${startDate}T00:00:00`);
+    if (value < start) return false;
+  }
+
+  if (endDate) {
+    const end = new Date(`${endDate}T23:59:59`);
+    if (value > end) return false;
+  }
+
+  return true;
+};
+
+const SmallMetricCard = ({
   title,
+  icon,
   value,
   subtitle,
-  icon,
-  accent = 'border-slate-200',
   valueClass = 'text-slate-900',
+  children,
 }: {
   title: string;
-  value: string;
-  subtitle: string;
-  icon?: React.ReactNode;
-  accent?: string;
+  icon: React.ReactNode;
+  value?: string;
+  subtitle?: string;
   valueClass?: string;
+  children?: React.ReactNode;
 }) => (
-  <div className={`bg-white rounded-[1.6rem] border ${accent} p-5 shadow-sm min-h-[126px]`}>
-    <div className="flex items-start justify-between gap-3 mb-3">
-      <div className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">{title}</div>
-      {icon ? <div className="text-slate-400">{icon}</div> : null}
+  <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm min-h-[142px]">
+    <div className="flex justify-between items-start mb-2">
+      <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{title}</span>
+      <div className="text-slate-400">{icon}</div>
     </div>
-    <div className={`text-[2rem] leading-none font-black ${valueClass}`}>{value}</div>
-    <div className="mt-4 text-[11px] font-bold text-slate-500 uppercase tracking-wide">{subtitle}</div>
+
+    {children ? (
+      <div className="h-[86px] w-full">{children}</div>
+    ) : (
+      <>
+        <h3 className={`text-2xl font-black mt-1 ${valueClass}`}>{value}</h3>
+        {subtitle && <div className="text-[10px] font-bold text-slate-500 uppercase mt-3 whitespace-pre-line">{subtitle}</div>}
+      </>
+    )}
   </div>
 );
 
-const StoreSelector = ({
-  stores,
-  selectedStores,
-  setSelectedStores,
-}: {
-  stores: string[];
-  selectedStores: string[];
-  setSelectedStores: React.Dispatch<React.SetStateAction<string[]>>;
-}) => {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
+export default function ComparativoAnual() {
+  const [annualRawData, setAnnualRawData] = useState<any[]>([]);
+  const [monthlyRawData, setMonthlyRawData] = useState<any[]>([]);
+  const [annualStoreCompareRows, setAnnualStoreCompareRows] = useState<any[]>([]);
+  const [errorMsg, setErrorMsg] = useState<string>('');
+  const [loading, setLoading] = useState(false);
+
+  const [selectedStores, setSelectedStores] = useState<string[]>([]);
+  const [isStoreMenuOpen, setIsStoreMenuOpen] = useState(false);
+  const storeMenuRef = useRef<HTMLDivElement>(null);
+
+  const [categoryFilter, setCategoryFilter] = useState('TODAS');
+  const [monthFilter, setMonthFilter] = useState<string>('0');
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+
+  const [yearA, setYearA] = useState<string>('');
+  const [yearB, setYearB] = useState<string>('');
+
+  const [activeTab, setActiveTab] = useState<'geral' | 'produtos'>('geral');
+  const [searchProduct, setSearchProduct] = useState('');
+
+  const API_URL = window.location.hostname === 'localhost'
+    ? 'http://localhost:3000'
+    : 'https://telefluxo-aplicacao.onrender.com';
 
   useEffect(() => {
     function handleClickOutside(event: any) {
-      if (ref.current && !ref.current.contains(event.target)) setOpen(false);
+      if (storeMenuRef.current && !storeMenuRef.current.contains(event.target)) setIsStoreMenuOpen(false);
     }
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const toggleStore = (store: string) => {
-    setSelectedStores((current) =>
-      current.includes(store) ? current.filter((item) => item !== store) : [...current, store],
-    );
-  };
-
-  return (
-    <div className="relative" ref={ref}>
-      <button
-        onClick={() => setOpen((v) => !v)}
-        className="h-12 min-w-[180px] px-4 rounded-2xl border border-slate-200 bg-white flex items-center justify-between gap-3 text-sm font-bold text-slate-700"
-      >
-        <span className="flex items-center gap-2 truncate">
-          <Store size={16} />
-          {selectedStores.length ? `${selectedStores.length} lojas` : 'Todas lojas'}
-        </span>
-        <ChevronDown size={16} />
-      </button>
-
-      {open && (
-        <div className="absolute right-0 top-14 z-30 w-[320px] bg-white border border-slate-200 rounded-2xl shadow-2xl p-3">
-          <div className="flex items-center justify-between px-1 pb-2 mb-2 border-b border-slate-100">
-            <span className="text-[11px] font-black uppercase tracking-widest text-slate-400">Lojas</span>
-            <button
-              onClick={() => setSelectedStores([])}
-              className="text-[11px] font-black uppercase tracking-widest text-blue-600"
-            >
-              Limpar
-            </button>
-          </div>
-          <div className="max-h-72 overflow-y-auto pr-1 space-y-1">
-            {stores.map((store) => {
-              const checked = selectedStores.includes(store);
-              return (
-                <button
-                  key={store}
-                  onClick={() => toggleStore(store)}
-                  className="w-full px-2 py-2 rounded-xl flex items-center gap-3 text-left hover:bg-slate-50"
-                >
-                  {checked ? <CheckSquare size={16} className="text-blue-600" /> : <Square size={16} className="text-slate-400" />}
-                  <span className="text-sm font-semibold text-slate-700">{store}</span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-};
-
-export default function ComparativoAnual() {
-  const [annualRawData, setAnnualRawData] = useState<AnyRow[]>([]);
-  const [monthlyRawData, setMonthlyRawData] = useState<AnyRow[]>([]);
-  const [compareRows, setCompareRows] = useState<CompareRow[]>([]);
-  const [errorMsg, setErrorMsg] = useState('');
-  const [loading, setLoading] = useState(false);
-
-  const [selectedStores, setSelectedStores] = useState<string[]>([]);
-  const [categoryFilter, setCategoryFilter] = useState('TODAS');
-  const [yearA, setYearA] = useState('');
-  const [yearB, setYearB] = useState('');
-  const [monthFilter, setMonthFilter] = useState('0');
-  const [startDate, setStartDate] = useState('');
-  const [endDate, setEndDate] = useState('');
-  const [activeTab, setActiveTab] = useState<'geral' | 'produtos'>('geral');
-  const [searchProduct, setSearchProduct] = useState('');
-
   const getUserId = () => {
+    let userId = '';
     try {
       const rawUser = localStorage.getItem('user') || localStorage.getItem('telefluxo_user');
-      if (!rawUser) return '';
-      const parsed = JSON.parse(rawUser);
-      return String(parsed.id || parsed.userId || parsed._id || '');
-    } catch {
-      return '';
+      if (rawUser) {
+        const parsed = JSON.parse(rawUser);
+        userId = parsed.id || parsed.userId || parsed._id || '';
+      }
+    } catch (e) {
+      console.error(e);
     }
+    return userId;
   };
 
   const loadData = async () => {
     setLoading(true);
+
     try {
       const userId = getUserId();
+
       const [resAnnual, resMonthly] = await Promise.all([
         fetch(`${API_URL}/sales_anuais?userId=${userId}`),
         fetch(`${API_URL}/sales?userId=${userId}`),
@@ -349,43 +363,6 @@ export default function ComparativoAnual() {
     loadData();
   }, []);
 
-  const yearsAvailable = useMemo(() => {
-    const set = new Set<string>();
-    [...annualRawData, ...monthlyRawData].forEach((sale) => {
-      const ym = extractYearMonth(getDateValue(sale));
-      if (ym?.year) set.add(ym.year);
-    });
-    return Array.from(set).sort();
-  }, [annualRawData, monthlyRawData]);
-
-  useEffect(() => {
-    if (!yearsAvailable.length) return;
-    const last = yearsAvailable[yearsAvailable.length - 1];
-    const prev = yearsAvailable.length >= 2 ? yearsAvailable[yearsAvailable.length - 2] : last;
-    setYearA((cur) => cur || prev);
-    setYearB((cur) => cur || last);
-  }, [yearsAvailable]);
-
-  useEffect(() => {
-    const now = new Date();
-    const firstDay = `${now.getFullYear()}-01-01`;
-    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-    setStartDate((cur) => cur || firstDay);
-    setEndDate((cur) => cur || today);
-  }, []);
-
-  useEffect(() => {
-    const userId = getUserId();
-    if (!userId || !yearA || !yearB) return;
-    fetch(`${API_URL}/anuais/lojas_compare?userId=${userId}&yearA=${yearA}&yearB=${yearB}&month=${monthFilter}`)
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('Não consegui carregar seguros anuais.'))))
-      .then((json) => setCompareRows(Array.isArray(json?.data) ? json.data : []))
-      .catch((err: any) => {
-        console.error(err);
-        setCompareRows([]);
-      });
-  }, [yearA, yearB, monthFilter]);
-
   const mergedRawData = useMemo(() => {
     const today = new Date();
     const currentYear = String(today.getFullYear());
@@ -406,415 +383,739 @@ export default function ComparativoAnual() {
     return [...annualWithoutCurrentMonth, ...monthlyCurrentMonth];
   }, [annualRawData, monthlyRawData]);
 
+  const yearsAvailable = useMemo(() => {
+    const set = new Set<string>();
+    for (const sale of mergedRawData) {
+      const ym = extractYearMonth(getDateValue(sale));
+      if (ym?.year) set.add(ym.year);
+    }
+    return Array.from(set).sort();
+  }, [mergedRawData]);
+
+  useEffect(() => {
+    if (!yearsAvailable.length) return;
+    const latest = yearsAvailable[yearsAvailable.length - 1];
+    const previous = yearsAvailable.length >= 2 ? yearsAvailable[yearsAvailable.length - 2] : latest;
+    setYearA((cur) => cur || previous);
+    setYearB((cur) => cur || latest);
+  }, [yearsAvailable]);
+
+  useEffect(() => {
+    const loadAnnualStoreCompare = async () => {
+      if (!yearA || !yearB) return;
+
+      try {
+        const userId = getUserId();
+        const month = Number(monthFilter || '0');
+
+        const res = await fetch(
+          `${API_URL}/anuais/lojas_compare?userId=${encodeURIComponent(userId)}&yearA=${encodeURIComponent(yearA)}&yearB=${encodeURIComponent(yearB)}&month=${month}`
+        );
+
+        if (!res.ok) throw new Error('Rota de comparação anual por lojas não encontrada.');
+        const json = await res.json();
+        const rows = (json && Array.isArray(json.data) && json.data) || (Array.isArray(json) ? json : []);
+        setAnnualStoreCompareRows(rows);
+      } catch (e: any) {
+        console.error(e);
+        setAnnualStoreCompareRows([]);
+      }
+    };
+
+    loadAnnualStoreCompare();
+  }, [API_URL, yearA, yearB, monthFilter]);
+
   const uniqueCategories = useMemo(() => {
-    const categories = new Set<string>();
-    mergedRawData.forEach((sale) => {
-      const cat = getCategory(sale);
-      if (cat && cat !== 'NAN' && cat !== 'UNDEFINED') categories.add(cat);
-    });
-    return Array.from(categories).sort();
+    const cats = new Set(
+      mergedRawData.map((r) => getCategory(r)).filter((c) => c && c !== 'NAN' && c !== 'UNDEFINED')
+    );
+    return Array.from(cats).sort();
   }, [mergedRawData]);
 
   const uniqueStores = useMemo(() => {
-    const stores = new Set<string>();
-    mergedRawData.forEach((sale) => stores.add(getStoreName(getStoreRaw(sale))));
+    const stores = new Set(mergedRawData.map((r) => getStoreName(getStoreRaw(r))).filter(Boolean));
     return Array.from(stores).sort();
   }, [mergedRawData]);
 
-  const filteredRawData = useMemo(() => {
-    const monthNum = Number(monthFilter || 0);
-    const start = startDate ? new Date(`${startDate}T00:00:00`) : null;
-    const end = endDate ? new Date(`${endDate}T23:59:59`) : null;
+  const toggleStore = (store: string) => {
+    if (selectedStores.includes(store)) setSelectedStores(selectedStores.filter((s) => s !== store));
+    else setSelectedStores([...selectedStores, store]);
+  };
 
+  const clearDates = () => {
+    setStartDate('');
+    setEndDate('');
+  };
+
+  const filteredRawData = useMemo(() => {
     return mergedRawData.filter((sale) => {
-      const storeName = getStoreName(getStoreRaw(sale));
-      const category = getCategory(sale);
       const ym = extractYearMonth(getDateValue(sale));
       if (!ym) return false;
-      const date = buildDate(ym.year, ym.month, ym.day);
 
-      if (selectedStores.length > 0 && !selectedStores.includes(storeName)) return false;
-      if (categoryFilter !== 'TODAS' && category !== categoryFilter) return false;
-      if (monthNum >= 1 && Number(ym.month) !== monthNum) return false;
-      if (start && date < start) return false;
-      if (end && date > end) return false;
+      const storeName = getStoreName(getStoreRaw(sale)).toUpperCase();
+
+      if (selectedStores.length > 0 && !selectedStores.map((s) => s.toUpperCase()).includes(storeName)) {
+        return false;
+      }
+
+      if (categoryFilter !== 'TODAS' && getCategory(sale) !== categoryFilter) {
+        return false;
+      }
+
+      if (monthFilter !== '0' && ym.month !== String(monthFilter).padStart(2, '0')) {
+        return false;
+      }
+
+      if ((startDate || endDate) && !isWithinDateRange(getDateValue(sale), startDate, endDate)) {
+        return false;
+      }
+
       return true;
     });
   }, [mergedRawData, selectedStores, categoryFilter, monthFilter, startDate, endDate]);
 
-  const compareRowsFiltered = useMemo(() => {
-    return compareRows.filter((row) => {
-      if (selectedStores.length > 0 && !selectedStores.includes(String(row.loja || '').toUpperCase())) return false;
-      if (Number(monthFilter || 0) >= 1 && Number(row.mes || 0) !== Number(monthFilter)) return false;
+  const filteredAnnualStoreCompare = useMemo(() => {
+    return annualStoreCompareRows.filter((row) => {
+      const storeName = getStoreName(String(row.loja || row.LOJA || row.cnpj_empresa || row.CNPJ_EMPRESA || ''));
+      if (selectedStores.length > 0 && !selectedStores.map((s) => s.toUpperCase()).includes(storeName.toUpperCase())) {
+        return false;
+      }
       return true;
     });
-  }, [compareRows, selectedStores, monthFilter]);
+  }, [annualStoreCompareRows, selectedStores]);
 
   const computed = useMemo(() => {
-    const totalsByYearMonth: Record<string, Record<string, number>> = {};
-    const totalsByYearCategory: Record<string, Record<string, number>> = {};
-    const totalsByYearRegion: Record<string, Record<string, number>> = {};
-    const totalsByYearStore: Record<string, Record<string, number>> = {};
-    const totalByYear: Record<string, number> = {};
-    const totalQtyByYear: Record<string, number> = {};
+    const today = new Date();
+    const currentYear = String(today.getFullYear());
+    const currentMonth = today.getMonth() + 1;
+    const currentDay = Math.max(1, today.getDate());
+    const daysInCurrentMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
 
+    const startOfYear = new Date(today.getFullYear(), 0, 1);
+    const daysPassedInYear = Math.max(
+      1,
+      Math.floor((today.getTime() - startOfYear.getTime()) / (1000 * 60 * 60 * 24)) + 1
+    );
+    const daysInYear = today.getFullYear() % 4 === 0 ? 366 : 365;
+
+    const monthKeys = Array.from({ length: 12 }, (_, i) => String(i + 1).padStart(2, '0'));
     const years = [yearA, yearB].filter(Boolean);
-    years.forEach((year) => {
+
+    const totalsByYearMonth: Record<string, Record<string, number>> = {};
+    const storeTotalsByYear: Record<string, Record<string, number>> = {};
+    const totalByYear: Record<string, number> = {};
+
+    for (const year of years) {
       totalsByYearMonth[year] = {};
-      totalsByYearCategory[year] = {};
-      totalsByYearRegion[year] = {};
-      totalsByYearStore[year] = {};
+      storeTotalsByYear[year] = {};
       totalByYear[year] = 0;
-      totalQtyByYear[year] = 0;
-      for (let m = 1; m <= 12; m++) totalsByYearMonth[year][String(m).padStart(2, '0')] = 0;
-    });
-
-    filteredRawData.forEach((sale) => {
-      const ym = extractYearMonth(getDateValue(sale));
-      if (!ym || !years.includes(ym.year)) return;
-      const total = getTotal(sale);
-      const qty = getQuantity(sale);
-      const category = getCategory(sale);
-      const region = getRegion(sale);
-      const storeName = getStoreName(getStoreRaw(sale));
-
-      totalsByYearMonth[ym.year][ym.month] = (totalsByYearMonth[ym.year][ym.month] || 0) + total;
-      totalsByYearCategory[ym.year][category] = (totalsByYearCategory[ym.year][category] || 0) + total;
-      totalsByYearRegion[ym.year][region] = (totalsByYearRegion[ym.year][region] || 0) + total;
-      totalsByYearStore[ym.year][storeName] = (totalsByYearStore[ym.year][storeName] || 0) + total;
-      totalByYear[ym.year] = (totalByYear[ym.year] || 0) + total;
-      totalQtyByYear[ym.year] = (totalQtyByYear[ym.year] || 0) + qty;
-    });
-
-    const now = new Date();
-    const currentYear = String(now.getFullYear());
-    const currentMonth = now.getMonth() + 1;
-    const currentDay = now.getDate();
-    const daysInCurrentMonth = new Date(now.getFullYear(), currentMonth, 0).getDate();
-    const daysPassedInYear = Math.max(1, Math.floor((now.getTime() - new Date(now.getFullYear(), 0, 1).getTime()) / 86400000) + 1);
-    const daysInYear = new Date(now.getFullYear(), 11, 31).getDate() === 31 ? (new Date(now.getFullYear(), 1, 29).getMonth() === 1 ? 366 : 365) : 365;
-
-    const cutoffMonth = endDate ? Number((endDate.split('-')[1] || currentMonth).replace(/^0/, '') || currentMonth) : currentMonth;
-    const totalA = yearA ? totalByYear[yearA] || 0 : 0;
-    const totalAUntilCutoff = yearA
-      ? Object.entries(totalsByYearMonth[yearA] || {})
-          .filter(([month]) => Number(month) <= cutoffMonth)
-          .reduce((acc, [, value]) => acc + value, 0)
-      : 0;
-    const totalB = yearB ? totalByYear[yearB] || 0 : 0;
-
-    const currentMonthKey = String(currentMonth).padStart(2, '0');
-    const currentMonthRealB = yearB ? totalsByYearMonth[yearB]?.[currentMonthKey] || 0 : 0;
-
-    let yearForecast = totalB;
-    let monthForecast = currentMonthRealB;
-    let monthRemainingForecast = 0;
-
-    if (yearB === currentYear) {
-      monthForecast = currentDay > 0 ? (currentMonthRealB / currentDay) * daysInCurrentMonth : currentMonthRealB;
-      monthRemainingForecast = Math.max(0, monthForecast - currentMonthRealB);
-      yearForecast = daysPassedInYear > 0 ? (totalB / daysPassedInYear) * daysInYear : totalB;
+      for (const month of monthKeys) totalsByYearMonth[year][month] = 0;
     }
 
-    const growthPct = totalA > 0 ? ((yearForecast - totalA) / totalA) * 100 : 0;
+    for (const sale of filteredRawData) {
+      const ym = extractYearMonth(getDateValue(sale));
+      if (!ym || !years.includes(ym.year)) continue;
 
-    const chartData = MONTH_LABELS.map((label, index) => {
-      const month = String(index + 1).padStart(2, '0');
-      const realA = yearA ? totalsByYearMonth[yearA]?.[month] || 0 : 0;
-      const realB = yearB ? totalsByYearMonth[yearB]?.[month] || 0 : 0;
-      const isCurrentMonth = yearB === currentYear && month === currentMonthKey;
-      const remaining = isCurrentMonth ? monthRemainingForecast : 0;
+      const total = getTotal(sale);
+      if (!total) continue;
 
-      return {
-        mes: label,
-        [`${yearA} Real`]: realA,
-        [`${yearB} Real`]: realB,
-        [`${yearB} Tendência restante`]: remaining,
+      const storeName = getStoreName(getStoreRaw(sale));
+      totalsByYearMonth[ym.year][ym.month] = (totalsByYearMonth[ym.year][ym.month] || 0) + total;
+      storeTotalsByYear[ym.year][storeName] = (storeTotalsByYear[ym.year][storeName] || 0) + total;
+      totalByYear[ym.year] += total;
+    }
+
+    let currentMonthRealYearB = 0;
+
+    const chartData = monthKeys.map((month, idx) => {
+      const totalYearA = yearA ? totalsByYearMonth[yearA]?.[month] || 0 : 0;
+      const totalYearB = yearB ? totalsByYearMonth[yearB]?.[month] || 0 : 0;
+
+      const row: AnyRow = {
+        mes: MONTH_LABELS[idx],
+        mesNumero: month,
+        [yearA]: totalYearA,
+        [`${yearB}_real`]: totalYearB,
+        [`${yearB}_proj`]: 0,
       };
+
+      if (yearB === currentYear && Number(month) === currentMonth) {
+        currentMonthRealYearB = totalYearB;
+        const projectedMonth = currentDay > 0 ? (totalYearB / currentDay) * daysInCurrentMonth : totalYearB;
+        row[`${yearB}_proj`] = Math.max(0, projectedMonth - totalYearB);
+      }
+
+      return row;
     });
 
-    const getBestStore = (year: string) => {
-      const entries = Object.entries(totalsByYearStore[year] || {}).sort((a, b) => b[1] - a[1]);
-      return entries[0] ? { nome: entries[0][0], total: entries[0][1] } : { nome: '—', total: 0 };
+    const totalA = yearA ? totalByYear[yearA] || 0 : 0;
+    const totalB = yearB ? totalByYear[yearB] || 0 : 0;
+
+    const cutoffMonth = monthFilter !== '0' ? Number(monthFilter) : currentMonth;
+    const totalAUntilCurrentMonth = yearA
+      ? monthKeys
+          .filter((m) => Number(m) <= cutoffMonth)
+          .reduce((sum, m) => sum + (totalsByYearMonth[yearA]?.[m] || 0), 0)
+      : 0;
+
+    let localYearForecast = totalB;
+    if (yearB === currentYear) {
+      localYearForecast = daysPassedInYear > 0 ? (totalB / daysPassedInYear) * daysInYear : totalB;
+    }
+
+    const bestStoreByYear = (year: string) => {
+      const entries = Object.entries(storeTotalsByYear[year] || {})
+        .map(([nome, total]) => ({ nome, total }))
+        .sort((a, b) => b.total - a.total);
+      return entries[0] || { nome: '—', total: 0 };
     };
 
-    const segurosYearB = compareRowsFiltered
-      .filter((row) => String(row.ano) === yearB)
-      .reduce(
-        (acc, row) => {
-          acc.total += toNumberSafe(row.seguro_total);
-          acc.qtd += toNumberSafe(row.seguro_qtd);
-          return acc;
-        },
-        { total: 0, qtd: 0 },
-      );
+    const bestB = yearB ? bestStoreByYear(yearB) : { nome: '—', total: 0 };
 
-    const categoryMiniData = Object.entries(totalsByYearCategory[yearB] || {})
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 6)
-      .map(([name, value]) => ({ name, value }));
-
-    const regionPieData = Object.entries(totalsByYearRegion[yearB] || {})
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 6)
-      .map(([name, value]) => ({ name, value }));
-
-    const groupedProducts = Object.values(
-      filteredRawData.reduce((acc: Record<string, any>, sale) => {
-        const ym = extractYearMonth(getDateValue(sale));
-        if (!ym || String(ym.year) !== yearB) return acc;
-
-        const description = getDescription(sale);
-        const category = getCategory(sale);
-        const total = getTotal(sale);
-        const qty = getQuantity(sale);
-        const key = `${description}__${category}`;
-        if (!acc[key]) acc[key] = { descricao: description, categoria: category, faturamento: 0, quantidade: 0 };
-        acc[key].faturamento += total;
-        acc[key].quantidade += qty;
-        return acc;
-      }, {}),
-    )
-      .sort((a: any, b: any) => b.faturamento - a.faturamento)
-      .filter((row: any) => {
-        const term = searchProduct.trim().toUpperCase();
-        if (!term) return true;
-        return String(row.descricao).includes(term) || String(row.categoria).includes(term);
-      });
+    const growthVsYearA = totalA > 0 ? ((localYearForecast - totalA) / totalA) * 100 : 0;
 
     return {
       chartData,
       totalA,
-      totalAUntilCutoff,
+      totalAUntilCurrentMonth,
       totalB,
-      bestB: yearB ? getBestStore(yearB) : { nome: '—', total: 0 },
-      yearForecast,
-      growthPct,
-      segurosYearB,
-      categoryMiniData,
-      regionPieData,
-      groupedProducts,
+      bestB,
+      localMonthSoFar: currentMonthRealYearB,
+      localMonthForecast:
+        yearB === currentYear && currentDay > 0
+          ? Math.max(currentMonthRealYearB, (currentMonthRealYearB / currentDay) * daysInCurrentMonth)
+          : currentMonthRealYearB,
+      localYearForecast: Math.max(localYearForecast, totalB),
+      growthVsYearA,
+      cutoffLabel:
+        monthFilter !== '0'
+          ? `Até ${MONTH_FULL[Number(monthFilter)]}`
+          : yearB === currentYear
+            ? 'Até mês atual'
+            : 'Ano completo',
     };
-  }, [filteredRawData, compareRowsFiltered, yearA, yearB, endDate, monthFilter, searchProduct]);
+  }, [filteredRawData, yearA, yearB, monthFilter]);
 
-  const monthLabel = monthFilter !== '0' ? MONTH_FULL[Number(monthFilter)] || 'Mês' : 'Ano completo';
+  const segurosComputed = useMemo(() => {
+    const byYear: Record<string, { total: number; qtd: number }> = {
+      [yearA]: { total: 0, qtd: 0 },
+      [yearB]: { total: 0, qtd: 0 },
+    };
+
+    for (const row of filteredAnnualStoreCompare) {
+      const year = String(row.ano || row.ANO || '');
+      if (year !== yearA && year !== yearB) continue;
+      byYear[year] = {
+        total: (byYear[year]?.total || 0) + toNumberSafe(row.seguro_total || row.SEGURO_TOTAL || 0),
+        qtd: (byYear[year]?.qtd || 0) + toNumberSafe(row.seguro_qtd || row.SEGURO_QTD || 0),
+      };
+    }
+
+    return {
+      yearA: byYear[yearA] || { total: 0, qtd: 0 },
+      yearB: byYear[yearB] || { total: 0, qtd: 0 },
+    };
+  }, [filteredAnnualStoreCompare, yearA, yearB]);
+
+  const categoryMiniData = useMemo(() => {
+    const map = new Map<string, number>();
+
+    for (const row of filteredRawData) {
+      const ym = extractYearMonth(getDateValue(row));
+      if (!ym || ym.year !== yearB) continue;
+
+      const category = getCategory(row) || 'OUTROS';
+      map.set(category, (map.get(category) || 0) + getTotal(row));
+    }
+
+    return Array.from(map.entries())
+      .map(([name, value]) => ({ name, value }))
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 5);
+  }, [filteredRawData, yearB]);
+
+  const regionPieData = useMemo(() => {
+    const map = new Map<string, number>();
+
+    for (const row of filteredRawData) {
+      const ym = extractYearMonth(getDateValue(row));
+      if (!ym || ym.year !== yearB) continue;
+
+      const region = getRegion(row) || 'SEM REGIÃO';
+      map.set(region, (map.get(region) || 0) + getTotal(row));
+    }
+
+    return Array.from(map.entries())
+      .map(([name, value]) => ({ name, value }))
+      .sort((a, b) => b.value - a.value);
+  }, [filteredRawData, yearB]);
+
+  const productComparison = useMemo(() => {
+    const prodMap = new Map<string, { desc: string; totalA: number; qtdA: number; totalB: number; qtdB: number }>();
+
+    for (const sale of filteredRawData) {
+      const ym = extractYearMonth(getDateValue(sale));
+      if (!ym) continue;
+
+      const isYearA = ym.year === yearA;
+      const isYearB = ym.year === yearB;
+      if (!isYearA && !isYearB) continue;
+
+      const desc = getDescription(sale);
+      const total = getTotal(sale);
+      const qtd = getQuantity(sale);
+
+      if (!prodMap.has(desc)) {
+        prodMap.set(desc, { desc, totalA: 0, qtdA: 0, totalB: 0, qtdB: 0 });
+      }
+
+      const current = prodMap.get(desc)!;
+      if (isYearA) {
+        current.totalA += total;
+        current.qtdA += qtd;
+      }
+      if (isYearB) {
+        current.totalB += total;
+        current.qtdB += qtd;
+      }
+    }
+
+    return Array.from(prodMap.values())
+      .map((p) => {
+        let crescimentoPct = 0;
+        if (p.totalA > 0) crescimentoPct = ((p.totalB - p.totalA) / p.totalA) * 100;
+        else if (p.totalB > 0) crescimentoPct = 100;
+        return { ...p, crescimentoPct };
+      })
+      .sort((a, b) => b.totalB - a.totalB);
+  }, [filteredRawData, yearA, yearB]);
+
+  const searchedProducts = useMemo(() => {
+    if (!searchProduct) return productComparison;
+    const term = searchProduct.toLowerCase();
+    return productComparison.filter((p) => p.desc.toLowerCase().includes(term));
+  }, [productComparison, searchProduct]);
+
+  const topProductA = useMemo(() => {
+    return [...productComparison].sort((a, b) => b.totalA - a.totalA)[0] || null;
+  }, [productComparison]);
+
+  const topProductB = useMemo(() => {
+    return [...productComparison].sort((a, b) => b.totalB - a.totalB)[0] || null;
+  }, [productComparison]);
+
+  const maxGrowthProduct = useMemo(() => {
+    const valid = productComparison.filter((p) => p.totalA > 10000);
+    return valid.sort((a, b) => b.crescimentoPct - a.crescimentoPct)[0] || null;
+  }, [productComparison]);
+
+  const noData = computed.totalA + computed.totalB + segurosComputed.yearB.total <= 0;
+
+  const chartLegendNameMap: Record<string, string> = useMemo(() => ({
+    [yearA]: `${yearA} Real`,
+    [`${yearB}_real`]: `${yearB} Real`,
+    [`${yearB}_proj`]: `${yearB} Tendência restante`,
+  }), [yearA, yearB]);
 
   return (
-    <div className="flex-1 overflow-y-auto p-4 md:p-6 bg-slate-50">
-      <div className="bg-white rounded-[2rem] border border-slate-200 p-5 md:p-6 shadow-sm mb-4">
-        <div className="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-4">
-          <div>
-            <div className="flex items-center gap-3 mb-2">
-              <div className="w-12 h-12 rounded-2xl bg-indigo-700 text-white flex items-center justify-center shadow-lg">
-                <Activity size={22} />
-              </div>
-              <div>
-                <h1 className="text-2xl font-black uppercase tracking-tight text-indigo-700">Vendas anuais</h1>
-                <p className="text-[11px] font-black uppercase tracking-[0.18em] text-slate-400">
-                  Histórico completo • comparativo entre anos • produtos
-                </p>
-              </div>
-            </div>
+    <div className="h-full overflow-y-auto p-4 md:p-6 bg-[#F0F2F5] font-sans text-slate-800">
+      {errorMsg && (
+        <div className="mb-4 bg-red-100 border border-red-300 text-red-700 px-4 py-3 rounded-xl flex items-center gap-2">
+          <AlertCircle size={20} />
+          <span className="block sm:inline">{errorMsg}</span>
+        </div>
+      )}
+
+      <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center mb-6 gap-4 bg-white p-4 rounded-xl shadow-sm border border-slate-200">
+        <div>
+          <div className="flex items-center gap-2 mb-1">
+            <div className="p-2 bg-[#1428A0] rounded text-white"><Activity size={18} /></div>
+            <h1 className="text-lg font-black uppercase tracking-tight text-[#1428A0]">
+              Comparativo Anual ({yearA || '—'} x {yearB || '—'})
+            </h1>
+          </div>
+          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-10">
+            Histórico completo • Comparativo entre anos • Produtos
+          </p>
+        </div>
+
+        <div className="flex flex-wrap gap-3 items-center w-full xl:w-auto">
+          <div className="flex items-center bg-white border border-slate-200 px-3 py-2 rounded-lg gap-2 shadow-sm">
+            <Calendar size={14} className="text-blue-600" />
+            <input
+              type="date"
+              value={startDate}
+              onChange={(e) => setStartDate(e.target.value)}
+              className="bg-transparent text-xs font-bold text-slate-600 outline-none"
+            />
           </div>
 
-          <div className="flex flex-wrap gap-3">
-            <div className="h-12 px-4 rounded-2xl border border-slate-200 bg-white flex items-center gap-3">
-              <Calendar size={16} className="text-slate-400" />
-              <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="outline-none text-sm font-bold text-slate-700 bg-transparent" />
-            </div>
-            <div className="h-12 px-4 rounded-2xl border border-slate-200 bg-white flex items-center gap-3">
-              <Calendar size={16} className="text-slate-400" />
-              <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="outline-none text-sm font-bold text-slate-700 bg-transparent" />
-            </div>
-            <select value={yearA} onChange={(e) => setYearA(e.target.value)} className="h-12 px-4 rounded-2xl border border-slate-200 bg-white text-sm font-bold text-slate-700">
-              {yearsAvailable.map((year) => (
-                <option key={year} value={year}>{year}</option>
-              ))}
-            </select>
-            <select value={yearB} onChange={(e) => setYearB(e.target.value)} className="h-12 px-4 rounded-2xl border border-slate-200 bg-white text-sm font-bold text-slate-700">
-              {yearsAvailable.map((year) => (
-                <option key={year} value={year}>{year}</option>
-              ))}
-            </select>
-            <select value={monthFilter} onChange={(e) => setMonthFilter(e.target.value)} className="h-12 px-4 rounded-2xl border border-slate-200 bg-white text-sm font-bold text-slate-700">
-              <option value="0">Todos os meses</option>
-              {Object.entries(MONTH_FULL).map(([num, label]) => (
-                <option key={num} value={num}>{label}</option>
-              ))}
-            </select>
-            <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)} className="h-12 px-4 rounded-2xl border border-slate-200 bg-white text-sm font-bold text-slate-700 min-w-[170px]">
-              <option value="TODAS">Todas categorias</option>
-              {uniqueCategories.map((cat) => (
-                <option key={cat} value={cat}>{cat}</option>
-              ))}
-            </select>
-            <StoreSelector stores={uniqueStores} selectedStores={selectedStores} setSelectedStores={setSelectedStores} />
-            <button onClick={loadData} className="h-12 px-5 rounded-2xl bg-blue-700 text-white text-sm font-black flex items-center gap-2 shadow-lg hover:bg-blue-800">
-              <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> Atualizar
+          <div className="flex items-center bg-white border border-slate-200 px-3 py-2 rounded-lg gap-2 shadow-sm">
+            <Calendar size={14} className="text-blue-600" />
+            <input
+              type="date"
+              value={endDate}
+              onChange={(e) => setEndDate(e.target.value)}
+              className="bg-transparent text-xs font-bold text-slate-600 outline-none"
+            />
+          </div>
+
+          {(startDate || endDate) && (
+            <button
+              onClick={clearDates}
+              className="bg-white border border-slate-200 px-4 py-2 rounded-lg text-xs font-bold text-slate-500 hover:bg-slate-50 shadow-sm"
+            >
+              Limpar datas
             </button>
+          )}
+
+          <div className="flex items-center bg-white border border-slate-200 px-3 py-2 rounded-lg gap-2 shadow-sm">
+            <Calendar size={14} className="text-blue-600" />
+            <select
+              value={monthFilter}
+              onChange={(e) => setMonthFilter(e.target.value)}
+              className="bg-transparent text-xs font-bold text-slate-600 uppercase outline-none cursor-pointer"
+            >
+              <option value="0">Todos os meses</option>
+              {Object.entries(MONTH_FULL).map(([key, label]) => (
+                <option key={key} value={key}>{label}</option>
+              ))}
+            </select>
           </div>
+
+          <div className="flex items-center bg-white border border-slate-200 px-3 py-2 rounded-lg gap-2 shadow-sm">
+            <Layers size={14} className="text-blue-600" />
+            <select
+              value={categoryFilter}
+              onChange={(e) => setCategoryFilter(e.target.value)}
+              className="bg-transparent text-xs font-bold text-slate-600 uppercase outline-none cursor-pointer w-full md:w-auto max-w-[180px] truncate"
+            >
+              <option value="TODAS">Todas categorias</option>
+              {uniqueCategories.map((c) => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="relative" ref={storeMenuRef}>
+            <button
+              onClick={() => setIsStoreMenuOpen(!isStoreMenuOpen)}
+              className="flex items-center gap-2 bg-white border border-slate-200 px-4 py-2 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-50 transition-colors min-w-[170px] justify-between shadow-sm"
+            >
+              <div className="flex items-center gap-2">
+                <Store size={14} className="text-blue-600" />
+                <span className="truncate max-w-[120px] uppercase">
+                  {selectedStores.length === 0 ? 'Todas as lojas' : selectedStores.length === 1 ? selectedStores[0] : `${selectedStores.length} lojas`}
+                </span>
+              </div>
+              <ChevronDown size={14} className="text-slate-400" />
+            </button>
+
+            {isStoreMenuOpen && (
+              <div className="absolute top-full right-0 mt-2 w-64 bg-white rounded-xl shadow-xl border border-slate-100 z-50 p-2 max-h-80 overflow-y-auto">
+                <div
+                  onClick={() => setSelectedStores([])}
+                  className="flex items-center gap-3 p-3 hover:bg-slate-50 rounded-lg cursor-pointer border-b border-slate-50 mb-1"
+                >
+                  {selectedStores.length === 0 ? <CheckSquare size={16} className="text-blue-600" /> : <Square size={16} className="text-slate-300" />}
+                  <span className="text-xs font-bold text-slate-700 uppercase">Todas as lojas</span>
+                </div>
+
+                {uniqueStores.map((store) => (
+                  <div
+                    key={store}
+                    onClick={() => toggleStore(store)}
+                    className="flex items-center gap-3 p-3 hover:bg-slate-50 rounded-lg cursor-pointer"
+                  >
+                    {selectedStores.includes(store)
+                      ? <CheckSquare size={16} className="text-blue-600" />
+                      : <Square size={16} className="text-slate-300" />
+                    }
+                    <span className="text-xs font-bold text-slate-600 uppercase truncate">{store}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <button
+            onClick={loadData}
+            disabled={loading}
+            className="bg-[#1428A0] hover:bg-blue-900 text-white px-4 py-2 rounded-lg text-xs font-bold transition-all shadow-md shadow-blue-900/10 flex items-center gap-2 disabled:opacity-50"
+          >
+            <Filter size={14} /> {loading ? 'Atualizando...' : 'Atualizar'}
+          </button>
         </div>
       </div>
 
-      {errorMsg ? (
-        <div className="mb-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-600">
-          {errorMsg}
-        </div>
-      ) : null}
-
-      <div className="flex gap-3 mb-4">
-        <button onClick={() => setActiveTab('geral')} className={`px-5 h-11 rounded-2xl text-sm font-black uppercase tracking-tight shadow-sm ${activeTab === 'geral' ? 'bg-blue-700 text-white' : 'bg-white border border-slate-200 text-slate-600'}`}>
-          Visão geral
+      <div className="flex gap-2 mb-6">
+        <button
+          onClick={() => setActiveTab('geral')}
+          className={`px-5 py-2.5 rounded-lg text-xs font-bold uppercase transition-all flex items-center gap-2 ${activeTab === 'geral' ? 'bg-[#1428A0] text-white shadow-md' : 'bg-white text-slate-500 hover:bg-slate-50 border border-slate-200'}`}
+        >
+          <Activity size={16} /> Visão Geral
         </button>
-        <button onClick={() => setActiveTab('produtos')} className={`px-5 h-11 rounded-2xl text-sm font-black uppercase tracking-tight shadow-sm ${activeTab === 'produtos' ? 'bg-white border border-slate-900 text-slate-900' : 'bg-white border border-slate-200 text-slate-600'}`}>
-          Comparativo de produtos
+        <button
+          onClick={() => setActiveTab('produtos')}
+          className={`px-5 py-2.5 rounded-lg text-xs font-bold uppercase transition-all flex items-center gap-2 ${activeTab === 'produtos' ? 'bg-emerald-600 text-white shadow-md' : 'bg-white text-slate-500 hover:bg-slate-50 border border-slate-200'}`}
+        >
+          <Package size={16} /> Comparativo de Produtos
         </button>
       </div>
 
-      {activeTab === 'geral' ? (
+      {noData && !loading && !errorMsg && (
+        <div className="bg-yellow-50 border border-yellow-200 text-yellow-700 p-4 rounded-xl flex items-center gap-3 mb-6">
+          <AlertCircle size={20} />
+          <div className="text-sm font-bold">Nenhum dado encontrado com os filtros atuais.</div>
+        </div>
+      )}
+
+      {activeTab === 'geral' && (
         <>
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 mb-4">
-            <StatCard
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 mb-6">
+            <SmallMetricCard
               title={`Card 1 · ${yearA}`}
+              icon={<Calendar size={16} className="text-indigo-600" />}
               value={formatMoney(computed.totalA)}
-              subtitle={`${yearA} até ${monthLabel}: ${formatMoney(computed.totalAUntilCutoff)}`}
-              icon={<Calendar size={18} />}
-              accent="border-slate-200"
-              valueClass="text-indigo-700"
+              valueClass="text-indigo-900"
+              subtitle={`${computed.cutoffLabel}: ${formatMoney(computed.totalAUntilCurrentMonth)}`}
             />
-            <StatCard
+
+            <SmallMetricCard
               title={`Card 2 · ${yearB}`}
+              icon={<Store size={16} className="text-sky-600" />}
               value={formatMoney(computed.totalB)}
-              subtitle={`Melhor loja: ${computed.bestB.nome} • ${formatMoney(computed.bestB.total)}`}
-              icon={<Store size={18} />}
-              accent="border-slate-200"
-              valueClass="text-sky-600"
+              valueClass="text-sky-700"
+              subtitle={`Melhor loja: ${computed.bestB.nome}\n${formatMoney(computed.bestB.total)}`}
             />
-            <StatCard
+
+            <SmallMetricCard
               title={`Card 3 · Tendência ${yearB}`}
-              value={formatMoney(computed.yearForecast)}
-              subtitle={`Crescimento: ${computed.growthPct.toFixed(2)}%`}
-              icon={<TrendingUp size={18} />}
-              accent="border-slate-200"
-              valueClass="text-emerald-600"
+              icon={<TrendingUp size={16} className="text-emerald-600" />}
+              value={formatMoney(computed.localYearForecast)}
+              valueClass="text-emerald-700"
+              subtitle={`Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.toFixed(2)}%`}
             />
-            <StatCard
+
+            <SmallMetricCard
               title="Card 4 · Seguros"
-              value={formatMoney(computed.segurosYearB.total)}
-              subtitle={`Qtd. seguros: ${computed.segurosYearB.qtd.toLocaleString('pt-BR')}`}
-              icon={<ShieldCheck size={18} />}
-              accent="border-slate-200"
+              icon={<ShieldCheck size={16} className="text-fuchsia-600" />}
+              value={formatMoney(segurosComputed.yearB.total)}
               valueClass="text-fuchsia-600"
+              subtitle={`Qtd. seguros: ${Math.round(segurosComputed.yearB.qtd).toLocaleString('pt-BR')}`}
             />
-            <div className="bg-white rounded-[1.6rem] border border-slate-200 p-5 shadow-sm min-h-[126px]">
-              <div className="flex items-start justify-between gap-3 mb-3">
-                <div className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Card 5 · Categorias</div>
-                <BarChart3 size={18} className="text-slate-400" />
-              </div>
-              <div className="h-[86px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={computed.categoryMiniData} margin={{ top: 2, right: 0, left: 0, bottom: 0 }}>
-                    <Bar dataKey="value" radius={[8, 8, 0, 0]} fill="#2563eb" />
-                    <XAxis dataKey="name" hide />
-                    <Tooltip formatter={(v: any) => formatMoney(Number(v || 0))} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-              <div className="mt-2 text-[11px] font-bold text-slate-500 uppercase tracking-wide">Top categorias de {yearB}</div>
-            </div>
-            <div className="bg-white rounded-[1.6rem] border border-slate-200 p-5 shadow-sm min-h-[126px]">
-              <div className="flex items-start justify-between gap-3 mb-3">
-                <div className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Card 6 · Regiões</div>
-                <PieChartIcon size={18} className="text-slate-400" />
-              </div>
-              <div className="h-[86px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Pie data={computed.regionPieData} dataKey="value" nameKey="name" innerRadius={20} outerRadius={34} paddingAngle={2}>
-                      {computed.regionPieData.map((_, idx) => (
-                        <Cell key={idx} fill={PIE_COLORS[idx % PIE_COLORS.length]} />
-                      ))}
-                    </Pie>
-                    <Tooltip formatter={(v: any) => formatMoney(Number(v || 0))} />
-                  </PieChart>
-                </ResponsiveContainer>
-              </div>
-              <div className="mt-2 text-[11px] font-bold text-slate-500 uppercase tracking-wide">Distribuição de {yearB}</div>
-            </div>
+
+            <SmallMetricCard
+              title="Card 5 · Categorias"
+              icon={<BarChart3 size={16} className="text-slate-400" />}
+            >
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={categoryMiniData} margin={{ top: 10, right: 0, left: 0, bottom: 10 }}>
+                  <Bar dataKey="value" fill="#2563EB" radius={[6, 6, 0, 0]} />
+                  <Tooltip formatter={(value: any) => [formatMoney(Number(value) || 0), 'Faturamento']} />
+                </BarChart>
+              </ResponsiveContainer>
+              <div className="text-[10px] font-bold text-slate-500 uppercase mt-2">Top categorias de {yearB}</div>
+            </SmallMetricCard>
+
+            <SmallMetricCard
+              title="Card 6 · Regiões"
+              icon={<PieChart size={16} className="text-slate-400" />}
+            >
+              <ResponsiveContainer width="100%" height="100%">
+                <RechartsPieChart>
+                  <Pie
+                    data={regionPieData}
+                    dataKey="value"
+                    nameKey="name"
+                    innerRadius={28}
+                    outerRadius={42}
+                    paddingAngle={2}
+                  >
+                    {regionPieData.map((entry, index) => (
+                      <Cell key={`cell-${entry.name}`} fill={PIE_COLORS[index % PIE_COLORS.length]} />
+                    ))}
+                  </Pie>
+                  <Tooltip formatter={(value: any, _name: any, props: any) => [formatMoney(Number(value) || 0), props?.payload?.name || 'Região']} />
+                </RechartsPieChart>
+              </ResponsiveContainer>
+              <div className="text-[10px] font-bold text-slate-500 uppercase mt-2">Distribuição de {yearB}</div>
+            </SmallMetricCard>
           </div>
 
-          <div className="bg-white rounded-[2rem] border border-slate-200 p-5 shadow-sm mb-4">
-            <div className="flex items-center gap-2 mb-5">
-              <Activity size={16} className="text-blue-700" />
-              <h2 className="text-lg font-black uppercase tracking-tight">Vendas por mês ({yearA} x {yearB})</h2>
+          <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm h-[380px] mb-6">
+            <div className="flex items-center gap-2 mb-6">
+              <Activity size={16} className="text-indigo-600" />
+              <h3 className="font-black text-slate-700 uppercase text-xs">Vendas por Mês ({yearA} x {yearB})</h3>
             </div>
-            <div className="h-[360px]">
+
+            <div className="h-[300px] min-h-[300px] w-full min-w-0">
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={computed.chartData} margin={{ top: 12, right: 20, left: 10, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-                  <XAxis dataKey="mes" tick={{ fill: '#64748b', fontSize: 12, fontWeight: 700 }} axisLine={false} tickLine={false} />
-                  <YAxis tickFormatter={formatMoneyShort} tick={{ fill: '#64748b', fontSize: 12, fontWeight: 700 }} axisLine={false} tickLine={false} width={76} />
-                  <Tooltip
-                    cursor={{ fill: 'rgba(37,99,235,0.06)' }}
-                    formatter={(value: any, name: any) => [formatMoney(Number(value || 0)), String(name)]}
-                    labelFormatter={(label) => `Mês: ${label}`}
-                    contentStyle={{ borderRadius: 16, borderColor: '#cbd5e1' }}
+                <BarChart data={computed.chartData} margin={{ top: 10, right: 10, left: 10, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E2E8F0" />
+                  <XAxis
+                    dataKey="mes"
+                    tick={{ fontSize: 12, fontWeight: 'bold', fill: '#64748b' }}
+                    axisLine={false}
+                    tickLine={false}
                   />
-                  <Legend />
-                  <Bar dataKey={`${yearA} Real`} name={`${yearA} Real`} fill="#1d4ed8" radius={[10, 10, 0, 0]} />
-                  <Bar dataKey={`${yearB} Real`} name={`${yearB} Real (até agora)`} fill="#7dd3fc" radius={[10, 10, 0, 0]} />
-                  <Bar dataKey={`${yearB} Tendência restante`} name={`${yearB} Tendência restante`} stackId="trend" fill="#0f766e" radius={[10, 10, 0, 0]} />
+                  <YAxis tickFormatter={(value) => formatMoneyShort(Number(value))} tick={{ fontSize: 10, fill: '#94A3B8' }} axisLine={false} tickLine={false} />
+                  <Tooltip
+                    cursor={{ fill: '#F8FAFC' }}
+                    contentStyle={{ backgroundColor: '#0F172A', borderRadius: '10px', border: 'none', color: '#fff' }}
+                    formatter={(val: any, name: string) => [formatMoney(Number(val) || 0), chartLegendNameMap[name] || name]}
+                  />
+                  <Legend formatter={(value) => <span style={{ color: '#334155', fontWeight: 700 }}>{chartLegendNameMap[value] || value}</span>} />
+                  <Bar dataKey={yearA} name={chartLegendNameMap[yearA]} fill={CHART_COLORS.yearA} radius={[4, 4, 0, 0]}>
+                    <LabelList
+                      dataKey={yearA}
+                      position="top"
+                      formatter={(val: any) => (Number(val) > 0 ? formatMoneyShort(Number(val)) : '')}
+                      style={{ fontSize: '10px', fill: CHART_COLORS.yearA, fontWeight: 900 }}
+                    />
+                  </Bar>
+
+                  <Bar dataKey={`${yearB}_real`} name={chartLegendNameMap[`${yearB}_real`]} stackId="yearB" fill={CHART_COLORS.yearBReal} radius={[4, 4, 0, 0]} />
+                  <Bar dataKey={`${yearB}_proj`} name={chartLegendNameMap[`${yearB}_proj`]} stackId="yearB" fill={CHART_COLORS.yearBProjection} radius={[4, 4, 0, 0]}>
+                    <LabelList
+                      dataKey={(row: AnyRow) => (Number(row[`${yearB}_real`] || 0) + Number(row[`${yearB}_proj`] || 0))}
+                      position="top"
+                      formatter={(val: any) => (Number(val) > 0 ? formatMoneyShort(Number(val)) : '')}
+                      style={{ fontSize: '10px', fill: CHART_COLORS.yearBProjection, fontWeight: 900 }}
+                    />
+                  </Bar>
                 </BarChart>
               </ResponsiveContainer>
             </div>
           </div>
         </>
-      ) : (
-        <div className="bg-white rounded-[2rem] border border-slate-200 p-5 shadow-sm">
-          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
-            <div>
-              <h2 className="text-lg font-black uppercase tracking-tight">Comparativo de produtos</h2>
-              <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-slate-400">Baseada no ano {yearB} com os filtros aplicados</p>
+      )}
+
+      {activeTab === 'produtos' && (
+        <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-4">
+              <div className="p-3 bg-indigo-50 text-indigo-600 rounded-xl"><Package size={24} /></div>
+              <div className="overflow-hidden">
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest truncate">Mais vendido ({yearA})</p>
+                <h3 className="text-sm font-black text-slate-800 mt-1 truncate" title={topProductA?.desc}>{topProductA?.desc || 'N/D'}</h3>
+                <p className="text-xs text-indigo-600 font-bold mt-0.5">{topProductA ? formatMoney(topProductA.totalA) : 'R$ 0'}</p>
+              </div>
             </div>
-            <div className="h-12 px-4 rounded-2xl border border-slate-200 bg-white flex items-center gap-3 min-w-[280px]">
-              <Filter size={16} className="text-slate-400" />
-              <input
-                value={searchProduct}
-                onChange={(e) => setSearchProduct(e.target.value)}
-                placeholder="Buscar por produto ou categoria"
-                className="w-full bg-transparent outline-none text-sm font-semibold text-slate-700"
-              />
+
+            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-4">
+              <div className="p-3 bg-sky-50 text-sky-600 rounded-xl"><Package size={24} /></div>
+              <div className="overflow-hidden">
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest truncate">Mais vendido ({yearB})</p>
+                <h3 className="text-sm font-black text-slate-800 mt-1 truncate" title={topProductB?.desc}>{topProductB?.desc || 'N/D'}</h3>
+                <p className="text-xs text-sky-600 font-bold mt-0.5">{topProductB ? formatMoney(topProductB.totalB) : 'R$ 0'}</p>
+              </div>
+            </div>
+
+            <div className="bg-white p-5 rounded-2xl border border-emerald-100 shadow-sm flex items-center gap-4 relative overflow-hidden">
+              <div className="absolute top-0 right-0 p-4 opacity-5"><TrendingUp size={60} /></div>
+              <div className="p-3 bg-emerald-50 text-emerald-600 rounded-xl z-10"><ArrowUpRight size={24} /></div>
+              <div className="z-10 overflow-hidden">
+                <p className="text-[10px] font-black text-emerald-600/70 uppercase tracking-widest truncate">Destaque de crescimento</p>
+                <h3 className="text-sm font-black text-emerald-900 mt-1 truncate" title={maxGrowthProduct?.desc}>{maxGrowthProduct?.desc || 'N/D'}</h3>
+                <p className="text-xs text-emerald-600 font-bold mt-0.5">
+                  {maxGrowthProduct ? `${maxGrowthProduct.crescimentoPct > 0 ? '+' : ''}${maxGrowthProduct.crescimentoPct.toFixed(1)}% vs ano anterior` : '-'}
+                </p>
+              </div>
             </div>
           </div>
 
-          <div className="overflow-auto rounded-2xl border border-slate-200">
-            <table className="min-w-full text-sm">
-              <thead className="bg-slate-50 sticky top-0 z-10">
-                <tr>
-                  <th className="px-4 py-3 text-left text-[11px] font-black uppercase tracking-[0.16em] text-slate-500">Descrição</th>
-                  <th className="px-4 py-3 text-left text-[11px] font-black uppercase tracking-[0.16em] text-slate-500">Categoria</th>
-                  <th className="px-4 py-3 text-right text-[11px] font-black uppercase tracking-[0.16em] text-slate-500">Qtd.</th>
-                  <th className="px-4 py-3 text-right text-[11px] font-black uppercase tracking-[0.16em] text-slate-500">Faturamento</th>
-                </tr>
-              </thead>
-              <tbody>
-                {computed.groupedProducts.map((row: any, idx: number) => (
-                  <tr key={`${row.descricao}-${idx}`} className={idx % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}>
-                    <td className="px-4 py-3 font-black text-slate-900">{row.descricao}</td>
-                    <td className="px-4 py-3 font-semibold text-slate-600">{row.categoria}</td>
-                    <td className="px-4 py-3 text-right font-black text-slate-700">{row.quantidade.toLocaleString('pt-BR')}</td>
-                    <td className="px-4 py-3 text-right font-black text-blue-700">{formatMoney(row.faturamento)}</td>
-                  </tr>
-                ))}
-                {!computed.groupedProducts.length && (
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden flex flex-col">
+            <div className="p-4 border-b border-slate-100 flex flex-col sm:flex-row justify-between items-center bg-slate-50 gap-4">
+              <div className="flex items-center gap-2">
+                <Layers size={18} className="text-slate-500" />
+                <h3 className="font-black text-slate-700 uppercase text-xs">Ranking de Produtos</h3>
+              </div>
+
+              <div className="relative w-full sm:w-72">
+                <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  placeholder="Buscar modelo..."
+                  value={searchProduct}
+                  onChange={(e) => setSearchProduct(e.target.value)}
+                  className="w-full pl-9 pr-3 py-2 text-xs font-bold text-slate-700 bg-white border border-slate-200 rounded-lg outline-none focus:border-emerald-500 transition-colors uppercase shadow-sm"
+                />
+              </div>
+            </div>
+
+            <div className="overflow-x-auto max-h-[600px]">
+              <table className="w-full text-left border-collapse min-w-[800px]">
+                <thead className="sticky top-0 bg-slate-50 shadow-sm z-10 border-b border-slate-200">
                   <tr>
-                    <td colSpan={4} className="px-4 py-8 text-center text-sm font-semibold text-slate-400">
-                      Nenhum produto encontrado com os filtros atuais.
-                    </td>
+                    <th className="p-3 text-center text-[9px] font-black text-slate-400 uppercase">#</th>
+                    <th className="p-3 text-[9px] font-black text-slate-400 uppercase">Produto</th>
+                    <th className="p-3 text-center border-l border-slate-200 bg-indigo-50/30 text-indigo-800 text-[10px] font-black uppercase" colSpan={2}>
+                      {yearA}
+                    </th>
+                    <th className="p-3 text-center border-l border-slate-200 bg-sky-50/30 text-sky-800 text-[10px] font-black uppercase" colSpan={2}>
+                      {yearB}
+                    </th>
+                    <th className="p-3 text-right border-l border-slate-200 text-[9px] font-black text-slate-400 uppercase">
+                      Crescimento
+                    </th>
                   </tr>
-                )}
-              </tbody>
-            </table>
+                  <tr className="text-[9px] font-black text-slate-400 uppercase tracking-wider bg-white">
+                    <th></th>
+                    <th></th>
+                    <th className="p-2 text-center border-l border-slate-100">Qtd</th>
+                    <th className="p-2 text-right border-r border-slate-100">Valor (R$)</th>
+                    <th className="p-2 text-center">Qtd</th>
+                    <th className="p-2 text-right border-r border-slate-100">Valor (R$)</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody className="text-xs font-bold text-slate-700 divide-y divide-slate-50">
+                  {searchedProducts.map((p, i) => {
+                    const isPositive = p.crescimentoPct > 0;
+                    const isNegative = p.crescimentoPct < 0;
+                    const isNeutral = p.crescimentoPct === 0;
+
+                    return (
+                      <tr key={`${p.desc}-${i}`} className="hover:bg-slate-50/80 transition-colors group">
+                        <td className="p-3 text-center">
+                          <span className={`w-5 h-5 flex items-center justify-center rounded mx-auto text-[9px] ${i < 3 ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-500'}`}>
+                            {i + 1}
+                          </span>
+                        </td>
+                        <td className="p-3 uppercase text-[10px] max-w-[200px] truncate" title={p.desc}>{p.desc}</td>
+                        <td className="p-3 text-center border-l border-slate-50 text-slate-500 bg-indigo-50/10 group-hover:bg-indigo-50/30 transition-colors">{p.qtdA}</td>
+                        <td className="p-3 text-right font-mono text-indigo-700 bg-indigo-50/10 group-hover:bg-indigo-50/30 transition-colors">{formatMoney(p.totalA)}</td>
+                        <td className="p-3 text-center border-l border-slate-50 bg-sky-50/10 group-hover:bg-sky-50/30 transition-colors">{p.qtdB}</td>
+                        <td className="p-3 text-right font-mono text-sky-700 font-black bg-sky-50/10 group-hover:bg-sky-50/30 transition-colors">{formatMoney(p.totalB)}</td>
+                        <td className="p-3 text-right border-l border-slate-50">
+                          <div className="flex justify-end">
+                            <div className={`flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-black ${
+                              isPositive ? 'bg-emerald-100 text-emerald-700' :
+                              isNegative ? 'bg-red-100 text-red-700' :
+                              'bg-slate-100 text-slate-500'
+                            }`}>
+                              {isPositive && <ArrowUpRight size={12} />}
+                              {isNegative && <ArrowDownRight size={12} />}
+                              {isNeutral && <Minus size={12} />}
+                              {isFinite(p.crescimentoPct) ? `${p.crescimentoPct > 0 ? '+' : ''}${p.crescimentoPct.toFixed(1)}%` : 'NOVO'}
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+
+                  {searchedProducts.length === 0 && (
+                    <tr>
+                      <td colSpan={7} className="p-10 text-center text-slate-400 text-sm font-bold">
+                        Nenhum produto encontrado com os filtros atuais.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       )}
