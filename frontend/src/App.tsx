@@ -22,14 +22,25 @@ import AuditoriaLojas from './components/AuditoriaLojas';
 import EstoqueDetalhado from './components/EstoqueDetalhado';
 import SolicitacoesModule from './components/SolicitacoesModule';
 import Stockout from './components/StockOut';
-import SacolasModule from './components/SacolasModule';
 import ComparativosModule from './components/ComparativosModule';
+// IMPORTAÇÃO DO SEU NOVO MÓDULO (Ajuste o caminho/nome se precisar)
+import ComprasVendas from './components/ComprasVendas'; 
+
 import {
   FileText, CheckCircle, LayoutDashboard, Users, LogOut,
-  Calendar, BarChart3, ChevronDown, ChevronRight, Circle, Plus,
+  Calendar, BarChart3, ChevronDown, ChevronRight, ChevronLeft, Circle, Plus,
   TrendingUp, Home as HomeIcon, MessageSquare, DollarSign,
   Package, Menu, X, Tag
 } from 'lucide-react';
+
+const DEFAULT_EXPANDED = {
+  general: false,
+  mine: false,
+  info: false,
+  stock: false,
+  sales: false,
+  finance: false,
+};
 
 function App() {
   const [user, setUser] = useState<any>(null);
@@ -38,18 +49,25 @@ function App() {
   const [selectedTask, setSelectedTask] = useState<any>(null);
   const [isUserModalOpen, setIsUserModalOpen] = useState(false);
   const [isNewTaskModalOpen, setIsNewTaskModalOpen] = useState(false);
-
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-
-  const [expanded, setExpanded] = useState({ general: false, mine: true, info: false, stock: false, sales: false, finance: false });
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [expanded, setExpanded] = useState(DEFAULT_EXPANDED);
 
   useEffect(() => {
+    try {
+      const savedCollapsed = localStorage.getItem('telefluxo_sidebar_collapsed');
+      if (savedCollapsed === 'true') setIsSidebarCollapsed(true);
+    } catch (e) {
+      console.error(e);
+    }
+
     const savedUser = localStorage.getItem('telefluxo_user');
     if (savedUser && savedUser !== "undefined") {
       try {
         const parsedUser = JSON.parse(savedUser);
         setUser(parsedUser);
         setCurrentView('home');
+        setExpanded(DEFAULT_EXPANDED);
       } catch (e) {
         localStorage.removeItem('telefluxo_user');
       }
@@ -63,7 +81,14 @@ function App() {
     return () => window.removeEventListener('openNewTaskModal', handleOpenModal);
   }, []);
 
-  // --- LÓGICA DE PERMISSÕES (RBAC) ---
+  useEffect(() => {
+    try {
+      localStorage.setItem('telefluxo_sidebar_collapsed', String(isSidebarCollapsed));
+    } catch (e) {
+      console.error(e);
+    }
+  }, [isSidebarCollapsed]);
+
   const userRole = user?.role || '';
   const isAdmin = user?.isAdmin === true || Number(user?.isAdmin) === 1;
   const isManager = user?.role?.toLowerCase().includes('gerente') || user?.role?.toLowerCase().includes('gestor');
@@ -72,43 +97,103 @@ function App() {
   const canViewStock = ['CEO', 'DIRETOR', 'LOJA'].includes(userRole) || isAdmin;
   const canViewFinance = ['CEO', 'DIRETOR', 'ADM'].includes(userRole) || isAdmin;
   const canViewTeam = ['CEO', 'DIRETOR', 'ADM'].includes(userRole) || isAdmin;
-
+  const canViewComparativos = userRole === 'ADM' || isAdmin;
   const isStoreOnly = userRole === 'LOJA';
-  // -----------------------------------
 
-  const handleLogout = () => { localStorage.clear(); window.location.reload(); };
+  const handleLogout = () => {
+    localStorage.clear();
+    window.location.reload();
+  };
 
   const handleNavigate = (view: string) => {
     setCurrentView(view);
     setIsMobileMenuOpen(false);
   };
 
+  const resetExpandedMenus = () => setExpanded(DEFAULT_EXPANDED);
+
+  const handleSectionToggle = (key: keyof typeof DEFAULT_EXPANDED) => {
+    if (isSidebarCollapsed) {
+      setIsSidebarCollapsed(false);
+      setExpanded({ ...DEFAULT_EXPANDED, [key]: true });
+      return;
+    }
+
+    setExpanded((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const toggleSidebarCollapse = () => {
+    setIsSidebarCollapsed((prev) => !prev);
+  };
+
   const viewTitles: Record<string, string> = {
     finance: 'CONTAS A PAGAR E RECEBER',
     controle_stone: 'CONCILIAÇÃO STONE',
     comparativos_pdf: 'COMPARATIVOS',
+    comparativo: 'VENDAS ANUAIS',
+    compras_vendas: 'COMPRAS X VENDAS', // ADICIONADO PARA O HEADER
   };
 
   const currentViewLabel = viewTitles[currentView] || currentView.replace(/_/g, ' ').toUpperCase();
-  const canViewComparativos = userRole === 'ADM' || isAdmin;
 
-  if (isLoading) return <div className="h-screen bg-slate-900 flex items-center justify-center text-white font-black uppercase tracking-widest animate-pulse">Iniciando TeleFluxo...</div>;
+  if (isLoading) {
+    return (
+      <div className="h-screen bg-slate-900 flex items-center justify-center text-white font-black uppercase tracking-widest animate-pulse">
+        Iniciando TeleFluxo...
+      </div>
+    );
+  }
 
-  if (!user) return <Login onLogin={(data: any) => {
-    setUser(data);
-    localStorage.setItem('telefluxo_user', JSON.stringify(data));
-    setCurrentView('home');
-  }} />;
+  if (!user) {
+    return (
+      <Login
+        onLogin={(data: any) => {
+          setUser(data);
+          localStorage.setItem('telefluxo_user', JSON.stringify(data));
+          setCurrentView('home');
+          setExpanded(DEFAULT_EXPANDED);
+        }}
+      />
+    );
+  }
 
-  const SubMenuItem = ({ label, view, active }: any) => (
-    <div onClick={() => handleNavigate(view)} className={`pl-12 pr-4 py-2 cursor-pointer flex items-center gap-2 text-[11px] font-black uppercase tracking-tighter transition-all hover:text-white ${active ? 'text-orange-500' : 'text-slate-500'}`}>
-      <Circle size={6} fill={active ? "currentColor" : "transparent"} /> {label}
+  const SubMenuItem = ({ label, view, active }: any) => {
+    if (isSidebarCollapsed) return null;
+
+    return (
+      <div
+        onClick={() => handleNavigate(view)}
+        className={`pl-12 pr-4 py-2 cursor-pointer flex items-center gap-2 text-[11px] font-black uppercase tracking-tighter transition-all hover:text-white ${active ? 'text-orange-500' : 'text-slate-500'}`}
+      >
+        <Circle size={6} fill={active ? "currentColor" : "transparent"} /> {label}
+      </div>
+    );
+  };
+
+  const NavButton = ({
+    icon: Icon,
+    label,
+    active,
+    onClick,
+    hasChevron = false,
+    chevronOpen = false,
+    customClass = '',
+  }: any) => (
+    <div
+      onClick={onClick}
+      title={label}
+      className={`p-3 rounded-xl cursor-pointer flex items-center ${isSidebarCollapsed ? 'justify-center' : 'justify-between'} transition-all ${active ? customClass : 'text-slate-400 hover:bg-slate-800'}`}
+    >
+      <div className={`flex items-center gap-3 font-bold text-sm ${isSidebarCollapsed ? 'justify-center' : ''}`}>
+        <Icon size={18} />
+        {!isSidebarCollapsed && <span>{label}</span>}
+      </div>
+      {!isSidebarCollapsed && hasChevron && (chevronOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />)}
     </div>
   );
 
   return (
     <div className="flex h-screen bg-slate-50 font-sans text-slate-800 overflow-hidden">
-
       {isMobileMenuOpen && (
         <div
           className="fixed inset-0 bg-black/60 z-30 md:hidden backdrop-blur-sm transition-opacity"
@@ -116,34 +201,56 @@ function App() {
         />
       )}
 
-      <aside className={`
-          fixed inset-y-0 left-0 z-40 w-64 bg-slate-900 text-white flex flex-col shadow-2xl transition-transform duration-300 ease-in-out
+      <aside
+        className={`
+          fixed inset-y-0 left-0 z-40 ${isSidebarCollapsed ? 'md:w-[92px]' : 'md:w-64'} w-64 bg-slate-900 text-white flex flex-col shadow-2xl transition-all duration-300 ease-in-out
           md:relative md:translate-x-0
           ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'}
-      `}>
-        <div className="p-6 text-xl font-bold border-b border-slate-800 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 bg-orange-600 rounded text-white flex items-center justify-center font-black italic shadow-lg">T</div>
-            <span className="tracking-tighter font-black">TELE<span className="text-orange-500">FLUXO</span></span>
+        `}
+      >
+        <div className={`border-b border-slate-800 flex items-center justify-between ${isSidebarCollapsed ? 'p-4' : 'p-6'}`}>
+          <div className={`flex items-center gap-2 ${isSidebarCollapsed ? 'justify-center w-full md:w-auto' : ''}`}>
+            <div className="w-8 h-8 bg-orange-600 rounded text-white flex items-center justify-center font-black italic shadow-lg shrink-0">T</div>
+            {!isSidebarCollapsed && (
+              <span className="tracking-tighter font-black">TELE<span className="text-orange-500">FLUXO</span></span>
+            )}
           </div>
-          <button onClick={() => setIsMobileMenuOpen(false)} className="md:hidden text-slate-400 hover:text-white">
-            <X size={24} />
-          </button>
+
+          <div className="flex items-center gap-2">
+            <button
+              onClick={toggleSidebarCollapse}
+              title={isSidebarCollapsed ? 'Expandir menu' : 'Recolher menu'}
+              className="hidden md:flex text-slate-400 hover:text-white transition-colors"
+            >
+              {isSidebarCollapsed ? <ChevronRight size={20} /> : <ChevronLeft size={20} />}
+            </button>
+            <button onClick={() => setIsMobileMenuOpen(false)} className="md:hidden text-slate-400 hover:text-white">
+              <X size={24} />
+            </button>
+          </div>
         </div>
 
-        <nav className="flex-1 p-4 space-y-1 mt-2 overflow-y-auto custom-scrollbar">
-
-          <div onClick={() => handleNavigate('home')} className={`p-3 rounded-xl cursor-pointer flex items-center gap-3 font-bold text-sm transition-all ${currentView === 'home' ? 'bg-orange-600 text-white shadow-lg' : 'text-slate-400 hover:bg-slate-800'}`}>
-            <HomeIcon size={18} /> Início
-          </div>
+        <nav className={`flex-1 ${isSidebarCollapsed ? 'p-3' : 'p-4'} space-y-1 mt-2 overflow-y-auto custom-scrollbar`}>
+          <NavButton
+            icon={HomeIcon}
+            label="Início"
+            active={currentView === 'home'}
+            onClick={() => handleNavigate('home')}
+            customClass="bg-orange-600 text-white shadow-lg"
+          />
 
           {(isAdmin || isManager) && !isStoreOnly && (
             <div>
-              <div onClick={() => setExpanded({ ...expanded, general: !expanded.general })} className={`p-3 rounded-xl cursor-pointer flex items-center justify-between transition-all ${currentView.startsWith('all') ? 'bg-slate-800 text-white' : 'text-slate-400 hover:bg-slate-800'}`}>
-                <div className="flex gap-3 items-center font-bold text-sm"><LayoutDashboard size={18} /> Visão Geral</div>
-                {expanded.general ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-              </div>
-              {expanded.general && (
+              <NavButton
+                icon={LayoutDashboard}
+                label="Visão Geral"
+                active={currentView.startsWith('all')}
+                onClick={() => handleSectionToggle('general')}
+                hasChevron
+                chevronOpen={expanded.general}
+                customClass="bg-slate-800 text-white"
+              />
+              {expanded.general && !isSidebarCollapsed && (
                 <div className="mt-1 space-y-1">
                   <SubMenuItem label="Total" view="all" active={currentView === 'all'} />
                   <SubMenuItem label="Pendentes" view="all_pending" active={currentView === 'all_pending'} />
@@ -155,11 +262,16 @@ function App() {
           )}
 
           <div>
-            <div onClick={() => setExpanded({ ...expanded, mine: !expanded.mine })} className={`p-3 rounded-xl cursor-pointer flex items-center justify-between transition-all ${currentView.startsWith('mine_') ? 'bg-slate-800 text-white' : 'text-slate-400 hover:bg-slate-800'}`}>
-              <div className="flex gap-3 items-center font-bold text-sm"><FileText size={18} /> Minhas Demandas</div>
-              {expanded.mine ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-            </div>
-            {expanded.mine && (
+            <NavButton
+              icon={FileText}
+              label="Minhas Demandas"
+              active={currentView.startsWith('mine_')}
+              onClick={() => handleSectionToggle('mine')}
+              hasChevron
+              chevronOpen={expanded.mine}
+              customClass="bg-slate-800 text-white"
+            />
+            {expanded.mine && !isSidebarCollapsed && (
               <div className="mt-1 space-y-1">
                 <SubMenuItem label="Pendentes" view="mine_pending" active={currentView === 'mine_pending'} />
                 <SubMenuItem label="Em Tratativa" view="mine_doing" active={currentView === 'mine_doing'} />
@@ -168,17 +280,25 @@ function App() {
             )}
           </div>
 
-          <div onClick={() => handleNavigate('completed')} className={`p-3 rounded-xl cursor-pointer flex gap-3 font-bold text-sm transition-all ${currentView === 'completed' ? 'bg-orange-600 text-white shadow-lg' : 'text-slate-400 hover:bg-slate-800'}`}>
-            <CheckCircle size={18} /> Histórico Geral
-          </div>
+          <NavButton
+            icon={CheckCircle}
+            label="Histórico Geral"
+            active={currentView === 'completed'}
+            onClick={() => handleNavigate('completed')}
+            customClass="bg-orange-600 text-white shadow-lg"
+          />
 
           <div>
-            <div onClick={() => setExpanded({ ...expanded, info: !expanded.info })} className={`p-3 rounded-xl cursor-pointer flex items-center justify-between transition-all ${currentView.startsWith('dept_') ? 'bg-slate-800 text-white' : 'text-slate-400 hover:bg-slate-800'}`}>
-              <div className="flex gap-3 items-center font-bold text-sm"><MessageSquare size={18} /> Informativos</div>
-              {expanded.info ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-            </div>
-
-            {expanded.info && (
+            <NavButton
+              icon={MessageSquare}
+              label="Informativos"
+              active={currentView.startsWith('dept_')}
+              onClick={() => handleSectionToggle('info')}
+              hasChevron
+              chevronOpen={expanded.info}
+              customClass="bg-slate-800 text-white"
+            />
+            {expanded.info && !isSidebarCollapsed && (
               <div className="mt-1 space-y-1">
                 {(isAdmin || isManager) ? (
                   <>
@@ -200,41 +320,30 @@ function App() {
           </div>
 
           {canViewComparativos && (
-            <div
+            <NavButton
+              icon={BarChart3}
+              label="Comparativos"
+              active={currentView === 'comparativos_pdf'}
               onClick={() => handleNavigate('comparativos_pdf')}
-              className={`p-3 rounded-xl cursor-pointer flex items-center gap-3 font-bold text-sm transition-all ${currentView === 'comparativos_pdf' ? 'bg-slate-800 text-white shadow-lg' : 'text-slate-400 hover:bg-slate-800'}`}
-            >
-              <BarChart3 size={18} /> Comparativos
-            </div>
+              customClass="bg-slate-800 text-white shadow-lg"
+            />
           )}
 
           {canViewFinance && (
             <div>
-              <div
-                onClick={() => setExpanded({ ...expanded, finance: !expanded.finance })}
-                className={`p-3 rounded-xl cursor-pointer flex items-center justify-between transition-all ${['finance', 'controle_stone'].includes(currentView) ? 'bg-emerald-600 text-white shadow-lg' : 'text-slate-400 hover:bg-slate-800'}`}
-              >
-                <div className="flex gap-3 items-center font-bold text-sm">
-                  <DollarSign size={18} /> Controle Financeiro
-                </div>
-                {expanded.finance ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-              </div>
-
-              {expanded.finance && (
+              <NavButton
+                icon={DollarSign}
+                label="Controle Financeiro"
+                active={['finance', 'controle_stone'].includes(currentView)}
+                onClick={() => handleSectionToggle('finance')}
+                hasChevron
+                chevronOpen={expanded.finance}
+                customClass="bg-emerald-600 text-white shadow-lg"
+              />
+              {expanded.finance && !isSidebarCollapsed && (
                 <div className="mt-1 space-y-1">
-                  <div
-                    onClick={() => handleNavigate('finance')}
-                    className={`pl-12 pr-4 py-2 cursor-pointer flex items-center gap-2 text-[11px] font-black uppercase tracking-tighter transition-all hover:text-white ${currentView === 'finance' ? 'text-orange-500' : 'text-slate-500'}`}
-                  >
-                    <Circle size={6} fill={currentView === 'finance' ? "currentColor" : "transparent"} /> Contas a pagar e receber
-                  </div>
-
-                  <div
-                    onClick={() => handleNavigate('controle_stone')}
-                    className={`pl-12 pr-4 py-2 cursor-pointer flex items-center gap-2 text-[11px] font-black uppercase tracking-tighter transition-all hover:text-white ${currentView === 'controle_stone' ? 'text-orange-500' : 'text-slate-500'}`}
-                  >
-                    <Circle size={6} fill={currentView === 'controle_stone' ? "currentColor" : "transparent"} /> Conciliação Stone
-                  </div>
+                  <SubMenuItem label="Contas a pagar e receber" view="finance" active={currentView === 'finance'} />
+                  <SubMenuItem label="Conciliação Stone" view="controle_stone" active={currentView === 'controle_stone'} />
                 </div>
               )}
             </div>
@@ -242,152 +351,122 @@ function App() {
 
           {canViewStock && (
             <div>
-              <div
-                onClick={() => setExpanded({ ...expanded, stock: !expanded.stock })}
-                className={`p-3 rounded-xl cursor-pointer flex items-center justify-between transition-all ${['stock', 'estoque_vendas', 'estoque_inteligente', 'auditoria_lojas', 'estoque_detalhado', 'stockout', 'sacolas'].includes(currentView) ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:bg-slate-800'}`}
-              >
-                <div className="flex gap-3 items-center font-bold text-sm">
-                  <Package size={18} /> Controle de Estoque
-                </div>
-                {expanded.stock ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-              </div>
-
-              {expanded.stock && (
+              <NavButton
+                icon={Package}
+                label="Controle de Estoque"
+                // ADICIONADO compras_vendas NA ARRAY ACTIVE
+                active={['stock', 'estoque_vendas', 'estoque_inteligente', 'auditoria_lojas', 'estoque_detalhado', 'stockout', 'compras_vendas'].includes(currentView)}
+                onClick={() => handleSectionToggle('stock')}
+                hasChevron
+                chevronOpen={expanded.stock}
+                customClass="bg-indigo-600 text-white shadow-lg"
+              />
+              {expanded.stock && !isSidebarCollapsed && (
                 <div className="mt-1 space-y-1">
-                  <div
-                    onClick={() => handleNavigate('stock')}
-                    className={`pl-12 pr-4 py-2 cursor-pointer flex items-center gap-2 text-[11px] font-black uppercase tracking-tighter transition-all hover:text-white ${currentView === 'stock' ? 'text-orange-500' : 'text-slate-500'}`}
-                  >
-                    <Circle size={6} fill={currentView === 'stock' ? "currentColor" : "transparent"} /> Visão Geral
-                  </div>
+                  <SubMenuItem label="Visão Geral" view="stock" active={currentView === 'stock'} />
+                  <SubMenuItem label="Visão Detalhada" view="estoque_detalhado" active={currentView === 'estoque_detalhado'} />
+                  <SubMenuItem label="Estoque x Vendas" view="estoque_vendas" active={currentView === 'estoque_vendas'} />
+                  
+                  {/* NOVO MENU APENAS PARA ADMINISTRADOR */}
+                  {isAdmin && (
+                    <SubMenuItem label="Compras x Vendas" view="compras_vendas" active={currentView === 'compras_vendas'} />
+                  )}
 
-                  <div
-                    onClick={() => handleNavigate('estoque_detalhado')}
-                    className={`pl-12 pr-4 py-2 cursor-pointer flex items-center gap-2 text-[11px] font-black uppercase tracking-tighter transition-all hover:text-white ${currentView === 'estoque_detalhado' ? 'text-orange-500' : 'text-slate-500'}`}
-                  >
-                    <Circle size={6} fill={currentView === 'estoque_detalhado' ? "currentColor" : "transparent"} /> Visão Detalhada
+                  <SubMenuItem label="Estoque Inteligente" view="estoque_inteligente" active={currentView === 'estoque_inteligente'} />
+                  <SubMenuItem label="Stockout" view="stockout" active={currentView === 'stockout'} />
+                  <SubMenuItem label="Auditoria Lojas" view="auditoria_lojas" active={currentView === 'auditoria_lojas'} />
                   </div>
-
-                  <div
-                    onClick={() => handleNavigate('estoque_vendas')}
-                    className={`pl-12 pr-4 py-2 cursor-pointer flex items-center gap-2 text-[11px] font-black uppercase tracking-tighter transition-all hover:text-white ${currentView === 'estoque_vendas' ? 'text-orange-500' : 'text-slate-500'}`}
-                  >
-                    <Circle size={6} fill={currentView === 'estoque_vendas' ? "currentColor" : "transparent"} /> Estoque x Vendas
-                  </div>
-
-                  <div
-                    onClick={() => handleNavigate('estoque_inteligente')}
-                    className={`pl-12 pr-4 py-2 cursor-pointer flex items-center gap-2 text-[11px] font-black uppercase tracking-tighter transition-all hover:text-white ${currentView === 'estoque_inteligente' ? 'text-orange-500' : 'text-slate-500'}`}
-                  >
-                    <Circle size={6} fill={currentView === 'estoque_inteligente' ? "currentColor" : "transparent"} /> Estoque Inteligente
-                  </div>
-
-                  <div
-                    onClick={() => handleNavigate('stockout')}
-                    className={`pl-12 pr-4 py-2 cursor-pointer flex items-center gap-2 text-[11px] font-black uppercase tracking-tighter transition-all hover:text-white ${currentView === 'stockout' ? 'text-orange-500' : 'text-slate-500'}`}
-                  >
-                    <Circle size={6} fill={currentView === 'stockout' ? "currentColor" : "transparent"} /> Stockout
-                  </div>
-
-                  <div
-                    onClick={() => handleNavigate('auditoria_lojas')}
-                    className={`pl-12 pr-4 py-2 cursor-pointer flex items-center gap-2 text-[11px] font-black uppercase tracking-tighter transition-all hover:text-white ${currentView === 'auditoria_lojas' ? 'text-orange-500' : 'text-slate-500'}`}
-                  >
-                    <Circle size={6} fill={currentView === 'auditoria_lojas' ? "currentColor" : "transparent"} /> Auditoria Lojas
-                  </div>
-
-                  <div
-                    onClick={() => handleNavigate('sacolas')}
-                    className={`pl-12 pr-4 py-2 cursor-pointer flex items-center gap-2 text-[11px] font-black uppercase tracking-tighter transition-all hover:text-white ${currentView === 'sacolas' ? 'text-orange-500' : 'text-slate-500'}`}
-                  >
-                    <Circle size={6} fill={currentView === 'sacolas' ? "currentColor" : "transparent"} /> Sacolas
-                  </div>
-                </div>
               )}
             </div>
           )}
 
           {canViewSales && (
             <div>
-              <div
-                onClick={() => setExpanded({ ...expanded, sales: !expanded.sales })}
-                className={`p-3 rounded-xl cursor-pointer flex items-center justify-between transition-all ${['sales_dash', 'comparativo'].includes(currentView) ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-400 hover:bg-slate-800'}`}
-              >
-                <div className="flex gap-3 items-center font-bold text-sm">
-                  <TrendingUp size={18} /> Controle de Vendas
-                </div>
-                {expanded.sales ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-              </div>
-
-              {expanded.sales && (
+              <NavButton
+                icon={TrendingUp}
+                label="Controle de Vendas"
+                active={['sales_dash', 'comparativo'].includes(currentView)}
+                onClick={() => handleSectionToggle('sales')}
+                hasChevron
+                chevronOpen={expanded.sales}
+                customClass="bg-blue-600 text-white shadow-lg"
+              />
+              {expanded.sales && !isSidebarCollapsed && (
                 <div className="mt-1 space-y-1">
-                  <div
-                    onClick={() => handleNavigate('sales_dash')}
-                    className={`pl-12 pr-4 py-2 cursor-pointer flex items-center gap-2 text-[11px] font-black uppercase tracking-tighter transition-all hover:text-white ${currentView === 'sales_dash' ? 'text-orange-500' : 'text-slate-500'}`}
-                  >
-                    <Circle size={6} fill={currentView === 'sales_dash' ? "currentColor" : "transparent"} /> Vendas Mensal
-                  </div>
-
-                  <div
-                    onClick={() => handleNavigate('comparativo')}
-                    className={`pl-12 pr-4 py-2 cursor-pointer flex items-center gap-2 text-[11px] font-black uppercase tracking-tighter transition-all hover:text-white ${currentView === 'comparativo' ? 'text-orange-500' : 'text-slate-500'}`}
-                  >
-                    <Circle size={6} fill={currentView === 'comparativo' ? "currentColor" : "transparent"} /> Comparativo Anual
-                  </div>
+                  <SubMenuItem label="Vendas Mensal" view="sales_dash" active={currentView === 'sales_dash'} />
+                  <SubMenuItem label="Vendas anuais" view="comparativo" active={currentView === 'comparativo'} />
                 </div>
               )}
             </div>
           )}
 
           {canViewSales && (
-            <div
+            <NavButton
+              icon={Tag}
+              label="Tabelas de Preço"
+              active={currentView === 'price_table'}
               onClick={() => handleNavigate('price_table')}
-              className={`p-3 rounded-xl cursor-pointer flex items-center gap-3 font-bold text-sm transition-all ${currentView === 'price_table' ? 'bg-indigo-500 text-white shadow-lg' : 'text-slate-400 hover:bg-slate-800'}`}
-            >
-              <Tag size={18} /> Tabelas de Preço
-            </div>
+              customClass="bg-indigo-500 text-white shadow-lg"
+            />
           )}
 
-          <div onClick={() => handleNavigate('agenda')} className={`p-3 rounded-xl cursor-pointer flex items-center gap-3 font-bold text-sm transition-all ${currentView === 'agenda' ? 'bg-orange-600 text-white shadow-lg' : 'text-slate-400 hover:bg-slate-800'}`}>
-            <Calendar size={18} /> Agenda Pessoal
-          </div>
+          <NavButton
+            icon={Calendar}
+            label="Agenda Pessoal"
+            active={currentView === 'agenda'}
+            onClick={() => handleNavigate('agenda')}
+            customClass="bg-orange-600 text-white shadow-lg"
+          />
 
           {(isAdmin || isManager) && (
-            <>
-              <div onClick={() => handleNavigate('manager_dash')} className={`p-3 rounded-xl cursor-pointer flex items-center gap-3 font-bold text-sm transition-all ${currentView === 'manager_dash' ? 'bg-orange-600 text-white shadow-lg' : 'text-slate-400 hover:bg-slate-800'}`}>
-                <BarChart3 size={18} /> Produtividade Equipe
-              </div>
-            </>
+            <NavButton
+              icon={BarChart3}
+              label="Produtividade Equipe"
+              active={currentView === 'manager_dash'}
+              onClick={() => handleNavigate('manager_dash')}
+              customClass="bg-orange-600 text-white shadow-lg"
+            />
           )}
 
-           <div
-              onClick={() => handleNavigate('solicitacoes')}
-              className={`p-3 rounded-xl cursor-pointer flex items-center gap-3 font-bold text-sm transition-all ${
-                currentView === 'solicitacoes'
-                  ? 'bg-fuchsia-600 text-white shadow-lg'
-                  : 'text-slate-400 hover:bg-slate-800'
-              }`}
->
-            <MessageSquare size={18} /> Solicitações
-          </div>
+          <NavButton
+            icon={MessageSquare}
+            label="Solicitações"
+            active={currentView === 'solicitacoes'}
+            onClick={() => handleNavigate('solicitacoes')}
+            customClass="bg-fuchsia-600 text-white shadow-lg"
+          />
 
           {canViewTeam && (
-            <div className="pt-4 mt-4 border-t border-slate-800">
-              <p className="px-3 text-[10px] font-black text-slate-500 uppercase mb-2 tracking-widest">Configurações</p>
-              <div onClick={() => handleNavigate('team')} className={`p-3 rounded-xl cursor-pointer flex gap-3 font-bold text-sm transition-all ${currentView === 'team' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:bg-slate-800'}`}>
-                <Users size={18} /> Equipe
-              </div>
+            <div className={`pt-4 mt-4 border-t border-slate-800 ${isSidebarCollapsed ? 'px-0' : ''}`}>
+              {!isSidebarCollapsed && (
+                <p className="px-3 text-[10px] font-black text-slate-500 uppercase mb-2 tracking-widest">Configurações</p>
+              )}
+              <NavButton
+                icon={Users}
+                label="Equipe"
+                active={currentView === 'team'}
+                onClick={() => handleNavigate('team')}
+                customClass="bg-slate-800 text-white"
+              />
             </div>
           )}
         </nav>
 
-        <div className="p-4 border-t border-slate-800 flex items-center gap-3 bg-slate-950/20">
-          <div className="w-10 h-10 rounded-full bg-orange-600 flex items-center justify-center text-sm font-black border-2 border-slate-700 shadow-inner shrink-0">{user?.name?.charAt(0)}</div>
-          <div className="flex-1 overflow-hidden">
-            <span className="text-sm font-bold truncate block uppercase tracking-tighter">{user?.name}</span>
-            <span className="text-[9px] text-slate-500 font-black uppercase truncate block tracking-widest italic">{user?.role}</span>
+        <div className={`border-t border-slate-800 bg-slate-950/20 ${isSidebarCollapsed ? 'p-3 flex justify-center' : 'p-4 flex items-center gap-3'}`}>
+          <div className="w-10 h-10 rounded-full bg-orange-600 flex items-center justify-center text-sm font-black border-2 border-slate-700 shadow-inner shrink-0">
+            {user?.name?.charAt(0)}
           </div>
-          <button onClick={handleLogout} className="text-slate-500 hover:text-red-500"><LogOut size={18} /></button>
+
+          {!isSidebarCollapsed && (
+            <div className="flex-1 overflow-hidden">
+              <span className="text-sm font-bold truncate block uppercase tracking-tighter">{user?.name}</span>
+              <span className="text-[9px] text-slate-500 font-black uppercase truncate block tracking-widest italic">{user?.role}</span>
+            </div>
+          )}
+
+          <button onClick={handleLogout} title="Sair" className="text-slate-500 hover:text-red-500 shrink-0">
+            <LogOut size={18} />
+          </button>
         </div>
       </aside>
 
@@ -401,17 +480,25 @@ function App() {
               <Menu size={24} />
             </button>
 
+            <button
+              onClick={toggleSidebarCollapse}
+              className="hidden md:flex items-center justify-center w-10 h-10 rounded-xl border border-slate-200 text-slate-500 hover:text-slate-900 hover:border-slate-300 transition-colors"
+              title={isSidebarCollapsed ? 'Expandir menu' : 'Recolher menu'}
+            >
+              {isSidebarCollapsed ? <ChevronRight size={18} /> : <ChevronLeft size={18} />}
+            </button>
+
             <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-orange-500 animate-pulse"></span>
               <span className="hidden md:inline">Grupo Telecel •</span>
               {currentViewLabel}
             </div>
           </div>
+
           <NotificationBell currentUser={user} />
         </header>
 
         <div className="flex-1 overflow-hidden relative flex flex-col">
-
           {currentView === 'home' ? (
             <Home currentUser={user} />
           ) : currentView === 'finance' ? (
@@ -444,12 +531,15 @@ function App() {
             <Stockout />
           ) : currentView === 'auditoria_lojas' ? (
             <AuditoriaLojas />
-          ) : currentView === 'sacolas' ? (
-            <SacolasModule currentUser={user} />
           ) : currentView === 'price_table' ? (
             <PriceTablePage />
           ) : currentView === 'solicitacoes' ? (
-            <SolicitacoesModule currentUser={user} />  
+            <SolicitacoesModule currentUser={user} />
+            
+          //* NOVA ROTA DE COMPRAS X VENDAS (Apenas para Admin) */}
+          ) : currentView === 'compras_vendas' && isAdmin ? (
+            <ComprasVendas />
+            
           ) : currentView === 'team' ? (
             <div className="flex-1 p-4 md:p-8 overflow-y-auto">
               <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
@@ -463,7 +553,6 @@ function App() {
               </div>
               <UserList />
             </div>
-
           ) : (
             <TaskList onOpenTask={(task: any) => { setSelectedTask(task); setCurrentView('detail'); }} viewMode={currentView} currentUser={user} />
           )}
@@ -472,7 +561,15 @@ function App() {
 
       <NewUserModal isOpen={isUserModalOpen} onClose={() => setIsUserModalOpen(false)} />
       {isNewTaskModalOpen && (
-        <NewTaskModal isOpen={isNewTaskModalOpen} onClose={() => setIsNewTaskModalOpen(false)} currentUser={user} onTaskCreated={() => { setIsNewTaskModalOpen(false); window.location.reload(); }} />
+        <NewTaskModal
+          isOpen={isNewTaskModalOpen}
+          onClose={() => setIsNewTaskModalOpen(false)}
+          currentUser={user}
+          onTaskCreated={() => {
+            setIsNewTaskModalOpen(false);
+            window.location.reload();
+          }}
+        />
       )}
     </div>
   );

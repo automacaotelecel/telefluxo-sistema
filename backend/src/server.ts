@@ -3502,6 +3502,147 @@ app.post('/api/solicitacoes', uploadSolicitacao.single('referenciaFile'), async 
   }
 });
 
+// ==========================================
+// ROTA: COMPRAS X VENDAS (CONFERÊNCIA IMEI)
+// ==========================================
+app.get('/api/compras-x-vendas', async (req, res) => {
+    try {
+        const { userId, startDate, endDate } = req.query;
+        
+        const DB_COMPRAS_PATH = path.join(DATABASE_DIR, 'compras', 'compras_anual.db');
+
+        if (!fs.existsSync(DB_COMPRAS_PATH)) {
+            return res.json({ 
+                rows: [], 
+                summary: { totalCompras: 0, emEstoque: 0, vendidos: 0, semLocalizacao: 0, valorComprado: 0 }, 
+                info: { comprasDb: 'Arquivo não encontrado. Rode o Python.' } 
+            });
+        }
+
+        const dbCompras = await open({ filename: DB_COMPRAS_PATH, driver: sqlite3.Database });
+        
+        // 1. Buscamos tudo sem filtro restrito no SQL para evitar perder dados
+        const rawData = await dbCompras.all(`SELECT * FROM compras`);
+        await dbCompras.close();
+
+        // 2. MÁGICA DA BLINDAGEM: Converte todas as colunas para minúsculo usando a sua função!
+        const comprasRaw = normalizeKeys(rawData);
+
+        // 3. Filtro de cancelamento tolerante (Lida com 'S', 'True', '1', etc)
+        const comprasAtivas = comprasRaw.filter((c: any) => {
+            const cancelado = String(c.cancelado || '').trim().toUpperCase();
+            return cancelado !== 'S' && cancelado !== 'TRUE' && cancelado !== '1';
+        });
+
+        const start = startDate ? new Date(startDate as string) : new Date('2000-01-01');
+        const end = endDate ? new Date(endDate as string) : new Date();
+        end.setHours(23, 59, 59, 999);
+
+        // 4. Filtro de Datas à prova de falhas
+        const comprasValidas = comprasAtivas.filter((c: any) => {
+            // Se a data vier nula do Python, exibe na tela para auditoria!
+            if (!c.data_emissao) return true; 
+
+            let dataCompra: Date;
+            if (c.data_emissao.includes('/')) {
+                const [d, m, y] = c.data_emissao.split('/');
+                dataCompra = new Date(`${y}-${m}-${d}T12:00:00`);
+            } else {
+                dataCompra = new Date(`${c.data_emissao}T12:00:00`);
+            }
+            
+            // Se o formato de data explodir, também manda pra tela
+            if (isNaN(dataCompra.getTime())) return true;
+
+            return dataCompra >= start && dataCompra <= end;
+        });
+
+        const currentStock = await prisma.stock.findMany({
+            where: { serial: { not: '' } },
+            select: { serial: true, storeName: true }
+        });
+        const stockMap = new Map(currentStock.map(s => [(s.serial || '').trim(), s.storeName]));
+
+        const imeiHistory = await prisma.imeiHistory.findMany({
+            select: { serial: true, currentStore: true }
+        });
+        const historyMap = new Map(imeiHistory.map(h => [(h.serial || '').trim(), h.currentStore]));
+
+        let emEstoque = 0;
+        let vendidos = 0;
+        let semLocalizacao = 0;
+        let valorComprado = 0;
+
+        const rows = comprasValidas.map((c: any) => {
+            const imei = c.imei ? String(c.imei).trim() : '';
+            let status = 'SEM LOCALIZAÇÃO';
+            let lojaAtual = '-';
+
+            if (imei) {
+                if (stockMap.has(imei)) {
+                    status = 'EM ESTOQUE';
+                    lojaAtual = stockMap.get(imei) || '-';
+                    emEstoque++;
+                } else if (historyMap.has(imei)) {
+                    status = 'VENDIDO';
+                    lojaAtual = historyMap.get(imei) || '-';
+                    vendidos++;
+                } else {
+                    semLocalizacao++;
+                }
+            } else {
+                semLocalizacao++;
+            }
+
+            valorComprado += Number(c.total_liquido || 0);
+
+            return {
+                dataCompra: c.data_emissao || '-',
+                notaFiscalCompra: c.nota_fiscal || '-',
+                lojaCompra: c.nome_fantasia || '-',
+                vendedorCompra: c.nome_vendedor || '-',
+                codigoProduto: c.codigo_produto || '-',
+                referencia: c.referencia || '-',
+                descricao: c.descricao || '-',
+                categoria: c.categoria || '-',
+                imei: imei,
+                quantidadeCompra: Number(c.quantidade || 0),
+                valorCompra: Number(c.total_liquido || 0),
+                tipoTransacao: c.tipo_transacao || '-',
+                naturezaOperacao: c.natureza_operacao || '-',
+                status,
+                lojaAtual,
+                quantidadeEstoqueFamilia: 0,
+                quantidadeVendidaFamilia: 0,
+                dataVenda: '-',
+                notaFiscalVenda: '-',
+                lojaVenda: '-',
+            };
+        });
+
+        res.json({
+            rows,
+            summary: {
+                totalCompras: rows.length,
+                emEstoque,
+                vendidos,
+                semLocalizacao,
+                valorComprado
+            },
+            info: {
+                // ALERTA VIZUAL: Se o Python entregou um banco zerado, o Frontend vai avisar!
+                comprasDb: rawData.length === 0 ? '⚠️ Tabela Vazia (Python não gerou dados)' : 'OK',
+                localSalesDb: 'Prisma Stock & History',
+                periodo: { startDate, endDate }
+            }
+        });
+
+    } catch (error: any) {
+        console.error("❌ Erro rota compras-x-vendas:", error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // Define a porta: Usa a do Render (process.env.PORT) ou a 3000 se for local
 const PORT = process.env.PORT || 3000;
 

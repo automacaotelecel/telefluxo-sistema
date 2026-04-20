@@ -1,1115 +1,933 @@
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import {
-  ResponsiveContainer,
-  CartesianGrid,
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  Tooltip,
-  Legend,
-  LabelList,
-  PieChart as RechartsPieChart,
-  Pie,
-  Cell,
-} from 'recharts';
-import {
-  Activity,
-  AlertCircle,
-  ArrowDownRight,
-  ArrowUpRight,
-  BarChart3,
-  Calendar,
-  CheckSquare,
-  ChevronDown,
-  Filter,
-  Layers,
-  Minus,
-  Package,
-  PieChart,
-  Search,
-  ShieldCheck,
-  Square,
-  Store,
-  TrendingUp,
-} from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import { AlertCircle, FileSpreadsheet, Search, UploadCloud } from 'lucide-react';
+import * as pdfjsLib from 'pdfjs-dist';
+import * as XLSX from 'xlsx';
 
-const STORE_MAP: Record<string, string> = {
-  "12309173001309": "ARAGUAIA SHOPPING",
-  "12309173000418": "BOULEVARD SHOPPING",
-  "12309173000175": "BRASILIA SHOPPING",
-  "12309173000680": "CONJUNTO NACIONAL",
-  "12309173001228": "CONJUNTO NACIONAL QUIOSQUE",
-  "12309173000507": "GOIANIA SHOPPING",
-  "12309173000256": "IGUATEMI SHOPPING",
-  "12309173000841": "JK SHOPPING",
-  "12309173000337": "PARK SHOPPING",
-  "12309173000922": "PATIO BRASIL",
-  "12309173000760": "TAGUATINGA SHOPPING",
-  "12309173001147": "TERRAÇO SHOPPING",
-  "12309173001651": "TAGUATINGA SHOPPING QQ",
-  "12309173001732": "UBERLÂNDIA SHOPPING",
-  "12309173001813": "UBERABA SHOPPING",
-  "12309173001570": "FLAMBOYANT SHOPPING",
-  "12309173002119": "BURITI SHOPPING",
-  "12309173002461": "PASSEIO DAS AGUAS",
-  "12309173002038": "PORTAL SHOPPING",
-  "12309173002208": "SHOPPING SUL",
-  "12309173001902": "BURITI RIO VERDE",
-  "12309173002380": "PARK ANAPOLIS",
-  "12309173002542": "SHOPPING RECIFE",
-  "12309173002895": "MANAIRA SHOPPING",
-  "12309173002976": "IGUATEMI FORTALEZA",
-  "12309173001066": "CD TAGUATINGA",
+// @ts-ignore
+import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.mjs?url';
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+
+/**
+ * Objetivo:
+ * - reproduzir o quadro operacional no estilo do Excel
+ * - uma linha por MODELO + CAMPANHA
+ * - juntar:
+ *   PDF (campanha/período/qtd/verba)
+ *   Google Sheets (basicModel -> descrição/ref)
+ *   /stock (estoque/custo/lojas)
+ *   /sales (vendas no período)
+ *   /price-table (preço sistema)
+ */
+
+type TraducaoMkt = {
+  basicModel: string;
+  marketingName: string;
+  descricao2: string;
+  referencia2: string;
 };
 
-const MONTH_LABELS = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
-const MONTH_FULL: Record<number, string> = {
-  1: 'Janeiro', 2: 'Fevereiro', 3: 'Março', 4: 'Abril', 5: 'Maio', 6: 'Junho',
-  7: 'Julho', 8: 'Agosto', 9: 'Setembro', 10: 'Outubro', 11: 'Novembro', 12: 'Dezembro',
+type PdfItem = {
+  arquivo: string;
+  refCampanha: string;
+  campanha: string;
+  tipoCampanha: string;
+  inicio: string;
+  termino: string;
+  modeloPdf: string;
+  quantidadeCarta: number;
+  verbaUnitaria: number;
+  verbaTotal: number;
 };
 
-const CHART_COLORS = {
-  yearA: '#1428A0',
-  yearBReal: '#7DD3FC',
-  yearBProjection: '#0F766E',
+type PriceRow = {
+  descricao: string;
+  referencia: string;
+  precoSamsung: number;
+  precoTelecel: number;
+  ofertaAtual: number;
 };
 
-const PIE_COLORS = ['#1428A0', '#2563EB', '#0EA5E9', '#14B8A6', '#F59E0B', '#EF4444', '#8B5CF6', '#64748B'];
-
-type AnyRow = Record<string, any>;
-
-const formatMoney = (val: number) =>
-  new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val || 0);
-
-const formatMoneyShort = (val: number) => {
-  if (!val) return 'R$ 0';
-  if (val >= 1_000_000) return `R$ ${(val / 1_000_000).toFixed(1)}M`;
-  if (val >= 1_000) return `R$ ${(val / 1_000).toFixed(0)}k`;
-  return `R$ ${val.toFixed(0)}`;
+type StockRow = {
+  referencia2: string;
+  descricao: string;
+  quantidade: number;
+  custoMedio: number;
+  custoTotal: number;
+  lojas: string[];
+  status: string;
 };
 
-const pick = (obj: AnyRow, keys: string[], fallback: any = undefined) => {
-  for (const k of keys) {
-    if (obj && obj[k] !== undefined && obj[k] !== null && obj[k] !== '') return obj[k];
+type SaleAgg = {
+  quantidade: number;
+};
+
+type LinhaTabela = {
+  descricao: string;
+  referencia: string;
+  precoSamsung: number;
+  precoTelecel: number;
+  totalDescontoTelecel: number;
+  descontoRebate: number;
+  descontoTradeIn: number;
+  descontoBogo: number;
+  descontoSip: number;
+  totalDesconto: number;
+  precoPromocional: number;
+  tipoPromocao: string;
+  periodo: string;
+  refCampanha: string;
+  campanha: string;
+  modeloPdf: string;
+  basicModel: string;
+  qtdEstoque: number;
+  custoTotalEstoque: number;
+  custoMedioEstoque: number;
+  margemEstoque: number | null;
+  novoCustoMedio: number | null;
+  margemPrice: number | null;
+  qtdVendida: number;
+  verbaUnitaria: number;
+  verbaTotal: number;
+  ofertaAtual: number;
+  lojas: string;
+  status: string;
+};
+
+const formatMoney = (value: number | null | undefined) => {
+  const n = Number(value || 0);
+  return n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+};
+
+const formatNumber = (value: number | null | undefined) =>
+  Number(value || 0).toLocaleString('pt-BR');
+
+const formatPercent = (value: number | null | undefined) => {
+  if (value === null || value === undefined || !Number.isFinite(value)) return '-';
+  return `${(value * 100).toFixed(2).replace('.', ',')}%`;
+};
+
+const normalizeLine = (value: string) =>
+  String(value || '')
+    .replace(/\u00A0/g, ' ')
+    .replace(/[‐‑–—−]/g, '-')
+    .replace(/[\uFFFE\uFEFF]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const normalizeBasicModel = (value: string) => {
+  const raw = String(value || '')
+    .toUpperCase()
+    .replace(/\u00A0/g, '')
+    .replace(/[‐‑–—−]/g, '-')
+    .replace(/[\uFFFE\uFEFF]/g, '')
+    .replace(/\s+/g, '')
+    .replace(/[^A-Z0-9\/-]/g, '');
+
+  if (!raw) return '';
+
+  let model = raw
+    .replace(/^BSM(?!-)/, 'BSM-')
+    .replace(/^BSM--+/, 'BSM-')
+    .replace(/-+/g, '-');
+
+  if (model.startsWith('BSM/') || model === 'BSM') {
+    model = model.replace(/^BSM\/?/, 'BSM-');
   }
-  return fallback;
+
+  if (!model.startsWith('BSM-')) {
+    model = `BSM-${model.replace(/^BSM/, '')}`;
+  }
+
+  return model;
 };
 
-const toNumberSafe = (v: any) => {
-  if (v === null || v === undefined) return 0;
-  if (typeof v === 'number') return Number.isFinite(v) ? v : 0;
-  const s = String(v)
-    .trim()
-    .replace(/\s/g, '')
-    .replace(/[R$\u00A0]/g, '')
-    .replace(/\./g, '')
-    .replace(',', '.')
-    .replace(/[^0-9.\-]/g, '');
-  const n = parseFloat(s);
-  return Number.isFinite(n) ? n : 0;
+const normalizeReference = (value: string) =>
+  String(value || '')
+    .toUpperCase()
+    .replace(/\u00A0/g, '')
+    .replace(/[‐‑–—−]/g, '-')
+    .replace(/[\uFFFE\uFEFF]/g, '')
+    .replace(/\s+/g, '')
+    .trim();
+
+const normalizeDesc = (value: string) =>
+  String(value || '')
+    .toUpperCase()
+    .replace(/\u00A0/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const parseMoneyBR = (value: string) => {
+  if (!value) return 0;
+  return Number(String(value).replace(/\./g, '').replace(',', '.').replace(/[^\d.-]/g, '')) || 0;
 };
 
-const getStoreName = (raw: string) => {
-  if (!raw) return 'N/D';
-  const clean = raw.replace(/\D/g, '');
-  return STORE_MAP[clean] || STORE_MAP[raw] || raw;
+const toNumber = (value: any) => {
+  if (value === null || value === undefined || value === '') return 0;
+  if (typeof value === 'number') return value;
+  return Number(String(value).replace(/\./g, '').replace(',', '.').replace(/[^\d.-]/g, '')) || 0;
 };
 
-const getDateValue = (sale: AnyRow) =>
-  pick(sale, ['data_emissao', 'DATA_EMISSAO', 'data', 'DATA', 'date', 'DATE'], '');
+const familyFromReference = (value: string) => {
+  const ref = normalizeReference(value);
+  const m = ref.match(/^([A-Z]{2,3}-[A-Z]?\d{3})/i);
+  return m?.[1]?.toUpperCase() || ref;
+};
 
-const getTotal = (sale: AnyRow) =>
-  toNumberSafe(
-    pick(sale, ['total_liquido', 'TOTAL_LIQUIDO', 'total_real', 'TOTAL_REAL', 'total', 'TOTAL', 'valor', 'VALOR'], 0)
-  );
+const getCurrentUserId = () => {
+  for (const key of ['telefluxo_user', 'user']) {
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) continue;
+      const parsed = JSON.parse(raw);
+      if (parsed?.id) return String(parsed.id);
+    } catch {
+      // ignore
+    }
+  }
+  return '';
+};
 
-const getStoreRaw = (sale: AnyRow) =>
-  String(pick(sale, ['cnpj_empresa', 'CNPJ_EMPRESA', 'cnpjEmp', 'CNPJ', 'loja', 'LOJA'], '')).trim();
+const getApiCandidates = (path: string) => {
+  const sameOrigin = typeof window !== 'undefined' && window.location?.origin
+    ? `${window.location.origin}${path}`
+    : '';
 
-const getCategory = (sale: AnyRow) =>
-  String(
-    pick(sale, ['familia', 'FAMILIA', 'categoria_real', 'CATEGORIA_REAL', 'categoria', 'CATEGORIA', 'grupo', 'GRUPO'], 'OUTROS')
-  )
-    .trim()
-    .toUpperCase();
+  if (path === '/api/comparativos/mkt-base' || path.startsWith('/price-table')) {
+    return [sameOrigin, `http://localhost:3000${path}`].filter(Boolean);
+  }
 
-const getRegion = (sale: AnyRow) =>
-  String(pick(sale, ['regiao', 'REGIAO'], 'SEM REGIÃO')).trim().toUpperCase() || 'SEM REGIÃO';
+  return [
+    sameOrigin,
+    `http://localhost:3000${path}`,
+    `https://telefluxo-aplicacao.onrender.com${path}`,
+  ].filter(Boolean);
+};
 
-const getDescription = (sale: AnyRow) =>
-  String(pick(sale, ['descricao', 'DESCRICAO', 'produto', 'PRODUTO'], 'N/D')).trim().toUpperCase();
+const fetchJsonFromCandidates = async (path: string) => {
+  const candidates = getApiCandidates(path);
+  let lastError = `Não consegui acessar ${path}`;
 
-const getQuantity = (sale: AnyRow) =>
-  toNumberSafe(pick(sale, ['quantidade', 'QUANTIDADE', 'qtd', 'QTD'], 0));
+  for (const url of candidates) {
+    try {
+      const response = await fetch(url);
+      if (!response.ok) {
+        lastError = `Falha ao ler ${url} (${response.status})`;
+        continue;
+      }
+      return { url, data: await response.json() };
+    } catch (error: any) {
+      lastError = error?.message || `Erro ao acessar ${url}`;
+    }
+  }
 
-const extractYearMonth = (raw: any): { year: string; month: string } | null => {
-  if (raw === null || raw === undefined || raw === '') return null;
+  throw new Error(lastError);
+};
 
-  if (raw instanceof Date && !isNaN(raw.getTime())) {
-    return {
-      year: String(raw.getFullYear()),
-      month: String(raw.getMonth() + 1).padStart(2, '0'),
+const extractFieldFromLines = (lines: string[], label: string) => {
+  const lowerLabel = label.toLowerCase();
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = normalizeLine(lines[i]);
+    if (!line.toLowerCase().startsWith(lowerLabel)) continue;
+
+    const valueFromSameLine = normalizeLine(line.replace(new RegExp(`^${label}\\s*:?\\s*`, 'i'), ''));
+    if (valueFromSameLine) return valueFromSameLine;
+
+    for (let j = i + 1; j < lines.length; j++) {
+      const nextLine = normalizeLine(lines[j]);
+      if (!nextLine || nextLine === ':') continue;
+      return nextLine;
+    }
+  }
+
+  return '';
+};
+
+const extractTitleFromLines = (lines: string[]) => {
+  const idx = lines.findIndex((line) => normalizeLine(line).toLowerCase().startsWith('título da campanha'));
+  if (idx < 0) return '';
+
+  const collected: string[] = [];
+  const currentLine = normalizeLine(lines[idx]);
+  const titleStart = normalizeLine(currentLine.replace(/^Título da campanha\s*:?\s*/i, ''));
+  if (titleStart) collected.push(titleStart);
+
+  for (let i = idx + 1; i < lines.length; i++) {
+    const line = normalizeLine(lines[i]);
+    if (!line) continue;
+    if (/^(Produto|Modelo|Period|Período|Verba unit\.|Quantidade|\*?Verba Max\.|Início|Término)$/i.test(line)) break;
+    if (/^SMART PHONE\b/i.test(line)) break;
+    collected.push(line);
+  }
+
+  return normalizeLine(collected.join(' '));
+};
+
+const extractPdfContent = async (file: File) => {
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const lines: string[] = [];
+  const allTextParts: string[] = [];
+  const pagesToRead = Math.min(pdf.numPages, 2);
+
+  for (let pageNumber = 1; pageNumber <= pagesToRead; pageNumber++) {
+    const page = await pdf.getPage(pageNumber);
+    const textContent = await page.getTextContent();
+    const rowsMap = new Map<number, any[]>();
+
+    (textContent.items as any[]).forEach((item: any) => {
+      const str = normalizeLine(item.str || '');
+      if (!str) return;
+      allTextParts.push(str);
+      const y = Math.round((item.transform?.[5] || 0) / 2) * 2;
+      if (!rowsMap.has(y)) rowsMap.set(y, []);
+      rowsMap.get(y)?.push(item);
+    });
+
+    const sortedY = Array.from(rowsMap.keys()).sort((a, b) => b - a);
+    sortedY.forEach((y) => {
+      const rowItems = rowsMap.get(y) || [];
+      rowItems.sort((a: any, b: any) => (a.transform?.[4] || 0) - (b.transform?.[4] || 0));
+      const rowText = normalizeLine(rowItems.map((item: any) => item.str || '').join(' '));
+      if (rowText) lines.push(rowText);
+    });
+  }
+
+  return {
+    lines,
+    fullText: normalizeLine(allTextParts.join(' ')),
+  };
+};
+
+const parseItemsFromText = (fullText: string) => {
+  const items: Array<{
+    modelo: string;
+    inicio: string;
+    termino: string;
+    verbaUnitaria: number;
+    quantidade: number;
+    verbaTotal: number;
+  }> = [];
+
+  const normalized = normalizeLine(fullText)
+    .replace(/BSM\s+-\s+/g, 'BSM-')
+    .replace(/BSM\s+/g, 'BSM-');
+
+  const patterns = [
+    /(?:SMART PHONE\s+)?(BSM-[A-Z]\d{3}[A-Z0-9\/-]+)\s+(\d{2}\.\d{2}\.\d{4})\s+(\d{2}\.\d{2}\.\d{4})\s+([\d\.,]+)\s+(\d+)\s+([\d\.,]+)/gi,
+    /(?:SMART PHONE\s+)?(?:BSM-)?([A-Z]\d{3}[A-Z0-9\/-]+)\s+(\d{2}\.\d{2}\.\d{4})\s+(\d{2}\.\d{2}\.\d{4})\s+([\d\.,]+)\s+(\d+)\s+([\d\.,]+)/gi,
+  ];
+
+  for (const pattern of patterns) {
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(normalized)) !== null) {
+      const rawModel = match[1].startsWith('BSM-') ? match[1] : `BSM-${match[1]}`;
+      const modelo = normalizeBasicModel(rawModel);
+      if (!modelo) continue;
+
+      const exists = items.some((item) => item.modelo === modelo && item.inicio === match![2] && item.termino === match![3]);
+      if (exists) continue;
+
+      items.push({
+        modelo,
+        inicio: match[2],
+        termino: match[3],
+        verbaUnitaria: parseMoneyBR(match[4]),
+        quantidade: Number(match[5]) || 0,
+        verbaTotal: parseMoneyBR(match[6]),
+      });
+    }
+  }
+
+  return items;
+};
+
+const parseCampaignFromPdf = async (file: File): Promise<PdfItem[]> => {
+  const parsed = await extractPdfContent(file);
+  const { lines, fullText } = parsed;
+
+  const refCampanha =
+    fullText.match(/N[ºo°]\s*Referência do Programa\s*:?\s*([A-Z0-9]+)/i)?.[1] || '';
+
+  const campanha = extractTitleFromLines(lines);
+  const tipoCampanha = normalizeLine(lines[0] || 'CAMPANHA');
+
+  const rawItems = parseItemsFromText(fullText);
+  return rawItems.map((item) => ({
+    arquivo: file.name,
+    refCampanha,
+    campanha,
+    tipoCampanha,
+    inicio: item.inicio,
+    termino: item.termino,
+    modeloPdf: item.modelo,
+    quantidadeCarta: item.quantidade,
+    verbaUnitaria: item.verbaUnitaria,
+    verbaTotal: item.verbaTotal,
+  }));
+};
+
+const buildTraducaoMap = (rows: any[]) => {
+  const map = new Map<string, TraducaoMkt>();
+
+  rows.forEach((row) => {
+    const basicModel = normalizeBasicModel(row.basicModel || row.basic_model || row['Basic Model'] || '');
+    if (!basicModel) return;
+
+    map.set(basicModel, {
+      basicModel,
+      marketingName: String(row.marketingName || row.marketing_name || row['Marketing Name'] || '').trim(),
+      descricao2: String(row.descricao2 || row['DESCRIÇÃO 2'] || row['DESCRICAO 2'] || '').trim(),
+      referencia2: normalizeReference(row.referencia2 || row['REFERENCIA 2'] || row['REFERÊNCIA 2'] || ''),
+    });
+  });
+
+  return map;
+};
+
+const buildStockMap = (records: any[]) => {
+  const grouped = new Map<string, StockRow>();
+
+  records.forEach((item) => {
+    const reference = normalizeReference(item.reference || item.REFERENCIA || item.REFERENCIA2 || item.referencia2 || '');
+    const reference2 = familyFromReference(reference || item.referencia2 || item.REFERENCIA2 || '');
+    if (!reference2) return;
+
+    const descricao = String(item.description || item.DESCRICAO || item['DESCRIÇÃO 2'] || '').trim();
+    const quantity = toNumber(item.quantity || item.QUANTIDADE || item.SALDO);
+    const avgCost =
+      toNumber(item.averageCost || item.CUSTO_MEDIO || item['CUSTO MÉDIO ESTOQUE'] || item['CUSTO NOVO PREÇO']) ||
+      toNumber(item.costPrice || item.PRECO_CUSTO || item['CUSTO COMPRA CORRETO']);
+    const store = String(item.storeName || item.NOME_FANTASIA || '').trim();
+    const status = String(item.status || item.STATUS || item.Coluna3 || '').trim();
+
+    if (!grouped.has(reference2)) {
+      grouped.set(reference2, {
+        referencia2: reference2,
+        descricao,
+        quantidade: 0,
+        custoMedio: 0,
+        custoTotal: 0,
+        lojas: [],
+        status,
+      });
+    }
+
+    const current = grouped.get(reference2)!;
+    current.quantidade += quantity;
+    current.custoTotal += avgCost * quantity;
+    if (store && !current.lojas.includes(store)) current.lojas.push(store);
+    if (!current.descricao && descricao) current.descricao = descricao;
+    if (!current.status && status) current.status = status;
+  });
+
+  grouped.forEach((row) => {
+    row.custoMedio = row.quantidade > 0 ? row.custoTotal / row.quantidade : 0;
+  });
+
+  return grouped;
+};
+
+const buildSalesMap = (rows: any[]) => {
+  const byDesc = new Map<string, SaleAgg>();
+  const byFamily = new Map<string, SaleAgg>();
+
+  rows.forEach((row) => {
+    const desc = normalizeDesc(row.DESCRICAO || row.descricao || row['DESCRIÇÃO 2'] || '');
+    const familia = familyFromReference(String(row.FAMILIA || row.familia || row.REFERENCIA || row.referencia || ''));
+    const qtd = toNumber(row.QUANTIDADE ?? row.quantidade ?? 0);
+
+    if (desc) {
+      byDesc.set(desc, { quantidade: (byDesc.get(desc)?.quantidade || 0) + qtd });
+    }
+    if (familia) {
+      byFamily.set(familia, { quantidade: (byFamily.get(familia)?.quantidade || 0) + qtd });
+    }
+  });
+
+  return { byDesc, byFamily };
+};
+
+const buildPriceMap = (rows: any[]) => {
+  const byDesc = new Map<string, PriceRow>();
+  const byRef = new Map<string, PriceRow>();
+
+  const getCandidate = (row: any, names: string[]) => {
+    for (const n of names) {
+      if (row?.[n] !== undefined && row?.[n] !== null && row?.[n] !== '') return row[n];
+    }
+    return '';
+  };
+
+  rows.forEach((row) => {
+    const descricao = String(
+      getCandidate(row, ['DESCRIÇÃO', 'descricao', 'description', 'model', 'modelo'])
+    ).trim();
+
+    const referencia = familyFromReference(
+      String(getCandidate(row, ['REFERENCIA', 'referencia', 'reference', 'sku', 'SKU']))
+    );
+
+    const precoSamsung = toNumber(getCandidate(row, ['PREÇO SAMSUNG', 'precoSamsung', 'preco_samsung', 'samsungPrice']));
+    const precoTelecel = toNumber(getCandidate(row, ['PREÇO TELECEL', 'precoTelecel', 'preco_telecel', 'price', 'currentPrice']));
+    const ofertaAtual = toNumber(getCandidate(row, ['PREÇO FINAL', 'precoFinal', 'preco_final', 'offerPrice', 'ofertaAtual']));
+
+    const payload: PriceRow = {
+      descricao,
+      referencia,
+      precoSamsung,
+      precoTelecel,
+      ofertaAtual,
     };
-  }
 
-  const s = String(raw).trim();
-  if (/^\d{4}$/.test(s)) return { year: s, month: '01' };
+    if (descricao) byDesc.set(normalizeDesc(descricao), payload);
+    if (referencia) byRef.set(referencia, payload);
+  });
 
-  const normalized = s.replace(/\./g, '/').replace(/\s+/g, '');
-
-  if (normalized.includes('-')) {
-    const parts = normalized.split('-').filter(Boolean);
-    if (/^\d{4}$/.test(parts[0]) && /^\d{1,2}$/.test(parts[1])) {
-      return { year: parts[0], month: String(parts[1]).padStart(2, '0') };
-    }
-    if (
-      parts.length === 3 &&
-      /^\d{4}$/.test(parts[0]) &&
-      /^\d{1,2}$/.test(parts[1]) &&
-      /^\d{1,2}$/.test(parts[2])
-    ) {
-      return { year: parts[0], month: String(parts[1]).padStart(2, '0') };
-    }
-  }
-
-  if (normalized.includes('/')) {
-    const parts = normalized.split('/').filter(Boolean);
-    if (parts.length >= 2 && /^\d{4}$/.test(parts[0]) && /^\d{1,2}$/.test(parts[1])) {
-      return { year: parts[0], month: String(parts[1]).padStart(2, '0') };
-    }
-    if (
-      parts.length === 3 &&
-      /^\d{1,2}$/.test(parts[0]) &&
-      /^\d{1,2}$/.test(parts[1]) &&
-      /^\d{4}$/.test(parts[2])
-    ) {
-      return { year: parts[2], month: String(parts[1]).padStart(2, '0') };
-    }
-  }
-
-  const m = normalized.match(/(\d{4}).*?(\d{1,2})/);
-  if (m?.[1] && m?.[2]) return { year: m[1], month: String(m[2]).padStart(2, '0') };
-
-  return null;
+  return { byDesc, byRef };
 };
 
-const parseDateLoose = (raw: any): Date | null => {
-  if (!raw) return null;
-  if (raw instanceof Date && !isNaN(raw.getTime())) return raw;
-
-  const s = String(raw).trim();
-  if (!s) return null;
-
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
-    const d = new Date(`${s}T00:00:00`);
-    return isNaN(d.getTime()) ? null : d;
-  }
-
-  if (/^\d{4}-\d{2}$/.test(s)) {
-    const d = new Date(`${s}-01T00:00:00`);
-    return isNaN(d.getTime()) ? null : d;
-  }
-
-  if (/^\d{2}\/\d{2}\/\d{4}$/.test(s)) {
-    const [dd, mm, yyyy] = s.split('/');
-    const d = new Date(`${yyyy}-${mm}-${dd}T00:00:00`);
-    return isNaN(d.getTime()) ? null : d;
-  }
-
-  const d = new Date(s);
-  return isNaN(d.getTime()) ? null : d;
+const margin = (price: number, cost: number) => {
+  if (!price || price <= 0) return null;
+  return (price - cost) / price;
 };
 
-const isWithinDateRange = (raw: any, startDate: string, endDate: string) => {
-  const value = parseDateLoose(raw);
-  if (!value) return false;
-
-  if (startDate) {
-    const start = new Date(`${startDate}T00:00:00`);
-    if (value < start) return false;
-  }
-
-  if (endDate) {
-    const end = new Date(`${endDate}T23:59:59`);
-    if (value > end) return false;
-  }
-
-  return true;
-};
-
-const SmallMetricCard = ({
-  title,
-  icon,
-  value,
-  subtitle,
-  valueClass = 'text-slate-900',
-  children,
-}: {
-  title: string;
-  icon: React.ReactNode;
-  value?: string;
-  subtitle?: string;
-  valueClass?: string;
-  children?: React.ReactNode;
-}) => (
-  <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm min-h-[142px]">
-    <div className="flex justify-between items-start mb-2">
-      <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{title}</span>
-      <div className="text-slate-400">{icon}</div>
-    </div>
-
-    {children ? (
-      <div className="h-[86px] w-full">{children}</div>
-    ) : (
-      <>
-        <h3 className={`text-2xl font-black mt-1 ${valueClass}`}>{value}</h3>
-        {subtitle && <div className="text-[10px] font-bold text-slate-500 uppercase mt-3 whitespace-pre-line">{subtitle}</div>}
-      </>
-    )}
-  </div>
+const TableHeader = ({ children, className = '' }: { children: React.ReactNode; className?: string }) => (
+  <th className={`px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-slate-500 text-left border-b border-slate-200 whitespace-nowrap ${className}`}>
+    {children}
+  </th>
 );
 
-export default function ComparativoAnual() {
-  const [annualRawData, setAnnualRawData] = useState<any[]>([]);
-  const [monthlyRawData, setMonthlyRawData] = useState<any[]>([]);
-  const [annualStoreCompareRows, setAnnualStoreCompareRows] = useState<any[]>([]);
-  const [errorMsg, setErrorMsg] = useState<string>('');
+const TableCell = ({ children, className = '' }: { children: React.ReactNode; className?: string }) => (
+  <td className={`px-3 py-3 text-sm text-slate-700 border-b border-slate-100 align-top ${className}`}>{children}</td>
+);
+
+const GroupHeader = ({ children, className = '', colSpan }: { children: React.ReactNode; className?: string; colSpan: number }) => (
+  <th
+    colSpan={colSpan}
+    className={`px-3 py-2 text-[10px] font-black uppercase tracking-[0.2em] text-center border-b border-slate-200 whitespace-nowrap ${className}`}
+  >
+    {children}
+  </th>
+);
+
+
+export default function ComparativosModule() {
+  const [rows, setRows] = useState<LinhaTabela[]>([]);
+  const [errorMsg, setErrorMsg] = useState('');
+  const [apiInfo, setApiInfo] = useState('');
+  const [searchTerm, setSearchTerm] = useState('');
   const [loading, setLoading] = useState(false);
 
-  const [selectedStores, setSelectedStores] = useState<string[]>([]);
-  const [isStoreMenuOpen, setIsStoreMenuOpen] = useState(false);
-  const storeMenuRef = useRef<HTMLDivElement>(null);
+  const processFiles = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files || []) as File[];
+    if (!files.length) return;
 
-  const [categoryFilter, setCategoryFilter] = useState('TODAS');
-  const [monthFilter, setMonthFilter] = useState<string>('0');
-  const [startDate, setStartDate] = useState('');
-  const [endDate, setEndDate] = useState('');
-
-  const [yearA, setYearA] = useState<string>('');
-  const [yearB, setYearB] = useState<string>('');
-
-  const [activeTab, setActiveTab] = useState<'geral' | 'produtos'>('geral');
-  const [searchProduct, setSearchProduct] = useState('');
-
-  const API_URL = window.location.hostname === 'localhost'
-    ? 'http://localhost:3000'
-    : 'https://telefluxo-aplicacao.onrender.com';
-
-  useEffect(() => {
-    function handleClickOutside(event: any) {
-      if (storeMenuRef.current && !storeMenuRef.current.contains(event.target)) setIsStoreMenuOpen(false);
-    }
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
-
-  const getUserId = () => {
-    let userId = '';
-    try {
-      const rawUser = localStorage.getItem('user') || localStorage.getItem('telefluxo_user');
-      if (rawUser) {
-        const parsed = JSON.parse(rawUser);
-        userId = parsed.id || parsed.userId || parsed._id || '';
-      }
-    } catch (e) {
-      console.error(e);
-    }
-    return userId;
-  };
-
-  const loadData = async () => {
     setLoading(true);
+    setErrorMsg('');
+    setApiInfo('');
 
     try {
-      const userId = getUserId();
+      const pdfItems = (await Promise.all(files.map((file) => parseCampaignFromPdf(file)))).flat();
 
-      const [resAnnual, resMonthly] = await Promise.all([
-        fetch(`${API_URL}/sales_anuais?userId=${userId}`),
-        fetch(`${API_URL}/sales?userId=${userId}`),
+      const allDates = pdfItems.flatMap((i) => [i.inicio, i.termino]).filter(Boolean);
+      const isoDates = allDates
+        .map((d) => {
+          const [day, month, year] = d.split('.');
+          return `${year}-${month}-${day}`;
+        })
+        .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d))
+        .sort();
+
+      const startDate = isoDates[0] || '';
+      const endDate = isoDates[isoDates.length - 1] || '';
+      const userId = getCurrentUserId();
+
+      const [baseResp, stockResp, priceResp, salesResp] = await Promise.all([
+        fetchJsonFromCandidates('/api/comparativos/mkt-base'),
+        fetchJsonFromCandidates('/stock'),
+        fetchJsonFromCandidates('/price-table?category=Aparelhos'),
+        userId && startDate && endDate
+          ? fetchJsonFromCandidates(`/sales?userId=${encodeURIComponent(userId)}&startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}`)
+          : Promise.resolve({ url: '', data: { sales: [] } }),
       ]);
 
-      if (!resAnnual.ok) throw new Error('Rota de histórico anual não encontrada no servidor.');
-      if (!resMonthly.ok) throw new Error('Rota de vendas mensais não encontrada no servidor.');
+      const traducaoRows = Array.isArray(baseResp.data?.rows)
+        ? baseResp.data.rows
+        : Array.isArray(baseResp.data)
+          ? baseResp.data
+          : [];
 
-      const dataAnnual = await resAnnual.json();
-      const dataMonthly = await resMonthly.json();
+      const traducaoMap = buildTraducaoMap(traducaoRows);
+      const stockMap = buildStockMap(Array.isArray(stockResp.data) ? stockResp.data : []);
+      const priceMap = buildPriceMap(Array.isArray(priceResp.data) ? priceResp.data : []);
+      const salesMap = buildSalesMap(Array.isArray(salesResp.data?.sales) ? salesResp.data.sales : []);
 
-      const annualList =
-        (dataAnnual && Array.isArray(dataAnnual.sales) && dataAnnual.sales) ||
-        (dataAnnual && Array.isArray(dataAnnual.data) && dataAnnual.data) ||
-        (Array.isArray(dataAnnual) ? dataAnnual : []);
+      const finalRows: LinhaTabela[] = pdfItems.map((item) => {
+        const traducao = traducaoMap.get(normalizeBasicModel(item.modeloPdf));
+        const descricao = traducao?.descricao2 || traducao?.marketingName || '-';
+        const referencia = familyFromReference(traducao?.referencia2 || '');
+        const stock = stockMap.get(referencia);
+        const price =
+          priceMap.byRef.get(referencia) ||
+          priceMap.byDesc.get(normalizeDesc(descricao));
 
-      const monthlyList =
-        (dataMonthly && Array.isArray(dataMonthly.sales) && dataMonthly.sales) ||
-        (dataMonthly && Array.isArray(dataMonthly.data) && dataMonthly.data) ||
-        (Array.isArray(dataMonthly) ? dataMonthly : []);
+        const qtdVendida =
+          salesMap.byDesc.get(normalizeDesc(descricao))?.quantidade ||
+          salesMap.byFamily.get(referencia)?.quantidade ||
+          0;
 
-      setAnnualRawData(annualList);
-      setMonthlyRawData(monthlyList);
-      setErrorMsg('');
-    } catch (err: any) {
-      console.error(err);
-      setErrorMsg(err?.message || 'Erro ao carregar dados anuais.');
-      setAnnualRawData([]);
-      setMonthlyRawData([]);
+        const precoSamsung = price?.precoSamsung || 0;
+        const precoTelecel = price?.precoTelecel || 0;
+        const ofertaAtual = price?.ofertaAtual || 0;
+        const totalDescontoTelecel = Math.max(precoSamsung - precoTelecel, 0);
+
+        // No PDF atual só temos verba unitária/total por item.
+        // Então colocamos a verba unitária como desconto principal da campanha.
+        const descontoRebate = item.tipoCampanha.toUpperCase().includes('REBATE') ? item.verbaUnitaria : 0;
+        const descontoTradeIn = item.tipoCampanha.toUpperCase().includes('TRADE') ? item.verbaUnitaria : 0;
+        const descontoBogo = item.tipoCampanha.toUpperCase().includes('BOGO') ? item.verbaUnitaria : 0;
+        const descontoSip = item.tipoCampanha.toUpperCase().includes('SIP') ? item.verbaUnitaria : 0;
+
+        const totalDesconto = totalDescontoTelecel + descontoRebate + descontoTradeIn + descontoBogo + descontoSip;
+        const precoPromocional = precoSamsung > 0 ? Math.max(precoSamsung - totalDesconto, 0) : 0;
+        const custoMedioEstoque = stock?.custoMedio || 0;
+        const custoTotalEstoque = stock?.custoTotal || 0;
+        const novoCustoMedio = custoMedioEstoque - item.verbaUnitaria;
+        const margemEstoque = precoTelecel > 0 ? margin(precoTelecel, custoMedioEstoque) : null;
+        const margemPrice = precoPromocional > 0 ? margin(precoPromocional, Math.max(novoCustoMedio, 0)) : null;
+
+        let status = '-';
+        if (ofertaAtual > 0 && precoPromocional > 0) {
+          if (ofertaAtual < precoPromocional) status = 'MENOR';
+          else if (ofertaAtual > precoPromocional) status = 'MAIOR';
+          else status = 'IGUAL';
+        } else if (stock?.status) {
+          status = stock.status;
+        }
+
+        return {
+          descricao: descricao || stock?.descricao || '-',
+          referencia,
+          precoSamsung,
+          precoTelecel,
+          totalDescontoTelecel,
+          descontoRebate,
+          descontoTradeIn,
+          descontoBogo,
+          descontoSip,
+          totalDesconto,
+          precoPromocional,
+          tipoPromocao: item.tipoCampanha,
+          periodo: item.inicio && item.termino ? `${item.inicio} a ${item.termino}` : '-',
+          refCampanha: item.refCampanha,
+          campanha: item.campanha,
+          modeloPdf: item.modeloPdf,
+          basicModel: traducao?.basicModel || normalizeBasicModel(item.modeloPdf),
+          qtdEstoque: stock?.quantidade || 0,
+          custoTotalEstoque,
+          custoMedioEstoque,
+          margemEstoque,
+          novoCustoMedio: Number.isFinite(novoCustoMedio) ? novoCustoMedio : null,
+          margemPrice,
+          qtdVendida,
+          verbaUnitaria: item.verbaUnitaria,
+          verbaTotal: item.verbaTotal,
+          ofertaAtual,
+          lojas: stock?.lojas.join(' | ') || '-',
+          status,
+        };
+      });
+
+      finalRows.sort((a, b) => a.descricao.localeCompare(b.descricao, 'pt-BR'));
+
+      setRows(finalRows);
+      setApiInfo(
+        `Google Sheets: ${traducaoMap.size} modelos · Estoque: ${stockMap.size} famílias · Vendas: ${salesMap.byDesc.size} descrições · Preços: ${priceMap.byDesc.size + priceMap.byRef.size} chaves`
+      );
+    } catch (error: any) {
+      setErrorMsg(error?.message || 'Erro ao processar comparativo.');
     } finally {
       setLoading(false);
+      event.target.value = '';
     }
   };
 
-  useEffect(() => {
-    loadData();
-  }, []);
+  const filteredRows = useMemo(() => {
+    const term = searchTerm.trim().toLowerCase();
+    if (!term) return rows;
 
-  const mergedRawData = useMemo(() => {
-    const today = new Date();
-    const currentYear = String(today.getFullYear());
-    const currentMonth = String(today.getMonth() + 1).padStart(2, '0');
-
-    const annualWithoutCurrentMonth = annualRawData.filter((row) => {
-      const ym = extractYearMonth(getDateValue(row));
-      if (!ym) return false;
-      return !(ym.year === currentYear && ym.month === currentMonth);
-    });
-
-    const monthlyCurrentMonth = monthlyRawData.filter((row) => {
-      const ym = extractYearMonth(getDateValue(row));
-      if (!ym) return false;
-      return ym.year === currentYear && ym.month === currentMonth;
-    });
-
-    return [...annualWithoutCurrentMonth, ...monthlyCurrentMonth];
-  }, [annualRawData, monthlyRawData]);
-
-  const yearsAvailable = useMemo(() => {
-    const set = new Set<string>();
-    for (const sale of mergedRawData) {
-      const ym = extractYearMonth(getDateValue(sale));
-      if (ym?.year) set.add(ym.year);
-    }
-    return Array.from(set).sort();
-  }, [mergedRawData]);
-
-  useEffect(() => {
-    if (!yearsAvailable.length) return;
-    const latest = yearsAvailable[yearsAvailable.length - 1];
-    const previous = yearsAvailable.length >= 2 ? yearsAvailable[yearsAvailable.length - 2] : latest;
-    setYearA((cur) => cur || previous);
-    setYearB((cur) => cur || latest);
-  }, [yearsAvailable]);
-
-  useEffect(() => {
-    const loadAnnualStoreCompare = async () => {
-      if (!yearA || !yearB) return;
-
-      try {
-        const userId = getUserId();
-        const month = Number(monthFilter || '0');
-
-        const res = await fetch(
-          `${API_URL}/anuais/lojas_compare?userId=${encodeURIComponent(userId)}&yearA=${encodeURIComponent(yearA)}&yearB=${encodeURIComponent(yearB)}&month=${month}`
-        );
-
-        if (!res.ok) throw new Error('Rota de comparação anual por lojas não encontrada.');
-        const json = await res.json();
-        const rows = (json && Array.isArray(json.data) && json.data) || (Array.isArray(json) ? json : []);
-        setAnnualStoreCompareRows(rows);
-      } catch (e: any) {
-        console.error(e);
-        setAnnualStoreCompareRows([]);
-      }
-    };
-
-    loadAnnualStoreCompare();
-  }, [API_URL, yearA, yearB, monthFilter]);
-
-  const uniqueCategories = useMemo(() => {
-    const cats = new Set(
-      mergedRawData.map((r) => getCategory(r)).filter((c) => c && c !== 'NAN' && c !== 'UNDEFINED')
+    return rows.filter((row) =>
+      [
+        row.descricao,
+        row.referencia,
+        row.refCampanha,
+        row.campanha,
+        row.modeloPdf,
+        row.basicModel,
+        row.tipoPromocao,
+        row.lojas,
+      ]
+        .join(' ')
+        .toLowerCase()
+        .includes(term)
     );
-    return Array.from(cats).sort();
-  }, [mergedRawData]);
+  }, [rows, searchTerm]);
 
-  const uniqueStores = useMemo(() => {
-    const stores = new Set(mergedRawData.map((r) => getStoreName(getStoreRaw(r))).filter(Boolean));
-    return Array.from(stores).sort();
-  }, [mergedRawData]);
+  const summary = useMemo(() => ({
+    campanhas: new Set(filteredRows.map((r) => r.refCampanha)).size,
+    modelos: filteredRows.length,
+    estoque: filteredRows.reduce((sum, r) => sum + r.qtdEstoque, 0),
+    vendida: filteredRows.reduce((sum, r) => sum + r.qtdVendida, 0),
+    verba: filteredRows.reduce((sum, r) => sum + r.verbaTotal, 0),
+  }), [filteredRows]);
 
-  const toggleStore = (store: string) => {
-    if (selectedStores.includes(store)) setSelectedStores(selectedStores.filter((s) => s !== store));
-    else setSelectedStores([...selectedStores, store]);
+  const exportExcel = () => {
+    const data = filteredRows.map((row) => ({
+      'DESCRIÇÃO': row.descricao,
+      'REFERENCIA': row.referencia,
+      'PREÇO SAMSUNG': row.precoSamsung,
+      'PREÇO TELECEL': row.precoTelecel,
+      'TOTAL DESCONTO TELECEL': row.totalDescontoTelecel,
+      'DESCONTO REBATE': row.descontoRebate,
+      'DESCONTO TRADE IN': row.descontoTradeIn,
+      'DESCONTO BOGO': row.descontoBogo,
+      'DESCONTO SIP': row.descontoSip,
+      'TOTAL DESCONTO (TELECEL + SAMSUNG)': row.totalDesconto,
+      'PREÇO PROMOCIONAL (TELECEL + SAMSUNG)': row.precoPromocional,
+      'TIPO DE PROMOÇÃO SAMSUNG E DATA': row.tipoPromocao,
+      'PERÍODO': row.periodo,
+      'REF. CAMPANHA': row.refCampanha,
+      'CAMPANHA': row.campanha,
+      'MODELO PDF': row.modeloPdf,
+      'BASIC MODEL': row.basicModel,
+      'QTD EM ESTOQUE': row.qtdEstoque,
+      'CUSTO TOTAL EM ESTOQUE': row.custoTotalEstoque,
+      'CUSTO MÉDIO ESTOQUE': row.custoMedioEstoque,
+      'MARGEM ESTOQUE': row.margemEstoque,
+      'NOVO CUSTO MÉDIO ESTOQUE (PRICE)': row.novoCustoMedio,
+      'MARGEM PRICE': row.margemPrice,
+      'QTD VENDIDA': row.qtdVendida,
+      'PRICE CAMPANHA': row.verbaUnitaria,
+      'VERBA TOTAL': row.verbaTotal,
+      'OFERTA ATUAL': row.ofertaAtual,
+      'LOJAS': row.lojas,
+      'STATUS': row.status,
+    }));
+
+    const workbook = XLSX.utils.book_new();
+    const worksheet = XLSX.utils.json_to_sheet(data);
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Comparativo');
+    XLSX.writeFile(workbook, `comparativo_ofertas_${Date.now()}.xlsx`);
   };
 
-  const clearDates = () => {
-    setStartDate('');
-    setEndDate('');
-  };
-
-  const filteredRawData = useMemo(() => {
-    return mergedRawData.filter((sale) => {
-      const ym = extractYearMonth(getDateValue(sale));
-      if (!ym) return false;
-
-      const storeName = getStoreName(getStoreRaw(sale)).toUpperCase();
-
-      if (selectedStores.length > 0 && !selectedStores.map((s) => s.toUpperCase()).includes(storeName)) {
-        return false;
-      }
-
-      if (categoryFilter !== 'TODAS' && getCategory(sale) !== categoryFilter) {
-        return false;
-      }
-
-      if (monthFilter !== '0' && ym.month !== String(monthFilter).padStart(2, '0')) {
-        return false;
-      }
-
-      if ((startDate || endDate) && !isWithinDateRange(getDateValue(sale), startDate, endDate)) {
-        return false;
-      }
-
-      return true;
-    });
-  }, [mergedRawData, selectedStores, categoryFilter, monthFilter, startDate, endDate]);
-
-  const filteredAnnualStoreCompare = useMemo(() => {
-    return annualStoreCompareRows.filter((row) => {
-      const storeName = getStoreName(String(row.loja || row.LOJA || row.cnpj_empresa || row.CNPJ_EMPRESA || ''));
-      if (selectedStores.length > 0 && !selectedStores.map((s) => s.toUpperCase()).includes(storeName.toUpperCase())) {
-        return false;
-      }
-      return true;
-    });
-  }, [annualStoreCompareRows, selectedStores]);
-
-  const computed = useMemo(() => {
-    const today = new Date();
-    const currentYear = String(today.getFullYear());
-    const currentMonth = today.getMonth() + 1;
-    const currentDay = Math.max(1, today.getDate());
-    const daysInCurrentMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
-
-    const startOfYear = new Date(today.getFullYear(), 0, 1);
-    const daysPassedInYear = Math.max(
-      1,
-      Math.floor((today.getTime() - startOfYear.getTime()) / (1000 * 60 * 60 * 24)) + 1
-    );
-    const daysInYear = today.getFullYear() % 4 === 0 ? 366 : 365;
-
-    const monthKeys = Array.from({ length: 12 }, (_, i) => String(i + 1).padStart(2, '0'));
-    const years = [yearA, yearB].filter(Boolean);
-
-    const totalsByYearMonth: Record<string, Record<string, number>> = {};
-    const storeTotalsByYear: Record<string, Record<string, number>> = {};
-    const totalByYear: Record<string, number> = {};
-
-    for (const year of years) {
-      totalsByYearMonth[year] = {};
-      storeTotalsByYear[year] = {};
-      totalByYear[year] = 0;
-      for (const month of monthKeys) totalsByYearMonth[year][month] = 0;
-    }
-
-    for (const sale of filteredRawData) {
-      const ym = extractYearMonth(getDateValue(sale));
-      if (!ym || !years.includes(ym.year)) continue;
-
-      const total = getTotal(sale);
-      if (!total) continue;
-
-      const storeName = getStoreName(getStoreRaw(sale));
-      totalsByYearMonth[ym.year][ym.month] = (totalsByYearMonth[ym.year][ym.month] || 0) + total;
-      storeTotalsByYear[ym.year][storeName] = (storeTotalsByYear[ym.year][storeName] || 0) + total;
-      totalByYear[ym.year] += total;
-    }
-
-    let currentMonthRealYearB = 0;
-
-    const chartData = monthKeys.map((month, idx) => {
-      const totalYearA = yearA ? totalsByYearMonth[yearA]?.[month] || 0 : 0;
-      const totalYearB = yearB ? totalsByYearMonth[yearB]?.[month] || 0 : 0;
-
-      const row: AnyRow = {
-        mes: MONTH_LABELS[idx],
-        mesNumero: month,
-        [yearA]: totalYearA,
-        [`${yearB}_real`]: totalYearB,
-        [`${yearB}_proj`]: 0,
-      };
-
-      if (yearB === currentYear && Number(month) === currentMonth) {
-        currentMonthRealYearB = totalYearB;
-        const projectedMonth = currentDay > 0 ? (totalYearB / currentDay) * daysInCurrentMonth : totalYearB;
-        row[`${yearB}_proj`] = Math.max(0, projectedMonth - totalYearB);
-      }
-
-      return row;
-    });
-
-    const totalA = yearA ? totalByYear[yearA] || 0 : 0;
-    const totalB = yearB ? totalByYear[yearB] || 0 : 0;
-
-    const cutoffMonth = monthFilter !== '0' ? Number(monthFilter) : currentMonth;
-    const totalAUntilCurrentMonth = yearA
-      ? monthKeys
-          .filter((m) => Number(m) <= cutoffMonth)
-          .reduce((sum, m) => sum + (totalsByYearMonth[yearA]?.[m] || 0), 0)
-      : 0;
-
-    let localYearForecast = totalB;
-    if (yearB === currentYear) {
-      localYearForecast = daysPassedInYear > 0 ? (totalB / daysPassedInYear) * daysInYear : totalB;
-    }
-
-    const bestStoreByYear = (year: string) => {
-      const entries = Object.entries(storeTotalsByYear[year] || {})
-        .map(([nome, total]) => ({ nome, total }))
-        .sort((a, b) => b.total - a.total);
-      return entries[0] || { nome: '—', total: 0 };
-    };
-
-    const bestB = yearB ? bestStoreByYear(yearB) : { nome: '—', total: 0 };
-
-    const growthVsYearA = totalA > 0 ? ((localYearForecast - totalA) / totalA) * 100 : 0;
-
-    return {
-      chartData,
-      totalA,
-      totalAUntilCurrentMonth,
-      totalB,
-      bestB,
-      localMonthSoFar: currentMonthRealYearB,
-      localMonthForecast:
-        yearB === currentYear && currentDay > 0
-          ? Math.max(currentMonthRealYearB, (currentMonthRealYearB / currentDay) * daysInCurrentMonth)
-          : currentMonthRealYearB,
-      localYearForecast: Math.max(localYearForecast, totalB),
-      growthVsYearA,
-      cutoffLabel:
-        monthFilter !== '0'
-          ? `Até ${MONTH_FULL[Number(monthFilter)]}`
-          : yearB === currentYear
-            ? 'Até mês atual'
-            : 'Ano completo',
-    };
-  }, [filteredRawData, yearA, yearB, monthFilter]);
-
-  const segurosComputed = useMemo(() => {
-    const byYear: Record<string, { total: number; qtd: number }> = {
-      [yearA]: { total: 0, qtd: 0 },
-      [yearB]: { total: 0, qtd: 0 },
-    };
-
-    for (const row of filteredAnnualStoreCompare) {
-      const year = String(row.ano || row.ANO || '');
-      if (year !== yearA && year !== yearB) continue;
-      byYear[year] = {
-        total: (byYear[year]?.total || 0) + toNumberSafe(row.seguro_total || row.SEGURO_TOTAL || 0),
-        qtd: (byYear[year]?.qtd || 0) + toNumberSafe(row.seguro_qtd || row.SEGURO_QTD || 0),
-      };
-    }
-
-    return {
-      yearA: byYear[yearA] || { total: 0, qtd: 0 },
-      yearB: byYear[yearB] || { total: 0, qtd: 0 },
-    };
-  }, [filteredAnnualStoreCompare, yearA, yearB]);
-
-  const categoryMiniData = useMemo(() => {
-    const map = new Map<string, number>();
-
-    for (const row of filteredRawData) {
-      const ym = extractYearMonth(getDateValue(row));
-      if (!ym || ym.year !== yearB) continue;
-
-      const category = getCategory(row) || 'OUTROS';
-      map.set(category, (map.get(category) || 0) + getTotal(row));
-    }
-
-    return Array.from(map.entries())
-      .map(([name, value]) => ({ name, value }))
-      .sort((a, b) => b.value - a.value)
-      .slice(0, 5);
-  }, [filteredRawData, yearB]);
-
-  const regionPieData = useMemo(() => {
-    const map = new Map<string, number>();
-
-    for (const row of filteredRawData) {
-      const ym = extractYearMonth(getDateValue(row));
-      if (!ym || ym.year !== yearB) continue;
-
-      const region = getRegion(row) || 'SEM REGIÃO';
-      map.set(region, (map.get(region) || 0) + getTotal(row));
-    }
-
-    return Array.from(map.entries())
-      .map(([name, value]) => ({ name, value }))
-      .sort((a, b) => b.value - a.value);
-  }, [filteredRawData, yearB]);
-
-  const productComparison = useMemo(() => {
-    const prodMap = new Map<string, { desc: string; totalA: number; qtdA: number; totalB: number; qtdB: number }>();
-
-    for (const sale of filteredRawData) {
-      const ym = extractYearMonth(getDateValue(sale));
-      if (!ym) continue;
-
-      const isYearA = ym.year === yearA;
-      const isYearB = ym.year === yearB;
-      if (!isYearA && !isYearB) continue;
-
-      const desc = getDescription(sale);
-      const total = getTotal(sale);
-      const qtd = getQuantity(sale);
-
-      if (!prodMap.has(desc)) {
-        prodMap.set(desc, { desc, totalA: 0, qtdA: 0, totalB: 0, qtdB: 0 });
-      }
-
-      const current = prodMap.get(desc)!;
-      if (isYearA) {
-        current.totalA += total;
-        current.qtdA += qtd;
-      }
-      if (isYearB) {
-        current.totalB += total;
-        current.qtdB += qtd;
-      }
-    }
-
-    return Array.from(prodMap.values())
-      .map((p) => {
-        let crescimentoPct = 0;
-        if (p.totalA > 0) crescimentoPct = ((p.totalB - p.totalA) / p.totalA) * 100;
-        else if (p.totalB > 0) crescimentoPct = 100;
-        return { ...p, crescimentoPct };
-      })
-      .sort((a, b) => b.totalB - a.totalB);
-  }, [filteredRawData, yearA, yearB]);
-
-  const searchedProducts = useMemo(() => {
-    if (!searchProduct) return productComparison;
-    const term = searchProduct.toLowerCase();
-    return productComparison.filter((p) => p.desc.toLowerCase().includes(term));
-  }, [productComparison, searchProduct]);
-
-  const topProductA = useMemo(() => {
-    return [...productComparison].sort((a, b) => b.totalA - a.totalA)[0] || null;
-  }, [productComparison]);
-
-  const topProductB = useMemo(() => {
-    return [...productComparison].sort((a, b) => b.totalB - a.totalB)[0] || null;
-  }, [productComparison]);
-
-  const maxGrowthProduct = useMemo(() => {
-    const valid = productComparison.filter((p) => p.totalA > 10000);
-    return valid.sort((a, b) => b.crescimentoPct - a.crescimentoPct)[0] || null;
-  }, [productComparison]);
-
-  const noData = computed.totalA + computed.totalB + segurosComputed.yearB.total <= 0;
-
-  const chartLegendNameMap: Record<string, string> = useMemo(() => ({
-    [yearA]: `${yearA} Real`,
-    [`${yearB}_real`]: `${yearB} Real`,
-    [`${yearB}_proj`]: `${yearB} Tendência restante`,
-  }), [yearA, yearB]);
 
   return (
-    <div className="h-full overflow-y-auto p-4 md:p-6 bg-[#F0F2F5] font-sans text-slate-800">
-      {errorMsg && (
-        <div className="mb-4 bg-red-100 border border-red-300 text-red-700 px-4 py-3 rounded-xl flex items-center gap-2">
-          <AlertCircle size={20} />
-          <span className="block sm:inline">{errorMsg}</span>
-        </div>
-      )}
-
-      <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center mb-6 gap-4 bg-white p-4 rounded-xl shadow-sm border border-slate-200">
-        <div>
-          <div className="flex items-center gap-2 mb-1">
-            <div className="p-2 bg-[#1428A0] rounded text-white"><Activity size={18} /></div>
-            <h1 className="text-lg font-black uppercase tracking-tight text-[#1428A0]">
-              Comparativo Anual ({yearA || '—'} x {yearB || '—'})
-            </h1>
-          </div>
-          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-10">
-            Histórico completo • Comparativo entre anos • Produtos
-          </p>
-        </div>
-
-        <div className="flex flex-wrap gap-3 items-center w-full xl:w-auto">
-          <div className="flex items-center bg-white border border-slate-200 px-3 py-2 rounded-lg gap-2 shadow-sm">
-            <Calendar size={14} className="text-blue-600" />
-            <input
-              type="date"
-              value={startDate}
-              onChange={(e) => setStartDate(e.target.value)}
-              className="bg-transparent text-xs font-bold text-slate-600 outline-none"
-            />
-          </div>
-
-          <div className="flex items-center bg-white border border-slate-200 px-3 py-2 rounded-lg gap-2 shadow-sm">
-            <Calendar size={14} className="text-blue-600" />
-            <input
-              type="date"
-              value={endDate}
-              onChange={(e) => setEndDate(e.target.value)}
-              className="bg-transparent text-xs font-bold text-slate-600 outline-none"
-            />
-          </div>
-
-          {(startDate || endDate) && (
-            <button
-              onClick={clearDates}
-              className="bg-white border border-slate-200 px-4 py-2 rounded-lg text-xs font-bold text-slate-500 hover:bg-slate-50 shadow-sm"
-            >
-              Limpar datas
-            </button>
-          )}
-
-          <div className="flex items-center bg-white border border-slate-200 px-3 py-2 rounded-lg gap-2 shadow-sm">
-            <Calendar size={14} className="text-blue-600" />
-            <select
-              value={monthFilter}
-              onChange={(e) => setMonthFilter(e.target.value)}
-              className="bg-transparent text-xs font-bold text-slate-600 uppercase outline-none cursor-pointer"
-            >
-              <option value="0">Todos os meses</option>
-              {Object.entries(MONTH_FULL).map(([key, label]) => (
-                <option key={key} value={key}>{label}</option>
-              ))}
-            </select>
-          </div>
-
-          <div className="flex items-center bg-white border border-slate-200 px-3 py-2 rounded-lg gap-2 shadow-sm">
-            <Layers size={14} className="text-blue-600" />
-            <select
-              value={categoryFilter}
-              onChange={(e) => setCategoryFilter(e.target.value)}
-              className="bg-transparent text-xs font-bold text-slate-600 uppercase outline-none cursor-pointer w-full md:w-auto max-w-[180px] truncate"
-            >
-              <option value="TODAS">Todas categorias</option>
-              {uniqueCategories.map((c) => (
-                <option key={c} value={c}>{c}</option>
-              ))}
-            </select>
-          </div>
-
-          <div className="relative" ref={storeMenuRef}>
-            <button
-              onClick={() => setIsStoreMenuOpen(!isStoreMenuOpen)}
-              className="flex items-center gap-2 bg-white border border-slate-200 px-4 py-2 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-50 transition-colors min-w-[170px] justify-between shadow-sm"
-            >
-              <div className="flex items-center gap-2">
-                <Store size={14} className="text-blue-600" />
-                <span className="truncate max-w-[120px] uppercase">
-                  {selectedStores.length === 0 ? 'Todas as lojas' : selectedStores.length === 1 ? selectedStores[0] : `${selectedStores.length} lojas`}
-                </span>
-              </div>
-              <ChevronDown size={14} className="text-slate-400" />
-            </button>
-
-            {isStoreMenuOpen && (
-              <div className="absolute top-full right-0 mt-2 w-64 bg-white rounded-xl shadow-xl border border-slate-100 z-50 p-2 max-h-80 overflow-y-auto">
-                <div
-                  onClick={() => setSelectedStores([])}
-                  className="flex items-center gap-3 p-3 hover:bg-slate-50 rounded-lg cursor-pointer border-b border-slate-50 mb-1"
-                >
-                  {selectedStores.length === 0 ? <CheckSquare size={16} className="text-blue-600" /> : <Square size={16} className="text-slate-300" />}
-                  <span className="text-xs font-bold text-slate-700 uppercase">Todas as lojas</span>
-                </div>
-
-                {uniqueStores.map((store) => (
-                  <div
-                    key={store}
-                    onClick={() => toggleStore(store)}
-                    className="flex items-center gap-3 p-3 hover:bg-slate-50 rounded-lg cursor-pointer"
-                  >
-                    {selectedStores.includes(store)
-                      ? <CheckSquare size={16} className="text-blue-600" />
-                      : <Square size={16} className="text-slate-300" />
-                    }
-                    <span className="text-xs font-bold text-slate-600 uppercase truncate">{store}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <button
-            onClick={loadData}
-            disabled={loading}
-            className="bg-[#1428A0] hover:bg-blue-900 text-white px-4 py-2 rounded-lg text-xs font-bold transition-all shadow-md shadow-blue-900/10 flex items-center gap-2 disabled:opacity-50"
-          >
-            <Filter size={14} /> {loading ? 'Atualizando...' : 'Atualizar'}
-          </button>
-        </div>
-      </div>
-
-      <div className="flex gap-2 mb-6">
-        <button
-          onClick={() => setActiveTab('geral')}
-          className={`px-5 py-2.5 rounded-lg text-xs font-bold uppercase transition-all flex items-center gap-2 ${activeTab === 'geral' ? 'bg-[#1428A0] text-white shadow-md' : 'bg-white text-slate-500 hover:bg-slate-50 border border-slate-200'}`}
-        >
-          <Activity size={16} /> Visão Geral
-        </button>
-        <button
-          onClick={() => setActiveTab('produtos')}
-          className={`px-5 py-2.5 rounded-lg text-xs font-bold uppercase transition-all flex items-center gap-2 ${activeTab === 'produtos' ? 'bg-emerald-600 text-white shadow-md' : 'bg-white text-slate-500 hover:bg-slate-50 border border-slate-200'}`}
-        >
-          <Package size={16} /> Comparativo de Produtos
-        </button>
-      </div>
-
-      {noData && !loading && !errorMsg && (
-        <div className="bg-yellow-50 border border-yellow-200 text-yellow-700 p-4 rounded-xl flex items-center gap-3 mb-6">
-          <AlertCircle size={20} />
-          <div className="text-sm font-bold">Nenhum dado encontrado com os filtros atuais.</div>
-        </div>
-      )}
-
-      {activeTab === 'geral' && (
-        <>
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 mb-6">
-            <SmallMetricCard
-              title={`Card 1 · ${yearA}`}
-              icon={<Calendar size={16} className="text-indigo-600" />}
-              value={formatMoney(computed.totalA)}
-              valueClass="text-indigo-900"
-              subtitle={`${computed.cutoffLabel}: ${formatMoney(computed.totalAUntilCurrentMonth)}`}
-            />
-
-            <SmallMetricCard
-              title={`Card 2 · ${yearB}`}
-              icon={<Store size={16} className="text-sky-600" />}
-              value={formatMoney(computed.totalB)}
-              valueClass="text-sky-700"
-              subtitle={`Melhor loja: ${computed.bestB.nome}\n${formatMoney(computed.bestB.total)}`}
-            />
-
-            <SmallMetricCard
-              title={`Card 3 · Tendência ${yearB}`}
-              icon={<TrendingUp size={16} className="text-emerald-600" />}
-              value={formatMoney(computed.localYearForecast)}
-              valueClass="text-emerald-700"
-              subtitle={`Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.toFixed(2)}%`}
-            />
-
-            <SmallMetricCard
-              title="Card 4 · Seguros"
-              icon={<ShieldCheck size={16} className="text-fuchsia-600" />}
-              value={formatMoney(segurosComputed.yearB.total)}
-              valueClass="text-fuchsia-600"
-              subtitle={`Qtd. seguros: ${Math.round(segurosComputed.yearB.qtd).toLocaleString('pt-BR')}`}
-            />
-
-            <SmallMetricCard
-              title="Card 5 · Categorias"
-              icon={<BarChart3 size={16} className="text-slate-400" />}
-            >
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={categoryMiniData} margin={{ top: 10, right: 0, left: 0, bottom: 10 }}>
-                  <Bar dataKey="value" fill="#2563EB" radius={[6, 6, 0, 0]} />
-                  <Tooltip formatter={(value: any) => [formatMoney(Number(value) || 0), 'Faturamento']} />
-                </BarChart>
-              </ResponsiveContainer>
-              <div className="text-[10px] font-bold text-slate-500 uppercase mt-2">Top categorias de {yearB}</div>
-            </SmallMetricCard>
-
-            <SmallMetricCard
-              title="Card 6 · Regiões"
-              icon={<PieChart size={16} className="text-slate-400" />}
-            >
-              <ResponsiveContainer width="100%" height="100%">
-                <RechartsPieChart>
-                  <Pie
-                    data={regionPieData}
-                    dataKey="value"
-                    nameKey="name"
-                    innerRadius={28}
-                    outerRadius={42}
-                    paddingAngle={2}
-                  >
-                    {regionPieData.map((entry, index) => (
-                      <Cell key={`cell-${entry.name}`} fill={PIE_COLORS[index % PIE_COLORS.length]} />
-                    ))}
-                  </Pie>
-                  <Tooltip formatter={(value: any, _name: any, props: any) => [formatMoney(Number(value) || 0), props?.payload?.name || 'Região']} />
-                </RechartsPieChart>
-              </ResponsiveContainer>
-              <div className="text-[10px] font-bold text-slate-500 uppercase mt-2">Distribuição de {yearB}</div>
-            </SmallMetricCard>
-          </div>
-
-          <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm h-[380px] mb-6">
-            <div className="flex items-center gap-2 mb-6">
-              <Activity size={16} className="text-indigo-600" />
-              <h3 className="font-black text-slate-700 uppercase text-xs">Vendas por Mês ({yearA} x {yearB})</h3>
-            </div>
-
-            <div className="h-[300px] min-h-[300px] w-full min-w-0">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={computed.chartData} margin={{ top: 10, right: 10, left: 10, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E2E8F0" />
-                  <XAxis
-                    dataKey="mes"
-                    tick={{ fontSize: 12, fontWeight: 'bold', fill: '#64748b' }}
-                    axisLine={false}
-                    tickLine={false}
-                  />
-                  <YAxis tickFormatter={(value) => formatMoneyShort(Number(value))} tick={{ fontSize: 10, fill: '#94A3B8' }} axisLine={false} tickLine={false} />
-                  <Tooltip
-                    cursor={{ fill: '#F8FAFC' }}
-                    contentStyle={{ backgroundColor: '#0F172A', borderRadius: '10px', border: 'none', color: '#fff' }}
-                    formatter={(val: any, name: string) => [formatMoney(Number(val) || 0), chartLegendNameMap[name] || name]}
-                  />
-                  <Legend formatter={(value) => <span style={{ color: '#334155', fontWeight: 700 }}>{chartLegendNameMap[value] || value}</span>} />
-                  <Bar dataKey={yearA} name={chartLegendNameMap[yearA]} fill={CHART_COLORS.yearA} radius={[4, 4, 0, 0]}>
-                    <LabelList
-                      dataKey={yearA}
-                      position="top"
-                      formatter={(val: any) => (Number(val) > 0 ? formatMoneyShort(Number(val)) : '')}
-                      style={{ fontSize: '10px', fill: CHART_COLORS.yearA, fontWeight: 900 }}
-                    />
-                  </Bar>
-
-                  <Bar dataKey={`${yearB}_real`} name={chartLegendNameMap[`${yearB}_real`]} stackId="yearB" fill={CHART_COLORS.yearBReal} radius={[4, 4, 0, 0]} />
-                  <Bar dataKey={`${yearB}_proj`} name={chartLegendNameMap[`${yearB}_proj`]} stackId="yearB" fill={CHART_COLORS.yearBProjection} radius={[4, 4, 0, 0]}>
-                    <LabelList
-                      dataKey={(row: AnyRow) => (Number(row[`${yearB}_real`] || 0) + Number(row[`${yearB}_proj`] || 0))}
-                      position="top"
-                      formatter={(val: any) => (Number(val) > 0 ? formatMoneyShort(Number(val)) : '')}
-                      style={{ fontSize: '10px', fill: CHART_COLORS.yearBProjection, fontWeight: 900 }}
-                    />
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-        </>
-      )}
-
-      {activeTab === 'produtos' && (
-        <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-4">
-              <div className="p-3 bg-indigo-50 text-indigo-600 rounded-xl"><Package size={24} /></div>
-              <div className="overflow-hidden">
-                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest truncate">Mais vendido ({yearA})</p>
-                <h3 className="text-sm font-black text-slate-800 mt-1 truncate" title={topProductA?.desc}>{topProductA?.desc || 'N/D'}</h3>
-                <p className="text-xs text-indigo-600 font-bold mt-0.5">{topProductA ? formatMoney(topProductA.totalA) : 'R$ 0'}</p>
-              </div>
-            </div>
-
-            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-4">
-              <div className="p-3 bg-sky-50 text-sky-600 rounded-xl"><Package size={24} /></div>
-              <div className="overflow-hidden">
-                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest truncate">Mais vendido ({yearB})</p>
-                <h3 className="text-sm font-black text-slate-800 mt-1 truncate" title={topProductB?.desc}>{topProductB?.desc || 'N/D'}</h3>
-                <p className="text-xs text-sky-600 font-bold mt-0.5">{topProductB ? formatMoney(topProductB.totalB) : 'R$ 0'}</p>
-              </div>
-            </div>
-
-            <div className="bg-white p-5 rounded-2xl border border-emerald-100 shadow-sm flex items-center gap-4 relative overflow-hidden">
-              <div className="absolute top-0 right-0 p-4 opacity-5"><TrendingUp size={60} /></div>
-              <div className="p-3 bg-emerald-50 text-emerald-600 rounded-xl z-10"><ArrowUpRight size={24} /></div>
-              <div className="z-10 overflow-hidden">
-                <p className="text-[10px] font-black text-emerald-600/70 uppercase tracking-widest truncate">Destaque de crescimento</p>
-                <h3 className="text-sm font-black text-emerald-900 mt-1 truncate" title={maxGrowthProduct?.desc}>{maxGrowthProduct?.desc || 'N/D'}</h3>
-                <p className="text-xs text-emerald-600 font-bold mt-0.5">
-                  {maxGrowthProduct ? `${maxGrowthProduct.crescimentoPct > 0 ? '+' : ''}${maxGrowthProduct.crescimentoPct.toFixed(1)}% vs ano anterior` : '-'}
+    <div className="w-full bg-slate-50 min-h-screen">
+      <div className="mx-auto max-w-[1800px] px-4 md:px-6 py-6 space-y-5">
+        <div className="bg-white rounded-[28px] border border-slate-200 shadow-sm p-5 md:p-6">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+            <div className="min-w-0">
+              <h1 className="text-[18px] md:text-[20px] font-black uppercase tracking-tight text-slate-900">
+                Comparativo de Ofertas
+              </h1>
+              <p className="text-[12px] text-slate-500 mt-1">
+                Estrutura no padrão operacional da planilha: cartas + sistema + estoque + vendas.
+              </p>
+              {apiInfo && (
+                <p className="mt-3 text-[11px] font-black uppercase tracking-widest text-emerald-600">
+                  {apiInfo}
                 </p>
-              </div>
+              )}
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3">
+              <label className="inline-flex items-center gap-2 rounded-2xl bg-slate-900 text-white px-5 py-3 text-sm font-black cursor-pointer shadow-sm hover:bg-slate-800 transition-colors">
+                <UploadCloud size={16} />
+                Importar PDFs
+                <input type="file" className="hidden" accept="application/pdf" multiple onChange={processFiles} />
+              </label>
+
+              <button
+                type="button"
+                onClick={exportExcel}
+                className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 text-white px-5 py-3 text-sm font-black shadow-sm hover:bg-emerald-700 transition-colors"
+              >
+                <FileSpreadsheet size={16} />
+                Exportar Excel
+              </button>
             </div>
           </div>
 
-          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden flex flex-col">
-            <div className="p-4 border-b border-slate-100 flex flex-col sm:flex-row justify-between items-center bg-slate-50 gap-4">
-              <div className="flex items-center gap-2">
-                <Layers size={18} className="text-slate-500" />
-                <h3 className="font-black text-slate-700 uppercase text-xs">Ranking de Produtos</h3>
-              </div>
+          {errorMsg && (
+            <div className="mt-4 flex items-start gap-3 rounded-2xl border border-red-200 bg-red-50 p-4 text-red-700">
+              <AlertCircle size={18} className="mt-0.5 shrink-0" />
+              <div className="text-sm">{errorMsg}</div>
+            </div>
+          )}
+        </div>
 
-              <div className="relative w-full sm:w-72">
-                <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                <input
-                  type="text"
-                  placeholder="Buscar modelo..."
-                  value={searchProduct}
-                  onChange={(e) => setSearchProduct(e.target.value)}
-                  className="w-full pl-9 pr-3 py-2 text-xs font-bold text-slate-700 bg-white border border-slate-200 rounded-lg outline-none focus:border-emerald-500 transition-colors uppercase shadow-sm"
-                />
-              </div>
+        <div className="bg-white rounded-[28px] border border-slate-200 shadow-sm p-5 md:p-6">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+            <div>
+              <h2 className="text-[16px] font-black uppercase tracking-tight text-slate-900">
+                Quadro consolidado
+              </h2>
+              <p className="text-[12px] text-slate-500 mt-1">
+                Uma linha por modelo + campanha, com colunas agrupadas como na planilha de Excel.
+              </p>
             </div>
 
-            <div className="overflow-x-auto max-h-[600px]">
-              <table className="w-full text-left border-collapse min-w-[800px]">
-                <thead className="sticky top-0 bg-slate-50 shadow-sm z-10 border-b border-slate-200">
+            <div className="relative w-full xl:w-[360px]">
+              <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                placeholder="Buscar por descrição, campanha, referência ou modelo"
+                className="w-full rounded-2xl border border-slate-200 bg-slate-50 pl-10 pr-4 py-3 text-sm outline-none focus:border-slate-400"
+              />
+            </div>
+          </div>
+
+          <div className="mt-5 grid grid-cols-2 xl:grid-cols-5 gap-4">
+            <div className="rounded-2xl border border-slate-200 p-4 bg-slate-50/60">
+              <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">Campanhas</div>
+              <div className="mt-2 text-3xl font-black text-slate-900">{formatNumber(summary.campanhas)}</div>
+            </div>
+            <div className="rounded-2xl border border-slate-200 p-4 bg-slate-50/60">
+              <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">Modelos</div>
+              <div className="mt-2 text-3xl font-black text-slate-900">{formatNumber(summary.modelos)}</div>
+            </div>
+            <div className="rounded-2xl border border-slate-200 p-4 bg-slate-50/60">
+              <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">Qtd. Estoque</div>
+              <div className="mt-2 text-3xl font-black text-emerald-600">{formatNumber(summary.estoque)}</div>
+            </div>
+            <div className="rounded-2xl border border-slate-200 p-4 bg-slate-50/60">
+              <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">Qtd. Vendida</div>
+              <div className="mt-2 text-3xl font-black text-blue-600">{formatNumber(summary.vendida)}</div>
+            </div>
+            <div className="rounded-2xl border border-slate-200 p-4 bg-slate-50/60">
+              <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">Verba Total</div>
+              <div className="mt-2 text-3xl font-black text-violet-600">{formatMoney(summary.verba)}</div>
+            </div>
+          </div>
+
+          <div className="mt-4 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
+            <span className="rounded-full bg-slate-100 px-3 py-1 font-semibold">Role para os lados para ver todas as colunas</span>
+            <span className="rounded-full bg-slate-100 px-3 py-1 font-semibold">Descrição e Referência fixas</span>
+            <span className="rounded-full bg-slate-100 px-3 py-1 font-semibold">Cabeçalho fixo no topo</span>
+          </div>
+
+          <div className="mt-6 rounded-2xl border border-slate-200 overflow-hidden bg-white shadow-sm">
+            <div className="max-h-[74vh] overflow-auto overscroll-contain">
+              <table className="min-w-[3320px] w-full border-separate border-spacing-0 bg-white">
+                <thead className="sticky top-0 z-30 shadow-[0_1px_0_0_rgba(226,232,240,1)]">
                   <tr>
-                    <th className="p-3 text-center text-[9px] font-black text-slate-400 uppercase">#</th>
-                    <th className="p-3 text-[9px] font-black text-slate-400 uppercase">Produto</th>
-                    <th className="p-3 text-center border-l border-slate-200 bg-indigo-50/30 text-indigo-800 text-[10px] font-black uppercase" colSpan={2}>
-                      {yearA}
-                    </th>
-                    <th className="p-3 text-center border-l border-slate-200 bg-sky-50/30 text-sky-800 text-[10px] font-black uppercase" colSpan={2}>
-                      {yearB}
-                    </th>
-                    <th className="p-3 text-right border-l border-slate-200 text-[9px] font-black text-slate-400 uppercase">
-                      Crescimento
-                    </th>
+                    <GroupHeader colSpan={2} className="bg-slate-100 text-slate-700 sticky top-0 left-0 z-40 shadow-[1px_0_0_0_rgba(226,232,240,1)]">
+                      Produto
+                    </GroupHeader>
+                    <GroupHeader colSpan={4} className="bg-emerald-50 text-emerald-700">Preços</GroupHeader>
+                    <GroupHeader colSpan={6} className="bg-sky-50 text-sky-700">Descontos</GroupHeader>
+                    <GroupHeader colSpan={8} className="bg-orange-50 text-orange-700">Campanha</GroupHeader>
+                    <GroupHeader colSpan={9} className="bg-violet-50 text-violet-700">Operação</GroupHeader>
                   </tr>
-                  <tr className="text-[9px] font-black text-slate-400 uppercase tracking-wider bg-white">
-                    <th></th>
-                    <th></th>
-                    <th className="p-2 text-center border-l border-slate-100">Qtd</th>
-                    <th className="p-2 text-right border-r border-slate-100">Valor (R$)</th>
-                    <th className="p-2 text-center">Qtd</th>
-                    <th className="p-2 text-right border-r border-slate-100">Valor (R$)</th>
-                    <th></th>
+                  <tr className="sticky top-[38px] z-30 bg-white">
+                    <TableHeader className="sticky left-0 z-40 min-w-[240px] bg-slate-50 shadow-[1px_0_0_0_rgba(226,232,240,1)]">Descrição</TableHeader>
+                    <TableHeader className="sticky left-[240px] z-40 min-w-[110px] bg-slate-50 shadow-[1px_0_0_0_rgba(226,232,240,1)]">Referência</TableHeader>
+
+                    <TableHeader className="min-w-[95px] bg-emerald-50/70">Preço Samsung</TableHeader>
+                    <TableHeader className="min-w-[95px] bg-emerald-50/70">Preço Telecel</TableHeader>
+                    <TableHeader className="min-w-[105px] bg-emerald-50/70">Oferta Atual</TableHeader>
+                    <TableHeader className="min-w-[120px] bg-emerald-50/70">Preço Promocional</TableHeader>
+
+                    <TableHeader className="min-w-[130px] bg-sky-50/80">Desc. Telecel</TableHeader>
+                    <TableHeader className="min-w-[110px] bg-sky-50/80">Desc. Rebate</TableHeader>
+                    <TableHeader className="min-w-[115px] bg-sky-50/80">Desc. Trade In</TableHeader>
+                    <TableHeader className="min-w-[100px] bg-sky-50/80">Desc. Bogo</TableHeader>
+                    <TableHeader className="min-w-[95px] bg-sky-50/80">Desc. SIP</TableHeader>
+                    <TableHeader className="min-w-[110px] bg-sky-50/80">Total Desconto</TableHeader>
+
+                    <TableHeader className="min-w-[180px] bg-orange-50/80">Tipo Promoção</TableHeader>
+                    <TableHeader className="min-w-[145px] bg-orange-50/80">Período</TableHeader>
+                    <TableHeader className="min-w-[135px] bg-orange-50/80">Ref. Campanha</TableHeader>
+                    <TableHeader className="min-w-[280px] bg-orange-50/80">Campanha</TableHeader>
+                    <TableHeader className="min-w-[155px] bg-orange-50/80">Modelo PDF</TableHeader>
+                    <TableHeader className="min-w-[155px] bg-orange-50/80">Basic Model</TableHeader>
+                    <TableHeader className="min-w-[105px] text-right bg-orange-50/80">Price Campanha</TableHeader>
+                    <TableHeader className="min-w-[105px] text-right bg-orange-50/80">Verba Total</TableHeader>
+
+                    <TableHeader className="min-w-[95px] text-right bg-violet-50/80">Qtd Estoque</TableHeader>
+                    <TableHeader className="min-w-[125px] text-right bg-violet-50/80">Custo Total Estoque</TableHeader>
+                    <TableHeader className="min-w-[125px] text-right bg-violet-50/80">Custo Médio Estoque</TableHeader>
+                    <TableHeader className="min-w-[105px] text-right bg-violet-50/80">Margem Estoque</TableHeader>
+                    <TableHeader className="min-w-[120px] text-right bg-violet-50/80">Novo Custo Médio</TableHeader>
+                    <TableHeader className="min-w-[100px] text-right bg-violet-50/80">Margem Price</TableHeader>
+                    <TableHeader className="min-w-[95px] text-right bg-violet-50/80">Qtd Vendida</TableHeader>
+                    <TableHeader className="min-w-[280px] bg-violet-50/80">Lojas</TableHeader>
+                    <TableHeader className="min-w-[90px] bg-violet-50/80">Status</TableHeader>
                   </tr>
                 </thead>
-                <tbody className="text-xs font-bold text-slate-700 divide-y divide-slate-50">
-                  {searchedProducts.map((p, i) => {
-                    const isPositive = p.crescimentoPct > 0;
-                    const isNegative = p.crescimentoPct < 0;
-                    const isNeutral = p.crescimentoPct === 0;
-
+                <tbody>
+                  {filteredRows.map((row, idx) => {
+                    const baseRow = idx % 2 === 0 ? 'bg-white hover:bg-slate-50' : 'bg-slate-50/40 hover:bg-slate-100/60';
+                    const descBg = idx % 2 === 0 ? 'bg-white' : 'bg-slate-50/40';
                     return (
-                      <tr key={`${p.desc}-${i}`} className="hover:bg-slate-50/80 transition-colors group">
-                        <td className="p-3 text-center">
-                          <span className={`w-5 h-5 flex items-center justify-center rounded mx-auto text-[9px] ${i < 3 ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-500'}`}>
-                            {i + 1}
-                          </span>
-                        </td>
-                        <td className="p-3 uppercase text-[10px] max-w-[200px] truncate" title={p.desc}>{p.desc}</td>
-                        <td className="p-3 text-center border-l border-slate-50 text-slate-500 bg-indigo-50/10 group-hover:bg-indigo-50/30 transition-colors">{p.qtdA}</td>
-                        <td className="p-3 text-right font-mono text-indigo-700 bg-indigo-50/10 group-hover:bg-indigo-50/30 transition-colors">{formatMoney(p.totalA)}</td>
-                        <td className="p-3 text-center border-l border-slate-50 bg-sky-50/10 group-hover:bg-sky-50/30 transition-colors">{p.qtdB}</td>
-                        <td className="p-3 text-right font-mono text-sky-700 font-black bg-sky-50/10 group-hover:bg-sky-50/30 transition-colors">{formatMoney(p.totalB)}</td>
-                        <td className="p-3 text-right border-l border-slate-50">
-                          <div className="flex justify-end">
-                            <div className={`flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-black ${
-                              isPositive ? 'bg-emerald-100 text-emerald-700' :
-                              isNegative ? 'bg-red-100 text-red-700' :
-                              'bg-slate-100 text-slate-500'
-                            }`}>
-                              {isPositive && <ArrowUpRight size={12} />}
-                              {isNegative && <ArrowDownRight size={12} />}
-                              {isNeutral && <Minus size={12} />}
-                              {isFinite(p.crescimentoPct) ? `${p.crescimentoPct > 0 ? '+' : ''}${p.crescimentoPct.toFixed(1)}%` : 'NOVO'}
-                            </div>
-                          </div>
-                        </td>
+                      <tr key={`${row.refCampanha}-${row.basicModel}-${idx}`} className={baseRow}>
+                        <TableCell className={`sticky left-0 z-20 min-w-[240px] font-black text-slate-900 shadow-[1px_0_0_0_rgba(241,245,249,1)] break-words ${descBg}`}>
+                          {row.descricao}
+                        </TableCell>
+                        <TableCell className={`sticky left-[240px] z-20 min-w-[110px] whitespace-nowrap shadow-[1px_0_0_0_rgba(241,245,249,1)] ${descBg}`}>
+                          {row.referencia || '-'}
+                        </TableCell>
+
+                        <TableCell className="whitespace-nowrap bg-emerald-50/30">{formatMoney(row.precoSamsung)}</TableCell>
+                        <TableCell className="whitespace-nowrap bg-emerald-50/30 font-semibold">{formatMoney(row.precoTelecel)}</TableCell>
+                        <TableCell className="whitespace-nowrap bg-emerald-50/30">{formatMoney(row.ofertaAtual)}</TableCell>
+                        <TableCell className="whitespace-nowrap bg-emerald-50/30 text-orange-600 font-black">{formatMoney(row.precoPromocional)}</TableCell>
+
+                        <TableCell className="whitespace-nowrap text-red-600 font-semibold bg-sky-50/20">{formatMoney(row.totalDescontoTelecel)}</TableCell>
+                        <TableCell className="whitespace-nowrap bg-sky-50/20">{formatMoney(row.descontoRebate)}</TableCell>
+                        <TableCell className="whitespace-nowrap bg-sky-50/20">{formatMoney(row.descontoTradeIn)}</TableCell>
+                        <TableCell className="whitespace-nowrap bg-sky-50/20">{formatMoney(row.descontoBogo)}</TableCell>
+                        <TableCell className="whitespace-nowrap bg-sky-50/20">{formatMoney(row.descontoSip)}</TableCell>
+                        <TableCell className="whitespace-nowrap text-red-600 font-black bg-sky-50/20">{formatMoney(row.totalDesconto)}</TableCell>
+
+                        <TableCell className="min-w-[180px] break-words bg-orange-50/20">{row.tipoPromocao}</TableCell>
+                        <TableCell className="whitespace-nowrap bg-orange-50/20">{row.periodo}</TableCell>
+                        <TableCell className="font-black whitespace-nowrap bg-orange-50/20">{row.refCampanha || '-'}</TableCell>
+                        <TableCell className="min-w-[280px] break-words bg-orange-50/20">{row.campanha || '-'}</TableCell>
+                        <TableCell className="whitespace-nowrap bg-orange-50/20">{row.modeloPdf}</TableCell>
+                        <TableCell className="whitespace-nowrap bg-orange-50/20">{row.basicModel}</TableCell>
+                        <TableCell className="text-right whitespace-nowrap bg-orange-50/20">{formatMoney(row.verbaUnitaria)}</TableCell>
+                        <TableCell className="text-right font-black text-violet-600 whitespace-nowrap bg-orange-50/20">{formatMoney(row.verbaTotal)}</TableCell>
+
+                        <TableCell className="text-right font-black text-emerald-600 bg-violet-50/20">{formatNumber(row.qtdEstoque)}</TableCell>
+                        <TableCell className="text-right whitespace-nowrap bg-violet-50/20">{formatMoney(row.custoTotalEstoque)}</TableCell>
+                        <TableCell className="text-right whitespace-nowrap bg-violet-50/20">{formatMoney(row.custoMedioEstoque)}</TableCell>
+                        <TableCell className="text-right whitespace-nowrap bg-violet-50/20">{formatPercent(row.margemEstoque)}</TableCell>
+                        <TableCell className="text-right whitespace-nowrap bg-violet-50/20">{row.novoCustoMedio === null ? '-' : formatMoney(row.novoCustoMedio)}</TableCell>
+                        <TableCell className="text-right whitespace-nowrap bg-violet-50/20">{formatPercent(row.margemPrice)}</TableCell>
+                        <TableCell className="text-right font-black text-blue-600 bg-violet-50/20">{formatNumber(row.qtdVendida)}</TableCell>
+                        <TableCell className="min-w-[280px] break-words bg-violet-50/20">{row.lojas}</TableCell>
+                        <TableCell className={`font-black whitespace-nowrap bg-violet-50/20 ${row.status === 'MENOR' ? 'text-emerald-600' : row.status === 'MAIOR' ? 'text-red-600' : 'text-slate-700'}`}>
+                          {row.status}
+                        </TableCell>
                       </tr>
                     );
                   })}
-
-                  {searchedProducts.length === 0 && (
+                  {!loading && filteredRows.length === 0 && (
                     <tr>
-                      <td colSpan={7} className="p-10 text-center text-slate-400 text-sm font-bold">
-                        Nenhum produto encontrado com os filtros atuais.
+                      <td colSpan={29} className="px-4 py-16 text-center text-slate-400">
+                        Importe as cartas em PDF para montar o quadro.
+                      </td>
+                    </tr>
+                  )}
+                  {loading && (
+                    <tr>
+                      <td colSpan={29} className="px-4 py-16 text-center text-slate-500">
+                        Processando cartas e cruzando com o sistema...
                       </td>
                     </tr>
                   )}
@@ -1118,7 +936,8 @@ export default function ComparativoAnual() {
             </div>
           </div>
         </div>
-      )}
+      </div>
     </div>
   );
 }
+
