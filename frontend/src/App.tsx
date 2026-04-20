@@ -23,7 +23,6 @@ import EstoqueDetalhado from './components/EstoqueDetalhado';
 import SolicitacoesModule from './components/SolicitacoesModule';
 import Stockout from './components/StockOut';
 import ComparativosModule from './components/ComparativosModule';
-// IMPORTAÇÃO DO SEU NOVO MÓDULO (Ajuste o caminho/nome se precisar)
 import ComprasVendas from './components/ComprasVendas'; 
 
 import {
@@ -129,9 +128,9 @@ function App() {
   const viewTitles: Record<string, string> = {
     finance: 'CONTAS A PAGAR E RECEBER',
     controle_stone: 'CONCILIAÇÃO STONE',
-    comparativos_pdf: 'COMPARATIVOS',
+    comparativos_pdf: 'COMPARATIVO DE OFERTAS',
     comparativo: 'VENDAS ANUAIS',
-    compras_vendas: 'COMPRAS X VENDAS', // ADICIONADO PARA O HEADER
+    compras_vendas: 'COMPRAS X VENDAS', 
   };
 
   const currentViewLabel = viewTitles[currentView] || currentView.replace(/_/g, ' ').toUpperCase();
@@ -354,7 +353,6 @@ function App() {
               <NavButton
                 icon={Package}
                 label="Controle de Estoque"
-                // ADICIONADO compras_vendas NA ARRAY ACTIVE
                 active={['stock', 'estoque_vendas', 'estoque_inteligente', 'auditoria_lojas', 'estoque_detalhado', 'stockout', 'compras_vendas'].includes(currentView)}
                 onClick={() => handleSectionToggle('stock')}
                 hasChevron
@@ -367,7 +365,6 @@ function App() {
                   <SubMenuItem label="Visão Detalhada" view="estoque_detalhado" active={currentView === 'estoque_detalhado'} />
                   <SubMenuItem label="Estoque x Vendas" view="estoque_vendas" active={currentView === 'estoque_vendas'} />
                   
-                  {/* NOVO MENU APENAS PARA ADMINISTRADOR */}
                   {isAdmin && (
                     <SubMenuItem label="Compras x Vendas" view="compras_vendas" active={currentView === 'compras_vendas'} />
                   )}
@@ -535,11 +532,8 @@ function App() {
             <PriceTablePage />
           ) : currentView === 'solicitacoes' ? (
             <SolicitacoesModule currentUser={user} />
-            
-          //* NOVA ROTA DE COMPRAS X VENDAS (Apenas para Admin) */}
           ) : currentView === 'compras_vendas' && isAdmin ? (
             <ComprasVendas />
-            
           ) : currentView === 'team' ? (
             <div className="flex-1 p-4 md:p-8 overflow-y-auto">
               <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
