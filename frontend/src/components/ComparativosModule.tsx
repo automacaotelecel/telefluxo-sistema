@@ -504,6 +504,16 @@ const TableCell = ({ children, className = '' }: { children: React.ReactNode; cl
   <td className={`px-3 py-3 text-sm text-slate-700 border-b border-slate-100 align-top ${className}`}>{children}</td>
 );
 
+const GroupHeader = ({ children, className = '', colSpan }: { children: React.ReactNode; className?: string; colSpan: number }) => (
+  <th
+    colSpan={colSpan}
+    className={`px-3 py-2 text-[10px] font-black uppercase tracking-[0.2em] text-center border-b border-slate-200 whitespace-nowrap ${className}`}
+  >
+    {children}
+  </th>
+);
+
+
 export default function ComparativosModule() {
   const [rows, setRows] = useState<LinhaTabela[]>([]);
   const [errorMsg, setErrorMsg] = useState('');
@@ -713,17 +723,18 @@ export default function ComparativosModule() {
     XLSX.writeFile(workbook, `comparativo_ofertas_${Date.now()}.xlsx`);
   };
 
+
   return (
     <div className="w-full bg-slate-50 min-h-screen">
-      <div className="mx-auto max-w-[1700px] px-6 py-6 space-y-5">
-        <div className="bg-white rounded-[28px] border border-slate-200 shadow-sm p-6">
+      <div className="mx-auto max-w-[1800px] px-4 md:px-6 py-6 space-y-5">
+        <div className="bg-white rounded-[28px] border border-slate-200 shadow-sm p-5 md:p-6">
           <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
             <div className="min-w-0">
-              <h1 className="text-[18px] font-black uppercase tracking-tight text-slate-900">
+              <h1 className="text-[18px] md:text-[20px] font-black uppercase tracking-tight text-slate-900">
                 Comparativo de Ofertas
               </h1>
               <p className="text-[12px] text-slate-500 mt-1">
-                Quadro no estilo do Excel: sistema + cartas + estoque + vendas.
+                Estrutura no padrão operacional da planilha: cartas + sistema + estoque + vendas.
               </p>
               {apiInfo && (
                 <p className="mt-3 text-[11px] font-black uppercase tracking-widest text-emerald-600">
@@ -733,7 +744,7 @@ export default function ComparativosModule() {
             </div>
 
             <div className="flex flex-wrap items-center gap-3">
-              <label className="inline-flex items-center gap-2 rounded-2xl bg-slate-900 text-white px-5 py-3 text-sm font-black cursor-pointer shadow-sm">
+              <label className="inline-flex items-center gap-2 rounded-2xl bg-slate-900 text-white px-5 py-3 text-sm font-black cursor-pointer shadow-sm hover:bg-slate-800 transition-colors">
                 <UploadCloud size={16} />
                 Importar PDFs
                 <input type="file" className="hidden" accept="application/pdf" multiple onChange={processFiles} />
@@ -742,7 +753,7 @@ export default function ComparativosModule() {
               <button
                 type="button"
                 onClick={exportExcel}
-                className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 text-white px-5 py-3 text-sm font-black shadow-sm"
+                className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 text-white px-5 py-3 text-sm font-black shadow-sm hover:bg-emerald-700 transition-colors"
               >
                 <FileSpreadsheet size={16} />
                 Exportar Excel
@@ -758,14 +769,14 @@ export default function ComparativosModule() {
           )}
         </div>
 
-        <div className="bg-white rounded-[28px] border border-slate-200 shadow-sm p-6">
+        <div className="bg-white rounded-[28px] border border-slate-200 shadow-sm p-5 md:p-6">
           <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
             <div>
               <h2 className="text-[16px] font-black uppercase tracking-tight text-slate-900">
                 Quadro consolidado
               </h2>
               <p className="text-[12px] text-slate-500 mt-1">
-                Uma linha por modelo + campanha, no padrão operacional do Excel.
+                Uma linha por modelo + campanha, com colunas agrupadas como na planilha de Excel.
               </p>
             </div>
 
@@ -805,86 +816,107 @@ export default function ComparativosModule() {
 
           <div className="mt-4 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
             <span className="rounded-full bg-slate-100 px-3 py-1 font-semibold">Role para os lados para ver todas as colunas</span>
-            <span className="rounded-full bg-slate-100 px-3 py-1 font-semibold">Role para baixo para ver todas as linhas</span>
-            <span className="rounded-full bg-slate-100 px-3 py-1 font-semibold">Descrição e Referência ficam fixas</span>
+            <span className="rounded-full bg-slate-100 px-3 py-1 font-semibold">Descrição e Referência fixas</span>
+            <span className="rounded-full bg-slate-100 px-3 py-1 font-semibold">Cabeçalho fixo no topo</span>
           </div>
 
           <div className="mt-6 rounded-2xl border border-slate-200 overflow-hidden bg-white shadow-sm">
-            <div className="max-h-[72vh] overflow-auto overscroll-contain">
-              <table className="min-w-[3200px] w-full border-separate border-spacing-0 bg-white">
-                <thead className="sticky top-0 z-30 bg-slate-50 shadow-[0_1px_0_0_rgba(226,232,240,1)]">
+            <div className="max-h-[74vh] overflow-auto overscroll-contain">
+              <table className="min-w-[3320px] w-full border-separate border-spacing-0 bg-white">
+                <thead className="sticky top-0 z-30 shadow-[0_1px_0_0_rgba(226,232,240,1)]">
                   <tr>
-                    <TableHeader className="sticky left-0 z-40 min-w-[220px] bg-slate-50 shadow-[1px_0_0_0_rgba(226,232,240,1)]">Descrição</TableHeader>
-                    <TableHeader className="sticky left-[220px] z-40 min-w-[110px] bg-slate-50 shadow-[1px_0_0_0_rgba(226,232,240,1)]">Referência</TableHeader>
-                    <TableHeader className="min-w-[95px]">Preço Samsung</TableHeader>
-                    <TableHeader className="min-w-[95px]">Preço Telecel</TableHeader>
-                    <TableHeader className="min-w-[130px]">Total Desconto Telecel</TableHeader>
-                    <TableHeader className="min-w-[110px]">Desconto Rebate</TableHeader>
-                    <TableHeader className="min-w-[115px]">Desconto Trade In</TableHeader>
-                    <TableHeader className="min-w-[100px]">Desconto Bogo</TableHeader>
-                    <TableHeader className="min-w-[95px]">Desconto SIP</TableHeader>
-                    <TableHeader className="min-w-[110px]">Total Desconto</TableHeader>
-                    <TableHeader className="min-w-[120px]">Preço Promocional</TableHeader>
-                    <TableHeader className="min-w-[180px]">Tipo Promoção</TableHeader>
-                    <TableHeader className="min-w-[145px]">Período</TableHeader>
-                    <TableHeader className="min-w-[135px]">Ref. Campanha</TableHeader>
-                    <TableHeader className="min-w-[280px]">Campanha</TableHeader>
-                    <TableHeader className="min-w-[155px]">Modelo PDF</TableHeader>
-                    <TableHeader className="min-w-[155px]">Basic Model</TableHeader>
-                    <TableHeader className="min-w-[95px] text-right">Qtd Estoque</TableHeader>
-                    <TableHeader className="min-w-[125px] text-right">Custo Total Estoque</TableHeader>
-                    <TableHeader className="min-w-[125px] text-right">Custo Médio Estoque</TableHeader>
-                    <TableHeader className="min-w-[105px] text-right">Margem Estoque</TableHeader>
-                    <TableHeader className="min-w-[120px] text-right">Novo Custo Médio</TableHeader>
-                    <TableHeader className="min-w-[100px] text-right">Margem Price</TableHeader>
-                    <TableHeader className="min-w-[95px] text-right">Qtd Vendida</TableHeader>
-                    <TableHeader className="min-w-[105px] text-right">Price Campanha</TableHeader>
-                    <TableHeader className="min-w-[105px] text-right">Verba Total</TableHeader>
-                    <TableHeader className="min-w-[105px] text-right">Oferta Atual</TableHeader>
-                    <TableHeader className="min-w-[280px]">Lojas</TableHeader>
-                    <TableHeader className="min-w-[90px]">Status</TableHeader>
+                    <GroupHeader colSpan={2} className="bg-slate-100 text-slate-700 sticky top-0 left-0 z-40 shadow-[1px_0_0_0_rgba(226,232,240,1)]">
+                      Produto
+                    </GroupHeader>
+                    <GroupHeader colSpan={4} className="bg-emerald-50 text-emerald-700">Preços</GroupHeader>
+                    <GroupHeader colSpan={6} className="bg-sky-50 text-sky-700">Descontos</GroupHeader>
+                    <GroupHeader colSpan={8} className="bg-orange-50 text-orange-700">Campanha</GroupHeader>
+                    <GroupHeader colSpan={9} className="bg-violet-50 text-violet-700">Operação</GroupHeader>
+                  </tr>
+                  <tr className="sticky top-[38px] z-30 bg-white">
+                    <TableHeader className="sticky left-0 z-40 min-w-[240px] bg-slate-50 shadow-[1px_0_0_0_rgba(226,232,240,1)]">Descrição</TableHeader>
+                    <TableHeader className="sticky left-[240px] z-40 min-w-[110px] bg-slate-50 shadow-[1px_0_0_0_rgba(226,232,240,1)]">Referência</TableHeader>
+
+                    <TableHeader className="min-w-[95px] bg-emerald-50/70">Preço Samsung</TableHeader>
+                    <TableHeader className="min-w-[95px] bg-emerald-50/70">Preço Telecel</TableHeader>
+                    <TableHeader className="min-w-[105px] bg-emerald-50/70">Oferta Atual</TableHeader>
+                    <TableHeader className="min-w-[120px] bg-emerald-50/70">Preço Promocional</TableHeader>
+
+                    <TableHeader className="min-w-[130px] bg-sky-50/80">Desc. Telecel</TableHeader>
+                    <TableHeader className="min-w-[110px] bg-sky-50/80">Desc. Rebate</TableHeader>
+                    <TableHeader className="min-w-[115px] bg-sky-50/80">Desc. Trade In</TableHeader>
+                    <TableHeader className="min-w-[100px] bg-sky-50/80">Desc. Bogo</TableHeader>
+                    <TableHeader className="min-w-[95px] bg-sky-50/80">Desc. SIP</TableHeader>
+                    <TableHeader className="min-w-[110px] bg-sky-50/80">Total Desconto</TableHeader>
+
+                    <TableHeader className="min-w-[180px] bg-orange-50/80">Tipo Promoção</TableHeader>
+                    <TableHeader className="min-w-[145px] bg-orange-50/80">Período</TableHeader>
+                    <TableHeader className="min-w-[135px] bg-orange-50/80">Ref. Campanha</TableHeader>
+                    <TableHeader className="min-w-[280px] bg-orange-50/80">Campanha</TableHeader>
+                    <TableHeader className="min-w-[155px] bg-orange-50/80">Modelo PDF</TableHeader>
+                    <TableHeader className="min-w-[155px] bg-orange-50/80">Basic Model</TableHeader>
+                    <TableHeader className="min-w-[105px] text-right bg-orange-50/80">Price Campanha</TableHeader>
+                    <TableHeader className="min-w-[105px] text-right bg-orange-50/80">Verba Total</TableHeader>
+
+                    <TableHeader className="min-w-[95px] text-right bg-violet-50/80">Qtd Estoque</TableHeader>
+                    <TableHeader className="min-w-[125px] text-right bg-violet-50/80">Custo Total Estoque</TableHeader>
+                    <TableHeader className="min-w-[125px] text-right bg-violet-50/80">Custo Médio Estoque</TableHeader>
+                    <TableHeader className="min-w-[105px] text-right bg-violet-50/80">Margem Estoque</TableHeader>
+                    <TableHeader className="min-w-[120px] text-right bg-violet-50/80">Novo Custo Médio</TableHeader>
+                    <TableHeader className="min-w-[100px] text-right bg-violet-50/80">Margem Price</TableHeader>
+                    <TableHeader className="min-w-[95px] text-right bg-violet-50/80">Qtd Vendida</TableHeader>
+                    <TableHeader className="min-w-[280px] bg-violet-50/80">Lojas</TableHeader>
+                    <TableHeader className="min-w-[90px] bg-violet-50/80">Status</TableHeader>
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredRows.map((row, idx) => (
-                    <tr key={`${row.refCampanha}-${row.basicModel}-${idx}`} className={idx % 2 === 0 ? 'bg-white hover:bg-slate-50' : 'bg-slate-50/40 hover:bg-slate-100/60'}>
-                      <TableCell className="sticky left-0 z-20 min-w-[220px] bg-inherit font-black text-slate-900 shadow-[1px_0_0_0_rgba(241,245,249,1)] break-words">
-                        {row.descricao}
-                      </TableCell>
-                      <TableCell className="sticky left-[220px] z-20 min-w-[110px] bg-inherit whitespace-nowrap shadow-[1px_0_0_0_rgba(241,245,249,1)]">
-                        {row.referencia || '-'}
-                      </TableCell>
-                      <TableCell className="whitespace-nowrap">{formatMoney(row.precoSamsung)}</TableCell>
-                      <TableCell className="whitespace-nowrap">{formatMoney(row.precoTelecel)}</TableCell>
-                      <TableCell className="whitespace-nowrap text-red-600 font-semibold">{formatMoney(row.totalDescontoTelecel)}</TableCell>
-                      <TableCell className="whitespace-nowrap">{formatMoney(row.descontoRebate)}</TableCell>
-                      <TableCell className="whitespace-nowrap">{formatMoney(row.descontoTradeIn)}</TableCell>
-                      <TableCell className="whitespace-nowrap">{formatMoney(row.descontoBogo)}</TableCell>
-                      <TableCell className="whitespace-nowrap">{formatMoney(row.descontoSip)}</TableCell>
-                      <TableCell className="whitespace-nowrap text-red-600 font-black">{formatMoney(row.totalDesconto)}</TableCell>
-                      <TableCell className="whitespace-nowrap text-orange-600 font-black">{formatMoney(row.precoPromocional)}</TableCell>
-                      <TableCell className="min-w-[180px] break-words">{row.tipoPromocao}</TableCell>
-                      <TableCell className="whitespace-nowrap">{row.periodo}</TableCell>
-                      <TableCell className="font-black whitespace-nowrap">{row.refCampanha || '-'}</TableCell>
-                      <TableCell className="min-w-[280px] break-words">{row.campanha || '-'}</TableCell>
-                      <TableCell className="whitespace-nowrap">{row.modeloPdf}</TableCell>
-                      <TableCell className="whitespace-nowrap">{row.basicModel}</TableCell>
-                      <TableCell className="text-right font-black text-emerald-600">{formatNumber(row.qtdEstoque)}</TableCell>
-                      <TableCell className="text-right whitespace-nowrap">{formatMoney(row.custoTotalEstoque)}</TableCell>
-                      <TableCell className="text-right whitespace-nowrap">{formatMoney(row.custoMedioEstoque)}</TableCell>
-                      <TableCell className="text-right whitespace-nowrap">{formatPercent(row.margemEstoque)}</TableCell>
-                      <TableCell className="text-right whitespace-nowrap">{row.novoCustoMedio === null ? '-' : formatMoney(row.novoCustoMedio)}</TableCell>
-                      <TableCell className="text-right whitespace-nowrap">{formatPercent(row.margemPrice)}</TableCell>
-                      <TableCell className="text-right font-black text-blue-600">{formatNumber(row.qtdVendida)}</TableCell>
-                      <TableCell className="text-right whitespace-nowrap">{formatMoney(row.verbaUnitaria)}</TableCell>
-                      <TableCell className="text-right font-black text-violet-600 whitespace-nowrap">{formatMoney(row.verbaTotal)}</TableCell>
-                      <TableCell className="text-right whitespace-nowrap">{formatMoney(row.ofertaAtual)}</TableCell>
-                      <TableCell className="min-w-[280px] break-words">{row.lojas}</TableCell>
-                      <TableCell className={`font-black whitespace-nowrap ${row.status === 'MENOR' ? 'text-emerald-600' : row.status === 'MAIOR' ? 'text-red-600' : 'text-slate-700'}`}>
-                        {row.status}
-                      </TableCell>
-                    </tr>
-                  ))}
+                  {filteredRows.map((row, idx) => {
+                    const baseRow = idx % 2 === 0 ? 'bg-white hover:bg-slate-50' : 'bg-slate-50/40 hover:bg-slate-100/60';
+                    const descBg = idx % 2 === 0 ? 'bg-white' : 'bg-slate-50/40';
+                    return (
+                      <tr key={`${row.refCampanha}-${row.basicModel}-${idx}`} className={baseRow}>
+                        <TableCell className={`sticky left-0 z-20 min-w-[240px] font-black text-slate-900 shadow-[1px_0_0_0_rgba(241,245,249,1)] break-words ${descBg}`}>
+                          {row.descricao}
+                        </TableCell>
+                        <TableCell className={`sticky left-[240px] z-20 min-w-[110px] whitespace-nowrap shadow-[1px_0_0_0_rgba(241,245,249,1)] ${descBg}`}>
+                          {row.referencia || '-'}
+                        </TableCell>
+
+                        <TableCell className="whitespace-nowrap bg-emerald-50/30">{formatMoney(row.precoSamsung)}</TableCell>
+                        <TableCell className="whitespace-nowrap bg-emerald-50/30 font-semibold">{formatMoney(row.precoTelecel)}</TableCell>
+                        <TableCell className="whitespace-nowrap bg-emerald-50/30">{formatMoney(row.ofertaAtual)}</TableCell>
+                        <TableCell className="whitespace-nowrap bg-emerald-50/30 text-orange-600 font-black">{formatMoney(row.precoPromocional)}</TableCell>
+
+                        <TableCell className="whitespace-nowrap text-red-600 font-semibold bg-sky-50/20">{formatMoney(row.totalDescontoTelecel)}</TableCell>
+                        <TableCell className="whitespace-nowrap bg-sky-50/20">{formatMoney(row.descontoRebate)}</TableCell>
+                        <TableCell className="whitespace-nowrap bg-sky-50/20">{formatMoney(row.descontoTradeIn)}</TableCell>
+                        <TableCell className="whitespace-nowrap bg-sky-50/20">{formatMoney(row.descontoBogo)}</TableCell>
+                        <TableCell className="whitespace-nowrap bg-sky-50/20">{formatMoney(row.descontoSip)}</TableCell>
+                        <TableCell className="whitespace-nowrap text-red-600 font-black bg-sky-50/20">{formatMoney(row.totalDesconto)}</TableCell>
+
+                        <TableCell className="min-w-[180px] break-words bg-orange-50/20">{row.tipoPromocao}</TableCell>
+                        <TableCell className="whitespace-nowrap bg-orange-50/20">{row.periodo}</TableCell>
+                        <TableCell className="font-black whitespace-nowrap bg-orange-50/20">{row.refCampanha || '-'}</TableCell>
+                        <TableCell className="min-w-[280px] break-words bg-orange-50/20">{row.campanha || '-'}</TableCell>
+                        <TableCell className="whitespace-nowrap bg-orange-50/20">{row.modeloPdf}</TableCell>
+                        <TableCell className="whitespace-nowrap bg-orange-50/20">{row.basicModel}</TableCell>
+                        <TableCell className="text-right whitespace-nowrap bg-orange-50/20">{formatMoney(row.verbaUnitaria)}</TableCell>
+                        <TableCell className="text-right font-black text-violet-600 whitespace-nowrap bg-orange-50/20">{formatMoney(row.verbaTotal)}</TableCell>
+
+                        <TableCell className="text-right font-black text-emerald-600 bg-violet-50/20">{formatNumber(row.qtdEstoque)}</TableCell>
+                        <TableCell className="text-right whitespace-nowrap bg-violet-50/20">{formatMoney(row.custoTotalEstoque)}</TableCell>
+                        <TableCell className="text-right whitespace-nowrap bg-violet-50/20">{formatMoney(row.custoMedioEstoque)}</TableCell>
+                        <TableCell className="text-right whitespace-nowrap bg-violet-50/20">{formatPercent(row.margemEstoque)}</TableCell>
+                        <TableCell className="text-right whitespace-nowrap bg-violet-50/20">{row.novoCustoMedio === null ? '-' : formatMoney(row.novoCustoMedio)}</TableCell>
+                        <TableCell className="text-right whitespace-nowrap bg-violet-50/20">{formatPercent(row.margemPrice)}</TableCell>
+                        <TableCell className="text-right font-black text-blue-600 bg-violet-50/20">{formatNumber(row.qtdVendida)}</TableCell>
+                        <TableCell className="min-w-[280px] break-words bg-violet-50/20">{row.lojas}</TableCell>
+                        <TableCell className={`font-black whitespace-nowrap bg-violet-50/20 ${row.status === 'MENOR' ? 'text-emerald-600' : row.status === 'MAIOR' ? 'text-red-600' : 'text-slate-700'}`}>
+                          {row.status}
+                        </TableCell>
+                      </tr>
+                    );
+                  })}
                   {!loading && filteredRows.length === 0 && (
                     <tr>
                       <td colSpan={29} className="px-4 py-16 text-center text-slate-400">
@@ -902,8 +934,10 @@ export default function ComparativosModule() {
                 </tbody>
               </table>
             </div>
-          </div>        </div>
+          </div>
+        </div>
       </div>
     </div>
   );
 }
+

@@ -47,10 +47,18 @@ if (!fs.existsSync(DATABASE_DIR)) {
     try { fs.mkdirSync(DATABASE_DIR, { recursive: true }); } catch(e) {}
 }
 
-// DEFINIÇÃO DAS VARIÁVEIS DE CAMINHO (AQUI ESTAVA O ERRO)
+// DEFINIÇÃO DAS VARIÁVEIS DE CAMINHO - VARIÁVIES DE CAMINHO 
 const GLOBAL_DB_PATH = path.join(DATABASE_DIR, 'samsung_vendas.db');
 const SAMSUNG_DB_PATH = GLOBAL_DB_PATH; // Cria um "apelido" para funcionar nas rotas novas e antigas
 const BESTFLOW_DB_PATH = path.join(DATABASE_DIR, 'bestflow.db');
+// Constantes para compras - para verificar se as compras feitas estão no sistema 
+const COMPRAS_DB_DIR = path.join(DATABASE_DIR, 'compras');
+const COMPRAS_DB_PATH = path.join(COMPRAS_DB_DIR, 'compras_imei_ano_atual.db');
+const LOCAL_SALES_DB_CANDIDATES = [
+  path.join(ROOT_DIR, 'relatorio_vendas_consolidado.db'),
+  path.join(DATABASE_DIR, 'relatorio_vendas_consolidado.db'),
+  path.join(DATABASE_DIR, 'vendas', 'relatorio_vendas_consolidado.db'),
+];
 
 // ✅ NOVO: DB ANUAL SEPARADO
 const ANUAL_DB_PATH = path.join(DATABASE_DIR, 'samsung_vendas_anuais.db');
@@ -206,6 +214,32 @@ if (!fs.existsSync(DATABASE_DIR)) {
 
 console.log("📂 Banco Vendas:", GLOBAL_DB_PATH);
 console.log("📂 Banco BestFlow:", BESTFLOW_DB_PATH);
+
+if (!fs.existsSync(COMPRAS_DB_DIR)) {
+  try { fs.mkdirSync(COMPRAS_DB_DIR, { recursive: true }); } catch(e) {}
+}
+
+function normalizeSerial(value: any) {
+  return String(value || '').trim();
+}
+
+function normalizeReferenceFamily(value: any) {
+  return String(value || '')
+    .toUpperCase()
+    .replace(/\u00A0/g, '')
+    .replace(/[‐-–—−]/g, '-')
+    .replace(/\s+/g, '')
+    .trim()
+    .match(/^([A-Z]{2,3}-[A-Z]?\d{3})/i)?.[1] ||
+    String(value || '').toUpperCase().replace(/\s+/g, '').trim();
+}
+
+function pickExistingPath(paths: string[]) {
+  for (const p of paths) {
+    if (fs.existsSync(p)) return p;
+  }
+  return '';
+}
 
 // ✅ FILA GLOBAL DE ESCRITA (MUTEX SQLITE)
 // ==========================================
@@ -3506,142 +3540,173 @@ app.post('/api/solicitacoes', uploadSolicitacao.single('referenciaFile'), async 
 // ROTA: COMPRAS X VENDAS (CONFERÊNCIA IMEI)
 // ==========================================
 app.get('/api/compras-x-vendas', async (req, res) => {
-    try {
-        const { userId, startDate, endDate } = req.query;
-        
-        const DB_COMPRAS_PATH = path.join(DATABASE_DIR, 'compras', 'compras_anual.db');
+  try {
+    const userId = String(req.query.userId || '');
+    const user: any = await prisma.user.findUnique({ where: { id: userId } });
 
-        if (!fs.existsSync(DB_COMPRAS_PATH)) {
-            return res.json({ 
-                rows: [], 
-                summary: { totalCompras: 0, emEstoque: 0, vendidos: 0, semLocalizacao: 0, valorComprado: 0 }, 
-                info: { comprasDb: 'Arquivo não encontrado. Rode o Python.' } 
-            });
-        }
-
-        const dbCompras = await open({ filename: DB_COMPRAS_PATH, driver: sqlite3.Database });
-        
-        // 1. Buscamos tudo sem filtro restrito no SQL para evitar perder dados
-        const rawData = await dbCompras.all(`SELECT * FROM compras`);
-        await dbCompras.close();
-
-        // 2. MÁGICA DA BLINDAGEM: Converte todas as colunas para minúsculo usando a sua função!
-        const comprasRaw = normalizeKeys(rawData);
-
-        // 3. Filtro de cancelamento tolerante (Lida com 'S', 'True', '1', etc)
-        const comprasAtivas = comprasRaw.filter((c: any) => {
-            const cancelado = String(c.cancelado || '').trim().toUpperCase();
-            return cancelado !== 'S' && cancelado !== 'TRUE' && cancelado !== '1';
-        });
-
-        const start = startDate ? new Date(startDate as string) : new Date('2000-01-01');
-        const end = endDate ? new Date(endDate as string) : new Date();
-        end.setHours(23, 59, 59, 999);
-
-        // 4. Filtro de Datas à prova de falhas
-        const comprasValidas = comprasAtivas.filter((c: any) => {
-            // Se a data vier nula do Python, exibe na tela para auditoria!
-            if (!c.data_emissao) return true; 
-
-            let dataCompra: Date;
-            if (c.data_emissao.includes('/')) {
-                const [d, m, y] = c.data_emissao.split('/');
-                dataCompra = new Date(`${y}-${m}-${d}T12:00:00`);
-            } else {
-                dataCompra = new Date(`${c.data_emissao}T12:00:00`);
-            }
-            
-            // Se o formato de data explodir, também manda pra tela
-            if (isNaN(dataCompra.getTime())) return true;
-
-            return dataCompra >= start && dataCompra <= end;
-        });
-
-        const currentStock = await prisma.stock.findMany({
-            where: { serial: { not: '' } },
-            select: { serial: true, storeName: true }
-        });
-        const stockMap = new Map(currentStock.map(s => [(s.serial || '').trim(), s.storeName]));
-
-        const imeiHistory = await prisma.imeiHistory.findMany({
-            select: { serial: true, currentStore: true }
-        });
-        const historyMap = new Map(imeiHistory.map(h => [(h.serial || '').trim(), h.currentStore]));
-
-        let emEstoque = 0;
-        let vendidos = 0;
-        let semLocalizacao = 0;
-        let valorComprado = 0;
-
-        const rows = comprasValidas.map((c: any) => {
-            const imei = c.imei ? String(c.imei).trim() : '';
-            let status = 'SEM LOCALIZAÇÃO';
-            let lojaAtual = '-';
-
-            if (imei) {
-                if (stockMap.has(imei)) {
-                    status = 'EM ESTOQUE';
-                    lojaAtual = stockMap.get(imei) || '-';
-                    emEstoque++;
-                } else if (historyMap.has(imei)) {
-                    status = 'VENDIDO';
-                    lojaAtual = historyMap.get(imei) || '-';
-                    vendidos++;
-                } else {
-                    semLocalizacao++;
-                }
-            } else {
-                semLocalizacao++;
-            }
-
-            valorComprado += Number(c.total_liquido || 0);
-
-            return {
-                dataCompra: c.data_emissao || '-',
-                notaFiscalCompra: c.nota_fiscal || '-',
-                lojaCompra: c.nome_fantasia || '-',
-                vendedorCompra: c.nome_vendedor || '-',
-                codigoProduto: c.codigo_produto || '-',
-                referencia: c.referencia || '-',
-                descricao: c.descricao || '-',
-                categoria: c.categoria || '-',
-                imei: imei,
-                quantidadeCompra: Number(c.quantidade || 0),
-                valorCompra: Number(c.total_liquido || 0),
-                tipoTransacao: c.tipo_transacao || '-',
-                naturezaOperacao: c.natureza_operacao || '-',
-                status,
-                lojaAtual,
-                quantidadeEstoqueFamilia: 0,
-                quantidadeVendidaFamilia: 0,
-                dataVenda: '-',
-                notaFiscalVenda: '-',
-                lojaVenda: '-',
-            };
-        });
-
-        res.json({
-            rows,
-            summary: {
-                totalCompras: rows.length,
-                emEstoque,
-                vendidos,
-                semLocalizacao,
-                valorComprado
-            },
-            info: {
-                // ALERTA VIZUAL: Se o Python entregou um banco zerado, o Frontend vai avisar!
-                comprasDb: rawData.length === 0 ? '⚠️ Tabela Vazia (Python não gerou dados)' : 'OK',
-                localSalesDb: 'Prisma Stock & History',
-                periodo: { startDate, endDate }
-            }
-        });
-
-    } catch (error: any) {
-        console.error("❌ Erro rota compras-x-vendas:", error);
-        res.status(500).json({ error: error.message });
+    if (!user || !(user.isAdmin || ['CEO', 'DIRETOR', 'ADM'].includes(user.role))) {
+      return res.status(403).json({ error: 'Acesso restrito ao administrador.' });
     }
+
+    if (!fs.existsSync(COMPRAS_DB_PATH)) {
+      return res.json({
+        summary: { totalCompras: 0, emEstoque: 0, vendidos: 0, semLocalizacao: 0, valorComprado: 0 },
+        rows: [],
+        info: { comprasDb: COMPRAS_DB_PATH, localSalesDb: '' }
+      });
+    }
+
+    const comprasDb = await open({ filename: COMPRAS_DB_PATH, driver: sqlite3.Database });
+    const today = new Date();
+    const defaultStart = `${today.getFullYear()}-01-01`;
+    const startDate = String(req.query.startDate || defaultStart);
+    const endDate = String(req.query.endDate || today.toISOString().slice(0, 10));
+
+    const comprasQuery = `
+      SELECT
+        data_emissao,
+        nota_fiscal,
+        nome_fantasia,
+        nome_vendedor,
+        codigo_produto,
+        referencia,
+        descricao,
+        categoria,
+        imei,
+        quantidade,
+        total_liquido,
+        tipo_transacao,
+        natureza_operacao,
+        cnpj_origem
+      FROM compras
+      WHERE data_emissao >= ? AND data_emissao <= ?
+        AND trim(COALESCE(imei, '')) <> ''
+      ORDER BY data_emissao DESC, descricao ASC
+    `;
+
+    const comprasRows = await comprasDb.all(comprasQuery, [startDate, endDate]);
+    await comprasDb.close();
+
+    const stock = await prisma.stock.findMany({
+      where: { serial: { not: '' } }
+    });
+
+    const stockBySerial = new Map<string, any>();
+    const stockQtyByFamily = new Map<string, number>();
+    stock.forEach((item: any) => {
+      const serial = normalizeSerial(item.serial);
+      if (serial) stockBySerial.set(serial, item);
+
+      const family = normalizeReferenceFamily(item.reference);
+      if (family) stockQtyByFamily.set(family, (stockQtyByFamily.get(family) || 0) + Number(item.quantity || 0));
+    });
+
+    const localSalesDbPath = pickExistingPath(LOCAL_SALES_DB_CANDIDATES);
+    const soldBySerial = new Map<string, any>();
+
+    if (localSalesDbPath) {
+      try {
+        const salesDb = await open({ filename: localSalesDbPath, driver: sqlite3.Database });
+        const soldRows = await salesDb.all(`
+          SELECT
+            DATA_EMISSAO as data_emissao,
+            NOTA_FISCAL as nota_fiscal,
+            REFERENCIA as referencia,
+            DESCRICAO as descricao,
+            IMEI as imei,
+            TOTAL_LIQUIDO as total_liquido,
+            NOME_FANTASIA as loja
+          FROM vendas
+          WHERE trim(COALESCE(IMEI, '')) <> ''
+        `);
+        await salesDb.close();
+
+        soldRows.forEach((row: any) => {
+          const serial = normalizeSerial(row.imei);
+          if (serial && !soldBySerial.has(serial)) soldBySerial.set(serial, row);
+        });
+      } catch (e) {
+        console.error('Erro ao ler DB local de vendas por IMEI:', e);
+      }
+    }
+
+    const salesAggDb = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+    const salesAggRows = await salesAggDb.all(`
+      SELECT
+        familia,
+        descricao,
+        SUM(quantidade) as quantidade
+      FROM vendas
+      WHERE data_emissao >= ? AND data_emissao <= ?
+      GROUP BY familia, descricao
+    `, [startDate, endDate]);
+    await salesAggDb.close();
+
+    const salesQtyByFamily = new Map<string, number>();
+    salesAggRows.forEach((row: any) => {
+      const family = normalizeReferenceFamily(row.familia || row.referencia || '');
+      if (family) salesQtyByFamily.set(family, (salesQtyByFamily.get(family) || 0) + Number(row.quantidade || 0));
+    });
+
+    const rows = comprasRows.map((row: any) => {
+      const imei = normalizeSerial(row.imei);
+      const family = normalizeReferenceFamily(row.referencia);
+      const stockHit = stockBySerial.get(imei);
+      const soldHit = soldBySerial.get(imei);
+
+      let status = 'SEM LOCALIZAÇÃO';
+      if (stockHit) status = 'EM ESTOQUE';
+      else if (soldHit) status = 'VENDIDO';
+
+      return {
+        dataCompra: row.data_emissao,
+        notaFiscalCompra: row.nota_fiscal,
+        lojaCompra: row.nome_fantasia,
+        vendedorCompra: row.nome_vendedor,
+        codigoProduto: row.codigo_produto,
+        referencia: family,
+        descricao: row.descricao,
+        categoria: row.categoria,
+        imei,
+        quantidadeCompra: Number(row.quantidade || 0),
+        valorCompra: Number(row.total_liquido || 0),
+        tipoTransacao: row.tipo_transacao,
+        naturezaOperacao: row.natureza_operacao,
+        status,
+        lojaAtual: stockHit?.storeName || '-',
+        quantidadeEstoqueFamilia: stockQtyByFamily.get(family) || 0,
+        quantidadeVendidaFamilia: salesQtyByFamily.get(family) || 0,
+        dataVenda: soldHit?.data_emissao || '-',
+        notaFiscalVenda: soldHit?.nota_fiscal || '-',
+        lojaVenda: soldHit?.loja || '-',
+        serialNoEstoque: Boolean(stockHit),
+        serialVendido: Boolean(soldHit),
+      };
+    });
+
+    const summary = {
+      totalCompras: rows.length,
+      emEstoque: rows.filter((r: any) => r.status === 'EM ESTOQUE').length,
+      vendidos: rows.filter((r: any) => r.status === 'VENDIDO').length,
+      semLocalizacao: rows.filter((r: any) => r.status === 'SEM LOCALIZAÇÃO').length,
+      valorComprado: rows.reduce((sum: number, r: any) => sum + Number(r.valorCompra || 0), 0),
+    };
+
+    return res.json({
+      summary,
+      rows,
+      info: {
+        comprasDb: COMPRAS_DB_PATH,
+        localSalesDb: localSalesDbPath || '',
+        periodo: { startDate, endDate }
+      }
+    });
+  } catch (error: any) {
+    console.error('Erro /api/compras-x-vendas:', error);
+    return res.status(500).json({ error: error?.message || 'Erro ao montar Compras x Vendas' });
+  }
 });
+
 
 // Define a porta: Usa a do Render (process.env.PORT) ou a 3000 se for local
 const PORT = process.env.PORT || 3000;

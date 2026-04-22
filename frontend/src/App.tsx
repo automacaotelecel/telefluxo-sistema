@@ -24,7 +24,6 @@ import SolicitacoesModule from './components/SolicitacoesModule';
 import Stockout from './components/StockOut';
 import ComparativosModule from './components/ComparativosModule';
 import ComprasVendas from './components/ComprasVendas'; 
-
 import {
   FileText, CheckCircle, LayoutDashboard, Users, LogOut,
   Calendar, BarChart3, ChevronDown, ChevronRight, ChevronLeft, Circle, Plus,
@@ -97,6 +96,7 @@ function App() {
   const canViewFinance = ['CEO', 'DIRETOR', 'ADM'].includes(userRole) || isAdmin;
   const canViewTeam = ['CEO', 'DIRETOR', 'ADM'].includes(userRole) || isAdmin;
   const canViewComparativos = userRole === 'ADM' || isAdmin;
+  const canViewComprasVendas = userRole === 'ADM' || isAdmin;
   const isStoreOnly = userRole === 'LOJA';
 
   const handleLogout = () => {
