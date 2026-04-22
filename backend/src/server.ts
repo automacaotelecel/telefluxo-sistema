@@ -3601,35 +3601,77 @@ app.get('/api/compras-x-vendas', async (req, res) => {
       if (family) stockQtyByFamily.set(family, (stockQtyByFamily.get(family) || 0) + Number(item.quantity || 0));
     });
 
-    const localSalesDbPath = pickExistingPath(LOCAL_SALES_DB_CANDIDATES);
     const soldBySerial = new Map<string, any>();
+    let annualSalesRawUsed = false;
+    let localSalesDbPath = '';
 
-    if (localSalesDbPath) {
+    // 1) PRIORIDADE: base anual RAW com IMEI
+    if (fs.existsSync(ANUAL_DB_PATH)) {
       try {
-        const salesDb = await open({ filename: localSalesDbPath, driver: sqlite3.Database });
-        const soldRows = await salesDb.all(`
-          SELECT
-            DATA_EMISSAO as data_emissao,
-            NOTA_FISCAL as nota_fiscal,
-            REFERENCIA as referencia,
-            DESCRICAO as descricao,
-            IMEI as imei,
-            TOTAL_LIQUIDO as total_liquido,
-            NOME_FANTASIA as loja
-          FROM vendas
-          WHERE trim(COALESCE(IMEI, '')) <> ''
-        `);
-        await salesDb.close();
+        const annualDb = await open({ filename: ANUAL_DB_PATH, driver: sqlite3.Database });
 
-        soldRows.forEach((row: any) => {
-          const serial = normalizeSerial(row.imei);
-          if (serial && !soldBySerial.has(serial)) soldBySerial.set(serial, row);
-        });
-      } catch (e) {
-        console.error('Erro ao ler DB local de vendas por IMEI:', e);
+        const soldRowsAnnual = await annualDb.all(`
+          SELECT
+            data_emissao,
+            nota_fiscal,
+            referencia,
+            descricao,
+            imei,
+            total_liquido,
+            loja
+          FROM vendas_anuais_raw
+          WHERE trim(COALESCE(imei, '')) <> ''
+            AND cancelado = 'N'
+            AND data_emissao >= ?
+            AND data_emissao <= ?
+        `, [startDate, endDate]);
+
+        for (const row of soldRowsAnnual) {
+          const imei = normalizeSerial(row.imei);
+          if (imei) soldBySerial.set(imei, row);
+        }
+
+        annualSalesRawUsed = true;
+        await annualDb.close();
+      } catch (error) {
+        console.error('Erro ao ler ANUAL_DB_PATH / vendas_anuais_raw:', error);
       }
     }
 
+    // 2) FALLBACK: DB local antigo, se não achou nada na anual raw
+    if (!annualSalesRawUsed) {
+      localSalesDbPath = pickExistingPath(LOCAL_SALES_DB_CANDIDATES);
+
+      if (localSalesDbPath) {
+        try {
+          const salesDb = await open({ filename: localSalesDbPath, driver: sqlite3.Database });
+
+          const soldRows = await salesDb.all(`
+            SELECT
+              DATA_EMISSAO as data_emissao,
+              NOTA_FISCAL as nota_fiscal,
+              REFERENCIA as referencia,
+              DESCRICAO as descricao,
+              IMEI as imei,
+              TOTAL_LIQUIDO as total_liquido,
+              NOME_FANTASIA as loja
+            FROM vendas
+            WHERE trim(COALESCE(IMEI, '')) <> ''
+              AND DATA_EMISSAO >= ?
+              AND DATA_EMISSAO <= ?
+          `, [startDate, endDate]);
+
+          for (const row of soldRows) {
+            const imei = normalizeSerial(row.imei);
+            if (imei) soldBySerial.set(imei, row);
+          }
+
+          await salesDb.close();
+        } catch (error) {
+          console.error('Erro ao ler DB local de vendas:', error);
+        }
+      }
+    }
     const salesAggDb = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
     const salesAggRows = await salesAggDb.all(`
       SELECT
