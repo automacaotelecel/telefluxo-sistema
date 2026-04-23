@@ -577,17 +577,26 @@ def build_db(excel_path: str, db_path: str) -> None:
     # ============================================================
     # ✅ NOVO: SINCRONIZAÇÃO COM A NUVEM (RENDER)
     # ============================================================
-    print("\n🚀 Iniciando sincronização do Banco Anual com a Nuvem...")
-    
-    dados_anuais = vendas_out.to_dict(orient="records")
-    
-    # Envia para a API (Atenção: Garanta que esta rota existe no seu backend!)
-    ok = enviar_dados_para_api("/api/sync/vendas_anuais", dados_anuais)
-    
-    if ok:
-        print("✅ Base Anual sincronizada com sucesso na nuvem!")
+    print("\n🚀 Iniciando sincronização do Banco Anual com a Nuvem.")
+
+dados_anuais = vendas_out.to_dict(orient="records")
+
+# Mantém exatamente o envio atual da base anual
+ok = enviar_dados_para_api("/api/sync/vendas_anuais", dados_anuais)
+
+if ok:
+    print("✅ Base Anual sincronizada com sucesso na nuvem!")
+
+    # ✅ NOVO: envia também a RAW com IMEI, sem mexer no restante da estrutura
+    dados_raw = raw_out.to_dict(orient="records")
+    ok_raw = enviar_dados_para_api("/api/sync/vendas_anuais_raw", dados_raw)
+
+    if ok_raw:
+        print("✅ Base RAW com IMEI sincronizada com sucesso na nuvem!")
     else:
-        print("❌ Falha ao enviar Base Anual para a nuvem.")
+        print("❌ Falha ao enviar Base RAW com IMEI para a nuvem.")
+else:
+    print("❌ Falha ao enviar Base Anual para a nuvem.")
 
 
 if __name__ == "__main__":

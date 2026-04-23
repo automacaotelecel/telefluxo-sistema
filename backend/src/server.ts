@@ -134,23 +134,50 @@ dbInit.serialize(() => {
 
 const anualInit = new sqlite3.Database(ANUAL_DB_PATH);
 anualInit.serialize(() => {
-  // RAW VENDAS
   anualInit.run(`
-  CREATE TABLE IF NOT EXISTS agg_lojas_mensal (
-    ano INTEGER,
-    mes INTEGER,
-    loja TEXT,
-    cnpj_empresa TEXT,
-    regiao TEXT,
-    vendas_total REAL,
-    vendas_qtd REAL,
-    seguros_total REAL,
-    seguros_qtd REAL,
-    PRIMARY KEY (ano, mes, loja)
-  )
+    CREATE TABLE IF NOT EXISTS vendas_anuais_raw (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      nota_fiscal TEXT,
+      cancelado TEXT,
+      tipo_transacao TEXT,
+      natureza_operacao TEXT,
+      data_emissao TEXT,
+      nome_vendedor TEXT,
+      codigo_produto TEXT,
+      referencia TEXT,
+      descricao TEXT,
+      categoria TEXT,
+      imei TEXT,
+      quantidade REAL,
+      total_liquido REAL,
+      qtd_real REAL,
+      total_real REAL,
+      categoria_real TEXT,
+      loja TEXT,
+      regiao TEXT,
+      ano INTEGER,
+      mes INTEGER,
+      cnpj_empresa TEXT
+    )
   `);
 
-  // RAW SEGUROS
+  anualInit.run(`
+    CREATE TABLE IF NOT EXISTS vendas_anuais (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      data_emissao TEXT,
+      ano INTEGER,
+      mes INTEGER,
+      loja TEXT,
+      cnpj_empresa TEXT,
+      nome_vendedor TEXT,
+      descricao TEXT,
+      familia TEXT,
+      regiao TEXT,
+      quantidade REAL,
+      total_liquido REAL
+    )
+  `);
+
   anualInit.run(`
     CREATE TABLE IF NOT EXISTS seguros_anuais (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -160,13 +187,14 @@ anualInit.serialize(() => {
       loja TEXT,
       cnpj_empresa TEXT,
       nome_vendedor TEXT,
-      premio_real REAL,
+      descricao TEXT,
+      regiao TEXT,
       qtd REAL,
-      regiao TEXT
+      premio REAL,
+      nf TEXT
     )
   `);
 
-  // AGG LOJA/MÊS/ANO (pronto pro comparativo)
   anualInit.run(`
     CREATE TABLE IF NOT EXISTS agg_lojas_mensal (
       ano INTEGER,
@@ -174,30 +202,29 @@ anualInit.serialize(() => {
       loja TEXT,
       cnpj_empresa TEXT,
       regiao TEXT,
-      venda_total REAL,
-      venda_qtd REAL,
-      seguro_total REAL,
-      seguro_qtd REAL,
+      vendas_total REAL,
+      vendas_qtd REAL,
+      seguros_total REAL,
+      seguros_qtd REAL,
       PRIMARY KEY (ano, mes, loja)
     )
   `);
 
-  // AGG VENDEDOR/MÊS/ANO (pronto pro comparativo)
   anualInit.run(`
-  CREATE TABLE IF NOT EXISTS agg_vendedores_mensal (
-    ano INTEGER,
-    mes INTEGER,
-    loja TEXT,
-    cnpj_empresa TEXT,
-    regiao TEXT,
-    vendedor TEXT,
-    vendas_total REAL,
-    vendas_qtd REAL,
-    seguros_total REAL,
-    seguros_qtd REAL,
-    PRIMARY KEY (ano, mes, loja, vendedor)
-  )
- `);
+    CREATE TABLE IF NOT EXISTS agg_vendedores_mensal (
+      ano INTEGER,
+      mes INTEGER,
+      loja TEXT,
+      cnpj_empresa TEXT,
+      regiao TEXT,
+      vendedor TEXT,
+      vendas_total REAL,
+      vendas_qtd REAL,
+      seguros_total REAL,
+      seguros_qtd REAL,
+      PRIMARY KEY (ano, mes, loja, vendedor)
+    )
+  `);
 
   console.log("📦 Tabelas ANUAIS garantidas!");
 });
@@ -2214,6 +2241,112 @@ app.post('/api/sync/vendedores_anuais', async (req, res) => {
 });
 // --- FIM DO BLOCO DE SINCRONIZAÇÃO ---
 
+app.post('/api/sync/vendas_anuais_raw', async (req, res) => {
+  const dados = req.body;
+  const shouldReset = req.query.reset !== 'false';
+
+  if (!dados || !Array.isArray(dados)) {
+    return res.status(400).json({ error: "Formato inválido." });
+  }
+
+  try {
+    await enqueueWrite(() => new Promise<void>((resolve, reject) => {
+      const db = new sqlite3.Database(ANUAL_DB_PATH);
+      db.configure("busyTimeout", 15000);
+
+      db.serialize(() => {
+        db.run("PRAGMA journal_mode=WAL;");
+        db.run("BEGIN IMMEDIATE TRANSACTION");
+
+        const preQuery = shouldReset ? "DELETE FROM vendas_anuais_raw" : "SELECT 1";
+
+        db.run(preQuery, (err) => {
+          if (err) {
+            db.run("ROLLBACK", () => db.close(() => reject(err)));
+            return;
+          }
+
+          const stmt = db.prepare(`
+            INSERT INTO vendas_anuais_raw (
+              nota_fiscal,
+              cancelado,
+              tipo_transacao,
+              natureza_operacao,
+              data_emissao,
+              nome_vendedor,
+              codigo_produto,
+              referencia,
+              descricao,
+              categoria,
+              imei,
+              quantidade,
+              total_liquido,
+              qtd_real,
+              total_real,
+              categoria_real,
+              loja,
+              regiao,
+              ano,
+              mes,
+              cnpj_empresa
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `);
+
+          for (const item of dados) {
+            stmt.run(
+              item.nota_fiscal || null,
+              item.cancelado || null,
+              item.tipo_transacao || null,
+              item.natureza_operacao || null,
+              item.data_emissao || null,
+              item.nome_vendedor || null,
+              item.codigo_produto || null,
+              item.referencia || null,
+              item.descricao || null,
+              item.categoria || null,
+              item.imei || null,
+              Number(item.quantidade || 0),
+              Number(item.total_liquido || 0),
+              Number(item.qtd_real || 0),
+              Number(item.total_real || 0),
+              item.categoria_real || null,
+              item.loja || null,
+              item.regiao || null,
+              Number(item.ano || 0),
+              Number(item.mes || 0),
+              item.cnpj_empresa || null
+            );
+          }
+
+          stmt.finalize((err2) => {
+            if (err2) {
+              db.run("ROLLBACK", () => db.close(() => reject(err2)));
+              return;
+            }
+
+            db.run("COMMIT", (err3) => {
+              if (err3) {
+                db.run("ROLLBACK", () => db.close(() => reject(err3)));
+                return;
+              }
+
+              db.close((err4) => {
+                if (err4) return reject(err4);
+                resolve();
+              });
+            });
+          });
+        });
+      });
+    }));
+
+    res.json({ message: `Lote de Vendas Anuais RAW sincronizado (Reset: ${shouldReset})` });
+  } catch (e: any) {
+    console.error("Erro /api/sync/vendas_anuais_raw:", e);
+    res.status(500).json({ error: "Erro banco anual RAW", details: e.message });
+  }
+});
+
 // ==========================================
 // ROTA FALTANTE: LISTAR LOJAS PARA CADASTRO
 // ==========================================
@@ -3631,7 +3764,7 @@ app.get('/api/compras-x-vendas', async (req, res) => {
           if (imei) soldBySerial.set(imei, row);
         }
 
-        annualSalesRawUsed = true;
+        annualSalesRawUsed = soldRowsAnnual.length > 0;
         await annualDb.close();
       } catch (error) {
         console.error('Erro ao ler ANUAL_DB_PATH / vendas_anuais_raw:', error);
@@ -3739,9 +3872,12 @@ app.get('/api/compras-x-vendas', async (req, res) => {
       rows,
       info: {
         comprasDb: COMPRAS_DB_PATH,
+        annualSalesDb: ANUAL_DB_PATH,
+        annualSalesRawUsed,
         localSalesDb: localSalesDbPath || '',
         periodo: { startDate, endDate }
       }
+      
     });
   } catch (error: any) {
     console.error('Erro /api/compras-x-vendas:', error);
