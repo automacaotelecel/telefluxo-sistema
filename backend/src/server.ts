@@ -129,6 +129,26 @@ dbInit.serialize(() => {
             qtd REAL, regiao TEXT, pct_seguro REAL, seguros REAL
         )
     `);
+
+      dbInit.run(`
+    CREATE TABLE IF NOT EXISTS vendas_detalhadas_imei (
+        data_emissao TEXT,
+        nota_fiscal TEXT,
+        nome_fantasia TEXT,
+        cnpj_empresa TEXT,
+        nome_vendedor TEXT,
+        codigo_produto TEXT,
+        referencia TEXT,
+        descricao TEXT,
+        categoria TEXT,
+        imei TEXT,
+        quantidade REAL,
+        total_liquido REAL,
+        regiao TEXT
+    )
+`);
+
+
     console.log("📦 Tabelas do Banco de Dados Garantidas!");
 });
 
@@ -247,7 +267,27 @@ if (!fs.existsSync(COMPRAS_DB_DIR)) {
 }
 
 function normalizeSerial(value: any) {
-  return String(value || '').trim();
+  return String(value ?? '')
+    .toUpperCase()
+    .replace(/\u00A0/g, '')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .replace(/[‐-–—−]/g, '')
+    .replace(/\s+/g, '')
+    .replace(/\.0+$/g, '')
+    .trim();
+}
+
+function safeNumber(value: any, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function nextIsoDate(isoDate: string) {
+  if (!isoDate) return '';
+  const d = new Date(`${isoDate}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return '';
+  d.setDate(d.getDate() + 1);
+  return d.toISOString().slice(0, 10);
 }
 
 function normalizeReferenceFamily(value: any) {
@@ -3683,19 +3723,40 @@ app.get('/api/compras-x-vendas', async (req, res) => {
 
     if (!fs.existsSync(COMPRAS_DB_PATH)) {
       return res.json({
-        summary: { totalCompras: 0, emEstoque: 0, vendidos: 0, semLocalizacao: 0, valorComprado: 0 },
+        summary: {
+          totalCompras: 0,
+          emEstoque: 0,
+          vendidos: 0,
+          conciliadoModelo: 0,
+          semLocalizacao: 0,
+          valorComprado: 0,
+        },
         rows: [],
-        info: { comprasDb: COMPRAS_DB_PATH, localSalesDb: '' }
+        info: {
+          comprasDb: COMPRAS_DB_PATH,
+          annualSalesDb: ANUAL_DB_PATH,
+          annualSalesRawUsed: false,
+          localSalesDb: '',
+          dailyDetailUsed: false,
+          periodo: {
+            startDate: String(req.query.startDate || ''),
+            endDate: String(req.query.endDate || ''),
+          },
+        },
       });
     }
 
-    const comprasDb = await open({ filename: COMPRAS_DB_PATH, driver: sqlite3.Database });
     const today = new Date();
     const defaultStart = `${today.getFullYear()}-01-01`;
     const startDate = String(req.query.startDate || defaultStart);
     const endDate = String(req.query.endDate || today.toISOString().slice(0, 10));
 
-    const comprasQuery = `
+    // --------------------------------------------------
+    // COMPRAS
+    // --------------------------------------------------
+    const comprasDb = await open({ filename: COMPRAS_DB_PATH, driver: sqlite3.Database });
+
+    const comprasRows = await comprasDb.all(`
       SELECT
         data_emissao,
         nota_fiscal,
@@ -3715,34 +3776,88 @@ app.get('/api/compras-x-vendas', async (req, res) => {
       WHERE data_emissao >= ? AND data_emissao <= ?
         AND trim(COALESCE(imei, '')) <> ''
       ORDER BY data_emissao DESC, descricao ASC
-    `;
+    `, [startDate, endDate]);
 
-    const comprasRows = await comprasDb.all(comprasQuery, [startDate, endDate]);
     await comprasDb.close();
 
+    // --------------------------------------------------
+    // ESTOQUE
+    // --------------------------------------------------
     const stock = await prisma.stock.findMany({
       where: { serial: { not: '' } }
     });
 
     const stockBySerial = new Map<string, any>();
     const stockQtyByFamily = new Map<string, number>();
+
     stock.forEach((item: any) => {
       const serial = normalizeSerial(item.serial);
       if (serial) stockBySerial.set(serial, item);
 
       const family = normalizeReferenceFamily(item.reference);
-      if (family) stockQtyByFamily.set(family, (stockQtyByFamily.get(family) || 0) + Number(item.quantity || 0));
+      if (family) {
+        stockQtyByFamily.set(
+          family,
+          (stockQtyByFamily.get(family) || 0) + safeNumber(item.quantity, 0)
+        );
+      }
     });
 
+    // --------------------------------------------------
+    // VENDAS — EXATAS POR IMEI + AGREGADAS POR FAMÍLIA
+    // --------------------------------------------------
     const soldBySerial = new Map<string, any>();
+    const soldQtyByFamily = new Map<string, number>();
+    const lastSaleByFamily = new Map<string, any>();
+
     let annualSalesRawUsed = false;
+    let dailyDetailUsed = false;
     let localSalesDbPath = '';
 
-    // 1) PRIORIDADE: base anual RAW com IMEI
+    const addFamilyQty = (family: string, qty: number) => {
+      if (!family) return;
+      soldQtyByFamily.set(family, (soldQtyByFamily.get(family) || 0) + safeNumber(qty, 0));
+    };
+
+    const setLastSaleByFamily = (family: string, row: any) => {
+      if (!family) return;
+      const prev = lastSaleByFamily.get(family);
+      if (!prev || String(prev.data_emissao || '') <= String(row.data_emissao || '')) {
+        lastSaleByFamily.set(family, row);
+      }
+    };
+
+    const setSoldBySerial = (row: any, origem: string) => {
+      const imei = normalizeSerial(row.imei);
+      if (!imei) return;
+
+      const existing = soldBySerial.get(imei);
+      const candidate = {
+        ...row,
+        imei,
+        origem,
+      };
+
+      if (!existing || String(existing.data_emissao || '') <= String(candidate.data_emissao || '')) {
+        soldBySerial.set(imei, candidate);
+      }
+    };
+
+    let annualMaxDate = '';
+
     if (fs.existsSync(ANUAL_DB_PATH)) {
       try {
         const annualDb = await open({ filename: ANUAL_DB_PATH, driver: sqlite3.Database });
 
+        const maxDateRow = await annualDb.get(`
+          SELECT MAX(data_emissao) as max_date
+          FROM vendas_anuais_raw
+          WHERE cancelado = 'N'
+        `);
+
+        annualMaxDate = String(maxDateRow?.max_date || '').slice(0, 10);
+
+        // IMEI exato da anual raw
         const soldRowsAnnual = await annualDb.all(`
           SELECT
             data_emissao,
@@ -3751,7 +3866,9 @@ app.get('/api/compras-x-vendas', async (req, res) => {
             descricao,
             imei,
             total_liquido,
-            loja
+            loja,
+            quantidade,
+            cnpj_empresa
           FROM vendas_anuais_raw
           WHERE trim(COALESCE(imei, '')) <> ''
             AND cancelado = 'N'
@@ -3760,19 +3877,90 @@ app.get('/api/compras-x-vendas', async (req, res) => {
         `, [startDate, endDate]);
 
         for (const row of soldRowsAnnual) {
-          const imei = normalizeSerial(row.imei);
-          if (imei) soldBySerial.set(imei, row);
+          setSoldBySerial(row, 'ANUAL_RAW');
+          const family = normalizeReferenceFamily(row.referencia || row.descricao || '');
+          setLastSaleByFamily(family, row);
         }
 
-        annualSalesRawUsed = soldRowsAnnual.length > 0;
+        // agregado anual por família/modelo (inclui vendas SEM IMEI)
+        const annualFamilyAgg = await annualDb.all(`
+          SELECT
+            referencia,
+            descricao,
+            SUM(COALESCE(quantidade, 0)) as quantidade,
+            MAX(data_emissao) as data_emissao
+          FROM vendas_anuais_raw
+          WHERE cancelado = 'N'
+            AND data_emissao >= ?
+            AND data_emissao <= ?
+          GROUP BY referencia, descricao
+        `, [startDate, endDate]);
+
+        for (const row of annualFamilyAgg) {
+          const family = normalizeReferenceFamily(row.referencia || row.descricao || '');
+          addFamilyQty(family, safeNumber(row.quantidade, 0));
+          setLastSaleByFamily(family, row);
+        }
+
+        annualSalesRawUsed = soldRowsAnnual.length > 0 || annualFamilyAgg.length > 0;
         await annualDb.close();
       } catch (error) {
         console.error('Erro ao ler ANUAL_DB_PATH / vendas_anuais_raw:', error);
       }
     }
 
-    // 2) FALLBACK: DB local antigo, se não achou nada na anual raw
-    if (!annualSalesRawUsed) {
+    // --------------------------------------------------
+    // SUPLEMENTO DIÁRIO DETALHADO
+    // Só soma o que vier DEPOIS da última data do anual raw
+    // --------------------------------------------------
+    const globalDb = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+
+    const dailyDetailTable = await globalDb.get(`
+      SELECT name
+      FROM sqlite_master
+      WHERE type='table'
+        AND name='vendas_detalhadas_imei'
+    `);
+
+    const dailySupplementStart =
+      annualMaxDate && annualMaxDate < endDate
+        ? nextIsoDate(annualMaxDate)
+        : (!annualMaxDate ? startDate : '');
+
+    if (dailyDetailTable && dailySupplementStart && dailySupplementStart <= endDate) {
+      const dailyDetailRows = await globalDb.all(`
+        SELECT
+          data_emissao,
+          nota_fiscal,
+          nome_fantasia as loja,
+          cnpj_empresa,
+          nome_vendedor,
+          codigo_produto,
+          referencia,
+          descricao,
+          categoria,
+          imei,
+          quantidade,
+          total_liquido,
+          regiao
+        FROM vendas_detalhadas_imei
+        WHERE data_emissao >= ?
+          AND data_emissao <= ?
+      `, [dailySupplementStart, endDate]);
+
+      for (const row of dailyDetailRows) {
+        setSoldBySerial(row, 'DIARIO_DETALHE');
+
+        const family = normalizeReferenceFamily(row.referencia || row.descricao || '');
+        addFamilyQty(family, safeNumber(row.quantidade, 0));
+        setLastSaleByFamily(family, row);
+      }
+
+      dailyDetailUsed = dailyDetailRows.length > 0;
+    }
+
+    // fallback legado local, se nada anual nem diário existir
+    if (!annualSalesRawUsed && !dailyDetailUsed) {
       localSalesDbPath = pickExistingPath(LOCAL_SALES_DB_CANDIDATES);
 
       if (localSalesDbPath) {
@@ -3787,16 +3975,19 @@ app.get('/api/compras-x-vendas', async (req, res) => {
               DESCRICAO as descricao,
               IMEI as imei,
               TOTAL_LIQUIDO as total_liquido,
-              NOME_FANTASIA as loja
+              NOME_FANTASIA as loja,
+              QUANTIDADE as quantidade
             FROM vendas
-            WHERE trim(COALESCE(IMEI, '')) <> ''
-              AND DATA_EMISSAO >= ?
+            WHERE DATA_EMISSAO >= ?
               AND DATA_EMISSAO <= ?
           `, [startDate, endDate]);
 
           for (const row of soldRows) {
-            const imei = normalizeSerial(row.imei);
-            if (imei) soldBySerial.set(imei, row);
+            setSoldBySerial(row, 'LOCAL_FALLBACK');
+
+            const family = normalizeReferenceFamily(row.referencia || row.descricao || '');
+            addFamilyQty(family, safeNumber(row.quantidade, 0));
+            setLastSaleByFamily(family, row);
           }
 
           await salesDb.close();
@@ -3805,33 +3996,66 @@ app.get('/api/compras-x-vendas', async (req, res) => {
         }
       }
     }
-    const salesAggDb = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
-    const salesAggRows = await salesAggDb.all(`
-      SELECT
-        familia,
-        descricao,
-        SUM(quantidade) as quantidade
-      FROM vendas
-      WHERE data_emissao >= ? AND data_emissao <= ?
-      GROUP BY familia, descricao
-    `, [startDate, endDate]);
-    await salesAggDb.close();
 
-    const salesQtyByFamily = new Map<string, number>();
-    salesAggRows.forEach((row: any) => {
-      const family = normalizeReferenceFamily(row.familia || row.referencia || '');
-      if (family) salesQtyByFamily.set(family, (salesQtyByFamily.get(family) || 0) + Number(row.quantidade || 0));
+    await globalDb.close();
+
+    // --------------------------------------------------
+    // QUOTAS DE CONCILIAÇÃO POR MODELO
+    // --------------------------------------------------
+    const purchaseQtyByFamily = new Map<string, number>();
+
+    comprasRows.forEach((row: any) => {
+      const family = normalizeReferenceFamily(row.referencia || row.descricao || '');
+      if (!family) return;
+      purchaseQtyByFamily.set(
+        family,
+        (purchaseQtyByFamily.get(family) || 0) + safeNumber(row.quantidade, 1)
+      );
     });
 
+    const modelQuotaRemaining = new Map<string, number>();
+
+    for (const [family, purchasedQty] of purchaseQtyByFamily.entries()) {
+      const stockQty = stockQtyByFamily.get(family) || 0;
+      const soldQty = soldQtyByFamily.get(family) || 0;
+
+      const quota = Math.max(
+        0,
+        Math.min(
+          Math.max(purchasedQty - stockQty, 0),
+          soldQty
+        )
+      );
+
+      modelQuotaRemaining.set(family, quota);
+    }
+
+    // --------------------------------------------------
+    // MONTAGEM DAS LINHAS
+    // --------------------------------------------------
     const rows = comprasRows.map((row: any) => {
       const imei = normalizeSerial(row.imei);
-      const family = normalizeReferenceFamily(row.referencia);
+      const family = normalizeReferenceFamily(row.referencia || row.descricao || '');
       const stockHit = stockBySerial.get(imei);
       const soldHit = soldBySerial.get(imei);
+
+      const rowQty = Math.max(1, safeNumber(row.quantidade, 1));
+      let modelHit = false;
+
+      if (!stockHit && !soldHit && family) {
+        const remaining = modelQuotaRemaining.get(family) || 0;
+        if (remaining >= rowQty) {
+          modelHit = true;
+          modelQuotaRemaining.set(family, remaining - rowQty);
+        }
+      }
 
       let status = 'SEM LOCALIZAÇÃO';
       if (stockHit) status = 'EM ESTOQUE';
       else if (soldHit) status = 'VENDIDO';
+      else if (modelHit) status = 'CONCILIADO POR MODELO';
+
+      const familySaleRef = lastSaleByFamily.get(family);
 
       return {
         dataCompra: row.data_emissao,
@@ -3843,19 +4067,26 @@ app.get('/api/compras-x-vendas', async (req, res) => {
         descricao: row.descricao,
         categoria: row.categoria,
         imei,
-        quantidadeCompra: Number(row.quantidade || 0),
-        valorCompra: Number(row.total_liquido || 0),
+        quantidadeCompra: rowQty,
+        valorCompra: safeNumber(row.total_liquido, 0),
         tipoTransacao: row.tipo_transacao,
         naturezaOperacao: row.natureza_operacao,
         status,
         lojaAtual: stockHit?.storeName || '-',
         quantidadeEstoqueFamilia: stockQtyByFamily.get(family) || 0,
-        quantidadeVendidaFamilia: salesQtyByFamily.get(family) || 0,
-        dataVenda: soldHit?.data_emissao || '-',
-        notaFiscalVenda: soldHit?.nota_fiscal || '-',
-        lojaVenda: soldHit?.loja || '-',
+        quantidadeVendidaFamilia: soldQtyByFamily.get(family) || 0,
+        dataVenda: soldHit?.data_emissao || (modelHit ? familySaleRef?.data_emissao || '-' : '-'),
+        notaFiscalVenda: soldHit?.nota_fiscal || (modelHit ? 'CONCILIADO_POR_MODELO' : '-'),
+        lojaVenda: soldHit?.loja || (modelHit ? familySaleRef?.loja || '-' : '-'),
         serialNoEstoque: Boolean(stockHit),
         serialVendido: Boolean(soldHit),
+        matchMetodo: stockHit
+          ? 'IMEI_ESTOQUE'
+          : soldHit
+            ? `IMEI_${soldHit?.origem || 'VENDA'}`
+            : modelHit
+              ? 'MODELO_REFERENCIA'
+              : 'NAO_LOCALIZADO',
       };
     });
 
@@ -3863,8 +4094,9 @@ app.get('/api/compras-x-vendas', async (req, res) => {
       totalCompras: rows.length,
       emEstoque: rows.filter((r: any) => r.status === 'EM ESTOQUE').length,
       vendidos: rows.filter((r: any) => r.status === 'VENDIDO').length,
+      conciliadoModelo: rows.filter((r: any) => r.status === 'CONCILIADO POR MODELO').length,
       semLocalizacao: rows.filter((r: any) => r.status === 'SEM LOCALIZAÇÃO').length,
-      valorComprado: rows.reduce((sum: number, r: any) => sum + Number(r.valorCompra || 0), 0),
+      valorComprado: rows.reduce((sum: number, r: any) => sum + safeNumber(r.valorCompra, 0), 0),
     };
 
     return res.json({
@@ -3874,10 +4106,12 @@ app.get('/api/compras-x-vendas', async (req, res) => {
         comprasDb: COMPRAS_DB_PATH,
         annualSalesDb: ANUAL_DB_PATH,
         annualSalesRawUsed,
+        annualMaxDate,
+        dailyDetailUsed,
+        dailySupplementStart: dailySupplementStart || '',
         localSalesDb: localSalesDbPath || '',
         periodo: { startDate, endDate }
       }
-      
     });
   } catch (error: any) {
     console.error('Erro /api/compras-x-vendas:', error);
@@ -3885,6 +4119,90 @@ app.get('/api/compras-x-vendas', async (req, res) => {
   }
 });
 
+// ==========================================
+// ROTA: VENDAS DETALHADAS
+// ==========================================
+
+app.post('/api/sync/vendas_detalhadas_imei', async (req, res) => {
+  const dados = req.body;
+  const reset = req.query.reset === 'true';
+
+  if (!Array.isArray(dados)) {
+    return res.status(400).json({ error: 'Formato inválido' });
+  }
+
+  try {
+    const db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+    await db.exec('BEGIN TRANSACTION');
+
+    if (reset) {
+      await db.exec('DROP TABLE IF EXISTS vendas_detalhadas_imei');
+    }
+
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS vendas_detalhadas_imei (
+        data_emissao TEXT,
+        nota_fiscal TEXT,
+        nome_fantasia TEXT,
+        cnpj_empresa TEXT,
+        nome_vendedor TEXT,
+        codigo_produto TEXT,
+        referencia TEXT,
+        descricao TEXT,
+        categoria TEXT,
+        imei TEXT,
+        quantidade REAL,
+        total_liquido REAL,
+        regiao TEXT
+      )
+    `);
+
+    const stmt = await db.prepare(`
+      INSERT INTO vendas_detalhadas_imei (
+        data_emissao,
+        nota_fiscal,
+        nome_fantasia,
+        cnpj_empresa,
+        nome_vendedor,
+        codigo_produto,
+        referencia,
+        descricao,
+        categoria,
+        imei,
+        quantidade,
+        total_liquido,
+        regiao
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    for (const item of dados) {
+      await stmt.run(
+        item.data_emissao || null,
+        item.nota_fiscal || null,
+        item.nome_fantasia || null,
+        item.cnpj_empresa || null,
+        item.nome_vendedor || null,
+        item.codigo_produto || null,
+        item.referencia || null,
+        item.descricao || null,
+        item.categoria || null,
+        item.imei || null,
+        safeNumber(item.quantidade, 0),
+        safeNumber(item.total_liquido, 0),
+        item.regiao || null
+      );
+    }
+
+    await stmt.finalize();
+    await db.exec('COMMIT');
+    await db.close();
+
+    res.json({ success: true, gravados: dados.length });
+  } catch (e: any) {
+    console.error('Erro Sync Vendas Detalhadas IMEI:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
 
 // Define a porta: Usa a do Render (process.env.PORT) ou a 3000 se for local
 const PORT = process.env.PORT || 3000;
