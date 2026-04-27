@@ -60,6 +60,7 @@ type PriceGuideRow = {
   priceRebate: number;
   priceTradeIn: number;
   priceBogo: number;
+  priceSip: number;
   ofertaAtual: number;
 };
 
@@ -106,6 +107,7 @@ type LinhaTabela = {
   priceRebate: number;
   priceTradeIn: number;
   priceBogo: number;
+  priceSip: number;
   verbaUnitaria: number;
   verbaTotal: number;
   ofertaAtual: number;
@@ -283,6 +285,19 @@ const normalizeHeader = (value: any) =>
     .replace(/\s+/g, ' ')
     .trim();
 
+const getExcelColumnName = (index: number) => {
+  let n = index + 1;
+  let name = '';
+
+  while (n > 0) {
+    const remainder = (n - 1) % 26;
+    name = String.fromCharCode(65 + remainder) + name;
+    n = Math.floor((n - 1) / 26);
+  }
+
+  return name;
+};
+
 const fetchPriceGuideSheet = async () => {
   try {
     const response = await fetch(PRICE_GUIDE_SHEET_CSV_URL, {
@@ -321,23 +336,14 @@ const fetchPriceGuideSheet = async () => {
       const row: any = {};
 
       headers.forEach((header, index) => {
-        if (header) row[header] = cols[index] ?? '';
-      });
+        const value = cols[index] ?? '';
+        const excelColumn = getExcelColumnName(index);
 
-      // Fallback por posição fixa da planilha
-      row.__colA = cols[0] ?? '';
-      row.__colB = cols[1] ?? '';
-      row.__colC = cols[2] ?? '';
-      row.__colD = cols[3] ?? ''; // Preço SSG
-      row.__colE = cols[4] ?? '';
-      row.__colF = cols[5] ?? '';
-      row.__colG = cols[6] ?? '';
-      row.__colH = cols[7] ?? '';
-      row.__colI = cols[8] ?? '';
-      row.__colJ = cols[9] ?? ''; // Preço final
-      row.__colK = cols[10] ?? ''; // Price Rebate
-      row.__colL = cols[11] ?? ''; // Price Trade In
-      row.__colM = cols[12] ?? ''; // Price Bogo
+        if (header) row[header] = value;
+
+        // Fallback por letra da coluna, útil quando o cabeçalho vem com quebra de linha ou símbolo.
+        row[`__col${excelColumn}`] = value;
+      });
 
       return row;
     });
@@ -439,7 +445,6 @@ const buildPriceGuideMap = (rows: any[]) => {
       getCandidate(row, [
         'REBATE',
         'DESCONTO REBATE',
-        'PRICE REBATE',
         '__colF',
       ])
     );
@@ -448,7 +453,6 @@ const buildPriceGuideMap = (rows: any[]) => {
       getCandidate(row, [
         'TRADE IN',
         'DESCONTO TRADE IN',
-        'PRICE TRADE IN',
         '__colG',
       ])
     );
@@ -457,7 +461,6 @@ const buildPriceGuideMap = (rows: any[]) => {
       getCandidate(row, [
         'BOGO',
         'DESCONTO BOGO',
-        'PRICE BOGO',
         '__colH',
       ])
     );
@@ -494,6 +497,17 @@ const buildPriceGuideMap = (rows: any[]) => {
         'PREÇO BOGO',
         'PRECO BOGO',
         '__colM',
+        '__colAG',
+      ])
+    );
+
+    const priceSip = toNumber(
+      getCandidate(row, [
+        'PRICE SIP',
+        'PREÇO SIP',
+        'PRECO SIP',
+        '__colN',
+        '__colAH',
       ])
     );
 
@@ -520,6 +534,7 @@ const buildPriceGuideMap = (rows: any[]) => {
       priceRebate,
       priceTradeIn,
       priceBogo,
+      priceSip,
       ofertaAtual,
     };
 
@@ -816,7 +831,8 @@ const recalculateRow = (row: LinhaTabela): LinhaTabela => {
     row.custoMedioEstoque -
     row.priceRebate -
     row.priceTradeIn -
-    row.priceBogo;
+    row.priceBogo -
+    row.priceSip;
 
   const novoCustoMedio = Number.isFinite(novoCustoMedioBruto) ? Math.max(novoCustoMedioBruto, 0) : null;
   const margemEstoque = row.precoTelecel > 0 ? 1 - row.custoMedioEstoque / row.precoTelecel : null;
@@ -846,13 +862,16 @@ const recalculateRow = (row: LinhaTabela): LinhaTabela => {
 };
 
 const getMergeKey = (row: LinhaTabela) => {
-  const byReference = normalizeReference(row.referencia || '');
-  if (byReference) return byReference;
+  // Uma linha por aparelho exato: a descrição completa é a chave mais fiel.
+  // Não usamos referência como primeira chave porque modelos como 256GB e 512GB
+  // podem compartilhar o mesmo prefixo de referência.
+  const byDescription = normalizeDesc(row.descricao || '');
+  if (byDescription) return byDescription;
 
   const byBasicModel = normalizeBasicModel(row.basicModel || row.modeloPdf || '');
   if (byBasicModel) return byBasicModel;
 
-  return normalizeDesc(row.descricao || '');
+  return normalizeReference(row.referencia || '');
 };
 
 const mergeDuplicateRowsByModel = (inputRows: LinhaTabela[]) => {
@@ -886,6 +905,7 @@ const mergeDuplicateRowsByModel = (inputRows: LinhaTabela[]) => {
       priceRebate: current.priceRebate || row.priceRebate,
       priceTradeIn: current.priceTradeIn || row.priceTradeIn,
       priceBogo: current.priceBogo || row.priceBogo,
+      priceSip: current.priceSip || row.priceSip,
       verbaUnitaria: current.verbaUnitaria || row.verbaUnitaria,
       verbaTotal: current.verbaTotal || row.verbaTotal,
       ofertaAtual: current.ofertaAtual || row.ofertaAtual,
@@ -1008,12 +1028,12 @@ export default function ComparativosModule() {
         const referencia = familyFromReference(traducao?.referencia2 || '');
         const stock = stockMap.get(referencia);
         const price =
-          priceMap.byRef.get(referencia) ||
-          priceMap.byDesc.get(normalizeDesc(descricao));
+          priceMap.byDesc.get(normalizeDesc(descricao)) ||
+          priceMap.byRef.get(referencia);
 
         const priceGuide =
-          priceGuideMap.byRef.get(referencia) ||
-          priceGuideMap.byDesc.get(normalizeDesc(descricao));
+          priceGuideMap.byDesc.get(normalizeDesc(descricao)) ||
+          priceGuideMap.byRef.get(referencia);
 
         const qtdVendida =
           salesMap.byDesc.get(normalizeDesc(descricao))?.quantidade ||
@@ -1075,6 +1095,7 @@ export default function ComparativosModule() {
           priceRebate: priceGuide?.priceRebate || 0,
           priceTradeIn: priceGuide?.priceTradeIn || 0,
           priceBogo: priceGuide?.priceBogo || 0,
+          priceSip: priceGuide?.priceSip || 0,
           verbaUnitaria: item.verbaUnitaria,
           verbaTotal: item.verbaTotal,
           ofertaAtual,
@@ -1159,6 +1180,7 @@ export default function ComparativosModule() {
       'PRICE REBATE': row.priceRebate,
       'PRICE TRADE IN': row.priceTradeIn,
       'PRICE BOGO': row.priceBogo,
+      'PRICE SIP': row.priceSip,
       'PRICE CAMPANHA': row.verbaUnitaria,
       'VERBA TOTAL': row.verbaTotal,
       'OFERTA ATUAL': row.ofertaAtual,
@@ -1174,14 +1196,44 @@ export default function ComparativosModule() {
 
 
   const discountColSpan = showDiscountDetails ? 6 : 3;
-  const priceColSpan = showPriceDetails ? 3 : 1;
+  const priceColSpan = showPriceDetails ? 4 : 1;
   const offerColSpan = showOfferDetails ? 2 : 1;
-  const totalTableCols = 15 + (showDiscountDetails ? 3 : 0) + (showPriceDetails ? 2 : 0) + (showOfferDetails ? 1 : 0);
-  const tableMinWidth = showDiscountDetails || showPriceDetails || showOfferDetails ? 'min-w-[2450px]' : 'min-w-[2050px]';
+  const totalTableCols = 15 + (showDiscountDetails ? 3 : 0) + (showPriceDetails ? 3 : 0) + (showOfferDetails ? 1 : 0);
+  const tableMinWidth = showDiscountDetails || showPriceDetails || showOfferDetails ? 'min-w-[2920px]' : 'min-w-[2240px]';
 
   return (
-    <div className="min-h-screen w-full bg-slate-50">
-      <div className="w-full max-w-none space-y-3 px-1.5 py-2 md:px-2">
+    <>
+      <style>
+        {`
+          .comparativo-scroll {
+            scrollbar-width: auto;
+            scrollbar-color: #475569 #e2e8f0;
+          }
+
+          .comparativo-scroll::-webkit-scrollbar {
+            height: 16px;
+            width: 16px;
+          }
+
+          .comparativo-scroll::-webkit-scrollbar-track {
+            background: #e2e8f0;
+            border-radius: 999px;
+          }
+
+          .comparativo-scroll::-webkit-scrollbar-thumb {
+            background: #64748b;
+            border-radius: 999px;
+            border: 3px solid #e2e8f0;
+          }
+
+          .comparativo-scroll::-webkit-scrollbar-thumb:hover {
+            background: #334155;
+          }
+        `}
+      </style>
+
+      <div className="min-h-screen w-full overflow-hidden bg-slate-50">
+      <div className="w-full max-w-none space-y-3 px-1 py-2 md:px-1.5">
         <div className="rounded-[22px] border border-slate-200 bg-white px-4 py-3 shadow-sm">
           <div className="flex flex-col gap-3 2xl:flex-row 2xl:items-center 2xl:justify-between">
             <div className="min-w-0">
@@ -1241,9 +1293,54 @@ export default function ComparativosModule() {
             </div>
           </div>
 
-          <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
-            <div className="max-h-[calc(100vh-205px)] min-h-[560px] overflow-auto overscroll-contain rounded-xl" style={{ scrollbarGutter: 'stable both-edges' }}>
-              <table className={`w-full ${tableMinWidth} table-auto border-separate border-spacing-0 bg-white`}>
+          <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+            <div
+              className="comparativo-scroll h-[calc(100vh-225px)] min-h-[360px] w-full max-w-[calc(100vw-78px)] overflow-x-scroll overflow-y-auto overscroll-contain rounded-xl pb-3"
+              style={{ scrollbarGutter: 'stable both-edges' }}
+            >
+              <table className={`w-max ${tableMinWidth} table-fixed border-separate border-spacing-0 bg-white text-[12px]`}>
+                <colgroup>
+                  <col className="w-[360px]" />
+                  <col className="w-[112px]" />
+                  <col className="w-[112px]" />
+                  <col className="w-[134px]" />
+                  {showDiscountDetails ? (
+                    <>
+                      <col className="w-[116px]" />
+                      <col className="w-[122px]" />
+                      <col className="w-[112px]" />
+                      <col className="w-[100px]" />
+                    </>
+                  ) : (
+                    <col className="w-[64px]" />
+                  )}
+                  <col className="w-[136px]" />
+                  <col className="w-[146px]" />
+                  <col className="w-[84px]" />
+                  <col className="w-[128px]" />
+                  <col className="w-[112px]" />
+                  <col className="w-[136px]" />
+                  <col className="w-[116px]" />
+                  <col className="w-[92px]" />
+                  {showPriceDetails ? (
+                    <>
+                      <col className="w-[122px]" />
+                      <col className="w-[132px]" />
+                      <col className="w-[116px]" />
+                      <col className="w-[108px]" />
+                    </>
+                  ) : (
+                    <col className="w-[64px]" />
+                  )}
+                  {showOfferDetails ? (
+                    <>
+                      <col className="w-[126px]" />
+                      <col className="w-[110px]" />
+                    </>
+                  ) : (
+                    <col className="w-[64px]" />
+                  )}
+                </colgroup>
                 <thead className="sticky top-0 z-30 shadow-[0_1px_0_0_rgba(226,232,240,1)]">
                   <tr>
                     <GroupHeader colSpan={1} className="sticky left-0 top-0 z-40 bg-[#d9d9d9] text-[#003366] shadow-[1px_0_0_0_rgba(148,163,184,0.55)]">
@@ -1275,7 +1372,7 @@ export default function ComparativosModule() {
                     </GroupHeader>
                   </tr>
                   <tr className="sticky top-[29px] z-30 bg-white">
-                    <TableHeader className="sticky left-0 z-40 w-[320px] min-w-[320px] bg-[#d9d9d9] text-[#003366] shadow-[1px_0_0_0_rgba(148,163,184,0.55)]">Descrição</TableHeader>
+                    <TableHeader className="sticky left-0 z-40 w-[360px] min-w-[360px] bg-[#d9d9d9] text-[#003366] shadow-[1px_0_0_0_rgba(148,163,184,0.55)]">Descrição</TableHeader>
 
                     <TableHeader className="w-[96px] bg-[#d9ffd9]">Preço Samsung</TableHeader>
                     <TableHeader className="w-[92px] bg-[#d9ffd9]">Preço Telecel</TableHeader>
@@ -1308,6 +1405,7 @@ export default function ComparativosModule() {
                         <TableHeader className="w-[98px] bg-[#e2f0d9]">Price Rebate</TableHeader>
                         <TableHeader className="w-[104px] bg-[#e2f0d9]">Price Trade In</TableHeader>
                         <TableHeader className="w-[94px] bg-[#e2f0d9]">Price Bogo</TableHeader>
+                        <TableHeader className="w-[86px] bg-[#e2f0d9]">Price SIP</TableHeader>
                       </>
                     ) : (
                       <TableHeader className="w-[58px] bg-[#e2f0d9] text-center">+</TableHeader>
@@ -1331,7 +1429,7 @@ export default function ComparativosModule() {
 
                     return (
                       <tr key={row.rowKey || `${row.refCampanha}-${row.basicModel}-${idx}`} className={baseRow}>
-                        <TableCell className={`sticky left-0 z-20 w-[320px] min-w-[320px] whitespace-nowrap font-black text-slate-900 shadow-[1px_0_0_0_rgba(148,163,184,0.35)] ${descBg}`}>
+                        <TableCell className={`sticky left-0 z-20 w-[360px] min-w-[360px] whitespace-nowrap font-black text-slate-900 shadow-[1px_0_0_0_rgba(148,163,184,0.35)] ${descBg}`}>
                           {row.descricao || '-'}
                         </TableCell>
 
@@ -1386,6 +1484,7 @@ export default function ComparativosModule() {
                             <TableCell className="whitespace-nowrap bg-[#edf7e8]">{formatMoney(row.priceRebate)}</TableCell>
                             <TableCell className="whitespace-nowrap bg-[#edf7e8]">{formatMoney(row.priceTradeIn)}</TableCell>
                             <TableCell className="whitespace-nowrap bg-[#edf7e8]">{formatMoney(row.priceBogo)}</TableCell>
+                            <TableCell className="whitespace-nowrap bg-[#edf7e8]">{formatMoney(row.priceSip)}</TableCell>
                           </>
                         ) : (
                           <TableCell className="bg-[#edf7e8] text-center">
@@ -1444,6 +1543,7 @@ export default function ComparativosModule() {
           </div>
         </div>
       </div>
-    </div>
+      </div>
+    </>
   );
 }
