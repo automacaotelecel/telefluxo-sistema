@@ -87,11 +87,17 @@ type CompraRow = {
   serialVendido: boolean;
 };
 
-type StatusFilter = 'TODOS' | 'EM ESTOQUE' | 'VENDIDO' | 'SEM LOCALIZAÇÃO';
+type StatusFilter =
+  | 'TODOS'
+  | 'EM ESTOQUE'
+  | 'VENDIDO'
+  | 'CONCILIADO POR MODELO'
+  | 'SEM LOCALIZAÇÃO';
 
 const statusStyleMap: Record<string, string> = {
   'EM ESTOQUE': 'bg-emerald-100 text-emerald-700 border border-emerald-200',
   'VENDIDO': 'bg-blue-100 text-blue-700 border border-blue-200',
+  'CONCILIADO POR MODELO': 'bg-amber-100 text-amber-700 border border-amber-200',
   'SEM LOCALIZAÇÃO': 'bg-red-100 text-red-700 border border-red-200',
 };
 
@@ -101,11 +107,12 @@ export default function ComprasXVendasModule() {
   const [endDate, setEndDate] = useState(today);
   const [rows, setRows] = useState<CompraRow[]>([]);
   const [summary, setSummary] = useState({
-    totalCompras: 0,
-    emEstoque: 0,
-    vendidos: 0,
-    semLocalizacao: 0,
-    valorComprado: 0,
+  totalCompras: 0,
+  emEstoque: 0,
+  vendidos: 0,
+  conciliadoModelo: 0,
+  semLocalizacao: 0,
+  valorComprado: 0,
   });
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('TODOS');
@@ -193,6 +200,7 @@ export default function ComprasXVendasModule() {
       'EM ESTOQUE': rows.filter((r) => r.status === 'EM ESTOQUE').length,
       VENDIDO: rows.filter((r) => r.status === 'VENDIDO').length,
       'SEM LOCALIZAÇÃO': rows.filter((r) => r.status === 'SEM LOCALIZAÇÃO').length,
+      'CONCILIADO POR MODELO': rows.filter((r) => r.status === 'CONCILIADO POR MODELO').length,
     }),
     [rows]
   );
@@ -368,6 +376,13 @@ export default function ComprasXVendasModule() {
                 count={statusCounts['SEM LOCALIZAÇÃO']}
                 onClick={() => setStatusFilter('SEM LOCALIZAÇÃO')}
                 icon={<PackageX size={14} />}
+              />
+              <StatusButton
+              label="Conciliado por modelo"
+              value="CONCILIADO POR MODELO"
+              active={statusFilter === 'CONCILIADO POR MODELO'}
+              count={statusCounts['CONCILIADO POR MODELO']}
+              onClick={() => setStatusFilter('CONCILIADO POR MODELO')}
               />
             </div>
           </div>

@@ -189,20 +189,30 @@ const getCurrentUserId = () => {
   return '';
 };
 
-const getApiCandidates = (path: string) => {
-  const sameOrigin = typeof window !== 'undefined' && window.location?.origin
-    ? `${window.location.origin}${path}`
-    : '';
+const API_BASE_URL = 'https://telefluxo-aplicacao.onrender.com';
 
-  if (path === '/api/comparativos/mkt-base' || path.startsWith('/price-table')) {
-    return [sameOrigin, `http://localhost:3000${path}`].filter(Boolean);
+const isLocalFrontend = () => {
+  if (typeof window === 'undefined') return false;
+
+  return (
+    window.location.hostname === 'localhost' ||
+    window.location.hostname === '127.0.0.1'
+  );
+};
+
+const getApiCandidates = (path: string) => {
+  const cleanPath = path.startsWith('/') ? path : `/${path}`;
+
+  if (isLocalFrontend()) {
+    return [
+      `http://localhost:3000${cleanPath}`,
+      `${API_BASE_URL}${cleanPath}`,
+    ];
   }
 
   return [
-    sameOrigin,
-    `http://localhost:3000${path}`,
-    `https://telefluxo-aplicacao.onrender.com${path}`,
-  ].filter(Boolean);
+    `${API_BASE_URL}${cleanPath}`,
+  ];
 };
 
 const fetchJsonFromCandidates = async (path: string) => {
