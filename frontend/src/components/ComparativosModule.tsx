@@ -48,6 +48,21 @@ type PriceRow = {
   ofertaAtual: number;
 };
 
+type PriceGuideRow = {
+  descricao: string;
+  referencia: string;
+  precoSamsung: number;
+  descontoTelecel: number;
+  descontoRebate: number;
+  descontoTradeIn: number;
+  descontoBogo: number;
+  descontoSip: number;
+  priceRebate: number;
+  priceTradeIn: number;
+  priceBogo: number;
+  ofertaAtual: number;
+};
+
 type StockRow = {
   referencia2: string;
   descricao: string;
@@ -63,6 +78,7 @@ type SaleAgg = {
 };
 
 type LinhaTabela = {
+  rowKey: string;
   descricao: string;
   referencia: string;
   precoSamsung: number;
@@ -87,6 +103,9 @@ type LinhaTabela = {
   novoCustoMedio: number | null;
   margemPrice: number | null;
   qtdVendida: number;
+  priceRebate: number;
+  priceTradeIn: number;
+  priceBogo: number;
   verbaUnitaria: number;
   verbaTotal: number;
   ofertaAtual: number;
@@ -105,6 +124,12 @@ const formatNumber = (value: number | null | undefined) =>
 const formatPercent = (value: number | null | undefined) => {
   if (value === null || value === undefined || !Number.isFinite(value)) return '-';
   return `${(value * 100).toFixed(2).replace('.', ',')}%`;
+};
+
+const formatEditableNumber = (value: number | null | undefined) => {
+  const n = Number(value || 0);
+  if (!n) return '';
+  return String(n).replace('.', ',');
 };
 
 const normalizeLine = (value: string) =>
@@ -189,6 +214,18 @@ const getCurrentUserId = () => {
   return '';
 };
 
+const getCurrentMonthRange = () => {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+
+  return {
+    startDate: `${y}-${m}-01`,
+    endDate: `${y}-${m}-${d}`,
+  };
+};
+
 const API_BASE_URL = 'https://telefluxo-aplicacao.onrender.com';
 
 const isLocalFrontend = () => {
@@ -233,6 +270,264 @@ const fetchJsonFromCandidates = async (path: string) => {
   }
 
   throw new Error(lastError);
+};
+
+const PRICE_GUIDE_SHEET_CSV_URL =
+  'https://docs.google.com/spreadsheets/d/1yInC46qAWka0S69njfFoXzJpYO4c1xVR_z3eEWBhkR4/export?format=csv&gid=0';
+
+const normalizeHeader = (value: any) =>
+  String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const fetchPriceGuideSheet = async () => {
+  try {
+    const response = await fetch(PRICE_GUIDE_SHEET_CSV_URL, {
+      cache: 'no-store',
+    });
+
+    if (!response.ok) {
+      console.warn(`Não consegui ler a planilha guia de preços (${response.status})`);
+      return { url: PRICE_GUIDE_SHEET_CSV_URL, data: [] };
+    }
+
+    const csvText = await response.text();
+
+    const workbook = XLSX.read(csvText, { type: 'string' });
+    const firstSheetName = workbook.SheetNames[0];
+
+    if (!firstSheetName) {
+      return { url: PRICE_GUIDE_SHEET_CSV_URL, data: [] };
+    }
+
+    const sheet = workbook.Sheets[firstSheetName];
+
+    const rawRows = XLSX.utils.sheet_to_json(sheet, {
+      header: 1,
+      defval: '',
+      blankrows: false,
+    }) as any[][];
+
+    if (rawRows.length < 2) {
+      return { url: PRICE_GUIDE_SHEET_CSV_URL, data: [] };
+    }
+
+    const headers = (rawRows[0] || []).map((h: any) => String(h || '').trim());
+
+    const data = rawRows.slice(1).map((cols) => {
+      const row: any = {};
+
+      headers.forEach((header, index) => {
+        if (header) row[header] = cols[index] ?? '';
+      });
+
+      // Fallback por posição fixa da planilha
+      row.__colA = cols[0] ?? '';
+      row.__colB = cols[1] ?? '';
+      row.__colC = cols[2] ?? '';
+      row.__colD = cols[3] ?? ''; // Preço SSG
+      row.__colE = cols[4] ?? '';
+      row.__colF = cols[5] ?? '';
+      row.__colG = cols[6] ?? '';
+      row.__colH = cols[7] ?? '';
+      row.__colI = cols[8] ?? '';
+      row.__colJ = cols[9] ?? ''; // Preço final
+      row.__colK = cols[10] ?? ''; // Price Rebate
+      row.__colL = cols[11] ?? ''; // Price Trade In
+      row.__colM = cols[12] ?? ''; // Price Bogo
+
+      return row;
+    });
+
+    return {
+      url: PRICE_GUIDE_SHEET_CSV_URL,
+      data,
+    };
+  } catch (error) {
+    console.warn('Falha ao ler planilha guia de preços. Mantendo estrutura atual.', error);
+    return { url: PRICE_GUIDE_SHEET_CSV_URL, data: [] };
+  }
+};
+
+const buildPriceGuideMap = (rows: any[]) => {
+  const byDesc = new Map<string, PriceGuideRow>();
+  const byRef = new Map<string, PriceGuideRow>();
+
+  const getCandidate = (row: any, names: string[]) => {
+    const keys = Object.keys(row || {});
+
+    for (const name of names) {
+      if (row?.[name] !== undefined && row?.[name] !== null && row?.[name] !== '') {
+        return row[name];
+      }
+
+      const wanted = normalizeHeader(name);
+      const foundKey = keys.find((key) => normalizeHeader(key) === wanted);
+
+      if (
+        foundKey &&
+        row?.[foundKey] !== undefined &&
+        row?.[foundKey] !== null &&
+        row?.[foundKey] !== ''
+      ) {
+        return row[foundKey];
+      }
+    }
+
+    return '';
+  };
+
+  rows.forEach((row) => {
+    const descricao = String(
+      getCandidate(row, [
+        'DESCRIÇÃO',
+        'DESCRICAO',
+        'DESCRIÇÃO 2',
+        'DESCRICAO 2',
+        'PRODUTO',
+        'MODELO',
+        'MODEL',
+        '__colB',
+        '__colA',
+      ])
+    ).trim();
+
+    const referencia = familyFromReference(
+      String(
+        getCandidate(row, [
+          'REFERENCIA',
+          'REFERÊNCIA',
+          'REFERENCIA 2',
+          'REFERÊNCIA 2',
+          'REF',
+          'SKU',
+          'CÓDIGO',
+          'CODIGO',
+          'REFERENCE',
+          '__colC',
+          '__colB',
+          '__colA',
+        ])
+      )
+    );
+
+    const precoSamsung = toNumber(
+      getCandidate(row, [
+        'PREÇO SSG',
+        'PRECO SSG',
+        'PREÇO SAMSUNG',
+        'PRECO SAMSUNG',
+        'SSG',
+        '__colD',
+      ])
+    );
+
+    const descontoTelecel = toNumber(
+      getCandidate(row, [
+        'DESC. TELECEL',
+        'DESC TELECEL',
+        'DESCONTO TELECEL',
+        'TOTAL DESCONTO TELECEL',
+        '__colE',
+      ])
+    );
+
+    const descontoRebate = toNumber(
+      getCandidate(row, [
+        'REBATE',
+        'DESCONTO REBATE',
+        'PRICE REBATE',
+        '__colF',
+      ])
+    );
+
+    const descontoTradeIn = toNumber(
+      getCandidate(row, [
+        'TRADE IN',
+        'DESCONTO TRADE IN',
+        'PRICE TRADE IN',
+        '__colG',
+      ])
+    );
+
+    const descontoBogo = toNumber(
+      getCandidate(row, [
+        'BOGO',
+        'DESCONTO BOGO',
+        'PRICE BOGO',
+        '__colH',
+      ])
+    );
+
+    const descontoSip = toNumber(
+      getCandidate(row, [
+        'SIP',
+        'DESCONTO SIP',
+        '__colI',
+      ])
+    );
+
+    const priceRebate = toNumber(
+      getCandidate(row, [
+        'PRICE REBATE',
+        'PREÇO REBATE',
+        'PRECO REBATE',
+        '__colK',
+      ])
+    );
+
+    const priceTradeIn = toNumber(
+      getCandidate(row, [
+        'PRICE TRADE IN',
+        'PREÇO TRADE IN',
+        'PRECO TRADE IN',
+        '__colL',
+      ])
+    );
+
+    const priceBogo = toNumber(
+      getCandidate(row, [
+        'PRICE BOGO',
+        'PREÇO BOGO',
+        'PRECO BOGO',
+        '__colM',
+      ])
+    );
+
+    const ofertaAtual = toNumber(
+      getCandidate(row, [
+        'PREÇO FINAL',
+        'PRECO FINAL',
+        'OFERTA ATUAL',
+        'PREÇO ATUAL',
+        'PRECO ATUAL',
+        '__colJ',
+      ])
+    );
+
+    const payload: PriceGuideRow = {
+      descricao,
+      referencia,
+      precoSamsung,
+      descontoTelecel,
+      descontoRebate,
+      descontoTradeIn,
+      descontoBogo,
+      descontoSip,
+      priceRebate,
+      priceTradeIn,
+      priceBogo,
+      ofertaAtual,
+    };
+
+    if (descricao) byDesc.set(normalizeDesc(descricao), payload);
+    if (referencia) byRef.set(referencia, payload);
+  });
+
+  return { byDesc, byRef };
 };
 
 const extractFieldFromLines = (lines: string[], label: string) => {
@@ -504,6 +799,111 @@ const margin = (price: number, cost: number) => {
   return (price - cost) / price;
 };
 
+const recalculateRow = (row: LinhaTabela): LinhaTabela => {
+  const totalDesconto =
+    row.totalDescontoTelecel +
+    row.descontoRebate +
+    row.descontoTradeIn +
+    row.descontoBogo +
+    row.descontoSip;
+
+  // Coluna N do comparativo: PREÇO PROMOCIONAL (TELECEL + SAMSUNG)
+  const precoPromocional = row.precoSamsung > 0 ? Math.max(row.precoSamsung - totalDesconto, 0) : 0;
+
+  // Coluna T do comparativo: NOVO CUSTO MÉDIO ESTOQUE (PRICE)
+  // Importante: aqui entram os campos Price, não os descontos brutos da Samsung.
+  const novoCustoMedioBruto =
+    row.custoMedioEstoque -
+    row.priceRebate -
+    row.priceTradeIn -
+    row.priceBogo;
+
+  const novoCustoMedio = Number.isFinite(novoCustoMedioBruto) ? Math.max(novoCustoMedioBruto, 0) : null;
+  const margemEstoque = row.precoTelecel > 0 ? 1 - row.custoMedioEstoque / row.precoTelecel : null;
+
+  // Fórmula fiel ao Excel: =100%-(NOVO CUSTO MÉDIO ESTOQUE / PREÇO PROMOCIONAL)
+  const margemPrice =
+    precoPromocional > 0 && novoCustoMedio !== null
+      ? 1 - novoCustoMedio / precoPromocional
+      : null;
+
+  let status = row.status || '-';
+  if (row.ofertaAtual > 0 && precoPromocional > 0) {
+    if (row.ofertaAtual < precoPromocional) status = 'MENOR';
+    else if (row.ofertaAtual > precoPromocional) status = 'MAIOR';
+    else status = 'IGUAL';
+  }
+
+  return {
+    ...row,
+    totalDesconto,
+    precoPromocional,
+    novoCustoMedio,
+    margemEstoque,
+    margemPrice,
+    status,
+  };
+};
+
+const getMergeKey = (row: LinhaTabela) => {
+  const byReference = normalizeReference(row.referencia || '');
+  if (byReference) return byReference;
+
+  const byBasicModel = normalizeBasicModel(row.basicModel || row.modeloPdf || '');
+  if (byBasicModel) return byBasicModel;
+
+  return normalizeDesc(row.descricao || '');
+};
+
+const mergeDuplicateRowsByModel = (inputRows: LinhaTabela[]) => {
+  const map = new Map<string, LinhaTabela>();
+
+  inputRows.forEach((row) => {
+    const key = getMergeKey(row);
+    if (!key) return;
+
+    const current = map.get(key);
+    if (!current) {
+      map.set(key, recalculateRow({ ...row, rowKey: `modelo-${key}` }));
+      return;
+    }
+
+    const merged: LinhaTabela = {
+      ...current,
+      // Mantém uma única linha por aparelho, sem somar estoque/venda repetida.
+      // Se alguma fonte vier zerada em uma linha e preenchida em outra, aproveita o valor preenchido.
+      precoSamsung: current.precoSamsung || row.precoSamsung,
+      precoTelecel: current.precoTelecel || row.precoTelecel,
+      totalDescontoTelecel: current.totalDescontoTelecel || row.totalDescontoTelecel,
+      descontoRebate: current.descontoRebate || row.descontoRebate,
+      descontoTradeIn: current.descontoTradeIn || row.descontoTradeIn,
+      descontoBogo: current.descontoBogo || row.descontoBogo,
+      descontoSip: current.descontoSip || row.descontoSip,
+      qtdEstoque: current.qtdEstoque || row.qtdEstoque,
+      custoTotalEstoque: current.custoTotalEstoque || row.custoTotalEstoque,
+      custoMedioEstoque: current.custoMedioEstoque || row.custoMedioEstoque,
+      qtdVendida: Math.max(current.qtdVendida || 0, row.qtdVendida || 0),
+      priceRebate: current.priceRebate || row.priceRebate,
+      priceTradeIn: current.priceTradeIn || row.priceTradeIn,
+      priceBogo: current.priceBogo || row.priceBogo,
+      verbaUnitaria: current.verbaUnitaria || row.verbaUnitaria,
+      verbaTotal: current.verbaTotal || row.verbaTotal,
+      ofertaAtual: current.ofertaAtual || row.ofertaAtual,
+      status: current.status || row.status,
+    };
+
+    map.set(key, recalculateRow(merged));
+  });
+
+  return Array.from(map.values());
+};
+
+const TruncateText = ({ value, className = '' }: { value: string; className?: string }) => (
+  <div className={`truncate ${className}`} title={value || '-'}>
+    {value || '-'}
+  </div>
+);
+
 const TableHeader = ({ children, className = '' }: { children: React.ReactNode; className?: string }) => (
   <th className={`px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-slate-500 text-left border-b border-slate-200 whitespace-nowrap ${className}`}>
     {children}
@@ -511,7 +911,7 @@ const TableHeader = ({ children, className = '' }: { children: React.ReactNode; 
 );
 
 const TableCell = ({ children, className = '' }: { children: React.ReactNode; className?: string }) => (
-  <td className={`px-3 py-3 text-sm text-slate-700 border-b border-slate-100 align-top ${className}`}>{children}</td>
+  <td className={`px-2.5 py-2 text-[12px] leading-5 text-slate-700 border-b border-slate-100 align-middle ${className}`}>{children}</td>
 );
 
 const GroupHeader = ({ children, className = '', colSpan }: { children: React.ReactNode; className?: string; colSpan: number }) => (
@@ -523,6 +923,18 @@ const GroupHeader = ({ children, className = '', colSpan }: { children: React.Re
   </th>
 );
 
+const ToggleGroupButton = ({ open, label, onClick }: { open: boolean; label: string; onClick: () => void }) => (
+  <button
+    type="button"
+    onClick={onClick}
+    className="inline-flex items-center justify-center gap-1 rounded-full border border-current/20 bg-white/70 px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.14em] shadow-sm transition hover:bg-white"
+    title={open ? `Recolher ${label}` : `Abrir ${label}`}
+  >
+    <span className="text-[13px] leading-none">{open ? '−' : '+'}</span>
+    {label}
+  </button>
+);
+
 
 export default function ComparativosModule() {
   const [rows, setRows] = useState<LinhaTabela[]>([]);
@@ -530,6 +942,23 @@ export default function ComparativosModule() {
   const [apiInfo, setApiInfo] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [loading, setLoading] = useState(false);
+  const [showDiscountDetails, setShowDiscountDetails] = useState(false);
+  const [showPriceDetails, setShowPriceDetails] = useState(false);
+  const [showOfferDetails, setShowOfferDetails] = useState(false);
+
+  const updateTotalDescontoTelecel = (rowKey: string, rawValue: string) => {
+    const value = toNumber(rawValue);
+
+    setRows((prevRows) =>
+      prevRows.map((row) => {
+        if (row.rowKey !== rowKey) return row;
+        return recalculateRow({
+          ...row,
+          totalDescontoTelecel: value,
+        });
+      })
+    );
+  };
 
   const processFiles = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files || []) as File[];
@@ -542,23 +971,19 @@ export default function ComparativosModule() {
     try {
       const pdfItems = (await Promise.all(files.map((file) => parseCampaignFromPdf(file)))).flat();
 
-      const allDates = pdfItems.flatMap((i) => [i.inicio, i.termino]).filter(Boolean);
-      const isoDates = allDates
-        .map((d) => {
-          const [day, month, year] = d.split('.');
-          return `${year}-${month}-${day}`;
-        })
-        .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d))
-        .sort();
-
-      const startDate = isoDates[0] || '';
-      const endDate = isoDates[isoDates.length - 1] || '';
+      const { startDate, endDate } = getCurrentMonthRange();
       const userId = getCurrentUserId();
 
-      const [baseResp, stockResp, priceResp, salesResp] = await Promise.all([
+      const [baseResp, stockResp, priceResp, priceGuideResp, salesResp] = await Promise.all([
         fetchJsonFromCandidates('/api/comparativos/mkt-base'),
         fetchJsonFromCandidates('/stock'),
+
+        // Mantém exatamente a estrutura atual
         fetchJsonFromCandidates('/price-table?category=Aparelhos'),
+
+        // Apenas adiciona a planilha guia para complementar Preço Samsung e Oferta Atual
+        fetchPriceGuideSheet(),
+
         userId && startDate && endDate
           ? fetchJsonFromCandidates(`/sales?userId=${encodeURIComponent(userId)}&startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}`)
           : Promise.resolve({ url: '', data: { sales: [] } }),
@@ -573,10 +998,12 @@ export default function ComparativosModule() {
       const traducaoMap = buildTraducaoMap(traducaoRows);
       const stockMap = buildStockMap(Array.isArray(stockResp.data) ? stockResp.data : []);
       const priceMap = buildPriceMap(Array.isArray(priceResp.data) ? priceResp.data : []);
+      const priceGuideMap = buildPriceGuideMap(Array.isArray(priceGuideResp.data) ? priceGuideResp.data : []);
       const salesMap = buildSalesMap(Array.isArray(salesResp.data?.sales) ? salesResp.data.sales : []);
 
-      const finalRows: LinhaTabela[] = pdfItems.map((item) => {
-        const traducao = traducaoMap.get(normalizeBasicModel(item.modeloPdf));
+      const finalRows: LinhaTabela[] = pdfItems.map((item, index) => {
+        const basicModel = normalizeBasicModel(item.modeloPdf);
+        const traducao = traducaoMap.get(basicModel);
         const descricao = traducao?.descricao2 || traducao?.marketingName || '-';
         const referencia = familyFromReference(traducao?.referencia2 || '');
         const stock = stockMap.get(referencia);
@@ -584,41 +1011,43 @@ export default function ComparativosModule() {
           priceMap.byRef.get(referencia) ||
           priceMap.byDesc.get(normalizeDesc(descricao));
 
+        const priceGuide =
+          priceGuideMap.byRef.get(referencia) ||
+          priceGuideMap.byDesc.get(normalizeDesc(descricao));
+
         const qtdVendida =
           salesMap.byDesc.get(normalizeDesc(descricao))?.quantidade ||
           salesMap.byFamily.get(referencia)?.quantidade ||
           0;
 
-        const precoSamsung = price?.precoSamsung || 0;
+        const precoSamsung = priceGuide?.precoSamsung || price?.precoSamsung || 0;
         const precoTelecel = price?.precoTelecel || 0;
-        const ofertaAtual = price?.ofertaAtual || 0;
-        const totalDescontoTelecel = Math.max(precoSamsung - precoTelecel, 0);
+        const ofertaAtual = priceGuide?.ofertaAtual || price?.ofertaAtual || 0;
 
-        // No PDF atual só temos verba unitária/total por item.
-        // Então colocamos a verba unitária como desconto principal da campanha.
-        const descontoRebate = item.tipoCampanha.toUpperCase().includes('REBATE') ? item.verbaUnitaria : 0;
-        const descontoTradeIn = item.tipoCampanha.toUpperCase().includes('TRADE') ? item.verbaUnitaria : 0;
-        const descontoBogo = item.tipoCampanha.toUpperCase().includes('BOGO') ? item.verbaUnitaria : 0;
-        const descontoSip = item.tipoCampanha.toUpperCase().includes('SIP') ? item.verbaUnitaria : 0;
+        const totalDescontoTelecel =
+          priceGuide?.descontoTelecel ||
+          (precoSamsung > 0 && precoTelecel > 0
+            ? Math.max(precoSamsung - precoTelecel, 0)
+            : 0);
 
-        const totalDesconto = totalDescontoTelecel + descontoRebate + descontoTradeIn + descontoBogo + descontoSip;
-        const precoPromocional = precoSamsung > 0 ? Math.max(precoSamsung - totalDesconto, 0) : 0;
-        const custoMedioEstoque = stock?.custoMedio || 0;
-        const custoTotalEstoque = stock?.custoTotal || 0;
-        const novoCustoMedio = custoMedioEstoque - item.verbaUnitaria;
-        const margemEstoque = precoTelecel > 0 ? margin(precoTelecel, custoMedioEstoque) : null;
-        const margemPrice = precoPromocional > 0 ? margin(precoPromocional, Math.max(novoCustoMedio, 0)) : null;
+        const descontoRebate =
+          priceGuide?.descontoRebate ||
+          (item.tipoCampanha.toUpperCase().includes('REBATE') ? item.verbaUnitaria : 0);
 
-        let status = '-';
-        if (ofertaAtual > 0 && precoPromocional > 0) {
-          if (ofertaAtual < precoPromocional) status = 'MENOR';
-          else if (ofertaAtual > precoPromocional) status = 'MAIOR';
-          else status = 'IGUAL';
-        } else if (stock?.status) {
-          status = stock.status;
-        }
+        const descontoTradeIn =
+          priceGuide?.descontoTradeIn ||
+          (item.tipoCampanha.toUpperCase().includes('TRADE') ? item.verbaUnitaria : 0);
 
-        return {
+        const descontoBogo =
+          priceGuide?.descontoBogo ||
+          (item.tipoCampanha.toUpperCase().includes('BOGO') ? item.verbaUnitaria : 0);
+
+        const descontoSip =
+          priceGuide?.descontoSip ||
+          (item.tipoCampanha.toUpperCase().includes('SIP') ? item.verbaUnitaria : 0);
+
+        const baseRow: LinhaTabela = {
+          rowKey: `${item.refCampanha || item.arquivo}-${basicModel}-${item.inicio}-${item.termino}-${index}`,
           descricao: descricao || stock?.descricao || '-',
           referencia,
           precoSamsung,
@@ -628,34 +1057,41 @@ export default function ComparativosModule() {
           descontoTradeIn,
           descontoBogo,
           descontoSip,
-          totalDesconto,
-          precoPromocional,
+          totalDesconto: 0,
+          precoPromocional: 0,
           tipoPromocao: item.tipoCampanha,
           periodo: item.inicio && item.termino ? `${item.inicio} a ${item.termino}` : '-',
           refCampanha: item.refCampanha,
           campanha: item.campanha,
           modeloPdf: item.modeloPdf,
-          basicModel: traducao?.basicModel || normalizeBasicModel(item.modeloPdf),
+          basicModel: traducao?.basicModel || basicModel,
           qtdEstoque: stock?.quantidade || 0,
-          custoTotalEstoque,
-          custoMedioEstoque,
-          margemEstoque,
-          novoCustoMedio: Number.isFinite(novoCustoMedio) ? novoCustoMedio : null,
-          margemPrice,
+          custoTotalEstoque: stock?.custoTotal || 0,
+          custoMedioEstoque: stock?.custoMedio || 0,
+          margemEstoque: null,
+          novoCustoMedio: null,
+          margemPrice: null,
           qtdVendida,
+          priceRebate: priceGuide?.priceRebate || 0,
+          priceTradeIn: priceGuide?.priceTradeIn || 0,
+          priceBogo: priceGuide?.priceBogo || 0,
           verbaUnitaria: item.verbaUnitaria,
           verbaTotal: item.verbaTotal,
           ofertaAtual,
           lojas: stock?.lojas.join(' | ') || '-',
-          status,
+          status: stock?.status || '-',
         };
+
+        return recalculateRow(baseRow);
       });
 
-      finalRows.sort((a, b) => a.descricao.localeCompare(b.descricao, 'pt-BR'));
+      const uniqueRows = mergeDuplicateRowsByModel(finalRows).sort((a, b) =>
+        a.descricao.localeCompare(b.descricao, 'pt-BR')
+      );
 
-      setRows(finalRows);
+      setRows(uniqueRows);
       setApiInfo(
-        `Google Sheets: ${traducaoMap.size} modelos · Estoque: ${stockMap.size} famílias · Vendas: ${salesMap.byDesc.size} descrições · Preços: ${priceMap.byDesc.size + priceMap.byRef.size} chaves`
+        `Google Sheets: ${traducaoMap.size} modelos · Guia preços: ${priceGuideMap.byDesc.size + priceGuideMap.byRef.size} chaves · Estoque: ${stockMap.size} famílias · Vendas mês: ${salesMap.byDesc.size} descrições · Preços sistema: ${priceMap.byDesc.size + priceMap.byRef.size} chaves`
       );
     } catch (error: any) {
       setErrorMsg(error?.message || 'Erro ao processar comparativo.');
@@ -720,6 +1156,9 @@ export default function ComparativosModule() {
       'NOVO CUSTO MÉDIO ESTOQUE (PRICE)': row.novoCustoMedio,
       'MARGEM PRICE': row.margemPrice,
       'QTD VENDIDA': row.qtdVendida,
+      'PRICE REBATE': row.priceRebate,
+      'PRICE TRADE IN': row.priceTradeIn,
+      'PRICE BOGO': row.priceBogo,
       'PRICE CAMPANHA': row.verbaUnitaria,
       'VERBA TOTAL': row.verbaTotal,
       'OFERTA ATUAL': row.ofertaAtual,
@@ -734,28 +1173,34 @@ export default function ComparativosModule() {
   };
 
 
+  const discountColSpan = showDiscountDetails ? 6 : 3;
+  const priceColSpan = showPriceDetails ? 3 : 1;
+  const offerColSpan = showOfferDetails ? 2 : 1;
+  const totalTableCols = 15 + (showDiscountDetails ? 3 : 0) + (showPriceDetails ? 2 : 0) + (showOfferDetails ? 1 : 0);
+  const tableMinWidth = showDiscountDetails || showPriceDetails || showOfferDetails ? 'min-w-[2450px]' : 'min-w-[2050px]';
+
   return (
-    <div className="w-full bg-slate-50 min-h-screen">
-      <div className="mx-auto max-w-[1800px] px-4 md:px-6 py-6 space-y-5">
-        <div className="bg-white rounded-[28px] border border-slate-200 shadow-sm p-5 md:p-6">
-          <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+    <div className="min-h-screen w-full bg-slate-50">
+      <div className="w-full max-w-none space-y-3 px-1.5 py-2 md:px-2">
+        <div className="rounded-[22px] border border-slate-200 bg-white px-4 py-3 shadow-sm">
+          <div className="flex flex-col gap-3 2xl:flex-row 2xl:items-center 2xl:justify-between">
             <div className="min-w-0">
-              <h1 className="text-[18px] md:text-[20px] font-black uppercase tracking-tight text-slate-900">
+              <h1 className="text-[18px] font-black uppercase tracking-tight text-slate-900 md:text-[20px]">
                 Comparativo de Ofertas
               </h1>
-              <p className="text-[12px] text-slate-500 mt-1">
-                Estrutura no padrão operacional da planilha: cartas + sistema + estoque + vendas.
+              <p className="mt-1 text-[11px] text-slate-500">
+                Importação de cartas, cruzamento com estoque, vendas, tabela de preço e guia de ofertas.
               </p>
               {apiInfo && (
-                <p className="mt-3 text-[11px] font-black uppercase tracking-widest text-emerald-600">
+                <p className="mt-2 max-w-[1200px] truncate text-[10px] font-black uppercase tracking-widest text-emerald-600" title={apiInfo}>
                   {apiInfo}
                 </p>
               )}
             </div>
 
-            <div className="flex flex-wrap items-center gap-3">
-              <label className="inline-flex items-center gap-2 rounded-2xl bg-slate-900 text-white px-5 py-3 text-sm font-black cursor-pointer shadow-sm hover:bg-slate-800 transition-colors">
-                <UploadCloud size={16} />
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl bg-slate-900 px-4 py-2.5 text-xs font-black text-white shadow-sm transition-colors hover:bg-slate-800">
+                <UploadCloud size={15} />
                 Importar PDFs
                 <input type="file" className="hidden" accept="application/pdf" multiple onChange={processFiles} />
               </label>
@@ -763,180 +1208,232 @@ export default function ComparativosModule() {
               <button
                 type="button"
                 onClick={exportExcel}
-                className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 text-white px-5 py-3 text-sm font-black shadow-sm hover:bg-emerald-700 transition-colors"
+                className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-xs font-black text-white shadow-sm transition-colors hover:bg-emerald-700"
               >
-                <FileSpreadsheet size={16} />
+                <FileSpreadsheet size={15} />
                 Exportar Excel
               </button>
             </div>
           </div>
 
           {errorMsg && (
-            <div className="mt-4 flex items-start gap-3 rounded-2xl border border-red-200 bg-red-50 p-4 text-red-700">
+            <div className="mt-3 flex items-start gap-3 rounded-2xl border border-red-200 bg-red-50 p-3 text-red-700">
               <AlertCircle size={18} className="mt-0.5 shrink-0" />
               <div className="text-sm">{errorMsg}</div>
             </div>
           )}
         </div>
 
-        <div className="bg-white rounded-[28px] border border-slate-200 shadow-sm p-5 md:p-6">
-          <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
-            <div>
-              <h2 className="text-[16px] font-black uppercase tracking-tight text-slate-900">
-                Quadro consolidado
-              </h2>
-              <p className="text-[12px] text-slate-500 mt-1">
-                Uma linha por modelo + campanha, com colunas agrupadas como na planilha de Excel.
-              </p>
-            </div>
+        <div className="rounded-[22px] border border-slate-200 bg-white p-2.5 shadow-sm">
+          <div className="mb-3 flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+            <h2 className="text-[18px] font-black uppercase tracking-tight text-slate-900">
+              Comparativo
+            </h2>
 
-            <div className="relative w-full xl:w-[360px]">
-              <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <div className="relative w-full xl:w-[480px]">
+              <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
               <input
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                placeholder="Buscar por descrição, campanha, referência ou modelo"
-                className="w-full rounded-2xl border border-slate-200 bg-slate-50 pl-10 pr-4 py-3 text-sm outline-none focus:border-slate-400"
+                placeholder="Buscar por descrição, preço, status ou modelo"
+                className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2.5 pl-9 pr-4 text-xs outline-none focus:border-slate-400"
               />
             </div>
           </div>
 
-          <div className="mt-5 grid grid-cols-2 xl:grid-cols-5 gap-4">
-            <div className="rounded-2xl border border-slate-200 p-4 bg-slate-50/60">
-              <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">Campanhas</div>
-              <div className="mt-2 text-3xl font-black text-slate-900">{formatNumber(summary.campanhas)}</div>
-            </div>
-            <div className="rounded-2xl border border-slate-200 p-4 bg-slate-50/60">
-              <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">Modelos</div>
-              <div className="mt-2 text-3xl font-black text-slate-900">{formatNumber(summary.modelos)}</div>
-            </div>
-            <div className="rounded-2xl border border-slate-200 p-4 bg-slate-50/60">
-              <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">Qtd. Estoque</div>
-              <div className="mt-2 text-3xl font-black text-emerald-600">{formatNumber(summary.estoque)}</div>
-            </div>
-            <div className="rounded-2xl border border-slate-200 p-4 bg-slate-50/60">
-              <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">Qtd. Vendida</div>
-              <div className="mt-2 text-3xl font-black text-blue-600">{formatNumber(summary.vendida)}</div>
-            </div>
-            <div className="rounded-2xl border border-slate-200 p-4 bg-slate-50/60">
-              <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">Verba Total</div>
-              <div className="mt-2 text-3xl font-black text-violet-600">{formatMoney(summary.verba)}</div>
-            </div>
-          </div>
-
-          <div className="mt-4 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
-            <span className="rounded-full bg-slate-100 px-3 py-1 font-semibold">Role para os lados para ver todas as colunas</span>
-            <span className="rounded-full bg-slate-100 px-3 py-1 font-semibold">Descrição e Referência fixas</span>
-            <span className="rounded-full bg-slate-100 px-3 py-1 font-semibold">Cabeçalho fixo no topo</span>
-          </div>
-
-          <div className="mt-6 rounded-2xl border border-slate-200 overflow-hidden bg-white shadow-sm">
-            <div className="max-h-[74vh] overflow-auto overscroll-contain">
-              <table className="min-w-[3320px] w-full border-separate border-spacing-0 bg-white">
+          <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+            <div className="max-h-[calc(100vh-205px)] min-h-[560px] overflow-auto overscroll-contain rounded-xl" style={{ scrollbarGutter: 'stable both-edges' }}>
+              <table className={`w-full ${tableMinWidth} table-auto border-separate border-spacing-0 bg-white`}>
                 <thead className="sticky top-0 z-30 shadow-[0_1px_0_0_rgba(226,232,240,1)]">
                   <tr>
-                    <GroupHeader colSpan={2} className="bg-slate-100 text-slate-700 sticky top-0 left-0 z-40 shadow-[1px_0_0_0_rgba(226,232,240,1)]">
+                    <GroupHeader colSpan={1} className="sticky left-0 top-0 z-40 bg-[#d9d9d9] text-[#003366] shadow-[1px_0_0_0_rgba(148,163,184,0.55)]">
                       Produto
                     </GroupHeader>
-                    <GroupHeader colSpan={4} className="bg-emerald-50 text-emerald-700">Preços</GroupHeader>
-                    <GroupHeader colSpan={6} className="bg-sky-50 text-sky-700">Descontos</GroupHeader>
-                    <GroupHeader colSpan={8} className="bg-orange-50 text-orange-700">Campanha</GroupHeader>
-                    <GroupHeader colSpan={9} className="bg-violet-50 text-violet-700">Operação</GroupHeader>
+                    <GroupHeader colSpan={2} className="bg-[#d9ffd9] text-[#006100]">Preços</GroupHeader>
+                    <GroupHeader colSpan={discountColSpan} className="bg-[#9dccf6] text-[#003366]">
+                      <ToggleGroupButton
+                        open={showDiscountDetails}
+                        label="Descontos"
+                        onClick={() => setShowDiscountDetails((prev) => !prev)}
+                      />
+                    </GroupHeader>
+                    <GroupHeader colSpan={1} className="bg-[#fff2cc] text-[#7f6000]">Preço Promo</GroupHeader>
+                    <GroupHeader colSpan={6} className="bg-[#eaf2f8] text-[#1f4e79]">Operação</GroupHeader>
+                    <GroupHeader colSpan={priceColSpan} className="bg-[#e2f0d9] text-[#003b8f]">
+                      <ToggleGroupButton
+                        open={showPriceDetails}
+                        label="Prices"
+                        onClick={() => setShowPriceDetails((prev) => !prev)}
+                      />
+                    </GroupHeader>
+                    <GroupHeader colSpan={offerColSpan} className="bg-[#92d050] text-[#003b8f]">
+                      <ToggleGroupButton
+                        open={showOfferDetails}
+                        label="Oferta"
+                        onClick={() => setShowOfferDetails((prev) => !prev)}
+                      />
+                    </GroupHeader>
                   </tr>
-                  <tr className="sticky top-[38px] z-30 bg-white">
-                    <TableHeader className="sticky left-0 z-40 min-w-[240px] bg-slate-50 shadow-[1px_0_0_0_rgba(226,232,240,1)]">Descrição</TableHeader>
-                    <TableHeader className="sticky left-[240px] z-40 min-w-[110px] bg-slate-50 shadow-[1px_0_0_0_rgba(226,232,240,1)]">Referência</TableHeader>
+                  <tr className="sticky top-[29px] z-30 bg-white">
+                    <TableHeader className="sticky left-0 z-40 w-[320px] min-w-[320px] bg-[#d9d9d9] text-[#003366] shadow-[1px_0_0_0_rgba(148,163,184,0.55)]">Descrição</TableHeader>
 
-                    <TableHeader className="min-w-[95px] bg-emerald-50/70">Preço Samsung</TableHeader>
-                    <TableHeader className="min-w-[95px] bg-emerald-50/70">Preço Telecel</TableHeader>
-                    <TableHeader className="min-w-[105px] bg-emerald-50/70">Oferta Atual</TableHeader>
-                    <TableHeader className="min-w-[120px] bg-emerald-50/70">Preço Promocional</TableHeader>
+                    <TableHeader className="w-[96px] bg-[#d9ffd9]">Preço Samsung</TableHeader>
+                    <TableHeader className="w-[92px] bg-[#d9ffd9]">Preço Telecel</TableHeader>
 
-                    <TableHeader className="min-w-[130px] bg-sky-50/80">Desc. Telecel</TableHeader>
-                    <TableHeader className="min-w-[110px] bg-sky-50/80">Desc. Rebate</TableHeader>
-                    <TableHeader className="min-w-[115px] bg-sky-50/80">Desc. Trade In</TableHeader>
-                    <TableHeader className="min-w-[100px] bg-sky-50/80">Desc. Bogo</TableHeader>
-                    <TableHeader className="min-w-[95px] bg-sky-50/80">Desc. SIP</TableHeader>
-                    <TableHeader className="min-w-[110px] bg-sky-50/80">Total Desconto</TableHeader>
+                    <TableHeader className="w-[112px] bg-[#9dccf6]">Total Desc. Telecel</TableHeader>
+                    {showDiscountDetails && (
+                      <>
+                        <TableHeader className="w-[104px] bg-[#9dccf6]">Desc. Rebate</TableHeader>
+                        <TableHeader className="w-[108px] bg-[#9dccf6]">Desc. Trade In</TableHeader>
+                        <TableHeader className="w-[96px] bg-[#9dccf6]">Desc. Bogo</TableHeader>
+                        <TableHeader className="w-[86px] bg-[#9dccf6]">Desc. SIP</TableHeader>
+                      </>
+                    )}
+                    {!showDiscountDetails && (
+                      <TableHeader className="w-[58px] bg-[#9dccf6] text-center">+</TableHeader>
+                    )}
+                    <TableHeader className="w-[118px] bg-[#fff2cc] text-[#7f6000]">Total Desconto</TableHeader>
 
-                    <TableHeader className="min-w-[180px] bg-orange-50/80">Tipo Promoção</TableHeader>
-                    <TableHeader className="min-w-[145px] bg-orange-50/80">Período</TableHeader>
-                    <TableHeader className="min-w-[135px] bg-orange-50/80">Ref. Campanha</TableHeader>
-                    <TableHeader className="min-w-[280px] bg-orange-50/80">Campanha</TableHeader>
-                    <TableHeader className="min-w-[155px] bg-orange-50/80">Modelo PDF</TableHeader>
-                    <TableHeader className="min-w-[155px] bg-orange-50/80">Basic Model</TableHeader>
-                    <TableHeader className="min-w-[105px] text-right bg-orange-50/80">Price Campanha</TableHeader>
-                    <TableHeader className="min-w-[105px] text-right bg-orange-50/80">Verba Total</TableHeader>
+                    <TableHeader className="w-[122px] bg-[#fff2cc]">Preço Promocional</TableHeader>
 
-                    <TableHeader className="min-w-[95px] text-right bg-violet-50/80">Qtd Estoque</TableHeader>
-                    <TableHeader className="min-w-[125px] text-right bg-violet-50/80">Custo Total Estoque</TableHeader>
-                    <TableHeader className="min-w-[125px] text-right bg-violet-50/80">Custo Médio Estoque</TableHeader>
-                    <TableHeader className="min-w-[105px] text-right bg-violet-50/80">Margem Estoque</TableHeader>
-                    <TableHeader className="min-w-[120px] text-right bg-violet-50/80">Novo Custo Médio</TableHeader>
-                    <TableHeader className="min-w-[100px] text-right bg-violet-50/80">Margem Price</TableHeader>
-                    <TableHeader className="min-w-[95px] text-right bg-violet-50/80">Qtd Vendida</TableHeader>
-                    <TableHeader className="min-w-[280px] bg-violet-50/80">Lojas</TableHeader>
-                    <TableHeader className="min-w-[90px] bg-violet-50/80">Status</TableHeader>
+                    <TableHeader className="w-[70px] bg-[#eaf2f8] text-right">Qtd Est.</TableHeader>
+                    <TableHeader className="w-[116px] bg-[#eaf2f8] text-right">Custo Médio</TableHeader>
+                    <TableHeader className="w-[92px] bg-[#eaf2f8] text-right">Margem Est.</TableHeader>
+                    <TableHeader className="w-[118px] bg-[#eaf2f8] text-right">Novo Custo Médio</TableHeader>
+                    <TableHeader className="w-[100px] bg-[#eaf2f8] text-right">Margem Price</TableHeader>
+                    <TableHeader className="w-[78px] bg-[#eaf2f8] text-right">Qtd Vend.</TableHeader>
+
+                    {showPriceDetails ? (
+                      <>
+                        <TableHeader className="w-[98px] bg-[#e2f0d9]">Price Rebate</TableHeader>
+                        <TableHeader className="w-[104px] bg-[#e2f0d9]">Price Trade In</TableHeader>
+                        <TableHeader className="w-[94px] bg-[#e2f0d9]">Price Bogo</TableHeader>
+                      </>
+                    ) : (
+                      <TableHeader className="w-[58px] bg-[#e2f0d9] text-center">+</TableHeader>
+                    )}
+
+                    {showOfferDetails ? (
+                      <>
+                        <TableHeader className="w-[112px] bg-[#92d050] text-[#003b8f]">Oferta Atual</TableHeader>
+                        <TableHeader className="w-[96px] bg-[#92d050] text-[#003b8f]">Status</TableHeader>
+                      </>
+                    ) : (
+                      <TableHeader className="w-[58px] bg-[#92d050] text-center text-[#003b8f]">+</TableHeader>
+                    )}
                   </tr>
                 </thead>
                 <tbody>
                   {filteredRows.map((row, idx) => {
                     const baseRow = idx % 2 === 0 ? 'bg-white hover:bg-slate-50' : 'bg-slate-50/40 hover:bg-slate-100/60';
                     const descBg = idx % 2 === 0 ? 'bg-white' : 'bg-slate-50/40';
+                    const margemPriceProblem = row.margemPrice !== null && row.margemPrice < 0.25;
+
                     return (
-                      <tr key={`${row.refCampanha}-${row.basicModel}-${idx}`} className={baseRow}>
-                        <TableCell className={`sticky left-0 z-20 min-w-[240px] font-black text-slate-900 shadow-[1px_0_0_0_rgba(241,245,249,1)] break-words ${descBg}`}>
-                          {row.descricao}
-                        </TableCell>
-                        <TableCell className={`sticky left-[240px] z-20 min-w-[110px] whitespace-nowrap shadow-[1px_0_0_0_rgba(241,245,249,1)] ${descBg}`}>
-                          {row.referencia || '-'}
+                      <tr key={row.rowKey || `${row.refCampanha}-${row.basicModel}-${idx}`} className={baseRow}>
+                        <TableCell className={`sticky left-0 z-20 w-[320px] min-w-[320px] whitespace-nowrap font-black text-slate-900 shadow-[1px_0_0_0_rgba(148,163,184,0.35)] ${descBg}`}>
+                          {row.descricao || '-'}
                         </TableCell>
 
-                        <TableCell className="whitespace-nowrap bg-emerald-50/30">{formatMoney(row.precoSamsung)}</TableCell>
-                        <TableCell className="whitespace-nowrap bg-emerald-50/30 font-semibold">{formatMoney(row.precoTelecel)}</TableCell>
-                        <TableCell className="whitespace-nowrap bg-emerald-50/30">{formatMoney(row.ofertaAtual)}</TableCell>
-                        <TableCell className="whitespace-nowrap bg-emerald-50/30 text-orange-600 font-black">{formatMoney(row.precoPromocional)}</TableCell>
+                        <TableCell className="whitespace-nowrap bg-[#edffed]">{formatMoney(row.precoSamsung)}</TableCell>
+                        <TableCell className="whitespace-nowrap bg-[#edffed] font-semibold">{formatMoney(row.precoTelecel)}</TableCell>
 
-                        <TableCell className="whitespace-nowrap text-red-600 font-semibold bg-sky-50/20">{formatMoney(row.totalDescontoTelecel)}</TableCell>
-                        <TableCell className="whitespace-nowrap bg-sky-50/20">{formatMoney(row.descontoRebate)}</TableCell>
-                        <TableCell className="whitespace-nowrap bg-sky-50/20">{formatMoney(row.descontoTradeIn)}</TableCell>
-                        <TableCell className="whitespace-nowrap bg-sky-50/20">{formatMoney(row.descontoBogo)}</TableCell>
-                        <TableCell className="whitespace-nowrap bg-sky-50/20">{formatMoney(row.descontoSip)}</TableCell>
-                        <TableCell className="whitespace-nowrap text-red-600 font-black bg-sky-50/20">{formatMoney(row.totalDesconto)}</TableCell>
-
-                        <TableCell className="min-w-[180px] break-words bg-orange-50/20">{row.tipoPromocao}</TableCell>
-                        <TableCell className="whitespace-nowrap bg-orange-50/20">{row.periodo}</TableCell>
-                        <TableCell className="font-black whitespace-nowrap bg-orange-50/20">{row.refCampanha || '-'}</TableCell>
-                        <TableCell className="min-w-[280px] break-words bg-orange-50/20">{row.campanha || '-'}</TableCell>
-                        <TableCell className="whitespace-nowrap bg-orange-50/20">{row.modeloPdf}</TableCell>
-                        <TableCell className="whitespace-nowrap bg-orange-50/20">{row.basicModel}</TableCell>
-                        <TableCell className="text-right whitespace-nowrap bg-orange-50/20">{formatMoney(row.verbaUnitaria)}</TableCell>
-                        <TableCell className="text-right font-black text-violet-600 whitespace-nowrap bg-orange-50/20">{formatMoney(row.verbaTotal)}</TableCell>
-
-                        <TableCell className="text-right font-black text-emerald-600 bg-violet-50/20">{formatNumber(row.qtdEstoque)}</TableCell>
-                        <TableCell className="text-right whitespace-nowrap bg-violet-50/20">{formatMoney(row.custoTotalEstoque)}</TableCell>
-                        <TableCell className="text-right whitespace-nowrap bg-violet-50/20">{formatMoney(row.custoMedioEstoque)}</TableCell>
-                        <TableCell className="text-right whitespace-nowrap bg-violet-50/20">{formatPercent(row.margemEstoque)}</TableCell>
-                        <TableCell className="text-right whitespace-nowrap bg-violet-50/20">{row.novoCustoMedio === null ? '-' : formatMoney(row.novoCustoMedio)}</TableCell>
-                        <TableCell className="text-right whitespace-nowrap bg-violet-50/20">{formatPercent(row.margemPrice)}</TableCell>
-                        <TableCell className="text-right font-black text-blue-600 bg-violet-50/20">{formatNumber(row.qtdVendida)}</TableCell>
-                        <TableCell className="min-w-[280px] break-words bg-violet-50/20">{row.lojas}</TableCell>
-                        <TableCell className={`font-black whitespace-nowrap bg-violet-50/20 ${row.status === 'MENOR' ? 'text-emerald-600' : row.status === 'MAIOR' ? 'text-red-600' : 'text-slate-700'}`}>
-                          {row.status}
+                        <TableCell className="bg-[#d9ecff]">
+                          <input
+                            type="text"
+                            inputMode="decimal"
+                            value={formatEditableNumber(row.totalDescontoTelecel)}
+                            onChange={(e) => updateTotalDescontoTelecel(row.rowKey, e.target.value)}
+                            className="w-full rounded-md border border-red-200 bg-red-50 px-1.5 py-0.5 text-right text-[11px] font-black text-red-600 outline-none focus:border-red-400 focus:bg-white"
+                            placeholder="0,00"
+                          />
                         </TableCell>
+                        {showDiscountDetails && (
+                          <>
+                            <TableCell className="whitespace-nowrap bg-[#d9ecff]">{formatMoney(row.descontoRebate)}</TableCell>
+                            <TableCell className="whitespace-nowrap bg-[#d9ecff]">{formatMoney(row.descontoTradeIn)}</TableCell>
+                            <TableCell className="whitespace-nowrap bg-[#d9ecff]">{formatMoney(row.descontoBogo)}</TableCell>
+                            <TableCell className="whitespace-nowrap bg-[#d9ecff]">{formatMoney(row.descontoSip)}</TableCell>
+                          </>
+                        )}
+                        {!showDiscountDetails && (
+                          <TableCell className="bg-[#d9ecff] text-center">
+                            <button
+                              type="button"
+                              onClick={() => setShowDiscountDetails(true)}
+                              className="rounded-full border border-sky-200 bg-white px-2 py-0.5 text-xs font-black text-sky-700 shadow-sm hover:bg-sky-50"
+                              title="Abrir descontos detalhados"
+                            >
+                              +
+                            </button>
+                          </TableCell>
+                        )}
+                        <TableCell className="whitespace-nowrap bg-[#fff2cc] font-black text-red-600">{formatMoney(row.totalDesconto)}</TableCell>
+
+                        <TableCell className="whitespace-nowrap bg-[#fff8d6] font-black text-orange-600">{formatMoney(row.precoPromocional)}</TableCell>
+
+                        <TableCell className="bg-[#f2f7fb] text-right font-black text-emerald-600">{formatNumber(row.qtdEstoque)}</TableCell>
+                        <TableCell className="whitespace-nowrap bg-[#f2f7fb] text-right">{formatMoney(row.custoMedioEstoque)}</TableCell>
+                        <TableCell className="whitespace-nowrap bg-[#f2f7fb] text-right">{formatPercent(row.margemEstoque)}</TableCell>
+                        <TableCell className="whitespace-nowrap bg-[#f2f7fb] text-right">{row.novoCustoMedio === null ? '-' : formatMoney(row.novoCustoMedio)}</TableCell>
+                        <TableCell className={`whitespace-nowrap text-right font-black ${margemPriceProblem ? 'bg-red-50 text-red-600' : 'bg-[#f2f7fb] text-slate-700'}`}>
+                          {formatPercent(row.margemPrice)}
+                        </TableCell>
+                        <TableCell className="bg-[#f2f7fb] text-right font-black text-blue-600">{formatNumber(row.qtdVendida)}</TableCell>
+
+                        {showPriceDetails ? (
+                          <>
+                            <TableCell className="whitespace-nowrap bg-[#edf7e8]">{formatMoney(row.priceRebate)}</TableCell>
+                            <TableCell className="whitespace-nowrap bg-[#edf7e8]">{formatMoney(row.priceTradeIn)}</TableCell>
+                            <TableCell className="whitespace-nowrap bg-[#edf7e8]">{formatMoney(row.priceBogo)}</TableCell>
+                          </>
+                        ) : (
+                          <TableCell className="bg-[#edf7e8] text-center">
+                            <button
+                              type="button"
+                              onClick={() => setShowPriceDetails(true)}
+                              className="rounded-full border border-blue-200 bg-white px-2 py-0.5 text-xs font-black text-blue-700 shadow-sm hover:bg-blue-50"
+                              title="Abrir prices"
+                            >
+                              +
+                            </button>
+                          </TableCell>
+                        )}
+
+                        {showOfferDetails ? (
+                          <>
+                            <TableCell className="whitespace-nowrap bg-[#e2f0d9] font-semibold text-blue-700">{formatMoney(row.ofertaAtual)}</TableCell>
+                            <TableCell className={`whitespace-nowrap bg-[#e2f0d9] font-black ${row.status === 'MENOR' ? 'text-emerald-700' : row.status === 'MAIOR' ? 'text-red-600' : 'text-slate-700'}`}>
+                              {row.status}
+                            </TableCell>
+                          </>
+                        ) : (
+                          <TableCell className="bg-[#e2f0d9] text-center">
+                            <button
+                              type="button"
+                              onClick={() => setShowOfferDetails(true)}
+                              className="rounded-full border border-lime-300 bg-white px-2 py-0.5 text-xs font-black text-lime-700 shadow-sm hover:bg-lime-50"
+                              title="Abrir oferta e status"
+                            >
+                              +
+                            </button>
+                          </TableCell>
+                        )}
                       </tr>
                     );
                   })}
+
                   {!loading && filteredRows.length === 0 && (
                     <tr>
-                      <td colSpan={29} className="px-4 py-16 text-center text-slate-400">
-                        Importe as cartas em PDF para montar o quadro.
+                      <td colSpan={totalTableCols} className="px-4 py-16 text-center text-slate-400">
+                        Importe as cartas em PDF para montar o comparativo.
                       </td>
                     </tr>
                   )}
+
                   {loading && (
                     <tr>
-                      <td colSpan={29} className="px-4 py-16 text-center text-slate-500">
+                      <td colSpan={totalTableCols} className="px-4 py-16 text-center text-slate-500">
                         Processando cartas e cruzando com o sistema...
                       </td>
                     </tr>
@@ -950,4 +1447,3 @@ export default function ComparativosModule() {
     </div>
   );
 }
-
