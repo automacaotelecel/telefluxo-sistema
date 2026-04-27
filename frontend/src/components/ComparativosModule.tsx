@@ -1,5 +1,5 @@
 
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, FileSpreadsheet, Search, UploadCloud } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
 import * as XLSX from 'xlsx';
@@ -478,7 +478,7 @@ const buildPriceGuideMap = (rows: any[]) => {
         'PRICE REBATE',
         'PREÇO REBATE',
         'PRECO REBATE',
-        '__colK',
+        '__colAE',
       ])
     );
 
@@ -487,7 +487,7 @@ const buildPriceGuideMap = (rows: any[]) => {
         'PRICE TRADE IN',
         'PREÇO TRADE IN',
         'PRECO TRADE IN',
-        '__colL',
+        '__colAF',
       ])
     );
 
@@ -496,7 +496,6 @@ const buildPriceGuideMap = (rows: any[]) => {
         'PRICE BOGO',
         'PREÇO BOGO',
         'PRECO BOGO',
-        '__colM',
         '__colAG',
       ])
     );
@@ -506,7 +505,6 @@ const buildPriceGuideMap = (rows: any[]) => {
         'PRICE SIP',
         'PREÇO SIP',
         'PRECO SIP',
-        '__colN',
         '__colAH',
       ])
     );
@@ -834,7 +832,7 @@ const recalculateRow = (row: LinhaTabela): LinhaTabela => {
     row.priceBogo -
     row.priceSip;
 
-  const novoCustoMedio = Number.isFinite(novoCustoMedioBruto) ? Math.max(novoCustoMedioBruto, 0) : null;
+  const novoCustoMedio = Number.isFinite(novoCustoMedioBruto) ? novoCustoMedioBruto : null;
   const margemEstoque = row.precoTelecel > 0 ? 1 - row.custoMedioEstoque / row.precoTelecel : null;
 
   // Fórmula fiel ao Excel: =100%-(NOVO CUSTO MÉDIO ESTOQUE / PREÇO PROMOCIONAL)
@@ -965,6 +963,10 @@ export default function ComparativosModule() {
   const [showDiscountDetails, setShowDiscountDetails] = useState(false);
   const [showPriceDetails, setShowPriceDetails] = useState(false);
   const [showOfferDetails, setShowOfferDetails] = useState(false);
+  const tableScrollRef = useRef<HTMLDivElement | null>(null);
+  const topScrollRef = useRef<HTMLDivElement | null>(null);
+  const [horizontalScrollWidth, setHorizontalScrollWidth] = useState(0);
+  const [horizontalClientWidth, setHorizontalClientWidth] = useState(0);
 
   const updateTotalDescontoTelecel = (rowKey: string, rawValue: string) => {
     const value = toNumber(rawValue);
@@ -1005,8 +1007,8 @@ export default function ComparativosModule() {
         fetchPriceGuideSheet(),
 
         userId && startDate && endDate
-          ? fetchJsonFromCandidates(`/sales?userId=${encodeURIComponent(userId)}&startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}`)
-          : Promise.resolve({ url: '', data: { sales: [] } }),
+        ? fetchJsonFromCandidates(`/api/comparativos/vendas-modelos?userId=${encodeURIComponent(userId)}&startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}`)
+        : Promise.resolve({ url: '', data: { sales: [] } }),
       ]);
 
       const traducaoRows = Array.isArray(baseResp.data?.rows)
@@ -1199,41 +1201,81 @@ export default function ComparativosModule() {
   const priceColSpan = showPriceDetails ? 4 : 1;
   const offerColSpan = showOfferDetails ? 2 : 1;
   const totalTableCols = 15 + (showDiscountDetails ? 3 : 0) + (showPriceDetails ? 3 : 0) + (showOfferDetails ? 1 : 0);
-  const tableMinWidth = showDiscountDetails || showPriceDetails || showOfferDetails ? 'min-w-[2920px]' : 'min-w-[2240px]';
+  const tableMinWidth = showDiscountDetails || showPriceDetails || showOfferDetails ? 'min-w-[3120px]' : 'min-w-[2460px]';
+
+  const updateHorizontalScrollMetrics = () => {
+    const tableScroller = tableScrollRef.current;
+    if (!tableScroller) return;
+
+    setHorizontalScrollWidth(tableScroller.scrollWidth);
+    setHorizontalClientWidth(tableScroller.clientWidth);
+
+    if (topScrollRef.current) {
+      topScrollRef.current.scrollLeft = tableScroller.scrollLeft;
+    }
+  };
+
+  useEffect(() => {
+    const timer = window.setTimeout(updateHorizontalScrollMetrics, 80);
+    window.addEventListener('resize', updateHorizontalScrollMetrics);
+
+    let resizeObserver: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined' && tableScrollRef.current) {
+      resizeObserver = new ResizeObserver(updateHorizontalScrollMetrics);
+      resizeObserver.observe(tableScrollRef.current);
+    }
+
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener('resize', updateHorizontalScrollMetrics);
+      resizeObserver?.disconnect();
+    };
+  }, [filteredRows.length, showDiscountDetails, showPriceDetails, showOfferDetails, tableMinWidth]);
+
+  const syncScrollFromTop = () => {
+    const topScroller = topScrollRef.current;
+    const tableScroller = tableScrollRef.current;
+    if (!topScroller || !tableScroller) return;
+    tableScroller.scrollLeft = topScroller.scrollLeft;
+  };
+
+  const syncScrollFromTable = () => {
+    const topScroller = topScrollRef.current;
+    const tableScroller = tableScrollRef.current;
+    if (!topScroller || !tableScroller) return;
+    topScroller.scrollLeft = tableScroller.scrollLeft;
+  };
 
   return (
-    <>
+    <div className="min-h-screen w-full bg-slate-50">
       <style>
         {`
-          .comparativo-scroll {
-            scrollbar-width: auto;
-            scrollbar-color: #475569 #e2e8f0;
+          .comparativo-scroll-top::-webkit-scrollbar,
+          .comparativo-scroll-body::-webkit-scrollbar {
+            height: 15px;
+            width: 15px;
           }
 
-          .comparativo-scroll::-webkit-scrollbar {
-            height: 16px;
-            width: 16px;
-          }
-
-          .comparativo-scroll::-webkit-scrollbar-track {
+          .comparativo-scroll-top::-webkit-scrollbar-track,
+          .comparativo-scroll-body::-webkit-scrollbar-track {
             background: #e2e8f0;
             border-radius: 999px;
           }
 
-          .comparativo-scroll::-webkit-scrollbar-thumb {
+          .comparativo-scroll-top::-webkit-scrollbar-thumb,
+          .comparativo-scroll-body::-webkit-scrollbar-thumb {
             background: #64748b;
             border-radius: 999px;
             border: 3px solid #e2e8f0;
           }
 
-          .comparativo-scroll::-webkit-scrollbar-thumb:hover {
+          .comparativo-scroll-top::-webkit-scrollbar-thumb:hover,
+          .comparativo-scroll-body::-webkit-scrollbar-thumb:hover {
             background: #334155;
           }
         `}
       </style>
-
-      <div className="min-h-screen w-full overflow-hidden bg-slate-50">
-      <div className="w-full max-w-none space-y-3 px-1 py-2 md:px-1.5">
+      <div className="w-full max-w-none space-y-3 px-1.5 py-2 md:px-2">
         <div className="rounded-[22px] border border-slate-200 bg-white px-4 py-3 shadow-sm">
           <div className="flex flex-col gap-3 2xl:flex-row 2xl:items-center 2xl:justify-between">
             <div className="min-w-0">
@@ -1295,52 +1337,25 @@ export default function ComparativosModule() {
 
           <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
             <div
-              className="comparativo-scroll h-[calc(100vh-225px)] min-h-[360px] w-full max-w-[calc(100vw-78px)] overflow-x-scroll overflow-y-auto overscroll-contain rounded-xl pb-3"
+              ref={topScrollRef}
+              onScroll={syncScrollFromTop}
+              className="comparativo-scroll-top h-5 w-full overflow-x-auto overflow-y-hidden border-b border-slate-200 bg-slate-100"
+            >
+              <div
+                style={{
+                  width: `${Math.max(horizontalScrollWidth, horizontalClientWidth, 1)}px`,
+                  height: 1,
+                }}
+              />
+            </div>
+
+            <div
+              ref={tableScrollRef}
+              onScroll={syncScrollFromTable}
+              className="comparativo-scroll-body max-h-[calc(100vh-230px)] min-h-[560px] w-full overflow-x-auto overflow-y-auto overscroll-contain rounded-b-xl pb-4"
               style={{ scrollbarGutter: 'stable both-edges' }}
             >
-              <table className={`w-max ${tableMinWidth} table-fixed border-separate border-spacing-0 bg-white text-[12px]`}>
-                <colgroup>
-                  <col className="w-[360px]" />
-                  <col className="w-[112px]" />
-                  <col className="w-[112px]" />
-                  <col className="w-[134px]" />
-                  {showDiscountDetails ? (
-                    <>
-                      <col className="w-[116px]" />
-                      <col className="w-[122px]" />
-                      <col className="w-[112px]" />
-                      <col className="w-[100px]" />
-                    </>
-                  ) : (
-                    <col className="w-[64px]" />
-                  )}
-                  <col className="w-[136px]" />
-                  <col className="w-[146px]" />
-                  <col className="w-[84px]" />
-                  <col className="w-[128px]" />
-                  <col className="w-[112px]" />
-                  <col className="w-[136px]" />
-                  <col className="w-[116px]" />
-                  <col className="w-[92px]" />
-                  {showPriceDetails ? (
-                    <>
-                      <col className="w-[122px]" />
-                      <col className="w-[132px]" />
-                      <col className="w-[116px]" />
-                      <col className="w-[108px]" />
-                    </>
-                  ) : (
-                    <col className="w-[64px]" />
-                  )}
-                  {showOfferDetails ? (
-                    <>
-                      <col className="w-[126px]" />
-                      <col className="w-[110px]" />
-                    </>
-                  ) : (
-                    <col className="w-[64px]" />
-                  )}
-                </colgroup>
+              <table className={`w-max ${tableMinWidth} table-fixed border-separate border-spacing-0 bg-white`}>
                 <thead className="sticky top-0 z-30 shadow-[0_1px_0_0_rgba(226,232,240,1)]">
                   <tr>
                     <GroupHeader colSpan={1} className="sticky left-0 top-0 z-40 bg-[#d9d9d9] text-[#003366] shadow-[1px_0_0_0_rgba(148,163,184,0.55)]">
@@ -1372,7 +1387,7 @@ export default function ComparativosModule() {
                     </GroupHeader>
                   </tr>
                   <tr className="sticky top-[29px] z-30 bg-white">
-                    <TableHeader className="sticky left-0 z-40 w-[360px] min-w-[360px] bg-[#d9d9d9] text-[#003366] shadow-[1px_0_0_0_rgba(148,163,184,0.55)]">Descrição</TableHeader>
+                    <TableHeader className="sticky left-0 z-40 w-[390px] min-w-[390px] bg-[#d9d9d9] text-[#003366] shadow-[1px_0_0_0_rgba(148,163,184,0.55)]">Descrição</TableHeader>
 
                     <TableHeader className="w-[96px] bg-[#d9ffd9]">Preço Samsung</TableHeader>
                     <TableHeader className="w-[92px] bg-[#d9ffd9]">Preço Telecel</TableHeader>
@@ -1429,7 +1444,7 @@ export default function ComparativosModule() {
 
                     return (
                       <tr key={row.rowKey || `${row.refCampanha}-${row.basicModel}-${idx}`} className={baseRow}>
-                        <TableCell className={`sticky left-0 z-20 w-[360px] min-w-[360px] whitespace-nowrap font-black text-slate-900 shadow-[1px_0_0_0_rgba(148,163,184,0.35)] ${descBg}`}>
+                        <TableCell className={`sticky left-0 z-20 w-[390px] min-w-[390px] whitespace-nowrap font-black text-slate-900 shadow-[1px_0_0_0_rgba(148,163,184,0.35)] ${descBg}`}>
                           {row.descricao || '-'}
                         </TableCell>
 
@@ -1543,7 +1558,6 @@ export default function ComparativosModule() {
           </div>
         </div>
       </div>
-      </div>
-    </>
+    </div>
   );
 }

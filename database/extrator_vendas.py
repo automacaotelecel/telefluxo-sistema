@@ -453,17 +453,61 @@ def integrar_vendas_geral():
             (treated["quantidade"].abs() > 0.001)
         ].copy()
 
+               # ============================================================
+        # NOVO: DETALHE DIÁRIO PARA CONCILIAÇÃO IMEI
+        # Não interfere no menu antigo, porque o envio agregado continua igual.
+        # ============================================================
+        col_total = "TOTAL REAL" if "TOTAL REAL" in df.columns else "TOTAL_LIQUIDO"
+        col_nf = "NOTA FISCAL" if "NOTA FISCAL" in df.columns else ("NOTA_FISCAL" if "NOTA_FISCAL" in df.columns else None)
+        col_ref = "REFERENCIA" if "REFERENCIA" in df.columns else None
+        col_imei = "IMEI" if "IMEI" in df.columns else ("SERIAL" if "SERIAL" in df.columns else None)
+        col_codigo = "CODIGO_PRODUTO" if "CODIGO_PRODUTO" in df.columns else None
+        col_desc_detalhe = "DESCRICAO" if "DESCRICAO" in df.columns else col_desc
+
+        detalhes = pd.DataFrame(index=treated.index.copy())
+        detalhes["data_emissao"] = treated["data_emissao"]
+        detalhes["nota_fiscal"] = df.loc[treated.index, col_nf].astype(str).str.strip() if col_nf else ""
+        detalhes["nome_fantasia"] = df.loc[treated.index, col_loja].apply(get_clean_store_name)
+        detalhes["cnpj_empresa"] = df.loc[treated.index, col_loja].map(loja_para_cnpj)
+        detalhes["nome_vendedor"] = df.loc[treated.index, col_vendedor].astype(str).str.strip().str.upper()
+        detalhes["codigo_produto"] = df.loc[treated.index, col_codigo].astype(str).str.strip() if col_codigo else ""
+        detalhes["referencia"] = df.loc[treated.index, col_ref].astype(str).str.strip().str.upper() if col_ref else ""
+        detalhes["descricao"] = df.loc[treated.index, col_desc_detalhe].astype(str).str.strip().str.upper()
+        detalhes["categoria"] = df.loc[treated.index, col_familia].astype(str).str.strip().str.upper()
+        detalhes["imei"] = df.loc[treated.index, col_imei].astype(str).str.strip() if col_imei else ""
+        detalhes["quantidade"] = pd.to_numeric(df.loc[treated.index, col_qtd], errors="coerce").fillna(0)
+        detalhes["total_liquido"] = pd.to_numeric(df.loc[treated.index, col_total], errors="coerce").fillna(0)
+        detalhes["regiao"] = df.loc[treated.index, col_regiao].astype(str).str.strip().str.upper()
+
+        detalhes = detalhes.dropna(subset=["cnpj_empresa"])
+        detalhes = detalhes[
+            (detalhes["total_liquido"].abs() > 0.01) |
+            (detalhes["quantidade"].abs() > 0.001)
+        ].copy() 
+
     except Exception as e:
         print(f"❌ Erro tratamento VENDAS: {e}")
         return False
 
     dados_json = treated.to_dict(orient="records")
+    dados_detalhados = detalhes.to_dict(orient="records")
 
     salvar_copia_vendas(dados_json)
+
+    # Mantém exatamente o envio antigo
     ok = enviar_dados_para_api("/api/sync/vendas", dados_json)
 
     if ok:
-        print("✅ Vendas enviadas e sincronizadas com sucesso.")
+        print("✅ Vendas agregadas enviadas e sincronizadas com sucesso.")
+
+        # NOVO: detalhe diário para conferência Compras x Vendas
+        ok_detalhe = enviar_dados_para_api("/api/sync/vendas_detalhadas_imei", dados_detalhados)
+
+        if ok_detalhe:
+            print("✅ Vendas detalhadas (IMEI/modelo) sincronizadas com sucesso.")
+        else:
+            print("⚠️ Vendas agregadas sincronizaram, mas o detalhe diário falhou.")
+
         time.sleep(5)
         return True
 

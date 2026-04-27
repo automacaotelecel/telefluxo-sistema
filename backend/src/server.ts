@@ -4204,6 +4204,198 @@ app.post('/api/sync/vendas_detalhadas_imei', async (req, res) => {
   }
 });
 
+// ==========================================
+// ROTA: VENDAS POR MODELO PARA COMPARATIVO
+// ==========================================
+app.get('/api/comparativos/vendas-modelos', async (req, res) => {
+  const userId = String(req.query.userId || '');
+  const startDate = String(req.query.startDate || '');
+  const endDate = String(req.query.endDate || '');
+
+  if (!startDate || !endDate) {
+    return res.status(400).json({
+      success: false,
+      error: 'Informe startDate e endDate no formato YYYY-MM-DD.',
+    });
+  }
+
+  const normalizeDateSql = (col: string) => `
+    CASE
+      WHEN ${col} LIKE '__/__/____%' THEN
+        substr(${col}, 7, 4) || '-' || substr(${col}, 4, 2) || '-' || substr(${col}, 1, 2)
+      ELSE
+        substr(${col}, 1, 10)
+    END
+  `;
+
+  const salesMap = new Map<string, any>();
+
+  const addRows = (rows: any[], origem: string) => {
+    for (const row of rows) {
+      const referencia = String(row.REFERENCIA || row.referencia || '').trim();
+      const descricao = String(row.DESCRICAO || row.descricao || '').trim();
+      const quantidade = safeNumber(row.QUANTIDADE ?? row.quantidade, 0);
+
+      if (!referencia && !descricao) continue;
+
+      const key = `${referencia.toUpperCase()}||${descricao.toUpperCase()}`;
+
+      const current = salesMap.get(key) || {
+        REFERENCIA: referencia,
+        FAMILIA: referencia,
+        DESCRICAO: descricao,
+        QUANTIDADE: 0,
+        origem,
+      };
+
+      current.QUANTIDADE += quantidade;
+      salesMap.set(key, current);
+    }
+  };
+
+  let globalDb: any;
+  let annualDb: any;
+
+  try {
+    const securityFilter = await getSalesFilter(userId, 'vendas');
+
+    // 1) Primeiro tenta buscar na base anual RAW, que possui referência/modelo.
+    let annualMaxDate = '';
+
+    if (fs.existsSync(ANUAL_DB_PATH)) {
+      try {
+        annualDb = await open({ filename: ANUAL_DB_PATH, driver: sqlite3.Database });
+
+        const hasAnnualRaw = await annualDb.get(`
+          SELECT name
+          FROM sqlite_master
+          WHERE type = 'table'
+            AND name = 'vendas_anuais_raw'
+        `);
+
+        if (hasAnnualRaw) {
+          const dateExpr = normalizeDateSql('data_emissao');
+
+          const maxDateRow = await annualDb.get(`
+            SELECT MAX(${dateExpr}) as max_date
+            FROM vendas_anuais_raw
+            WHERE COALESCE(cancelado, 'N') = 'N'
+              AND ${dateExpr} >= ?
+              AND ${dateExpr} <= ?
+              AND ${securityFilter}
+          `, [startDate, endDate]);
+
+          annualMaxDate = String(maxDateRow?.max_date || '').slice(0, 10);
+
+          const annualRows = await annualDb.all(`
+            SELECT
+              referencia AS REFERENCIA,
+              descricao AS DESCRICAO,
+              SUM(
+                CASE
+                  WHEN COALESCE(qtd_real, 0) <> 0 THEN COALESCE(qtd_real, 0)
+                  ELSE COALESCE(quantidade, 0)
+                END
+              ) AS QUANTIDADE
+            FROM vendas_anuais_raw
+            WHERE COALESCE(cancelado, 'N') = 'N'
+              AND ${dateExpr} >= ?
+              AND ${dateExpr} <= ?
+              AND ${securityFilter}
+            GROUP BY referencia, descricao
+          `, [startDate, endDate]);
+
+          addRows(annualRows, 'ANUAL_RAW');
+        }
+
+        await annualDb.close();
+        annualDb = null;
+      } catch (error) {
+        console.error('Erro ao buscar vendas no ANUAL RAW:', error);
+        if (annualDb) {
+          try { await annualDb.close(); } catch {}
+          annualDb = null;
+        }
+      }
+    }
+
+    // 2) Depois complementa com venda diária detalhada após a última data anual.
+    globalDb = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+
+    const hasDetailed = await globalDb.get(`
+      SELECT name
+      FROM sqlite_master
+      WHERE type = 'table'
+        AND name = 'vendas_detalhadas_imei'
+    `);
+
+    const dailyStart =
+      annualMaxDate && annualMaxDate < endDate
+        ? nextIsoDate(annualMaxDate)
+        : (!annualMaxDate ? startDate : '');
+
+    if (hasDetailed && dailyStart && dailyStart <= endDate) {
+      const dateExpr = normalizeDateSql('data_emissao');
+
+      const detailedRows = await globalDb.all(`
+        SELECT
+          referencia AS REFERENCIA,
+          descricao AS DESCRICAO,
+          SUM(COALESCE(quantidade, 0)) AS QUANTIDADE
+        FROM vendas_detalhadas_imei
+        WHERE ${dateExpr} >= ?
+          AND ${dateExpr} <= ?
+          AND ${securityFilter}
+        GROUP BY referencia, descricao
+      `, [dailyStart, endDate]);
+
+      addRows(detailedRows, 'DIARIO_DETALHE');
+    }
+
+    // 3) Fallback: se nada veio das bases detalhadas, usa a tabela vendas antiga.
+    if (salesMap.size === 0) {
+      const dateExpr = normalizeDateSql('data_emissao');
+
+      const legacyRows = await globalDb.all(`
+        SELECT
+          familia AS REFERENCIA,
+          descricao AS DESCRICAO,
+          SUM(COALESCE(quantidade, 0)) AS QUANTIDADE
+        FROM vendas
+        WHERE ${dateExpr} >= ?
+          AND ${dateExpr} <= ?
+          AND ${securityFilter}
+        GROUP BY familia, descricao
+      `, [startDate, endDate]);
+
+      addRows(legacyRows, 'VENDAS_LEGADO');
+    }
+
+    await globalDb.close();
+
+    const sales = Array.from(salesMap.values());
+
+    return res.json({
+      success: true,
+      total: sales.length,
+      sales,
+      periodo: { startDate, endDate },
+    });
+  } catch (error: any) {
+    console.error('Erro /api/comparativos/vendas-modelos:', error);
+
+    try {
+      if (globalDb) await globalDb.close();
+      if (annualDb) await annualDb.close();
+    } catch {}
+
+    return res.status(500).json({
+      success: false,
+      error: error?.message || 'Erro ao buscar vendas por modelo.',
+    });
+  }
+});
+
 // Define a porta: Usa a do Render (process.env.PORT) ou a 3000 se for local
 const PORT = process.env.PORT || 3000;
 
