@@ -1,5 +1,5 @@
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { AlertCircle, FileSpreadsheet, Search, UploadCloud } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
 import * as XLSX from 'xlsx';
@@ -78,8 +78,25 @@ type SaleAgg = {
   quantidade: number;
 };
 
+type ComparativoKind = 'REBATE_TRADEIN' | 'BOGO' | 'SIP';
+type ComparativoTab = 'com_ofertas' | 'sem_ofertas';
+type EditableDiscountField = 'descontoRebate' | 'descontoTradeIn' | 'descontoBogo' | 'descontoSip';
+
+type PendingComparativoData = {
+  pdfItems: PdfItem[];
+  traducaoRows: any[];
+  stockRows: any[];
+  priceRows: any[];
+  priceGuideRows: any[];
+  salesRows: any[];
+};
+
+
 type LinhaTabela = {
   rowKey: string;
+  hasOferta: boolean;
+  isSelected: boolean;
+  comparativoKind: ComparativoKind | null;
   descricao: string;
   referencia: string;
   precoSamsung: number;
@@ -274,6 +291,49 @@ const fetchJsonFromCandidates = async (path: string) => {
   throw new Error(lastError);
 };
 
+
+const postJsonToCandidates = async (path: string, payload: any) => {
+  const candidates = getApiCandidates(path);
+  let lastError = `Não consegui enviar ${path}`;
+
+  for (const url of candidates) {
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      const responseData = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        lastError = responseData?.error || `Falha ao enviar ${url} (${response.status})`;
+        continue;
+      }
+
+      return { url, data: responseData };
+    } catch (error: any) {
+      lastError = error?.message || `Erro ao enviar ${url}`;
+    }
+  }
+
+  throw new Error(lastError);
+};
+
+const getCurrentUserInfo = () => {
+  for (const key of ['telefluxo_user', 'user']) {
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) continue;
+      const parsed = JSON.parse(raw);
+      if (parsed?.id || parsed?.name) return parsed;
+    } catch {
+      // ignore
+    }
+  }
+  return {};
+};
+
 const PRICE_GUIDE_SHEET_CSV_URL =
   'https://docs.google.com/spreadsheets/d/1yInC46qAWka0S69njfFoXzJpYO4c1xVR_z3eEWBhkR4/export?format=csv&gid=0';
 
@@ -361,6 +421,7 @@ const fetchPriceGuideSheet = async () => {
 const buildPriceGuideMap = (rows: any[]) => {
   const byDesc = new Map<string, PriceGuideRow>();
   const byRef = new Map<string, PriceGuideRow>();
+  const allRows: PriceGuideRow[] = [];
 
   const getCandidate = (row: any, names: string[]) => {
     const keys = Object.keys(row || {});
@@ -536,11 +597,12 @@ const buildPriceGuideMap = (rows: any[]) => {
       ofertaAtual,
     };
 
+    if (descricao || referencia) allRows.push(payload);
     if (descricao) byDesc.set(normalizeDesc(descricao), payload);
     if (referencia) byRef.set(referencia, payload);
   });
 
-  return { byDesc, byRef };
+  return { byDesc, byRef, rows: allRows };
 };
 
 const extractFieldFromLines = (lines: string[], label: string) => {
@@ -812,19 +874,50 @@ const margin = (price: number, cost: number) => {
   return (price - cost) / price;
 };
 
+const floorMoney = (value: number) => {
+  const n = Number(value || 0);
+  return Number.isFinite(n) ? Math.floor(n) : 0;
+};
+
+const PRICE_TO_DISCOUNT_FACTOR = 1.9;
+
+const roundToStep = (value: number, step: number) => {
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  return Math.round(value / step) * step;
+};
+
+const calculateDiscountFromPrice = (priceValue: number) => {
+  const price = Number(priceValue || 0);
+  if (!Number.isFinite(price) || price <= 0) return 0;
+
+  // Regra operacional aproximada do comparativo:
+  // o desconto nasce do Price x ~2, com arredondamento comercial.
+  // Pelos exemplos da planilha, o fator 1.9 + arredondamento em degraus
+  // reproduz melhor os descontos do modelo do que multiplicar por 2 seco.
+  const estimatedDiscount = price * PRICE_TO_DISCOUNT_FACTOR;
+  const step = estimatedDiscount < 300 ? 10 : 50;
+
+  return roundToStep(estimatedDiscount, step);
+};
+
 const recalculateRow = (row: LinhaTabela): LinhaTabela => {
-  const totalDesconto =
+  const totalDescontoBruto =
     row.totalDescontoTelecel +
     row.descontoRebate +
     row.descontoTradeIn +
     row.descontoBogo +
     row.descontoSip;
 
+  // Regra operacional: o total desconto aparece sem centavos.
+  // Ex.: R$ 2.218,58 vira R$ 2.218,00.
+  const totalDesconto = floorMoney(totalDescontoBruto);
+
   // Coluna N do comparativo: PREÇO PROMOCIONAL (TELECEL + SAMSUNG)
+  // O preço promocional usa o total desconto já sem centavos.
   const precoPromocional = row.precoSamsung > 0 ? Math.max(row.precoSamsung - totalDesconto, 0) : 0;
 
   // Coluna T do comparativo: NOVO CUSTO MÉDIO ESTOQUE (PRICE)
-  // Importante: aqui entram os campos Price, não os descontos brutos da Samsung.
+  // Aqui entram os campos Price, não os descontos brutos da Samsung.
   const novoCustoMedioBruto =
     row.custoMedioEstoque -
     row.priceRebate -
@@ -859,6 +952,37 @@ const recalculateRow = (row: LinhaTabela): LinhaTabela => {
   };
 };
 
+const getCampaignText = (item: PdfItem) =>
+  normalizeDesc(`${item.tipoCampanha || ''} ${item.campanha || ''} ${item.arquivo || ''} ${item.refCampanha || ''} ${item.modeloPdf || ''}`);
+
+const getCampaignKind = (item: PdfItem): ComparativoKind | null => {
+  const text = getCampaignText(item);
+
+  if (/\b(SIP)\b/i.test(text)) return 'SIP';
+  if (/\b(BUNDLE|BOGO|MULTI\s*BUY|MULTI-BUY|MULTIBUY)\b/i.test(text)) return 'BOGO';
+  if (/\b(VOUCHER|TRADE\s*IN|TRADE-IN|TRADEIN|REBATE|SELL\s*OUT|SELLOUT)\b/i.test(text)) return 'REBATE_TRADEIN';
+
+  return null;
+};
+
+const getCampaignPriceFields = (item: PdfItem) => {
+  const text = getCampaignText(item);
+  const value = toNumber(item.verbaUnitaria);
+
+  return {
+    priceRebate: /\b(REBATE|SELL\s*OUT|SELLOUT)\b/i.test(text) ? value : 0,
+    priceTradeIn: /\b(VOUCHER|TRADE\s*IN|TRADE-IN|TRADEIN)\b/i.test(text) ? value : 0,
+    priceBogo: /\b(BUNDLE|BOGO|MULTI\s*BUY|MULTI-BUY|MULTIBUY)\b/i.test(text) ? value : 0,
+    priceSip: /\b(SIP)\b/i.test(text) ? value : 0,
+  };
+};
+
+const getComparativoKindLabel = (kind: ComparativoKind) => {
+  if (kind === 'REBATE_TRADEIN') return 'Rebate e Trade In';
+  if (kind === 'BOGO') return 'Bogo';
+  return 'SIP';
+};
+
 const getMergeKey = (row: LinhaTabela) => {
   // Uma linha por aparelho exato: a descrição completa é a chave mais fiel.
   // Não usamos referência como primeira chave porque modelos como 256GB e 512GB
@@ -887,6 +1011,9 @@ const mergeDuplicateRowsByModel = (inputRows: LinhaTabela[]) => {
 
     const merged: LinhaTabela = {
       ...current,
+      hasOferta: current.hasOferta || row.hasOferta,
+      isSelected: current.isSelected && row.isSelected,
+      comparativoKind: current.comparativoKind || row.comparativoKind,
       // Mantém uma única linha por aparelho, sem somar estoque/venda repetida.
       // Se alguma fonte vier zerada em uma linha e preenchida em outra, aproveita o valor preenchido.
       precoSamsung: current.precoSamsung || row.precoSamsung,
@@ -963,10 +1090,36 @@ export default function ComparativosModule() {
   const [showDiscountDetails, setShowDiscountDetails] = useState(false);
   const [showPriceDetails, setShowPriceDetails] = useState(false);
   const [showOfferDetails, setShowOfferDetails] = useState(false);
-  const tableScrollRef = useRef<HTMLDivElement | null>(null);
-  const topScrollRef = useRef<HTMLDivElement | null>(null);
-  const [horizontalScrollWidth, setHorizontalScrollWidth] = useState(0);
-  const [horizontalClientWidth, setHorizontalClientWidth] = useState(0);
+
+  const topScrollRef = useRef<HTMLDivElement>(null);
+  const tableScrollRef = useRef<HTMLDivElement>(null);
+  const syncingScrollRef = useRef(false);
+
+  const [pendingData, setPendingData] = useState<PendingComparativoData | null>(null);
+  const [showCompareModal, setShowCompareModal] = useState(false);
+  const [compareKindDraft, setCompareKindDraft] = useState<ComparativoKind>('REBATE_TRADEIN');
+  const [selectedComparativoKind, setSelectedComparativoKind] = useState<ComparativoKind>('REBATE_TRADEIN');
+  const [activeTab, setActiveTab] = useState<ComparativoTab>('com_ofertas');
+  const [showFlowSendModal, setShowFlowSendModal] = useState(false);
+  const [sendingToFlow, setSendingToFlow] = useState(false);
+  const [flowTitleDraft, setFlowTitleDraft] = useState('');
+  const [flowSendMsg, setFlowSendMsg] = useState('');
+
+  const syncHorizontalScroll = (source: 'top' | 'table') => {
+    if (syncingScrollRef.current) return;
+
+    const from = source === 'top' ? topScrollRef.current : tableScrollRef.current;
+    const to = source === 'top' ? tableScrollRef.current : topScrollRef.current;
+
+    if (!from || !to) return;
+
+    syncingScrollRef.current = true;
+    to.scrollLeft = from.scrollLeft;
+
+    requestAnimationFrame(() => {
+      syncingScrollRef.current = false;
+    });
+  };
 
   const updateTotalDescontoTelecel = (rowKey: string, rawValue: string) => {
     const value = toNumber(rawValue);
@@ -982,6 +1135,215 @@ export default function ComparativosModule() {
     );
   };
 
+  const updateDiscountField = (rowKey: string, field: EditableDiscountField, rawValue: string) => {
+    const value = toNumber(rawValue);
+
+    setRows((prevRows) =>
+      prevRows.map((row) => {
+        if (row.rowKey !== rowKey) return row;
+
+        return recalculateRow({
+          ...row,
+          [field]: value,
+        });
+      })
+    );
+  };
+
+  const toggleRowSelected = (rowKey: string) => {
+    setRows((prevRows) =>
+      prevRows.map((row) =>
+        row.rowKey === rowKey
+          ? { ...row, isSelected: !row.isSelected }
+          : row
+      )
+    );
+  };
+
+  const buildRowsForComparativo = (data: PendingComparativoData, kind: ComparativoKind) => {
+    const traducaoMap = buildTraducaoMap(data.traducaoRows);
+    const stockMap = buildStockMap(data.stockRows);
+    const priceMap = buildPriceMap(data.priceRows);
+    const priceGuideMap = buildPriceGuideMap(data.priceGuideRows);
+    const salesMap = buildSalesMap(data.salesRows);
+
+    const getSalesQuantity = (descricao: string, referencia: string) =>
+      salesMap.byDesc.get(normalizeDesc(descricao))?.quantidade ||
+      salesMap.byFamily.get(referencia)?.quantidade ||
+      0;
+
+    const buildBaseRow = ({
+      rowKey,
+      descricao,
+      referencia,
+      priceGuide,
+      price,
+      stock,
+      qtdVendida,
+      hasOferta,
+      campaignItem,
+      campaignPrices,
+    }: {
+      rowKey: string;
+      descricao: string;
+      referencia: string;
+      priceGuide?: PriceGuideRow;
+      price?: PriceRow;
+      stock?: StockRow;
+      qtdVendida: number;
+      hasOferta: boolean;
+      campaignItem?: PdfItem;
+      campaignPrices?: { priceRebate: number; priceTradeIn: number; priceBogo: number; priceSip: number };
+    }) => {
+      const precoSamsung = priceGuide?.precoSamsung || price?.precoSamsung || 0;
+      const precoTelecel = price?.precoTelecel || 0;
+      const ofertaAtual = priceGuide?.ofertaAtual || price?.ofertaAtual || 0;
+
+      const totalDescontoTelecel =
+        priceGuide?.descontoTelecel ||
+        (precoSamsung > 0 && precoTelecel > 0
+          ? Math.max(precoSamsung - precoTelecel, 0)
+          : 0);
+
+      // Regra operacional:
+      // - Com ofertas: o Price vem primeiro da carta; se não houver, cai na planilha guia.
+      // - Sem ofertas: não existe Price, então não pode existir desconto baseado em Price.
+      const effectivePriceRebate = hasOferta ? (campaignPrices?.priceRebate || priceGuide?.priceRebate || 0) : 0;
+      const effectivePriceTradeIn = hasOferta ? (campaignPrices?.priceTradeIn || priceGuide?.priceTradeIn || 0) : 0;
+      const effectivePriceBogo = hasOferta ? (campaignPrices?.priceBogo || priceGuide?.priceBogo || 0) : 0;
+      const effectivePriceSip = hasOferta ? (campaignPrices?.priceSip || priceGuide?.priceSip || 0) : 0;
+
+      const baseRow: LinhaTabela = {
+        rowKey,
+        hasOferta,
+        isSelected: true,
+        comparativoKind: kind,
+        descricao: descricao || stock?.descricao || '-',
+        referencia,
+        precoSamsung,
+        precoTelecel,
+        totalDescontoTelecel,
+        // Os descontos de campanha agora nascem sempre do respectivo Price.
+        // Ex.: Price Rebate -> Desc. Rebate; Price Trade In -> Desc. Trade In.
+        // Se Price = 0, então o desconto também precisa ser 0.
+        // O usuário ainda pode editar manualmente os campos na tela.
+        descontoRebate: calculateDiscountFromPrice(effectivePriceRebate),
+        descontoTradeIn: calculateDiscountFromPrice(effectivePriceTradeIn),
+        descontoBogo: calculateDiscountFromPrice(effectivePriceBogo),
+        descontoSip: calculateDiscountFromPrice(effectivePriceSip),
+        totalDesconto: 0,
+        precoPromocional: 0,
+        tipoPromocao: campaignItem?.tipoCampanha || getComparativoKindLabel(kind),
+        periodo: campaignItem?.inicio && campaignItem?.termino ? `${campaignItem.inicio} a ${campaignItem.termino}` : '-',
+        refCampanha: campaignItem?.refCampanha || '',
+        campanha: campaignItem?.campanha || '',
+        modeloPdf: campaignItem?.modeloPdf || '',
+        basicModel: campaignItem ? normalizeBasicModel(campaignItem.modeloPdf) : '',
+        qtdEstoque: stock?.quantidade || 0,
+        custoTotalEstoque: stock?.custoTotal || 0,
+        custoMedioEstoque: stock?.custoMedio || 0,
+        margemEstoque: null,
+        novoCustoMedio: null,
+        margemPrice: null,
+        qtdVendida,
+        priceRebate: effectivePriceRebate,
+        priceTradeIn: effectivePriceTradeIn,
+        priceBogo: effectivePriceBogo,
+        priceSip: effectivePriceSip,
+        verbaUnitaria: campaignItem?.verbaUnitaria || 0,
+        verbaTotal: campaignItem?.verbaTotal || 0,
+        ofertaAtual,
+        lojas: stock?.lojas.join(' | ') || '-',
+        status: stock?.status || '-',
+      };
+
+      return recalculateRow(baseRow);
+    };
+
+    const selectedPdfItems = data.pdfItems.filter((item) => getCampaignKind(item) === kind);
+
+    const offerRowsRaw: LinhaTabela[] = selectedPdfItems.map((item, index) => {
+      const basicModel = normalizeBasicModel(item.modeloPdf);
+      const traducao = traducaoMap.get(basicModel);
+      const descricao = traducao?.descricao2 || traducao?.marketingName || item.modeloPdf || '-';
+      const referencia = familyFromReference(traducao?.referencia2 || '');
+      const stock = stockMap.get(referencia);
+      const price =
+        priceMap.byDesc.get(normalizeDesc(descricao)) ||
+        priceMap.byRef.get(referencia);
+
+      const priceGuide =
+        priceGuideMap.byDesc.get(normalizeDesc(descricao)) ||
+        priceGuideMap.byRef.get(referencia);
+
+      return buildBaseRow({
+        rowKey: `oferta-${item.refCampanha || item.arquivo}-${basicModel}-${item.inicio}-${item.termino}-${index}`,
+        descricao,
+        referencia,
+        priceGuide,
+        price,
+        stock,
+        qtdVendida: getSalesQuantity(descricao, referencia),
+        hasOferta: true,
+        campaignItem: item,
+        campaignPrices: getCampaignPriceFields(item),
+      });
+    });
+
+    const offerRows = mergeDuplicateRowsByModel(offerRowsRaw);
+    const offerKeys = new Set(offerRows.map((row) => getMergeKey(row)));
+
+    const noOfferRowsRaw: LinhaTabela[] = priceGuideMap.rows
+      .filter((guide) => {
+        const fakeKey = normalizeDesc(guide.descricao || '') || normalizeReference(guide.referencia || '');
+        if (!fakeKey) return false;
+        return !offerKeys.has(fakeKey);
+      })
+      .map((guide, index) => {
+        const descricao = guide.descricao || '-';
+        const referencia = guide.referencia || '';
+        const stock = stockMap.get(referencia);
+        const price =
+          priceMap.byDesc.get(normalizeDesc(descricao)) ||
+          priceMap.byRef.get(referencia);
+
+        return buildBaseRow({
+          rowKey: `sem-oferta-${normalizeDesc(descricao) || referencia}-${index}`,
+          descricao,
+          referencia,
+          priceGuide: guide,
+          price,
+          stock,
+          qtdVendida: getSalesQuantity(descricao, referencia),
+          hasOferta: false,
+        });
+      });
+
+    const noOfferRows = mergeDuplicateRowsByModel(noOfferRowsRaw);
+
+    const finalRows = [...offerRows, ...noOfferRows].sort((a, b) =>
+      a.descricao.localeCompare(b.descricao, 'pt-BR')
+    );
+
+    return {
+      finalRows,
+      apiInfoText:
+        `Google Sheets: ${traducaoMap.size} modelos · Cartas: ${selectedPdfItems.length} itens · Guia preços: ${priceGuideMap.byDesc.size + priceGuideMap.byRef.size} chaves · Estoque: ${stockMap.size} famílias · Vendas mês: ${salesMap.byDesc.size} descrições · Preços sistema: ${priceMap.byDesc.size + priceMap.byRef.size} chaves`,
+    };
+  };
+
+  const applyComparativoKind = (kind: ComparativoKind) => {
+    if (!pendingData) return;
+
+    const { finalRows, apiInfoText } = buildRowsForComparativo(pendingData, kind);
+
+    setSelectedComparativoKind(kind);
+    setRows(finalRows);
+    setApiInfo(apiInfoText);
+    setActiveTab('com_ofertas');
+    setShowCompareModal(false);
+  };
+
   const processFiles = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files || []) as File[];
     if (!files.length) return;
@@ -989,6 +1351,7 @@ export default function ComparativosModule() {
     setLoading(true);
     setErrorMsg('');
     setApiInfo('');
+    setRows([]);
 
     try {
       const pdfItems = (await Promise.all(files.map((file) => parseCampaignFromPdf(file)))).flat();
@@ -999,16 +1362,11 @@ export default function ComparativosModule() {
       const [baseResp, stockResp, priceResp, priceGuideResp, salesResp] = await Promise.all([
         fetchJsonFromCandidates('/api/comparativos/mkt-base'),
         fetchJsonFromCandidates('/stock'),
-
-        // Mantém exatamente a estrutura atual
         fetchJsonFromCandidates('/price-table?category=Aparelhos'),
-
-        // Apenas adiciona a planilha guia para complementar Preço Samsung e Oferta Atual
         fetchPriceGuideSheet(),
-
         userId && startDate && endDate
-        ? fetchJsonFromCandidates(`/api/comparativos/vendas-modelos?userId=${encodeURIComponent(userId)}&startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}`)
-        : Promise.resolve({ url: '', data: { sales: [] } }),
+          ? fetchJsonFromCandidates(`/sales?userId=${encodeURIComponent(userId)}&startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}`)
+          : Promise.resolve({ url: '', data: { sales: [] } }),
       ]);
 
       const traducaoRows = Array.isArray(baseResp.data?.rows)
@@ -1017,105 +1375,19 @@ export default function ComparativosModule() {
           ? baseResp.data
           : [];
 
-      const traducaoMap = buildTraducaoMap(traducaoRows);
-      const stockMap = buildStockMap(Array.isArray(stockResp.data) ? stockResp.data : []);
-      const priceMap = buildPriceMap(Array.isArray(priceResp.data) ? priceResp.data : []);
-      const priceGuideMap = buildPriceGuideMap(Array.isArray(priceGuideResp.data) ? priceGuideResp.data : []);
-      const salesMap = buildSalesMap(Array.isArray(salesResp.data?.sales) ? salesResp.data.sales : []);
+      const nextPendingData: PendingComparativoData = {
+        pdfItems,
+        traducaoRows,
+        stockRows: Array.isArray(stockResp.data) ? stockResp.data : [],
+        priceRows: Array.isArray(priceResp.data) ? priceResp.data : [],
+        priceGuideRows: Array.isArray(priceGuideResp.data) ? priceGuideResp.data : [],
+        salesRows: Array.isArray(salesResp.data?.sales) ? salesResp.data.sales : [],
+      };
 
-      const finalRows: LinhaTabela[] = pdfItems.map((item, index) => {
-        const basicModel = normalizeBasicModel(item.modeloPdf);
-        const traducao = traducaoMap.get(basicModel);
-        const descricao = traducao?.descricao2 || traducao?.marketingName || '-';
-        const referencia = familyFromReference(traducao?.referencia2 || '');
-        const stock = stockMap.get(referencia);
-        const price =
-          priceMap.byDesc.get(normalizeDesc(descricao)) ||
-          priceMap.byRef.get(referencia);
-
-        const priceGuide =
-          priceGuideMap.byDesc.get(normalizeDesc(descricao)) ||
-          priceGuideMap.byRef.get(referencia);
-
-        const qtdVendida =
-          salesMap.byDesc.get(normalizeDesc(descricao))?.quantidade ||
-          salesMap.byFamily.get(referencia)?.quantidade ||
-          0;
-
-        const precoSamsung = priceGuide?.precoSamsung || price?.precoSamsung || 0;
-        const precoTelecel = price?.precoTelecel || 0;
-        const ofertaAtual = priceGuide?.ofertaAtual || price?.ofertaAtual || 0;
-
-        const totalDescontoTelecel =
-          priceGuide?.descontoTelecel ||
-          (precoSamsung > 0 && precoTelecel > 0
-            ? Math.max(precoSamsung - precoTelecel, 0)
-            : 0);
-
-        const descontoRebate =
-          priceGuide?.descontoRebate ||
-          (item.tipoCampanha.toUpperCase().includes('REBATE') ? item.verbaUnitaria : 0);
-
-        const descontoTradeIn =
-          priceGuide?.descontoTradeIn ||
-          (item.tipoCampanha.toUpperCase().includes('TRADE') ? item.verbaUnitaria : 0);
-
-        const descontoBogo =
-          priceGuide?.descontoBogo ||
-          (item.tipoCampanha.toUpperCase().includes('BOGO') ? item.verbaUnitaria : 0);
-
-        const descontoSip =
-          priceGuide?.descontoSip ||
-          (item.tipoCampanha.toUpperCase().includes('SIP') ? item.verbaUnitaria : 0);
-
-        const baseRow: LinhaTabela = {
-          rowKey: `${item.refCampanha || item.arquivo}-${basicModel}-${item.inicio}-${item.termino}-${index}`,
-          descricao: descricao || stock?.descricao || '-',
-          referencia,
-          precoSamsung,
-          precoTelecel,
-          totalDescontoTelecel,
-          descontoRebate,
-          descontoTradeIn,
-          descontoBogo,
-          descontoSip,
-          totalDesconto: 0,
-          precoPromocional: 0,
-          tipoPromocao: item.tipoCampanha,
-          periodo: item.inicio && item.termino ? `${item.inicio} a ${item.termino}` : '-',
-          refCampanha: item.refCampanha,
-          campanha: item.campanha,
-          modeloPdf: item.modeloPdf,
-          basicModel: traducao?.basicModel || basicModel,
-          qtdEstoque: stock?.quantidade || 0,
-          custoTotalEstoque: stock?.custoTotal || 0,
-          custoMedioEstoque: stock?.custoMedio || 0,
-          margemEstoque: null,
-          novoCustoMedio: null,
-          margemPrice: null,
-          qtdVendida,
-          priceRebate: priceGuide?.priceRebate || 0,
-          priceTradeIn: priceGuide?.priceTradeIn || 0,
-          priceBogo: priceGuide?.priceBogo || 0,
-          priceSip: priceGuide?.priceSip || 0,
-          verbaUnitaria: item.verbaUnitaria,
-          verbaTotal: item.verbaTotal,
-          ofertaAtual,
-          lojas: stock?.lojas.join(' | ') || '-',
-          status: stock?.status || '-',
-        };
-
-        return recalculateRow(baseRow);
-      });
-
-      const uniqueRows = mergeDuplicateRowsByModel(finalRows).sort((a, b) =>
-        a.descricao.localeCompare(b.descricao, 'pt-BR')
-      );
-
-      setRows(uniqueRows);
-      setApiInfo(
-        `Google Sheets: ${traducaoMap.size} modelos · Guia preços: ${priceGuideMap.byDesc.size + priceGuideMap.byRef.size} chaves · Estoque: ${stockMap.size} famílias · Vendas mês: ${salesMap.byDesc.size} descrições · Preços sistema: ${priceMap.byDesc.size + priceMap.byRef.size} chaves`
-      );
+      setPendingData(nextPendingData);
+      setCompareKindDraft('REBATE_TRADEIN');
+      setShowCompareModal(true);
+      setApiInfo(`Cartas lidas: ${pdfItems.length} itens. Escolha o tipo de comparativo para tratar.`);
     } catch (error: any) {
       setErrorMsg(error?.message || 'Erro ao processar comparativo.');
     } finally {
@@ -1124,11 +1396,15 @@ export default function ComparativosModule() {
     }
   };
 
+  const currentTabRows = useMemo(() => {
+    return rows.filter((row) => activeTab === 'com_ofertas' ? row.hasOferta : !row.hasOferta);
+  }, [rows, activeTab]);
+
   const filteredRows = useMemo(() => {
     const term = searchTerm.trim().toLowerCase();
-    if (!term) return rows;
+    if (!term) return currentTabRows;
 
-    return rows.filter((row) =>
+    return currentTabRows.filter((row) =>
       [
         row.descricao,
         row.referencia,
@@ -1138,143 +1414,174 @@ export default function ComparativosModule() {
         row.basicModel,
         row.tipoPromocao,
         row.lojas,
+        row.status,
       ]
         .join(' ')
         .toLowerCase()
         .includes(term)
     );
-  }, [rows, searchTerm]);
+  }, [currentTabRows, searchTerm]);
+
+  const offerRowsCount = useMemo(() => rows.filter((row) => row.hasOferta).length, [rows]);
+  const noOfferRowsCount = useMemo(() => rows.filter((row) => !row.hasOferta).length, [rows]);
 
   const summary = useMemo(() => ({
-    campanhas: new Set(filteredRows.map((r) => r.refCampanha)).size,
+    campanhas: new Set(filteredRows.map((r) => r.refCampanha).filter(Boolean)).size,
     modelos: filteredRows.length,
     estoque: filteredRows.reduce((sum, r) => sum + r.qtdEstoque, 0),
     vendida: filteredRows.reduce((sum, r) => sum + r.qtdVendida, 0),
     verba: filteredRows.reduce((sum, r) => sum + r.verbaTotal, 0),
   }), [filteredRows]);
 
-  const exportExcel = () => {
-    const data = filteredRows.map((row) => ({
-      'DESCRIÇÃO': row.descricao,
-      'REFERENCIA': row.referencia,
-      'PREÇO SAMSUNG': row.precoSamsung,
-      'PREÇO TELECEL': row.precoTelecel,
-      'TOTAL DESCONTO TELECEL': row.totalDescontoTelecel,
-      'DESCONTO REBATE': row.descontoRebate,
-      'DESCONTO TRADE IN': row.descontoTradeIn,
-      'DESCONTO BOGO': row.descontoBogo,
-      'DESCONTO SIP': row.descontoSip,
-      'TOTAL DESCONTO (TELECEL + SAMSUNG)': row.totalDesconto,
-      'PREÇO PROMOCIONAL (TELECEL + SAMSUNG)': row.precoPromocional,
-      'TIPO DE PROMOÇÃO SAMSUNG E DATA': row.tipoPromocao,
-      'PERÍODO': row.periodo,
-      'REF. CAMPANHA': row.refCampanha,
-      'CAMPANHA': row.campanha,
-      'MODELO PDF': row.modeloPdf,
-      'BASIC MODEL': row.basicModel,
-      'QTD EM ESTOQUE': row.qtdEstoque,
-      'CUSTO TOTAL EM ESTOQUE': row.custoTotalEstoque,
-      'CUSTO MÉDIO ESTOQUE': row.custoMedioEstoque,
-      'MARGEM ESTOQUE': row.margemEstoque,
-      'NOVO CUSTO MÉDIO ESTOQUE (PRICE)': row.novoCustoMedio,
-      'MARGEM PRICE': row.margemPrice,
-      'QTD VENDIDA': row.qtdVendida,
-      'PRICE REBATE': row.priceRebate,
-      'PRICE TRADE IN': row.priceTradeIn,
-      'PRICE BOGO': row.priceBogo,
-      'PRICE SIP': row.priceSip,
-      'PRICE CAMPANHA': row.verbaUnitaria,
-      'VERBA TOTAL': row.verbaTotal,
-      'OFERTA ATUAL': row.ofertaAtual,
-      'LOJAS': row.lojas,
-      'STATUS': row.status,
-    }));
+  const buildExportData = (sourceRows: LinhaTabela[]) =>
+    sourceRows
+      .filter((row) => row.isSelected)
+      .map((row) => ({
+        'DESCRIÇÃO': row.descricao,
+        'REFERENCIA': row.referencia,
+        'PREÇO SAMSUNG': row.precoSamsung,
+        'PREÇO TELECEL': row.precoTelecel,
+        'TOTAL DESCONTO TELECEL': row.totalDescontoTelecel,
+        'DESCONTO REBATE': row.descontoRebate,
+        'DESCONTO TRADE IN': row.descontoTradeIn,
+        'DESCONTO BOGO': row.descontoBogo,
+        'DESCONTO SIP': row.descontoSip,
+        'TOTAL DESCONTO (TELECEL + SAMSUNG)': row.totalDesconto,
+        'PREÇO PROMOCIONAL (TELECEL + SAMSUNG)': row.precoPromocional,
+        'TIPO DE PROMOÇÃO SAMSUNG E DATA': row.tipoPromocao,
+        'PERÍODO': row.periodo,
+        'REF. CAMPANHA': row.refCampanha,
+        'CAMPANHA': row.campanha,
+        'MODELO PDF': row.modeloPdf,
+        'BASIC MODEL': row.basicModel,
+        'QTD EM ESTOQUE': row.qtdEstoque,
+        'CUSTO TOTAL EM ESTOQUE': row.custoTotalEstoque,
+        'CUSTO MÉDIO ESTOQUE': row.custoMedioEstoque,
+        'MARGEM ESTOQUE': row.margemEstoque,
+        'NOVO CUSTO MÉDIO ESTOQUE (PRICE)': row.novoCustoMedio,
+        'MARGEM PRICE': row.margemPrice,
+        'QTD VENDIDA': row.qtdVendida,
+        'PRICE REBATE': row.priceRebate,
+        'PRICE TRADE IN': row.priceTradeIn,
+        'PRICE BOGO': row.priceBogo,
+        'PRICE SIP': row.priceSip,
+        'PRICE CAMPANHA': row.verbaUnitaria,
+        'VERBA TOTAL': row.verbaTotal,
+        'OFERTA ATUAL': row.ofertaAtual,
+        'LOJAS': row.lojas,
+        'STATUS': row.status,
+      }));
 
+  const exportExcel = () => {
     const workbook = XLSX.utils.book_new();
-    const worksheet = XLSX.utils.json_to_sheet(data);
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Comparativo');
+
+    const comOfertas = buildExportData(rows.filter((row) => row.hasOferta));
+    const semOfertas = buildExportData(rows.filter((row) => !row.hasOferta));
+
+    XLSX.utils.book_append_sheet(
+      workbook,
+      XLSX.utils.json_to_sheet(comOfertas),
+      'Com Ofertas'
+    );
+
+    XLSX.utils.book_append_sheet(
+      workbook,
+      XLSX.utils.json_to_sheet(semOfertas),
+      'Sem Ofertas'
+    );
+
     XLSX.writeFile(workbook, `comparativo_ofertas_${Date.now()}.xlsx`);
   };
 
+
+
+  const openSendToFlowModal = () => {
+    if (!rows.length) {
+      setErrorMsg('Monte um comparativo antes de enviar para análise.');
+      return;
+    }
+
+    const now = new Date();
+    const dateLabel = now.toLocaleDateString('pt-BR');
+    setFlowTitleDraft(`${getComparativoKindLabel(selectedComparativoKind)} - ${dateLabel}`);
+    setFlowSendMsg('');
+    setShowFlowSendModal(true);
+  };
+
+  const sendSelectedComparativoToFlow = async () => {
+    const selectedRows = rows.filter((row) => row.isSelected);
+    const comOfertas = selectedRows.filter((row) => row.hasOferta);
+    const semOfertas = selectedRows.filter((row) => !row.hasOferta);
+    const currentUser = getCurrentUserInfo();
+
+    if (!selectedRows.length) {
+      setFlowSendMsg('Selecione pelo menos um produto para enviar.');
+      return;
+    }
+
+    setSendingToFlow(true);
+    setFlowSendMsg('');
+
+    try {
+      await postJsonToCandidates('/api/comparativos/fluxo', {
+        titulo: flowTitleDraft || `${getComparativoKindLabel(selectedComparativoKind)} - ${new Date().toLocaleDateString('pt-BR')}`,
+        tipoComparativo: selectedComparativoKind,
+        criadoPorId: String(currentUser?.id || getCurrentUserId() || ''),
+        criadoPorNome: String(currentUser?.name || currentUser?.nome || 'Usuário'),
+        comOfertas,
+        semOfertas,
+        resumo: {
+          totalSelecionados: selectedRows.length,
+          totalComOfertas: comOfertas.length,
+          totalSemOfertas: semOfertas.length,
+          geradoEm: new Date().toISOString(),
+        },
+      });
+
+      setFlowSendMsg('Comparativo enviado para análise com sucesso. Ele já está no Fluxo Comparativo.');
+    } catch (error: any) {
+      setFlowSendMsg(error?.message || 'Erro ao enviar comparativo para análise.');
+    } finally {
+      setSendingToFlow(false);
+    }
+  };
 
   const discountColSpan = showDiscountDetails ? 6 : 3;
   const priceColSpan = showPriceDetails ? 4 : 1;
   const offerColSpan = showOfferDetails ? 2 : 1;
   const totalTableCols = 15 + (showDiscountDetails ? 3 : 0) + (showPriceDetails ? 3 : 0) + (showOfferDetails ? 1 : 0);
-  const tableMinWidth = showDiscountDetails || showPriceDetails || showOfferDetails ? 'min-w-[3120px]' : 'min-w-[2460px]';
-
-  const updateHorizontalScrollMetrics = () => {
-    const tableScroller = tableScrollRef.current;
-    if (!tableScroller) return;
-
-    setHorizontalScrollWidth(tableScroller.scrollWidth);
-    setHorizontalClientWidth(tableScroller.clientWidth);
-
-    if (topScrollRef.current) {
-      topScrollRef.current.scrollLeft = tableScroller.scrollLeft;
-    }
-  };
-
-  useEffect(() => {
-    const timer = window.setTimeout(updateHorizontalScrollMetrics, 80);
-    window.addEventListener('resize', updateHorizontalScrollMetrics);
-
-    let resizeObserver: ResizeObserver | null = null;
-    if (typeof ResizeObserver !== 'undefined' && tableScrollRef.current) {
-      resizeObserver = new ResizeObserver(updateHorizontalScrollMetrics);
-      resizeObserver.observe(tableScrollRef.current);
-    }
-
-    return () => {
-      window.clearTimeout(timer);
-      window.removeEventListener('resize', updateHorizontalScrollMetrics);
-      resizeObserver?.disconnect();
-    };
-  }, [filteredRows.length, showDiscountDetails, showPriceDetails, showOfferDetails, tableMinWidth]);
-
-  const syncScrollFromTop = () => {
-    const topScroller = topScrollRef.current;
-    const tableScroller = tableScrollRef.current;
-    if (!topScroller || !tableScroller) return;
-    tableScroller.scrollLeft = topScroller.scrollLeft;
-  };
-
-  const syncScrollFromTable = () => {
-    const topScroller = topScrollRef.current;
-    const tableScroller = tableScrollRef.current;
-    if (!topScroller || !tableScroller) return;
-    topScroller.scrollLeft = tableScroller.scrollLeft;
-  };
+  const tableMinWidth =
+    showDiscountDetails || showPriceDetails || showOfferDetails
+      ? 'min-w-[2850px]'
+      : 'min-w-[2350px]';
 
   return (
-    <div className="min-h-screen w-full bg-slate-50">
+    <>
       <style>
         {`
-          .comparativo-scroll-top::-webkit-scrollbar,
-          .comparativo-scroll-body::-webkit-scrollbar {
-            height: 15px;
-            width: 15px;
+          .comparativo-scroll::-webkit-scrollbar {
+            height: 16px;
+            width: 14px;
           }
 
-          .comparativo-scroll-top::-webkit-scrollbar-track,
-          .comparativo-scroll-body::-webkit-scrollbar-track {
-            background: #e2e8f0;
+          .comparativo-scroll::-webkit-scrollbar-track {
+            background: #dbe3ee;
             border-radius: 999px;
           }
 
-          .comparativo-scroll-top::-webkit-scrollbar-thumb,
-          .comparativo-scroll-body::-webkit-scrollbar-thumb {
+          .comparativo-scroll::-webkit-scrollbar-thumb {
             background: #64748b;
             border-radius: 999px;
-            border: 3px solid #e2e8f0;
+            border: 3px solid #dbe3ee;
           }
 
-          .comparativo-scroll-top::-webkit-scrollbar-thumb:hover,
-          .comparativo-scroll-body::-webkit-scrollbar-thumb:hover {
+          .comparativo-scroll::-webkit-scrollbar-thumb:hover {
             background: #334155;
           }
         `}
       </style>
+
+      <div className="min-h-screen w-full bg-slate-50">
       <div className="w-full max-w-none space-y-3 px-1.5 py-2 md:px-2">
         <div className="rounded-[22px] border border-slate-200 bg-white px-4 py-3 shadow-sm">
           <div className="flex flex-col gap-3 2xl:flex-row 2xl:items-center 2xl:justify-between">
@@ -1307,6 +1614,15 @@ export default function ComparativosModule() {
                 <FileSpreadsheet size={15} />
                 Exportar Excel
               </button>
+
+
+              <button
+                type="button"
+                onClick={openSendToFlowModal}
+                className="inline-flex items-center gap-2 rounded-xl bg-blue-700 px-4 py-2.5 text-xs font-black text-white shadow-sm transition-colors hover:bg-blue-800"
+              >
+                Enviar para análise
+              </button>
             </div>
           </div>
 
@@ -1335,27 +1651,56 @@ export default function ComparativosModule() {
             </div>
           </div>
 
-          <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setActiveTab('com_ofertas')}
+                className={`rounded-xl px-4 py-2 text-xs font-black uppercase tracking-widest transition ${
+                  activeTab === 'com_ofertas'
+                    ? 'bg-slate-900 text-white shadow-sm'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                }`}
+              >
+                Com ofertas ({offerRowsCount})
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setActiveTab('sem_ofertas')}
+                className={`rounded-xl px-4 py-2 text-xs font-black uppercase tracking-widest transition ${
+                  activeTab === 'sem_ofertas'
+                    ? 'bg-slate-900 text-white shadow-sm'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                }`}
+              >
+                Sem ofertas ({noOfferRowsCount})
+              </button>
+            </div>
+
+            <div className="text-[11px] font-semibold text-slate-500">
+              Comparativo: <span className="font-black text-slate-800">{getComparativoKindLabel(selectedComparativoKind)}</span> ·
+              Produtos na tela: <span className="font-black text-slate-800">{formatNumber(summary.modelos)}</span> ·
+              Selecionados: <span className="font-black text-emerald-700">{formatNumber(filteredRows.filter((row) => row.isSelected).length)}</span>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
             <div
               ref={topScrollRef}
-              onScroll={syncScrollFromTop}
-              className="comparativo-scroll-top h-5 w-full overflow-x-auto overflow-y-hidden border-b border-slate-200 bg-slate-100"
+              onScroll={() => syncHorizontalScroll('top')}
+              className="comparativo-scroll h-5 w-full overflow-x-scroll overflow-y-hidden border-b border-slate-200 bg-slate-100"
             >
-              <div
-                style={{
-                  width: `${Math.max(horizontalScrollWidth, horizontalClientWidth, 1)}px`,
-                  height: 1,
-                }}
-              />
+              <div className={`${tableMinWidth} h-1`} />
             </div>
 
             <div
               ref={tableScrollRef}
-              onScroll={syncScrollFromTable}
-              className="comparativo-scroll-body max-h-[calc(100vh-230px)] min-h-[560px] w-full overflow-x-auto overflow-y-auto overscroll-contain rounded-b-xl pb-4"
+              onScroll={() => syncHorizontalScroll('table')}
+              className="comparativo-scroll max-h-[calc(100vh-225px)] min-h-[560px] w-full overflow-x-scroll overflow-y-auto overscroll-contain rounded-xl pb-4"
               style={{ scrollbarGutter: 'stable both-edges' }}
             >
-              <table className={`w-max ${tableMinWidth} table-fixed border-separate border-spacing-0 bg-white`}>
+              <table className={`w-max ${tableMinWidth} table-auto border-separate border-spacing-0 bg-white`}>
                 <thead className="sticky top-0 z-30 shadow-[0_1px_0_0_rgba(226,232,240,1)]">
                   <tr>
                     <GroupHeader colSpan={1} className="sticky left-0 top-0 z-40 bg-[#d9d9d9] text-[#003366] shadow-[1px_0_0_0_rgba(148,163,184,0.55)]">
@@ -1387,7 +1732,7 @@ export default function ComparativosModule() {
                     </GroupHeader>
                   </tr>
                   <tr className="sticky top-[29px] z-30 bg-white">
-                    <TableHeader className="sticky left-0 z-40 w-[390px] min-w-[390px] bg-[#d9d9d9] text-[#003366] shadow-[1px_0_0_0_rgba(148,163,184,0.55)]">Descrição</TableHeader>
+                    <TableHeader className="sticky left-0 z-40 w-[320px] min-w-[320px] bg-[#d9d9d9] text-[#003366] shadow-[1px_0_0_0_rgba(148,163,184,0.55)]">Descrição</TableHeader>
 
                     <TableHeader className="w-[96px] bg-[#d9ffd9]">Preço Samsung</TableHeader>
                     <TableHeader className="w-[92px] bg-[#d9ffd9]">Preço Telecel</TableHeader>
@@ -1441,11 +1786,21 @@ export default function ComparativosModule() {
                     const baseRow = idx % 2 === 0 ? 'bg-white hover:bg-slate-50' : 'bg-slate-50/40 hover:bg-slate-100/60';
                     const descBg = idx % 2 === 0 ? 'bg-white' : 'bg-slate-50/40';
                     const margemPriceProblem = row.margemPrice !== null && row.margemPrice < 0.25;
+                    const rowMuted = !row.isSelected ? 'opacity-45' : '';
 
                     return (
-                      <tr key={row.rowKey || `${row.refCampanha}-${row.basicModel}-${idx}`} className={baseRow}>
-                        <TableCell className={`sticky left-0 z-20 w-[390px] min-w-[390px] whitespace-nowrap font-black text-slate-900 shadow-[1px_0_0_0_rgba(148,163,184,0.35)] ${descBg}`}>
-                          {row.descricao || '-'}
+                      <tr key={row.rowKey || `${row.refCampanha}-${row.basicModel}-${idx}`} className={`${baseRow} ${rowMuted}`}>
+                        <TableCell className={`sticky left-0 z-20 w-[320px] min-w-[320px] whitespace-nowrap font-black text-slate-900 shadow-[1px_0_0_0_rgba(148,163,184,0.35)] ${descBg}`}>
+                          <div className="flex min-w-[300px] items-center gap-2">
+                            <input
+                              type="checkbox"
+                              checked={row.isSelected}
+                              onChange={() => toggleRowSelected(row.rowKey)}
+                              className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                              title="Marcar/desmarcar produto para exportação"
+                            />
+                            <span>{row.descricao || '-'}</span>
+                          </div>
                         </TableCell>
 
                         <TableCell className="whitespace-nowrap bg-[#edffed]">{formatMoney(row.precoSamsung)}</TableCell>
@@ -1463,10 +1818,46 @@ export default function ComparativosModule() {
                         </TableCell>
                         {showDiscountDetails && (
                           <>
-                            <TableCell className="whitespace-nowrap bg-[#d9ecff]">{formatMoney(row.descontoRebate)}</TableCell>
-                            <TableCell className="whitespace-nowrap bg-[#d9ecff]">{formatMoney(row.descontoTradeIn)}</TableCell>
-                            <TableCell className="whitespace-nowrap bg-[#d9ecff]">{formatMoney(row.descontoBogo)}</TableCell>
-                            <TableCell className="whitespace-nowrap bg-[#d9ecff]">{formatMoney(row.descontoSip)}</TableCell>
+                            <TableCell className="bg-[#d9ecff]">
+                              <input
+                                type="text"
+                                inputMode="decimal"
+                                value={formatEditableNumber(row.descontoRebate)}
+                                onChange={(e) => updateDiscountField(row.rowKey, 'descontoRebate', e.target.value)}
+                                className="w-full min-w-[88px] rounded-md border border-sky-200 bg-white/80 px-1.5 py-0.5 text-right text-[11px] font-semibold text-slate-700 outline-none focus:border-sky-500 focus:bg-white"
+                                placeholder="0,00"
+                              />
+                            </TableCell>
+                            <TableCell className="bg-[#d9ecff]">
+                              <input
+                                type="text"
+                                inputMode="decimal"
+                                value={formatEditableNumber(row.descontoTradeIn)}
+                                onChange={(e) => updateDiscountField(row.rowKey, 'descontoTradeIn', e.target.value)}
+                                className="w-full min-w-[88px] rounded-md border border-sky-200 bg-white/80 px-1.5 py-0.5 text-right text-[11px] font-semibold text-slate-700 outline-none focus:border-sky-500 focus:bg-white"
+                                placeholder="0,00"
+                              />
+                            </TableCell>
+                            <TableCell className="bg-[#d9ecff]">
+                              <input
+                                type="text"
+                                inputMode="decimal"
+                                value={formatEditableNumber(row.descontoBogo)}
+                                onChange={(e) => updateDiscountField(row.rowKey, 'descontoBogo', e.target.value)}
+                                className="w-full min-w-[88px] rounded-md border border-sky-200 bg-white/80 px-1.5 py-0.5 text-right text-[11px] font-semibold text-slate-700 outline-none focus:border-sky-500 focus:bg-white"
+                                placeholder="0,00"
+                              />
+                            </TableCell>
+                            <TableCell className="bg-[#d9ecff]">
+                              <input
+                                type="text"
+                                inputMode="decimal"
+                                value={formatEditableNumber(row.descontoSip)}
+                                onChange={(e) => updateDiscountField(row.rowKey, 'descontoSip', e.target.value)}
+                                className="w-full min-w-[88px] rounded-md border border-sky-200 bg-white/80 px-1.5 py-0.5 text-right text-[11px] font-semibold text-slate-700 outline-none focus:border-sky-500 focus:bg-white"
+                                placeholder="0,00"
+                              />
+                            </TableCell>
                           </>
                         )}
                         {!showDiscountDetails && (
@@ -1540,7 +1931,7 @@ export default function ComparativosModule() {
                   {!loading && filteredRows.length === 0 && (
                     <tr>
                       <td colSpan={totalTableCols} className="px-4 py-16 text-center text-slate-400">
-                        Importe as cartas em PDF para montar o comparativo.
+                        Importe as cartas em PDF para montar o comparativo ou verifique a aba selecionada.
                       </td>
                     </tr>
                   )}
@@ -1558,6 +1949,139 @@ export default function ComparativosModule() {
           </div>
         </div>
       </div>
-    </div>
+
+      </div>
+
+      {showCompareModal && pendingData && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-slate-950/55 p-4">
+          <div className="w-full max-w-[520px] rounded-[28px] border border-slate-200 bg-white p-6 shadow-2xl">
+            <div className="mb-5">
+              <h3 className="text-xl font-black uppercase tracking-tight text-slate-900">
+                Qual comparativo tratar?
+              </h3>
+              <p className="mt-2 text-sm text-slate-500">
+                Escolha uma opção para separar os produtos com ofertas e gerar a aba de produtos sem ofertas.
+              </p>
+            </div>
+
+            <div className="space-y-3">
+              {([
+                ['REBATE_TRADEIN', 'Rebate e Trade In', 'Cartas Rebate Sell Out + Voucher / Trade In'],
+                ['BOGO', 'Bogo', 'Cartas Bundle / Bogo'],
+                ['SIP', 'SIP', 'Cartas SIP'],
+              ] as Array<[ComparativoKind, string, string]>).map(([value, title, description]) => {
+                const count = pendingData.pdfItems.filter((item) => getCampaignKind(item) === value).length;
+
+                return (
+                  <label
+                    key={value}
+                    className={`flex cursor-pointer items-center justify-between gap-4 rounded-2xl border p-4 transition ${
+                      compareKindDraft === value
+                        ? 'border-slate-900 bg-slate-50 shadow-sm'
+                        : 'border-slate-200 bg-white hover:bg-slate-50'
+                    }`}
+                  >
+                    <div className="flex items-start gap-3">
+                      <input
+                        type="radio"
+                        name="comparativo-kind"
+                        checked={compareKindDraft === value}
+                        onChange={() => setCompareKindDraft(value)}
+                        className="mt-1 h-4 w-4 text-slate-900 focus:ring-slate-900"
+                      />
+                      <div>
+                        <div className="text-sm font-black uppercase tracking-wide text-slate-900">{title}</div>
+                        <div className="mt-1 text-xs text-slate-500">{description}</div>
+                      </div>
+                    </div>
+
+                    <div className="rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-700">
+                      {count} itens
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+
+            <div className="mt-6 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setShowCompareModal(false)}
+                className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-black text-slate-600 hover:bg-slate-50"
+              >
+                Cancelar
+              </button>
+
+              <button
+                type="button"
+                onClick={() => applyComparativoKind(compareKindDraft)}
+                className="rounded-xl bg-slate-900 px-5 py-2 text-sm font-black text-white shadow-sm hover:bg-slate-800"
+              >
+                Gerar comparativo
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+
+      {showFlowSendModal && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-xl rounded-[26px] border border-slate-200 bg-white p-6 shadow-2xl">
+            <div className="mb-5">
+              <h3 className="text-lg font-black uppercase tracking-tight text-slate-900">
+                Qual comparativo você quer enviar?
+              </h3>
+              <p className="mt-1 text-sm text-slate-500">
+                O relatório será enviado para o Fluxo Comparativo como <strong>Em análise</strong>. Depois disso, a validação fica com a presidência.
+              </p>
+            </div>
+
+            <label className="mb-2 block text-[11px] font-black uppercase tracking-widest text-slate-500">
+              Comparativo
+            </label>
+            <div className="mb-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <div className="flex items-start gap-3">
+                <input type="radio" checked readOnly className="mt-1" />
+                <div className="min-w-0 flex-1">
+                  <input
+                    value={flowTitleDraft}
+                    onChange={(event) => setFlowTitleDraft(event.target.value)}
+                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-slate-900 outline-none focus:border-slate-400"
+                  />
+                  <div className="mt-2 text-xs text-slate-500">
+                    Tipo: <strong>{getComparativoKindLabel(selectedComparativoKind)}</strong> · Com ofertas: <strong>{rows.filter((row) => row.hasOferta && row.isSelected).length}</strong> · Sem ofertas: <strong>{rows.filter((row) => !row.hasOferta && row.isSelected).length}</strong>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {flowSendMsg && (
+              <div className={`mb-4 rounded-2xl border p-3 text-sm font-semibold ${flowSendMsg.includes('sucesso') ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-red-200 bg-red-50 text-red-700'}`}>
+                {flowSendMsg}
+              </div>
+            )}
+
+            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <button
+                type="button"
+                onClick={() => setShowFlowSendModal(false)}
+                className="rounded-xl border border-slate-200 px-4 py-2 text-xs font-black uppercase text-slate-600 hover:bg-slate-50"
+              >
+                Fechar
+              </button>
+              <button
+                type="button"
+                onClick={sendSelectedComparativoToFlow}
+                disabled={sendingToFlow}
+                className="rounded-xl bg-slate-900 px-4 py-2 text-xs font-black uppercase text-white shadow-sm hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {sendingToFlow ? 'Enviando...' : 'Enviar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }

@@ -4396,6 +4396,591 @@ app.get('/api/comparativos/vendas-modelos', async (req, res) => {
   }
 });
 
+// =======================================================
+// 🔁 FLUXO DE COMPARATIVO
+// =======================================================
+
+const COMPARATIVO_EMAIL_DEFAULT = 'analista.samsungtelecel@gmail.com';
+
+type ComparativoStatus = 'EM_ANALISE' | 'RESPONDIDO' | 'DEVOLVIDO';
+
+function safeJsonParse(value: any, fallback: any) {
+  try {
+    if (!value) return fallback;
+    if (typeof value === 'object') return value;
+    return JSON.parse(String(value));
+  } catch {
+    return fallback;
+  }
+}
+
+function sanitizeFileName(value: any) {
+  return String(value || 'comparativo')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9-_]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_|_$/g, '')
+    .slice(0, 80) || 'comparativo';
+}
+
+function toMoneyNumber(value: any) {
+  if (value === null || value === undefined || value === '') return 0;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+
+  return Number(
+    String(value)
+      .replace(/\./g, '')
+      .replace(',', '.')
+      .replace(/[^\d.-]/g, '')
+  ) || 0;
+}
+
+function roundUpToEndingNine(value: any) {
+  const base = Math.ceil(toMoneyNumber(value));
+  if (base <= 0) return 0;
+
+  let candidate = base;
+
+  while (candidate % 10 !== 9) {
+    candidate += 1;
+  }
+
+  return candidate;
+}
+
+function getFinalPriceFromRow(row: any) {
+  return toMoneyNumber(
+    row.precoFinal ??
+    row.preco_final ??
+    row.precoPromocional ??
+    row['PREÇO PROMOCIONAL'] ??
+    row['PRECO PROMOCIONAL'] ??
+    row.ofertaAtual ??
+    row['OFERTA ATUAL'] ??
+    0
+  );
+}
+
+function normalizeComparativoRowForExcel(row: any) {
+  const precoFinal = getFinalPriceFromRow(row);
+  const preco18x = roundUpToEndingNine(precoFinal * 1.06);
+
+  return {
+    'DESCRIÇÃO': row.descricao || row.DESCRICAO || row['DESCRIÇÃO'] || '',
+    'REFERÊNCIA': row.referencia || row.REFERENCIA || row['REFERÊNCIA'] || '',
+    'PREÇO SAMSUNG': toMoneyNumber(row.precoSamsung ?? row['PREÇO SAMSUNG']),
+    'PREÇO TELECEL': toMoneyNumber(row.precoTelecel ?? row['PREÇO TELECEL']),
+    'DESC. TELECEL': toMoneyNumber(row.totalDescontoTelecel ?? row['DESC. TELECEL']),
+    'DESC. REBATE': toMoneyNumber(row.descontoRebate ?? row['DESC. REBATE']),
+    'DESC. TRADE IN': toMoneyNumber(row.descontoTradeIn ?? row['DESC. TRADE IN']),
+    'DESC. BOGO': toMoneyNumber(row.descontoBogo ?? row['DESC. BOGO']),
+    'DESC. SIP': toMoneyNumber(row.descontoSip ?? row['DESC. SIP']),
+    'TOTAL DESCONTO': toMoneyNumber(row.totalDesconto ?? row['TOTAL DESCONTO']),
+    'PREÇO FINAL': precoFinal,
+    'PREÇO 18X': preco18x,
+    'QTD ESTOQUE': toMoneyNumber(row.qtdEstoque ?? row['QTD ESTOQUE']),
+    'CUSTO MÉDIO': toMoneyNumber(row.custoMedioEstoque ?? row['CUSTO MÉDIO']),
+    'MARGEM ESTOQUE': row.margemEstoque ?? row['MARGEM ESTOQUE'] ?? '',
+    'NOVO CUSTO MÉDIO': toMoneyNumber(row.novoCustoMedio ?? row['NOVO CUSTO MÉDIO']),
+    'MARGEM PRICE': row.margemPrice ?? row['MARGEM PRICE'] ?? '',
+    'QTD VENDIDA': toMoneyNumber(row.qtdVendida ?? row['QTD VENDIDA']),
+    'PRICE REBATE': toMoneyNumber(row.priceRebate ?? row['PRICE REBATE']),
+    'PRICE TRADE IN': toMoneyNumber(row.priceTradeIn ?? row['PRICE TRADE IN']),
+    'PRICE BOGO': toMoneyNumber(row.priceBogo ?? row['PRICE BOGO']),
+    'PRICE SIP': toMoneyNumber(row.priceSip ?? row['PRICE SIP']),
+    'OFERTA ATUAL': toMoneyNumber(row.ofertaAtual ?? row['OFERTA ATUAL']),
+    'STATUS': row.status || row.STATUS || '',
+  };
+}
+
+function buildComparativoWorkbookBuffer(row: any) {
+  const comOfertas = safeJsonParse(row.com_ofertas_json, []);
+  const semOfertas = safeJsonParse(row.sem_ofertas_json, []);
+  const payload = safeJsonParse(row.payload_json, {});
+
+  const tabelaFinal = [
+    ...comOfertas.map((item: any) => ({
+      ...normalizeComparativoRowForExcel(item),
+      'TIPO': 'COM OFERTA',
+    })),
+    ...semOfertas.map((item: any) => ({
+      ...normalizeComparativoRowForExcel(item),
+      'TIPO': 'SEM OFERTA',
+    })),
+  ];
+
+  const resumo = [
+    { Campo: 'ID', Valor: row.id },
+    { Campo: 'Título', Valor: row.titulo },
+    { Campo: 'Tipo Comparativo', Valor: row.tipo_comparativo },
+    { Campo: 'Status', Valor: row.status },
+    { Campo: 'Criado por', Valor: row.criado_por_nome },
+    { Campo: 'Criado em', Valor: row.created_at },
+    { Campo: 'Enviado em', Valor: row.enviado_em || '' },
+    { Campo: 'Respondido em', Valor: row.respondido_em || '' },
+    { Campo: 'Devolvido em', Valor: row.devolvido_em || '' },
+    { Campo: 'Motivo devolução', Valor: row.motivo_devolucao || '' },
+    { Campo: 'Total com ofertas', Valor: comOfertas.length },
+    { Campo: 'Total sem ofertas', Valor: semOfertas.length },
+    { Campo: 'Payload', Valor: JSON.stringify(payload).slice(0, 25000) },
+  ];
+
+  const workbook = XLSX.utils.book_new();
+
+  const wsComOfertas = XLSX.utils.json_to_sheet(
+    comOfertas.map((item: any) => normalizeComparativoRowForExcel(item))
+  );
+
+  const wsSemOfertas = XLSX.utils.json_to_sheet(
+    semOfertas.map((item: any) => normalizeComparativoRowForExcel(item))
+  );
+
+  const wsTabelaFinal = XLSX.utils.json_to_sheet(tabelaFinal);
+  const wsResumo = XLSX.utils.json_to_sheet(resumo);
+
+  XLSX.utils.book_append_sheet(workbook, wsComOfertas, 'Com Ofertas');
+  XLSX.utils.book_append_sheet(workbook, wsSemOfertas, 'Sem Ofertas');
+  XLSX.utils.book_append_sheet(workbook, wsTabelaFinal, 'Tabela Final');
+  XLSX.utils.book_append_sheet(workbook, wsResumo, 'Resumo');
+
+  return XLSX.write(workbook, {
+    type: 'buffer',
+    bookType: 'xlsx',
+  });
+}
+
+async function ensureComparativosFluxoTable() {
+  const db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS comparativos_fluxo (
+      id TEXT PRIMARY KEY,
+      titulo TEXT,
+      tipo_comparativo TEXT,
+      status TEXT DEFAULT 'EM_ANALISE',
+      criado_por_id TEXT,
+      criado_por_nome TEXT,
+      enviado_para TEXT,
+      payload_json TEXT,
+      com_ofertas_json TEXT,
+      sem_ofertas_json TEXT,
+      motivo_devolucao TEXT,
+      email_enviado_para TEXT,
+      created_at TEXT,
+      updated_at TEXT,
+      enviado_em TEXT,
+      respondido_em TEXT,
+      devolvido_em TEXT
+    )
+  `);
+
+  await db.close();
+}
+
+// =======================================================
+// Criar/enviar comparativo para análise
+// =======================================================
+app.post('/api/comparativos/fluxo', async (req, res) => {
+  await ensureComparativosFluxoTable();
+
+  const {
+    titulo,
+    tipoComparativo,
+    criadoPorId,
+    criadoPorNome,
+    enviadoPara,
+    payload,
+    comOfertas,
+    semOfertas,
+  } = req.body || {};
+
+  const now = new Date().toISOString();
+  const id = `CMP-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+
+  let db: any;
+
+  try {
+    db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+
+    await db.run(
+      `
+        INSERT INTO comparativos_fluxo (
+          id,
+          titulo,
+          tipo_comparativo,
+          status,
+          criado_por_id,
+          criado_por_nome,
+          enviado_para,
+          payload_json,
+          com_ofertas_json,
+          sem_ofertas_json,
+          created_at,
+          updated_at,
+          enviado_em
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        id,
+        String(titulo || `Comparativo ${tipoComparativo || ''}`).trim(),
+        String(tipoComparativo || '').trim(),
+        'EM_ANALISE',
+        String(criadoPorId || '').trim(),
+        String(criadoPorNome || '').trim(),
+        String(enviadoPara || 'Sr Rufino').trim(),
+        JSON.stringify(payload || {}),
+        JSON.stringify(Array.isArray(comOfertas) ? comOfertas : []),
+        JSON.stringify(Array.isArray(semOfertas) ? semOfertas : []),
+        now,
+        now,
+        now,
+      ]
+    );
+
+    const created = await db.get(`SELECT * FROM comparativos_fluxo WHERE id = ?`, [id]);
+    await db.close();
+
+    return res.status(201).json({
+      success: true,
+      message: 'Comparativo enviado para análise.',
+      comparativo: {
+        ...created,
+        payload: safeJsonParse(created.payload_json, {}),
+        comOfertas: safeJsonParse(created.com_ofertas_json, []),
+        semOfertas: safeJsonParse(created.sem_ofertas_json, []),
+      },
+    });
+  } catch (error: any) {
+    try { if (db) await db.close(); } catch {}
+
+    console.error('Erro ao criar fluxo de comparativo:', error);
+
+    return res.status(500).json({
+      success: false,
+      error: error?.message || 'Erro ao enviar comparativo para análise.',
+    });
+  }
+});
+
+// =======================================================
+// Listar comparativos do fluxo
+// status opcional: EM_ANALISE, RESPONDIDO, DEVOLVIDO
+// =======================================================
+app.get('/api/comparativos/fluxo', async (req, res) => {
+  await ensureComparativosFluxoTable();
+
+  const status = String(req.query.status || '').trim();
+  let db: any;
+
+  try {
+    db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+
+    const rows = status
+      ? await db.all(
+          `SELECT * FROM comparativos_fluxo WHERE status = ? ORDER BY created_at DESC`,
+          [status]
+        )
+      : await db.all(
+          `SELECT * FROM comparativos_fluxo ORDER BY created_at DESC`
+        );
+
+    await db.close();
+
+    return res.json({
+      success: true,
+      total: rows.length,
+      comparativos: rows.map((row: any) => ({
+        ...row,
+        payload: safeJsonParse(row.payload_json, {}),
+        comOfertas: safeJsonParse(row.com_ofertas_json, []),
+        semOfertas: safeJsonParse(row.sem_ofertas_json, []),
+      })),
+    });
+  } catch (error: any) {
+    try { if (db) await db.close(); } catch {}
+
+    console.error('Erro ao listar fluxo de comparativo:', error);
+
+    return res.status(500).json({
+      success: false,
+      error: error?.message || 'Erro ao listar comparativos.',
+    });
+  }
+});
+
+// =======================================================
+// Buscar comparativo por ID
+// =======================================================
+app.get('/api/comparativos/fluxo/:id', async (req, res) => {
+  await ensureComparativosFluxoTable();
+
+  let db: any;
+
+  try {
+    db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+
+    const row = await db.get(
+      `SELECT * FROM comparativos_fluxo WHERE id = ?`,
+      [req.params.id]
+    );
+
+    await db.close();
+
+    if (!row) {
+      return res.status(404).json({
+        success: false,
+        error: 'Comparativo não encontrado.',
+      });
+    }
+
+    return res.json({
+      success: true,
+      comparativo: {
+        ...row,
+        payload: safeJsonParse(row.payload_json, {}),
+        comOfertas: safeJsonParse(row.com_ofertas_json, []),
+        semOfertas: safeJsonParse(row.sem_ofertas_json, []),
+      },
+    });
+  } catch (error: any) {
+    try { if (db) await db.close(); } catch {}
+
+    console.error('Erro ao buscar comparativo:', error);
+
+    return res.status(500).json({
+      success: false,
+      error: error?.message || 'Erro ao buscar comparativo.',
+    });
+  }
+});
+
+// =======================================================
+// Marcar como respondido
+// Somente CEO deve chamar pelo frontend
+// =======================================================
+app.put('/api/comparativos/fluxo/:id/respondido', async (req, res) => {
+  await ensureComparativosFluxoTable();
+
+  const now = new Date().toISOString();
+  let db: any;
+
+  try {
+    db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+
+    const row = await db.get(
+      `SELECT * FROM comparativos_fluxo WHERE id = ?`,
+      [req.params.id]
+    );
+
+    if (!row) {
+      await db.close();
+      return res.status(404).json({
+        success: false,
+        error: 'Comparativo não encontrado.',
+      });
+    }
+
+    await db.run(
+      `
+        UPDATE comparativos_fluxo
+        SET status = ?,
+            updated_at = ?,
+            respondido_em = ?,
+            motivo_devolucao = NULL
+        WHERE id = ?
+      `,
+      ['RESPONDIDO', now, now, req.params.id]
+    );
+
+    const updated = await db.get(
+      `SELECT * FROM comparativos_fluxo WHERE id = ?`,
+      [req.params.id]
+    );
+
+    await db.close();
+
+    return res.json({
+      success: true,
+      message: 'Comparativo marcado como respondido.',
+      comparativo: {
+        ...updated,
+        payload: safeJsonParse(updated.payload_json, {}),
+        comOfertas: safeJsonParse(updated.com_ofertas_json, []),
+        semOfertas: safeJsonParse(updated.sem_ofertas_json, []),
+      },
+    });
+  } catch (error: any) {
+    try { if (db) await db.close(); } catch {}
+
+    console.error('Erro ao marcar como respondido:', error);
+
+    return res.status(500).json({
+      success: false,
+      error: error?.message || 'Erro ao marcar como respondido.',
+    });
+  }
+});
+
+// =======================================================
+// Devolver comparativo com motivo
+// Somente CEO deve chamar pelo frontend
+// =======================================================
+app.put('/api/comparativos/fluxo/:id/devolver', async (req, res) => {
+  await ensureComparativosFluxoTable();
+
+  const motivo = String(req.body?.motivo || '').trim();
+
+  if (!motivo) {
+    return res.status(400).json({
+      success: false,
+      error: 'Informe o motivo da devolução.',
+    });
+  }
+
+  const now = new Date().toISOString();
+  let db: any;
+
+  try {
+    db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+
+    const row = await db.get(
+      `SELECT * FROM comparativos_fluxo WHERE id = ?`,
+      [req.params.id]
+    );
+
+    if (!row) {
+      await db.close();
+      return res.status(404).json({
+        success: false,
+        error: 'Comparativo não encontrado.',
+      });
+    }
+
+    await db.run(
+      `
+        UPDATE comparativos_fluxo
+        SET status = ?,
+            motivo_devolucao = ?,
+            updated_at = ?,
+            devolvido_em = ?
+        WHERE id = ?
+      `,
+      ['DEVOLVIDO', motivo, now, now, req.params.id]
+    );
+
+    const updated = await db.get(
+      `SELECT * FROM comparativos_fluxo WHERE id = ?`,
+      [req.params.id]
+    );
+
+    await db.close();
+
+    return res.json({
+      success: true,
+      message: 'Comparativo devolvido.',
+      comparativo: {
+        ...updated,
+        payload: safeJsonParse(updated.payload_json, {}),
+        comOfertas: safeJsonParse(updated.com_ofertas_json, []),
+        semOfertas: safeJsonParse(updated.sem_ofertas_json, []),
+      },
+    });
+  } catch (error: any) {
+    try { if (db) await db.close(); } catch {}
+
+    console.error('Erro ao devolver comparativo:', error);
+
+    return res.status(500).json({
+      success: false,
+      error: error?.message || 'Erro ao devolver comparativo.',
+    });
+  }
+});
+
+// =======================================================
+// Enviar tabela final por e-mail e devolver base64 para download
+// =======================================================
+app.post('/api/comparativos/fluxo/:id/send-table', async (req, res) => {
+  await ensureComparativosFluxoTable();
+
+  const to = String(req.body?.to || COMPARATIVO_EMAIL_DEFAULT).trim();
+  let db: any;
+
+  try {
+    db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+
+    const row = await db.get(
+      `SELECT * FROM comparativos_fluxo WHERE id = ?`,
+      [req.params.id]
+    );
+
+    if (!row) {
+      await db.close();
+      return res.status(404).json({
+        success: false,
+        error: 'Comparativo não encontrado.',
+      });
+    }
+
+    if (row.status !== 'RESPONDIDO') {
+      await db.close();
+      return res.status(400).json({
+        success: false,
+        error: 'A tabela só pode ser enviada depois que o comparativo estiver respondido.',
+      });
+    }
+
+    const buffer = buildComparativoWorkbookBuffer(row);
+    const fileName = `${sanitizeFileName(row.titulo)}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+
+    await mailTransporter.sendMail({
+      from: process.env.GMAIL_USER,
+      to,
+      subject: `Tabela de comparativo - ${row.titulo}`,
+      text: `Segue em anexo a tabela final do comparativo "${row.titulo}".`,
+      attachments: [
+        {
+          filename: fileName,
+          content: buffer,
+          contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        },
+      ],
+    });
+
+    const now = new Date().toISOString();
+
+    await db.run(
+      `
+        UPDATE comparativos_fluxo
+        SET email_enviado_para = ?,
+            updated_at = ?
+        WHERE id = ?
+      `,
+      [to, now, req.params.id]
+    );
+
+    await db.close();
+
+    return res.json({
+      success: true,
+      message: 'Tabela enviada por e-mail e pronta para download.',
+      emailTo: to,
+      fileName,
+      fileBase64: buffer.toString('base64'),
+    });
+  } catch (error: any) {
+    try { if (db) await db.close(); } catch {}
+
+    console.error('Erro ao enviar tabela do comparativo:', error);
+
+    return res.status(500).json({
+      success: false,
+      error: error?.message || 'Erro ao enviar tabela.',
+    });
+  }
+});
+
 // Define a porta: Usa a do Render (process.env.PORT) ou a 3000 se for local
 const PORT = process.env.PORT || 3000;
 

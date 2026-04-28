@@ -23,6 +23,7 @@ import EstoqueDetalhado from './components/EstoqueDetalhado';
 import SolicitacoesModule from './components/SolicitacoesModule';
 import Stockout from './components/StockOut';
 import ComparativosModule from './components/ComparativosModule';
+import FluxoComparativoModule from './components/FluxoComparativoModule';
 import ComprasVendas from './components/ComprasVendas'; 
 import {
   FileText, CheckCircle, LayoutDashboard, Users, LogOut,
@@ -38,6 +39,7 @@ const DEFAULT_EXPANDED = {
   stock: false,
   sales: false,
   finance: false,
+  comparativos: false,
 };
 
 function App() {
@@ -95,7 +97,7 @@ function App() {
   const canViewStock = ['CEO', 'DIRETOR', 'LOJA'].includes(userRole) || isAdmin;
   const canViewFinance = ['CEO', 'DIRETOR', 'ADM'].includes(userRole) || isAdmin;
   const canViewTeam = ['CEO', 'DIRETOR', 'ADM'].includes(userRole) || isAdmin;
-  const canViewComparativos = userRole === 'ADM' || isAdmin;
+  const canViewComparativos = ['ADM', 'CEO'].includes(userRole) || isAdmin;
   const canViewComprasVendas = userRole === 'ADM' || isAdmin;
   const isStoreOnly = userRole === 'LOJA';
 
@@ -128,7 +130,8 @@ function App() {
   const viewTitles: Record<string, string> = {
     finance: 'CONTAS A PAGAR E RECEBER',
     controle_stone: 'CONCILIAÇÃO STONE',
-    comparativos_pdf: 'COMPARATIVO DE OFERTAS',
+    comparativos_pdf: 'MONTAR COMPARATIVO',
+    comparativos_fluxo: 'FLUXO COMPARATIVO',
     comparativo: 'VENDAS ANUAIS',
     compras_vendas: 'COMPRAS X VENDAS', 
   };
@@ -319,13 +322,23 @@ function App() {
           </div>
 
           {canViewComparativos && (
-            <NavButton
-              icon={BarChart3}
-              label="Comparativos"
-              active={currentView === 'comparativos_pdf'}
-              onClick={() => handleNavigate('comparativos_pdf')}
-              customClass="bg-slate-800 text-white shadow-lg"
-            />
+            <div>
+              <NavButton
+                icon={BarChart3}
+                label="Comparativos"
+                active={['comparativos_pdf', 'comparativos_fluxo'].includes(currentView)}
+                onClick={() => handleSectionToggle('comparativos')}
+                hasChevron
+                chevronOpen={expanded.comparativos}
+                customClass="bg-slate-800 text-white shadow-lg"
+              />
+              {expanded.comparativos && !isSidebarCollapsed && (
+                <div className="mt-1 space-y-1">
+                  <SubMenuItem label="Montar Comparativo" view="comparativos_pdf" active={currentView === 'comparativos_pdf'} />
+                  <SubMenuItem label="Fluxo Comparativo" view="comparativos_fluxo" active={currentView === 'comparativos_fluxo'} />
+                </div>
+              )}
+            </div>
           )}
 
           {canViewFinance && (
@@ -504,6 +517,8 @@ function App() {
             <ControleStone />
           ) : currentView === 'comparativos_pdf' ? (
             <ComparativosModule />
+          ) : currentView === 'comparativos_fluxo' ? (
+            <FluxoComparativoModule currentUser={user} />
           ) : currentView === 'stock' ? (
             <StockModule />
           ) : currentView.startsWith('dept_') ? (
