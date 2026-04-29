@@ -249,10 +249,18 @@ anualInit.serialize(() => {
   console.log("📦 Tabelas ANUAIS garantidas!");
 });
 
+// Adiciona um limite no banco de dados, para aceitar os COMPARATIVOS.
 const app = express();
 const prisma = new PrismaClient();
-app.use(cors());
-app.use(express.json());
+
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+}));
+
+app.use(express.json({ limit: '100mb' }));
+app.use(express.urlencoded({ limit: '100mb', extended: true }));
 
 // Garante que a pasta existe
 if (!fs.existsSync(DATABASE_DIR)) {
@@ -329,15 +337,6 @@ const storage = multer.diskStorage({
     filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname}`)
 });
 const upload = multer({ storage: storage });
-
-// Configuração CORS Liberada
-app.use(cors({
-    origin: '*', // Permite que qualquer site (Vercel, Localhost) acesse
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization']
-}));
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 const GSHEET_TRANSLATION_URL =
   'https://docs.google.com/spreadsheets/d/e/2PACX-1vS96tjslp46EX-F8-Q8AfYfanS_DzG-2XpUJ6bjK7xTE73m-7LdsX59sTjRnyPMWcE8niiHpJa-A4pX/pub?output=csv';
@@ -2001,7 +2000,7 @@ app.get('/sellers-kpi', handleSellersKpi);
 app.get('/api/kpi-vendedores', handleSellersKpi);
 
 // Aumentamos o limite para 50mb para aguentar o Excel
-app.use(express.json({ limit: '50mb' }));
+app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // ============================================================
@@ -4494,10 +4493,18 @@ function normalizeComparativoRowForExcel(row: any) {
   };
 }
 
-function buildComparativoWorkbookBuffer(row: any) {
-  const comOfertas = safeJsonParse(row.com_ofertas_json, []);
-  const semOfertas = safeJsonParse(row.sem_ofertas_json, []);
-  const payload = safeJsonParse(row.payload_json, {});
+function buildComparativoWorkbookBuffer(row: any, override?: any) {
+  const comOfertas = Array.isArray(override?.comOfertas)
+    ? override.comOfertas
+    : safeJsonParse(row.com_ofertas_json, []);
+
+  const semOfertas = Array.isArray(override?.semOfertas)
+    ? override.semOfertas
+    : safeJsonParse(row.sem_ofertas_json, []);
+
+  const payload = override?.payload
+    ? override.payload
+    : safeJsonParse(row.payload_json, {});
 
   const tabelaFinal = [
     ...comOfertas.map((item: any) => ({
@@ -4548,6 +4555,43 @@ function buildComparativoWorkbookBuffer(row: any) {
     type: 'buffer',
     bookType: 'xlsx',
   });
+}
+
+function getComparativoPayloadFromRequest(body: any, row: any) {
+  const payloadAtual = safeJsonParse(row.payload_json, {});
+  const comOfertasAtual = safeJsonParse(row.com_ofertas_json, []);
+  const semOfertasAtual = safeJsonParse(row.sem_ofertas_json, []);
+
+  const payloadBody = body?.payload && typeof body.payload === 'object'
+    ? body.payload
+    : null;
+
+  const comOfertas =
+    Array.isArray(body?.comOfertas)
+      ? body.comOfertas
+      : Array.isArray(payloadBody?.comOfertas)
+        ? payloadBody.comOfertas
+        : comOfertasAtual;
+
+  const semOfertas =
+    Array.isArray(body?.semOfertas)
+      ? body.semOfertas
+      : Array.isArray(payloadBody?.semOfertas)
+        ? payloadBody.semOfertas
+        : semOfertasAtual;
+
+  const payload = {
+    ...payloadAtual,
+    ...(payloadBody || {}),
+    comOfertas,
+    semOfertas,
+  };
+
+  return {
+    payload,
+    comOfertas,
+    semOfertas,
+  };
 }
 
 async function ensureComparativosFluxoTable() {
@@ -4899,7 +4943,153 @@ app.put('/api/comparativos/fluxo/:id/devolver', async (req, res) => {
 });
 
 // =======================================================
+// Atualizar status do comparativo e salvar payload editado
+// Usado pela tela de análise do Rufino
+// =======================================================
+app.put('/api/comparativos/fluxo/:id/status', async (req, res) => {
+  await ensureComparativosFluxoTable();
+
+  const status = String(req.body?.status || '').trim().toUpperCase();
+  const motivoDevolucao = String(
+    req.body?.motivoDevolucao || req.body?.motivo || ''
+  ).trim();
+
+  const userId = String(req.body?.userId || '').trim();
+
+  if (!['EM_ANALISE', 'RESPONDIDO', 'DEVOLVIDO'].includes(status)) {
+    return res.status(400).json({
+      success: false,
+      error: 'Status inválido.',
+    });
+  }
+
+  if (status === 'DEVOLVIDO' && !motivoDevolucao) {
+    return res.status(400).json({
+      success: false,
+      error: 'Informe o motivo da devolução.',
+    });
+  }
+
+  let db: any;
+  const now = new Date().toISOString();
+
+  try {
+    const user = userId
+      ? await prisma.user.findUnique({ where: { id: userId } })
+      : null;
+
+    const userRole = String((user as any)?.role || '').toUpperCase();
+    const userIsAdmin =
+      (user as any)?.isAdmin === true ||
+      Number((user as any)?.isAdmin) === 1;
+
+    const isAllowed =
+      !!user &&
+      (
+        userIsAdmin ||
+        userRole === 'CEO' ||
+        userRole === 'MASTER'
+      );
+
+    if (!isAllowed) {
+      return res.status(403).json({
+        success: false,
+        error: 'Usuário sem permissão para alterar o status do comparativo.',
+      });
+    }
+
+    db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+
+    const row = await db.get(
+      `SELECT * FROM comparativos_fluxo WHERE id = ?`,
+      [req.params.id]
+    );
+
+    if (!row) {
+      await db.close();
+      return res.status(404).json({
+        success: false,
+        error: 'Comparativo não encontrado.',
+      });
+    }
+
+    const payloadParts = getComparativoPayloadFromRequest(req.body, row);
+
+    const respondidoEm = status === 'RESPONDIDO'
+      ? now
+      : row.respondido_em || null;
+
+    const devolvidoEm = status === 'DEVOLVIDO'
+      ? now
+      : row.devolvido_em || null;
+
+    const motivoFinal = status === 'DEVOLVIDO'
+      ? motivoDevolucao
+      : null;
+
+    await db.run(
+      `
+        UPDATE comparativos_fluxo
+        SET status = ?,
+            payload_json = ?,
+            com_ofertas_json = ?,
+            sem_ofertas_json = ?,
+            motivo_devolucao = ?,
+            updated_at = ?,
+            respondido_em = ?,
+            devolvido_em = ?
+        WHERE id = ?
+      `,
+      [
+        status,
+        JSON.stringify(payloadParts.payload),
+        JSON.stringify(payloadParts.comOfertas),
+        JSON.stringify(payloadParts.semOfertas),
+        motivoFinal,
+        now,
+        respondidoEm,
+        devolvidoEm,
+        req.params.id,
+      ]
+    );
+
+    const updated = await db.get(
+      `SELECT * FROM comparativos_fluxo WHERE id = ?`,
+      [req.params.id]
+    );
+
+    await db.close();
+
+    return res.json({
+      success: true,
+      message:
+        status === 'RESPONDIDO'
+          ? 'Comparativo marcado como respondido.'
+          : status === 'DEVOLVIDO'
+            ? 'Comparativo devolvido.'
+            : 'Comparativo atualizado.',
+      comparativo: {
+        ...updated,
+        payload: safeJsonParse(updated.payload_json, {}),
+        comOfertas: safeJsonParse(updated.com_ofertas_json, []),
+        semOfertas: safeJsonParse(updated.sem_ofertas_json, []),
+      },
+    });
+  } catch (error: any) {
+    try { if (db) await db.close(); } catch {}
+
+    console.error('Erro ao atualizar status do comparativo:', error);
+
+    return res.status(500).json({
+      success: false,
+      error: error?.message || 'Erro ao atualizar status do comparativo.',
+    });
+  }
+});
+
+// =======================================================
 // Enviar tabela final por e-mail e devolver base64 para download
+// Usa payload atualizado, se o frontend enviar alterações
 // =======================================================
 app.post('/api/comparativos/fluxo/:id/send-table', async (req, res) => {
   await ensureComparativosFluxoTable();
@@ -4931,7 +5121,16 @@ app.post('/api/comparativos/fluxo/:id/send-table', async (req, res) => {
       });
     }
 
-    const buffer = buildComparativoWorkbookBuffer(row);
+    const payloadParts = getComparativoPayloadFromRequest(req.body, row);
+
+    const rowForWorkbook = {
+      ...row,
+      payload_json: JSON.stringify(payloadParts.payload),
+      com_ofertas_json: JSON.stringify(payloadParts.comOfertas),
+      sem_ofertas_json: JSON.stringify(payloadParts.semOfertas),
+    };
+
+    const buffer = buildComparativoWorkbookBuffer(rowForWorkbook, payloadParts);
     const fileName = `${sanitizeFileName(row.titulo)}_${new Date().toISOString().slice(0, 10)}.xlsx`;
 
     await mailTransporter.sendMail({
@@ -4954,10 +5153,20 @@ app.post('/api/comparativos/fluxo/:id/send-table', async (req, res) => {
       `
         UPDATE comparativos_fluxo
         SET email_enviado_para = ?,
+            payload_json = ?,
+            com_ofertas_json = ?,
+            sem_ofertas_json = ?,
             updated_at = ?
         WHERE id = ?
       `,
-      [to, now, req.params.id]
+      [
+        to,
+        JSON.stringify(payloadParts.payload),
+        JSON.stringify(payloadParts.comOfertas),
+        JSON.stringify(payloadParts.semOfertas),
+        now,
+        req.params.id,
+      ]
     );
 
     await db.close();

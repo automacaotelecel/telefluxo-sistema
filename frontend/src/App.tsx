@@ -89,15 +89,27 @@ function App() {
     }
   }, [isSidebarCollapsed]);
 
-  const userRole = user?.role || '';
+  const userRole = String(user?.role || '').toUpperCase();
+  const userEmail = String(user?.email || '').toLowerCase();
   const isAdmin = user?.isAdmin === true || Number(user?.isAdmin) === 1;
-  const isManager = user?.role?.toLowerCase().includes('gerente') || user?.role?.toLowerCase().includes('gestor');
+  const isManager =
+    userRole.includes('GERENTE') ||
+    userRole.includes('GESTOR');
+
+  // Usuário especial da Samsung: acessa somente a área de Comparativos,
+  // sem virar ADM e sem ganhar acesso a Financeiro, Estoque, Equipe etc.
+  const isSamsungUser =
+    userRole === 'SAMSUNG' ||
+    userEmail === 'analista.samsungtelecel@gmail.com';
 
   const canViewSales = ['CEO', 'DIRETOR', 'LOJA'].includes(userRole) || isAdmin;
   const canViewStock = ['CEO', 'DIRETOR', 'LOJA'].includes(userRole) || isAdmin;
   const canViewFinance = ['CEO', 'DIRETOR', 'ADM'].includes(userRole) || isAdmin;
   const canViewTeam = ['CEO', 'DIRETOR', 'ADM'].includes(userRole) || isAdmin;
-  const canViewComparativos = ['ADM', 'CEO'].includes(userRole) || isAdmin;
+
+  // Comparativos liberado para ADM, CEO, Admin e usuário Samsung específico.
+  const canViewComparativos = ['ADM', 'CEO'].includes(userRole) || isAdmin || isSamsungUser;
+
   const canViewComprasVendas = userRole === 'ADM' || isAdmin;
   const isStoreOnly = userRole === 'LOJA';
 
