@@ -13,8 +13,21 @@ import path from 'path';
 import https from 'https';
 import nodemailer from 'nodemailer';
 import dotenv from 'dotenv';
+import { GoogleGenAI } from '@google/genai'; //IMPORTE DA CLARK (IA DO TELEFLUXO)
 
 dotenv.config();
+
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
+
+const genAI = new GoogleGenAI({
+  apiKey: GEMINI_API_KEY,
+});
+
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3-flash-preview';
+
+if (!GEMINI_API_KEY) {
+  console.warn('⚠️ GEMINI_API_KEY não configurada. A Clark IA não funcionará até configurar a chave no .env.');
+}
 
 const uploadSolicitacao = multer({
   storage: multer.memoryStorage(),
@@ -1009,6 +1022,911 @@ async function getSalesFilter(userId: string, tableType: 'vendas' | 'kpi'): Prom
         return `cnpj_empresa IN (${cnpjsSql})`;
     }
 }
+
+// =======================================================
+// CLARK IA - ASSISTENTE INTERNO DO TELEFLUXO
+// =======================================================
+
+type ClarkIntent =
+  | 'vendas_hoje'
+  | 'vendas_mes'
+  | 'ranking_lojas_mes'
+  | 'ranking_vendedores_mes'
+  | 'categoria_mes'
+  | 'produto_maior_estoque'
+  | 'ranking_estoque_produtos'
+  | 'ajuda';
+
+type ClarkFiltros = {
+  limite: number;
+  categoriaOriginal: string | undefined;
+  categoriaCanonica: string | undefined;
+  aliasesCategoria: string[];
+};
+
+function todayIsoSaoPaulo() {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Sao_Paulo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date());
+}
+
+function monthStartIsoSaoPaulo() {
+  const today = todayIsoSaoPaulo();
+  return `${today.slice(0, 7)}-01`;
+}
+
+function formatBRL(value: any) {
+  const n = Number(value || 0);
+
+  return n.toLocaleString('pt-BR', {
+    style: 'currency',
+    currency: 'BRL',
+  });
+}
+
+function traduzirCnpjParaLoja(cnpj: any) {
+  const key = String(cnpj || '').replace(/\D/g, '');
+  return LOJAS_MAP_GLOBAL[key] || String(cnpj || 'Loja não identificada');
+}
+
+function normalizarTextoClark(value: any) {
+  return String(value || '')
+    .toUpperCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function extrairFiltrosClark(pergunta: string): ClarkFiltros {
+  const texto = normalizarTextoClark(pergunta);
+
+  const numeroEncontrado = texto.match(/\b(\d{1,2})\b/);
+  let limite = numeroEncontrado ? Number(numeroEncontrado[1]) : 10;
+
+  if (!Number.isFinite(limite) || limite <= 0) limite = 10;
+  if (limite > 20) limite = 20;
+
+  let categoriaOriginal: string | undefined;
+  let categoriaCanonica: string | undefined;
+  let aliasesCategoria: string[] = [];
+
+  if (
+    texto.includes('SMARTPHONE') ||
+    texto.includes('SMARTPHONES') ||
+    texto.includes('APARELHO') ||
+    texto.includes('APARELHOS') ||
+    texto.includes('CELULAR') ||
+    texto.includes('CELULARES')
+  ) {
+    categoriaOriginal = 'SMARTPHONES';
+    categoriaCanonica = 'SMARTPHONES';
+    aliasesCategoria = ['SMARTPHONE', 'SMARTPHONES', 'APARELHO', 'APARELHOS', 'CELULAR', 'CELULARES'];
+  }
+
+  else if (
+    texto.includes('ACESSORIO') ||
+    texto.includes('ACESSORIOS') ||
+    texto.includes('ACESSÓRIO') ||
+    texto.includes('ACESSÓRIOS')
+  ) {
+    categoriaOriginal = 'ACESSÓRIOS';
+    categoriaCanonica = 'ACESSÓRIOS';
+    aliasesCategoria = ['ACESSORIO', 'ACESSORIOS', 'ACESSÓRIO', 'ACESSÓRIOS'];
+  }
+
+  else if (
+    texto.includes('WEARABLE') ||
+    texto.includes('WEARABLES') ||
+    texto.includes('RELOGIO') ||
+    texto.includes('RELÓGIO') ||
+    texto.includes('BUDS') ||
+    texto.includes('FONE')
+  ) {
+    categoriaOriginal = 'WEARABLES';
+    categoriaCanonica = 'WEARABLES';
+    aliasesCategoria = ['WEARABLE', 'WEARABLES', 'RELOGIO', 'RELÓGIO', 'BUDS', 'FONE', 'FONES'];
+  }
+
+  else if (
+    texto.includes('TABLET') ||
+    texto.includes('TABLETS')
+  ) {
+    categoriaOriginal = 'TABLETS';
+    categoriaCanonica = 'TABLETS';
+    aliasesCategoria = ['TABLET', 'TABLETS'];
+  }
+
+  return {
+    limite,
+    categoriaOriginal,
+    categoriaCanonica,
+    aliasesCategoria,
+  };
+}
+
+function detectarIntencaoClark(pergunta: string): ClarkIntent {
+  const p = String(pergunta || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+
+  const falaDeVenda =
+    p.includes('venda') ||
+    p.includes('vendemos') ||
+    p.includes('vendeu') ||
+    p.includes('faturamento') ||
+    p.includes('faturamos') ||
+    p.includes('receita');
+
+  const falaDeEstoque =
+    p.includes('estoque') ||
+    p.includes('saldo') ||
+    p.includes('quantidade em loja') ||
+    p.includes('quantidade nas lojas') ||
+    p.includes('temos em loja') ||
+    p.includes('temos nas lojas');
+
+  if (
+    falaDeEstoque &&
+    (
+      p.includes('mais temos') ||
+      p.includes('mais tem') ||
+      p.includes('maior estoque') ||
+      p.includes('mais em estoque') ||
+      p.includes('produto que mais') ||
+      p.includes('produto com mais') ||
+      p.includes('qual produto temos mais') ||
+      p.includes('qual o produto que mais')
+    )
+  ) {
+    return 'produto_maior_estoque';
+  }
+
+  if (falaDeEstoque) {
+    return 'ranking_estoque_produtos';
+  }
+
+  if (
+    p.includes('ranking') &&
+    (p.includes('vendedor') || p.includes('vendedores'))
+  ) {
+    return 'ranking_vendedores_mes';
+  }
+
+  if (
+    p.includes('ranking') &&
+    (p.includes('loja') || p.includes('lojas'))
+  ) {
+    return 'ranking_lojas_mes';
+  }
+
+  if (
+    (p.includes('loja') || p.includes('lojas')) &&
+    (
+      p.includes('mais vendeu') ||
+      p.includes('melhor') ||
+      p.includes('top') ||
+      p.includes('primeira')
+    )
+  ) {
+    return 'ranking_lojas_mes';
+  }
+
+  if (
+    (p.includes('vendedor') || p.includes('vendedores')) &&
+    (
+      p.includes('mais vendeu') ||
+      p.includes('melhor') ||
+      p.includes('top') ||
+      p.includes('primeiro')
+    )
+  ) {
+    return 'ranking_vendedores_mes';
+  }
+
+  if (
+    p.includes('categoria') ||
+    p.includes('familia') ||
+    p.includes('produto mais vendido') ||
+    p.includes('o que mais vendeu')
+  ) {
+    return 'categoria_mes';
+  }
+
+  if (p.includes('hoje') && falaDeVenda) {
+    return 'vendas_hoje';
+  }
+
+  if (
+    p.includes('mes') ||
+    p.includes('mensal') ||
+    p.includes('esse mes') ||
+    p.includes('este mes') ||
+    p.includes('mes atual')
+  ) {
+    return 'vendas_mes';
+  }
+
+  if (falaDeVenda) {
+    return 'vendas_mes';
+  }
+
+  return 'ajuda';
+}
+
+async function consultarResumoVendasClark(
+  db: any,
+  securityFilter: string,
+  startDate: string,
+  endDate: string
+) {
+  return await db.get(
+    `
+      SELECT
+        COALESCE(SUM(total_liquido), 0) AS total_vendas,
+        COALESCE(SUM(quantidade), 0) AS total_pecas,
+        CASE
+          WHEN COALESCE(SUM(quantidade), 0) > 0
+          THEN COALESCE(SUM(total_liquido), 0) / COALESCE(SUM(quantidade), 0)
+          ELSE 0
+        END AS ticket_medio
+      FROM vendas
+      WHERE ${securityFilter}
+        AND data_emissao >= ?
+        AND data_emissao <= ?
+    `,
+    [startDate, endDate]
+  );
+}
+
+async function consultarRankingLojasClark(
+  db: any,
+  securityFilter: string,
+  startDate: string,
+  endDate: string
+) {
+  return await db.all(
+    `
+      SELECT
+        cnpj_empresa,
+        COALESCE(SUM(total_liquido), 0) AS total_vendas,
+        COALESCE(SUM(quantidade), 0) AS total_pecas,
+        CASE
+          WHEN COALESCE(SUM(quantidade), 0) > 0
+          THEN COALESCE(SUM(total_liquido), 0) / COALESCE(SUM(quantidade), 0)
+          ELSE 0
+        END AS ticket_medio
+      FROM vendas
+      WHERE ${securityFilter}
+        AND data_emissao >= ?
+        AND data_emissao <= ?
+      GROUP BY cnpj_empresa
+      ORDER BY total_vendas DESC
+      LIMIT 10
+    `,
+    [startDate, endDate]
+  );
+}
+
+async function consultarRankingVendedoresClark(
+  db: any,
+  securityFilter: string,
+  startDate: string,
+  endDate: string
+) {
+  return await db.all(
+    `
+      SELECT
+        nome_vendedor,
+        cnpj_empresa,
+        COALESCE(SUM(total_liquido), 0) AS total_vendas,
+        COALESCE(SUM(quantidade), 0) AS total_pecas,
+        CASE
+          WHEN COALESCE(SUM(quantidade), 0) > 0
+          THEN COALESCE(SUM(total_liquido), 0) / COALESCE(SUM(quantidade), 0)
+          ELSE 0
+        END AS ticket_medio
+      FROM vendas
+      WHERE ${securityFilter}
+        AND data_emissao >= ?
+        AND data_emissao <= ?
+        AND nome_vendedor IS NOT NULL
+        AND TRIM(nome_vendedor) <> ''
+      GROUP BY nome_vendedor, cnpj_empresa
+      ORDER BY total_vendas DESC
+      LIMIT 10
+    `,
+    [startDate, endDate]
+  );
+}
+
+async function consultarCategoriasClark(
+  db: any,
+  securityFilter: string,
+  startDate: string,
+  endDate: string
+) {
+  return await db.all(
+    `
+      SELECT
+        COALESCE(familia, 'OUTROS') AS familia,
+        COALESCE(SUM(total_liquido), 0) AS total_vendas,
+        COALESCE(SUM(quantidade), 0) AS total_pecas
+      FROM vendas
+      WHERE ${securityFilter}
+        AND data_emissao >= ?
+        AND data_emissao <= ?
+      GROUP BY COALESCE(familia, 'OUTROS')
+      ORDER BY total_vendas DESC
+      LIMIT 10
+    `,
+    [startDate, endDate]
+  );
+}
+
+function categoriaEstoqueConfere(categoriaItem: any, filtros: ClarkFiltros) {
+  if (!filtros.aliasesCategoria.length) return true;
+
+  const categoriaNormalizada = normalizarTextoClark(categoriaItem);
+
+  return filtros.aliasesCategoria.some((alias) => {
+    const aliasNormalizado = normalizarTextoClark(alias);
+    return (
+      categoriaNormalizada === aliasNormalizado ||
+      categoriaNormalizada.includes(aliasNormalizado) ||
+      aliasNormalizado.includes(categoriaNormalizada)
+    );
+  });
+}
+
+async function consultarRankingEstoqueProdutosClark(
+  userId: string,
+  filtros: ClarkFiltros
+) {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+  });
+
+  if (!user) {
+    return {
+      acesso_negado: true,
+      total_itens_estoque: 0,
+      total_itens_filtrados: 0,
+      categoria_solicitada: filtros.categoriaCanonica || null,
+      categorias_encontradas: [],
+      ranking: [],
+    };
+  }
+
+  const superRoles = ['CEO', 'DIRETOR', 'ADM', 'ADMIN', 'GESTOR', 'SÓCIO', 'MASTER'];
+  const userRole = String(user.role || '').toUpperCase();
+  const isSuperUser = Boolean(user.isAdmin) || superRoles.includes(userRole);
+
+  const allowedStores = String(user.allowedStores || '')
+    .split(',')
+    .map((s) => {
+      const clean = normStore(s);
+      const corrigido = CORRECAO_NOMES_SERVER[clean];
+      return corrigido ? normStore(corrigido) : clean;
+    })
+    .filter(Boolean);
+
+  const estoqueRaw = await prisma.stock.findMany({
+    where: {
+      quantity: {
+        gt: 0,
+      },
+    },
+    select: {
+      storeName: true,
+      productCode: true,
+      reference: true,
+      description: true,
+      category: true,
+      quantity: true,
+      salePrice: true,
+    },
+  });
+
+  const estoquePorPermissao = isSuperUser
+    ? estoqueRaw
+    : estoqueRaw.filter((item: any) => {
+        const lojaItem = normStore(item.storeName);
+
+        return allowedStores.some((lojaPermitida) => {
+          return lojaItem === lojaPermitida || lojaItem.includes(lojaPermitida);
+        });
+      });
+
+  const categoriasMap = new Map<string, number>();
+
+  for (const item of estoquePorPermissao as any[]) {
+    const categoria = String(item.category || 'SEM CATEGORIA').trim();
+    const categoriaKey = categoria || 'SEM CATEGORIA';
+    categoriasMap.set(categoriaKey, (categoriasMap.get(categoriaKey) || 0) + Number(item.quantity || 0));
+  }
+
+  const categoriasEncontradas = Array.from(categoriasMap.entries())
+    .sort((a, b) => Number(b[1]) - Number(a[1]))
+    .slice(0, 20)
+    .map(([categoria, quantidade]) => ({
+      categoria,
+      quantidade,
+    }));
+
+  const estoqueFiltrado = estoquePorPermissao.filter((item: any) => {
+    return categoriaEstoqueConfere(item.category, filtros);
+  });
+
+  const produtosMap = new Map<string, any>();
+
+  for (const item of estoqueFiltrado as any[]) {
+    const descricao = String(item.description || 'SEM DESCRIÇÃO').trim();
+    const referencia = String(item.reference || '').trim();
+    const codigo = String(item.productCode || '').trim();
+    const categoria = String(item.category || 'GERAL').trim();
+
+    const key = `${descricao.toUpperCase()}|${referencia.toUpperCase()}|${codigo.toUpperCase()}`;
+
+    const qtd = Number(item.quantity || 0);
+    const precoVenda = Number(item.salePrice || 0);
+
+    if (!produtosMap.has(key)) {
+      produtosMap.set(key, {
+        descricao,
+        referencia,
+        codigo_produto: codigo,
+        categoria,
+        quantidade_total: 0,
+        valor_estimado_estoque: 0,
+        lojas: new Map<string, number>(),
+      });
+    }
+
+    const atual = produtosMap.get(key);
+    atual.quantidade_total += qtd;
+    atual.valor_estimado_estoque += qtd * precoVenda;
+
+    const loja = String(item.storeName || 'LOJA NÃO IDENTIFICADA').trim();
+    atual.lojas.set(loja, (atual.lojas.get(loja) || 0) + qtd);
+  }
+
+  const ranking = Array.from(produtosMap.values())
+    .sort((a: any, b: any) => Number(b.quantidade_total) - Number(a.quantidade_total))
+    .slice(0, filtros.limite)
+    .map((item: any, index: number) => {
+      const lojasEntries = Array.from(
+        (item.lojas as Map<string, number>).entries()
+      ) as Array<[string, number]>;
+
+      const principaisLojas = lojasEntries
+        .sort((a, b) => Number(b[1]) - Number(a[1]))
+        .slice(0, 8)
+        .map(([loja, quantidade]) => ({
+          loja,
+          quantidade: Number(quantidade || 0),
+        }));
+
+      return {
+        posicao: index + 1,
+        descricao: item.descricao,
+        referencia: item.referencia,
+        codigo_produto: item.codigo_produto,
+        categoria: item.categoria,
+        quantidade_total: Number(item.quantidade_total || 0),
+        valor_estimado_estoque: Number(item.valor_estimado_estoque || 0),
+        valor_estimado_estoque_formatado: formatBRL(item.valor_estimado_estoque),
+        principais_lojas: principaisLojas,
+      };
+    });
+
+  return {
+    acesso_negado: false,
+    total_itens_estoque: estoquePorPermissao.length,
+    total_itens_filtrados: estoqueFiltrado.length,
+    categoria_solicitada: filtros.categoriaCanonica || null,
+    categorias_encontradas: categoriasEncontradas,
+    ranking,
+  };
+}
+
+function montarPromptClark(params: {
+  pergunta: string;
+  intencao: string;
+  filtros: ClarkFiltros;
+  dados: any;
+}) {
+  return `
+Você é a Clark, assistente de IA interna do sistema TeleFluxo.
+
+Personalidade:
+- Profissional, clara e objetiva.
+- Inteligente, calma e analítica.
+- Fala como uma consultora de gestão.
+- Não usa linguagem robótica.
+- Não inventa números.
+- Não promete ações que o sistema ainda não executa.
+- Usa apenas o JSON de dados fornecido.
+- Responde em português do Brasil.
+- Quando houver valores, usa formato de moeda em R$.
+- Quando fizer sentido, encerra com uma sugestão prática.
+- Se o módulo for estoque, explique os produtos com maior quantidade, a quantidade total e as principais lojas quando essa informação existir.
+- Se o usuário pediu uma categoria específica, responda somente com base nessa categoria filtrada.
+- Se o JSON filtrado vier vazio, diga que não encontrou itens naquela categoria e mostre as categorias encontradas para ajudar o usuário a ajustar a pergunta.
+- Se o módulo for vendas, destaque total vendido, peças, ticket médio, ranking ou categoria conforme os dados disponíveis.
+
+Contexto:
+O TeleFluxo é um sistema interno de gestão com dados de vendas, lojas, vendedores, estoque e operação.
+Nesta versão, você responde sobre vendas e estoque usando apenas os dados fornecidos em JSON.
+
+Pergunta do usuário:
+${params.pergunta}
+
+Intenção identificada:
+${params.intencao}
+
+Filtros extraídos da pergunta:
+${JSON.stringify(params.filtros, null, 2)}
+
+Dados disponíveis em JSON:
+${JSON.stringify(params.dados, null, 2)}
+
+Gere a resposta final para o usuário.
+`;
+}
+
+function gerarRespostaFallbackClark(intencao: ClarkIntent, dados: any, filtros: ClarkFiltros) {
+  if (dados?.modulo === 'estoque') {
+    const ranking = dados?.ranking_top || dados?.ranking_top_10 || [];
+    const categoria = dados?.categoria_solicitada || filtros.categoriaCanonica;
+
+    if (!ranking.length) {
+      const cats = Array.isArray(dados?.categorias_encontradas)
+        ? dados.categorias_encontradas
+            .slice(0, 8)
+            .map((c: any) => `- ${c.categoria}: ${c.quantidade} unidades`)
+            .join('\n')
+        : '';
+
+      return `Não encontrei produtos em estoque para a categoria ${categoria || 'solicitada'}.
+
+Categorias encontradas no estoque:
+${cats || 'Nenhuma categoria disponível no retorno atual.'}
+
+Sugestão: confira se a categoria está cadastrada no sistema como SMARTPHONES, APARELHOS, ACESSÓRIOS, WEARABLES ou outro nome parecido.`;
+    }
+
+    const titulo = categoria
+      ? `Top ${ranking.length} produtos em estoque da categoria ${categoria}`
+      : `Top ${ranking.length} produtos com maior estoque`;
+
+    const linhas = ranking.map((item: any) => {
+      const lojas = Array.isArray(item.principais_lojas)
+        ? item.principais_lojas
+            .slice(0, 5)
+            .map((l: any) => `${l.loja}: ${l.quantidade} un.`)
+            .join(' | ')
+        : 'Lojas não informadas';
+
+      return `${item.posicao}. ${item.descricao}${item.referencia ? ` — Ref. ${item.referencia}` : ''}
+   Quantidade: ${item.quantidade_total} un.
+   Valor estimado: ${item.valor_estimado_estoque_formatado}
+   Principais lojas: ${lojas}`;
+    }).join('\n\n');
+
+    return `${titulo}:
+
+${linhas}
+
+Sugestão: use esse ranking para avaliar redistribuição entre lojas com maior concentração e lojas com maior giro.`;
+  }
+
+  if (dados?.modulo === 'vendas') {
+    if (dados?.total_vendas_formatado) {
+      return `Resumo de vendas para ${dados?.periodo?.descricao || 'o período consultado'}:
+
+Total vendido: ${dados.total_vendas_formatado}
+Peças vendidas: ${dados.total_pecas}
+Ticket médio: ${dados.ticket_medio_formatado}
+
+Sugestão: compare esse resultado com a meta do período para identificar se precisa reforçar ação comercial hoje.`;
+    }
+
+    if (Array.isArray(dados?.ranking)) {
+      const linhas = dados.ranking
+        .slice(0, 10)
+        .map((item: any) => {
+          const nome = item.loja || item.vendedor || item.familia || 'Item';
+          return `${item.posicao}. ${nome} — ${item.total_vendas_formatado || ''} | ${item.total_pecas || 0} peças`;
+        })
+        .join('\n');
+
+      return `Ranking do período ${dados?.periodo?.descricao || ''}:
+
+${linhas}`;
+    }
+  }
+
+  return `Ainda estou evoluindo. No momento, consigo responder melhor perguntas sobre vendas, ranking de lojas, vendedores, categorias e estoque.`;
+}
+
+app.post('/api/clark/perguntar', async (req, res) => {
+  let db: any = null;
+
+  try {
+    const { userId, pergunta } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({
+        error: 'Usuário não informado.',
+      });
+    }
+
+    if (!pergunta || !String(pergunta).trim()) {
+      return res.status(400).json({
+        error: 'Digite uma pergunta para a Clark.',
+      });
+    }
+
+    if (!process.env.GEMINI_API_KEY) {
+      return res.status(500).json({
+        error: 'GEMINI_API_KEY não configurada no backend.',
+      });
+    }
+
+    const perguntaLimpa = String(pergunta).trim();
+    const intencao = detectarIntencaoClark(perguntaLimpa);
+    const filtros = extrairFiltrosClark(perguntaLimpa);
+
+    const hoje = todayIsoSaoPaulo();
+    const inicioMes = monthStartIsoSaoPaulo();
+
+    let dados: any = {};
+
+    const precisaBancoVendas = [
+      'vendas_hoje',
+      'vendas_mes',
+      'ranking_lojas_mes',
+      'ranking_vendedores_mes',
+      'categoria_mes',
+    ].includes(intencao);
+
+    let securityFilter = '';
+
+    if (precisaBancoVendas) {
+      securityFilter = await getSalesFilter(String(userId), 'vendas');
+
+      if (securityFilter === '1=0') {
+        return res.status(403).json({
+          error: 'Você não tem permissão para consultar esses dados.',
+        });
+      }
+
+      db = await open({
+        filename: GLOBAL_DB_PATH,
+        driver: sqlite3.Database,
+      });
+    }
+
+    if (intencao === 'vendas_hoje') {
+      const resumo = await consultarResumoVendasClark(db, securityFilter, hoje, hoje);
+
+      dados = {
+        modulo: 'vendas',
+        periodo: {
+          descricao: `Hoje (${hoje})`,
+          data_inicio: hoje,
+          data_fim: hoje,
+        },
+        total_vendas: Number(resumo?.total_vendas || 0),
+        total_vendas_formatado: formatBRL(resumo?.total_vendas || 0),
+        total_pecas: Number(resumo?.total_pecas || 0),
+        ticket_medio: Number(resumo?.ticket_medio || 0),
+        ticket_medio_formatado: formatBRL(resumo?.ticket_medio || 0),
+      };
+    }
+
+    else if (intencao === 'vendas_mes') {
+      const resumo = await consultarResumoVendasClark(db, securityFilter, inicioMes, hoje);
+
+      dados = {
+        modulo: 'vendas',
+        periodo: {
+          descricao: `Mês atual (${inicioMes} até ${hoje})`,
+          data_inicio: inicioMes,
+          data_fim: hoje,
+        },
+        total_vendas: Number(resumo?.total_vendas || 0),
+        total_vendas_formatado: formatBRL(resumo?.total_vendas || 0),
+        total_pecas: Number(resumo?.total_pecas || 0),
+        ticket_medio: Number(resumo?.ticket_medio || 0),
+        ticket_medio_formatado: formatBRL(resumo?.ticket_medio || 0),
+      };
+    }
+
+    else if (intencao === 'ranking_lojas_mes') {
+      const ranking = await consultarRankingLojasClark(db, securityFilter, inicioMes, hoje);
+
+      dados = {
+        modulo: 'vendas',
+        periodo: {
+          descricao: `Mês atual (${inicioMes} até ${hoje})`,
+          data_inicio: inicioMes,
+          data_fim: hoje,
+        },
+        ranking: ranking.map((r: any, index: number) => ({
+          posicao: index + 1,
+          loja: traduzirCnpjParaLoja(r.cnpj_empresa),
+          cnpj_empresa: r.cnpj_empresa,
+          total_vendas: Number(r.total_vendas || 0),
+          total_vendas_formatado: formatBRL(r.total_vendas || 0),
+          total_pecas: Number(r.total_pecas || 0),
+          ticket_medio: Number(r.ticket_medio || 0),
+          ticket_medio_formatado: formatBRL(r.ticket_medio || 0),
+        })),
+      };
+    }
+
+    else if (intencao === 'ranking_vendedores_mes') {
+      const ranking = await consultarRankingVendedoresClark(db, securityFilter, inicioMes, hoje);
+
+      dados = {
+        modulo: 'vendas',
+        periodo: {
+          descricao: `Mês atual (${inicioMes} até ${hoje})`,
+          data_inicio: inicioMes,
+          data_fim: hoje,
+        },
+        ranking: ranking.map((r: any, index: number) => ({
+          posicao: index + 1,
+          vendedor: r.nome_vendedor,
+          loja: traduzirCnpjParaLoja(r.cnpj_empresa),
+          cnpj_empresa: r.cnpj_empresa,
+          total_vendas: Number(r.total_vendas || 0),
+          total_vendas_formatado: formatBRL(r.total_vendas || 0),
+          total_pecas: Number(r.total_pecas || 0),
+          ticket_medio: Number(r.ticket_medio || 0),
+          ticket_medio_formatado: formatBRL(r.ticket_medio || 0),
+        })),
+      };
+    }
+
+    else if (intencao === 'categoria_mes') {
+      const categorias = await consultarCategoriasClark(db, securityFilter, inicioMes, hoje);
+
+      dados = {
+        modulo: 'vendas',
+        periodo: {
+          descricao: `Mês atual (${inicioMes} até ${hoje})`,
+          data_inicio: inicioMes,
+          data_fim: hoje,
+        },
+        categorias: categorias.map((r: any, index: number) => ({
+          posicao: index + 1,
+          familia: r.familia,
+          total_vendas: Number(r.total_vendas || 0),
+          total_vendas_formatado: formatBRL(r.total_vendas || 0),
+          total_pecas: Number(r.total_pecas || 0),
+        })),
+      };
+    }
+
+    else if (intencao === 'produto_maior_estoque') {
+      const estoque = await consultarRankingEstoqueProdutosClark(String(userId), {
+        ...filtros,
+        limite: filtros.limite || 1,
+      });
+
+      dados = {
+        modulo: 'estoque',
+        pergunta_respondida: 'Produto com maior quantidade em estoque hoje',
+        data_consulta: hoje,
+        categoria_solicitada: estoque.categoria_solicitada,
+        total_itens_estoque_analisados: estoque.total_itens_estoque,
+        total_itens_filtrados: estoque.total_itens_filtrados,
+        categorias_encontradas: estoque.categorias_encontradas,
+        produto_mais_em_estoque: estoque.ranking[0] || null,
+        ranking_top: estoque.ranking,
+      };
+    }
+
+    else if (intencao === 'ranking_estoque_produtos') {
+      const estoque = await consultarRankingEstoqueProdutosClark(String(userId), filtros);
+
+      dados = {
+        modulo: 'estoque',
+        pergunta_respondida: 'Ranking de produtos com maior quantidade em estoque',
+        data_consulta: hoje,
+        categoria_solicitada: estoque.categoria_solicitada,
+        total_itens_estoque_analisados: estoque.total_itens_estoque,
+        total_itens_filtrados: estoque.total_itens_filtrados,
+        categorias_encontradas: estoque.categorias_encontradas,
+        ranking_top: estoque.ranking,
+      };
+    }
+
+    else {
+      dados = {
+        modulo: 'ajuda',
+        mensagem:
+          'Posso responder perguntas sobre vendas, ranking de lojas, ranking de vendedores, categorias e estoque.',
+        exemplos: [
+          'Quanto vendemos hoje?',
+          'Quanto vendemos no mês?',
+          'Qual loja mais vendeu no mês?',
+          'Me mostre o ranking de vendedores.',
+          'Qual categoria mais vendeu no mês?',
+          'Qual produto temos mais em estoque hoje?',
+          'Liste os 5 maiores modelos da categoria SMARTPHONES em estoque.',
+        ],
+      };
+    }
+
+    if (db) {
+      await db.close();
+      db = null;
+    }
+
+    const prompt = montarPromptClark({
+      pergunta: perguntaLimpa,
+      intencao,
+      filtros,
+      dados,
+    });
+
+    let resposta = '';
+
+    try {
+      const geminiResponse = await genAI.models.generateContent({
+        model: GEMINI_MODEL,
+        contents: prompt,
+      });
+
+      resposta =
+        geminiResponse.text ||
+        gerarRespostaFallbackClark(intencao, dados, filtros);
+
+      return res.json({
+        ok: true,
+        clark: resposta,
+        intencao,
+        filtros,
+        dados,
+        fallback: false,
+      });
+
+    } catch (geminiError: any) {
+      console.warn('⚠️ Gemini falhou. Usando fallback local:', geminiError?.message || geminiError);
+
+      resposta = gerarRespostaFallbackClark(intencao, dados, filtros);
+
+      return res.json({
+        ok: true,
+        clark: resposta,
+        intencao,
+        filtros,
+        dados,
+        fallback: true,
+        gemini_error: geminiError?.message || 'Falha temporária no Gemini',
+      });
+    }
+
+  } catch (error: any) {
+    try {
+      if (db) await db.close();
+    } catch {}
+
+    console.error('❌ Erro no Clark:', error);
+
+    return res.status(500).json({
+      error: error?.message || 'Erro interno no Clark.',
+    });
+  }
+});
 
 // ==========================================
 // 2. ROTA /sales (VERSÃO FINAL LIMPA) -- ROTA DE VENDAS
@@ -4401,6 +5319,13 @@ app.get('/api/comparativos/vendas-modelos', async (req, res) => {
 
 const COMPARATIVO_EMAIL_DEFAULT = 'analista.samsungtelecel@gmail.com';
 
+// Lista fixa de destinatários da tabela final.
+// Para adicionar mais e-mails depois, basta incluir aqui.
+const COMPARATIVO_EMAIL_LIST = [
+  'analista.samsungtelecel@gmail.com',
+];
+
+
 type ComparativoStatus = 'EM_ANALISE' | 'RESPONDIDO' | 'DEVOLVIDO';
 
 function safeJsonParse(value: any, fallback: any) {
@@ -4594,6 +5519,253 @@ function getComparativoPayloadFromRequest(body: any, row: any) {
   };
 }
 
+function escapeHtml(value: any) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+function formatMoneyBR(value: any) {
+  const n = toMoneyNumber(value);
+  return n.toLocaleString('pt-BR', {
+    style: 'currency',
+    currency: 'BRL',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
+function roundMoney(value: any) {
+  const n = toMoneyNumber(value);
+  return Math.round((n + Number.EPSILON) * 100) / 100;
+}
+
+function pickRowValue(row: any, keys: string[], fallback: any = '') {
+  for (const key of keys) {
+    if (row?.[key] !== undefined && row?.[key] !== null && row?.[key] !== '') {
+      return row[key];
+    }
+  }
+  return fallback;
+}
+
+function normalizeFinalTableRow(row: any) {
+  const descricao = String(pickRowValue(row, ['descricao', 'DESCRICAO', 'DESCRIÇÃO', 'produto', 'PRODUTO'], ''));
+  const referencia = String(pickRowValue(row, ['referencia', 'REFERENCIA', 'REFERÊNCIA'], ''));
+
+  const precoSamsung = roundMoney(pickRowValue(row, ['precoSamsung', 'PREÇO SAMSUNG', 'PRECO SAMSUNG'], 0));
+
+  const descTelecel = roundMoney(
+    pickRowValue(row, [
+      'totalDescontoTelecel',
+      'descontoTelecel',
+      'DESC. TELECEL',
+      'TELECEL DESC. MANUAL',
+      'TOTAL DESCONTO TELECEL',
+    ], 0)
+  );
+
+  const descRebate = roundMoney(pickRowValue(row, ['descontoRebate', 'DESC. REBATE', 'REBATE DESC. AUTOMATICO'], 0));
+  const descTradeIn = roundMoney(pickRowValue(row, ['descontoTradeIn', 'DESC. TRADE IN', 'TRADE IN DESC. AUTOMATICO'], 0));
+  const descBogo = roundMoney(pickRowValue(row, ['descontoBogo', 'DESC. BOGO', 'BOGO / CASH BACK DESC. MANUAL'], 0));
+  const descSip = roundMoney(pickRowValue(row, ['descontoSip', 'DESC. SIP', 'SIP DESC. MANUAL'], 0));
+
+  const totalDesconto = roundMoney(descTelecel + descRebate + descTradeIn + descBogo + descSip);
+  const precoFinal = roundMoney(Math.max(precoSamsung - totalDesconto, 0));
+  const preco18x = roundUpToEndingNine(precoFinal * 1.06);
+
+  // Base original da tabela de preços usada no comparativo.
+  // Na montagem do comparativo, ofertaAtual representa o preço final original da planilha guia.
+  const precoFinalOriginal = roundMoney(pickRowValue(row, ['ofertaAtual', 'OFERTA ATUAL', 'PREÇO FINAL ORIGINAL'], 0));
+
+  const changed =
+    Boolean(row?.hasOferta) ||
+    (precoFinalOriginal > 0 && Math.abs(precoFinal - precoFinalOriginal) > 0.01);
+
+  return {
+    descricao,
+    referencia,
+    precoSamsung,
+    descTelecel,
+    descRebate,
+    descTradeIn,
+    descBogo,
+    descSip,
+    precoFinal,
+    preco18x,
+    changed,
+    excel: {
+      'DESCRIÇÃO': descricao,
+      'REFERÊNCIA': referencia,
+      'PREÇO SAMSUNG': precoSamsung,
+      'TELECEL DESC. MANUAL': descTelecel,
+      'REBATE DESC. AUTOMATICO': descRebate,
+      'TRADE IN DESC. AUTOMATICO': descTradeIn,
+      'BOGO / CASH BACK DESC. MANUAL': descBogo,
+      'SIP DESC. MANUAL': descSip,
+      'PREÇO FINAL': precoFinal,
+      'PREÇO PARCELAMENTO 18x': preco18x,
+    },
+  };
+}
+
+function getFinalTableRowsFromComparativo(row: any, override?: any) {
+  const comOfertas = Array.isArray(override?.comOfertas)
+    ? override.comOfertas
+    : safeJsonParse(row.com_ofertas_json, []);
+
+  const semOfertas = Array.isArray(override?.semOfertas)
+    ? override.semOfertas
+    : safeJsonParse(row.sem_ofertas_json, []);
+
+  const allRows = [...comOfertas, ...semOfertas]
+    .filter((item: any) => item && item.isSelected !== false)
+    .map((item: any) => normalizeFinalTableRow(item));
+
+  allRows.sort((a: any, b: any) => String(a.descricao).localeCompare(String(b.descricao), 'pt-BR'));
+  return allRows;
+}
+
+function buildFinalTableWorkbookBuffer(finalRows: any[], titulo: string) {
+  const headers = [
+    'DESCRIÇÃO',
+    'REFERÊNCIA',
+    'PREÇO SAMSUNG',
+    'TELECEL DESC. MANUAL',
+    'REBATE DESC. AUTOMATICO',
+    'TRADE IN DESC. AUTOMATICO',
+    'BOGO / CASH BACK DESC. MANUAL',
+    'SIP DESC. MANUAL',
+    'PREÇO FINAL',
+    'PREÇO PARCELAMENTO 18x',
+  ];
+
+  const aoa = [
+    [`${titulo || 'Tabela Telecel'}`],
+    headers,
+    ...finalRows.map((row: any) => headers.map((header) => row.excel[header])),
+  ];
+
+  const workbook = XLSX.utils.book_new();
+  const sheet = XLSX.utils.aoa_to_sheet(aoa);
+
+  sheet['!cols'] = [
+    { wch: 36 },
+    { wch: 16 },
+    { wch: 15 },
+    { wch: 20 },
+    { wch: 23 },
+    { wch: 25 },
+    { wch: 30 },
+    { wch: 18 },
+    { wch: 14 },
+    { wch: 24 },
+  ];
+
+  // Mescla o título da linha 1.
+  sheet['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: headers.length - 1 } }];
+
+  // Tentativa de aplicar estilos no Excel. Dependendo da lib xlsx instalada,
+  // o estilo pode ser respeitado ou ignorado. O HTML do e-mail sempre respeita o amarelo.
+  const range = XLSX.utils.decode_range(sheet['!ref'] || 'A1:J1');
+
+  for (let c = range.s.c; c <= range.e.c; c += 1) {
+    const headerCell = XLSX.utils.encode_cell({ r: 1, c });
+    if (sheet[headerCell]) {
+      sheet[headerCell].s = {
+        font: { bold: true, color: { rgb: 'FFFFFF' } },
+        fill: { fgColor: { rgb: '1F4E78' } },
+        alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
+      };
+    }
+  }
+
+  finalRows.forEach((row: any, idx: number) => {
+    const excelRowIndex = idx + 2;
+
+    for (let c = 0; c < headers.length; c += 1) {
+      const cellRef = XLSX.utils.encode_cell({ r: excelRowIndex, c });
+      if (!sheet[cellRef]) continue;
+
+      sheet[cellRef].s = {
+        fill: row.changed ? { fgColor: { rgb: 'FFF2CC' } } : undefined,
+        alignment: { vertical: 'center', wrapText: true },
+      };
+    }
+  });
+
+  XLSX.utils.book_append_sheet(workbook, sheet, 'TABELA TELECEL');
+
+  return XLSX.write(workbook, {
+    type: 'buffer',
+    bookType: 'xlsx',
+  });
+}
+
+function buildFinalTableHtml(finalRows: any[]) {
+  const headers = [
+    'DESCRIÇÃO',
+    'REFERÊNCIA',
+    'PREÇO SAMSUNG',
+    'TELECEL DESC. MANUAL',
+    'REBATE DESC. AUTOMATICO',
+    'TRADE IN DESC. AUTOMATICO',
+    'BOGO / CASH BACK DESC. MANUAL',
+    'SIP DESC. MANUAL',
+    'PREÇO FINAL',
+    'PREÇO PARCELAMENTO 18x',
+  ];
+
+  const moneyHeaders = new Set(headers.slice(2));
+
+  const rowsHtml = finalRows.map((row: any) => {
+    const bg = row.changed ? '#fff2cc' : '#ffffff';
+
+    const cells = headers.map((header) => {
+      const value = row.excel[header];
+      const display = moneyHeaders.has(header) ? formatMoneyBR(value) : escapeHtml(value);
+      const align = moneyHeaders.has(header) ? 'right' : 'left';
+
+      return `<td style="border:1px solid #d9e2f3;padding:7px 9px;text-align:${align};background:${bg};font-size:12px;">${display}</td>`;
+    }).join('');
+
+    return `<tr>${cells}</tr>`;
+  }).join('');
+
+  const headersHtml = headers.map((header) => `
+    <th style="border:1px solid #d9e2f3;padding:8px 9px;background:#1f4e78;color:#ffffff;font-size:11px;text-align:center;">
+      ${escapeHtml(header)}
+    </th>
+  `).join('');
+
+  return `
+    <table style="border-collapse:collapse;width:100%;font-family:Arial,Helvetica,sans-serif;margin-top:16px;">
+      <thead><tr>${headersHtml}</tr></thead>
+      <tbody>${rowsHtml}</tbody>
+    </table>
+  `;
+}
+
+function buildEmailHtml(body: string, finalRows: any[]) {
+  const bodyHtml = escapeHtml(body || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\n/g, '<br>');
+
+  return `
+    <div style="font-family:Arial,Helvetica,sans-serif;color:#1f2937;font-size:14px;line-height:1.5;">
+      <div>${bodyHtml}</div>
+      ${buildFinalTableHtml(finalRows)}
+      <p style="margin-top:18px;font-size:12px;color:#6b7280;">
+        Linhas destacadas em amarelo indicam produtos com alteração em relação à tabela original.
+      </p>
+    </div>
+  `;
+}
+
+
 async function ensureComparativosFluxoTable() {
   const db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
 
@@ -4621,6 +5793,271 @@ async function ensureComparativosFluxoTable() {
 
   await db.close();
 }
+
+// =======================================================
+// Excluir comparativo
+// Regra:
+// - EM_ANALISE: quem criou pode excluir
+// - RESPONDIDO/DEVOLVIDO: somente CEO ou MASTER
+// =======================================================
+app.delete('/api/comparativos/fluxo/:id', async (req, res) => {
+  await ensureComparativosFluxoTable();
+
+  const userId = String(req.body?.userId || req.query?.userId || '').trim();
+  let db: any;
+
+  try {
+    const user = userId
+      ? await prisma.user.findUnique({ where: { id: userId } })
+      : null;
+
+    if (!user) {
+      return res.status(403).json({
+        success: false,
+        error: 'Usuário inválido para excluir comparativo.',
+      });
+    }
+
+    const userRole = String((user as any)?.role || '').toUpperCase();
+    const isCeoOrMaster = userRole === 'CEO' || userRole === 'MASTER';
+
+    db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+
+    const row = await db.get(
+      `SELECT * FROM comparativos_fluxo WHERE id = ?`,
+      [req.params.id]
+    );
+
+    if (!row) {
+      await db.close();
+      return res.status(404).json({
+        success: false,
+        error: 'Comparativo não encontrado.',
+      });
+    }
+
+    const isCreator = String(row.criado_por_id || '') === userId;
+    const canDelete = row.status === 'EM_ANALISE'
+      ? (isCreator || isCeoOrMaster)
+      : isCeoOrMaster;
+
+    if (!canDelete) {
+      await db.close();
+      return res.status(403).json({
+        success: false,
+        error: 'Você não tem permissão para excluir este comparativo.',
+      });
+    }
+
+    await db.run(`DELETE FROM comparativos_fluxo WHERE id = ?`, [req.params.id]);
+    await db.close();
+
+    return res.json({
+      success: true,
+      message: 'Comparativo excluído com sucesso.',
+    });
+  } catch (error: any) {
+    try { if (db) await db.close(); } catch {}
+
+    console.error('Erro ao excluir comparativo:', error);
+    return res.status(500).json({
+      success: false,
+      error: error?.message || 'Erro ao excluir comparativo.',
+    });
+  }
+});
+
+// =======================================================
+// Prévia da tabela final
+// =======================================================
+app.get('/api/comparativos/fluxo/:id/final-table-preview', async (req, res) => {
+  await ensureComparativosFluxoTable();
+
+  let db: any;
+
+  try {
+    db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+
+    const row = await db.get(
+      `SELECT * FROM comparativos_fluxo WHERE id = ?`,
+      [req.params.id]
+    );
+
+    if (!row) {
+      await db.close();
+      return res.status(404).json({
+        success: false,
+        error: 'Comparativo não encontrado.',
+      });
+    }
+
+    if (row.status !== 'RESPONDIDO') {
+      await db.close();
+      return res.status(400).json({
+        success: false,
+        error: 'A tabela final só pode ser visualizada depois que o comparativo estiver respondido.',
+      });
+    }
+
+    const finalRows = getFinalTableRowsFromComparativo(row);
+
+    await db.close();
+
+    return res.json({
+      success: true,
+      titulo: row.titulo,
+      destinatarios: COMPARATIVO_EMAIL_LIST,
+      defaultSubject: `Tabela Telecel - ${row.titulo}`,
+      defaultBody: `Prezados, boa tarde!\n\nSegue tabela atualizada referente ao comparativo ${row.titulo}.\n\nQualquer dúvida, fico à disposição.`,
+      rows: finalRows.map((row: any) => ({
+        ...row.excel,
+        descricao: row.descricao,
+        referencia: row.referencia,
+        precoSamsung: row.precoSamsung,
+        descTelecel: row.descTelecel,
+        descRebate: row.descRebate,
+        descTradeIn: row.descTradeIn,
+        descBogo: row.descBogo,
+        descSip: row.descSip,
+        precoFinal: row.precoFinal,
+        preco18x: row.preco18x,
+        changed: row.changed,
+      })),
+    });
+  } catch (error: any) {
+    try { if (db) await db.close(); } catch {}
+
+    console.error('Erro ao montar prévia da tabela final:', error);
+    return res.status(500).json({
+      success: false,
+      error: error?.message || 'Erro ao montar prévia da tabela final.',
+    });
+  }
+});
+
+// =======================================================
+// Enviar tabela final: HTML no corpo + Excel anexo
+// Também permite downloadOnly=true para baixar sem enviar
+// =======================================================
+app.post('/api/comparativos/fluxo/:id/send-final-table', async (req, res) => {
+  await ensureComparativosFluxoTable();
+
+  const subject = String(req.body?.subject || '').trim();
+  const body = String(req.body?.body || '').trim();
+  const downloadOnly = req.body?.downloadOnly === true;
+
+  if (!subject) {
+    return res.status(400).json({
+      success: false,
+      error: 'Informe o assunto do e-mail.',
+    });
+  }
+
+  let db: any;
+
+  try {
+    db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+
+    const row = await db.get(
+      `SELECT * FROM comparativos_fluxo WHERE id = ?`,
+      [req.params.id]
+    );
+
+    if (!row) {
+      await db.close();
+      return res.status(404).json({
+        success: false,
+        error: 'Comparativo não encontrado.',
+      });
+    }
+
+    if (row.status !== 'RESPONDIDO') {
+      await db.close();
+      return res.status(400).json({
+        success: false,
+        error: 'A tabela só pode ser enviada depois que o comparativo estiver respondido.',
+      });
+    }
+
+    const payloadParts = getComparativoPayloadFromRequest(req.body, row);
+
+    const rowForFinal = {
+      ...row,
+      payload_json: JSON.stringify(payloadParts.payload),
+      com_ofertas_json: JSON.stringify(payloadParts.comOfertas),
+      sem_ofertas_json: JSON.stringify(payloadParts.semOfertas),
+    };
+
+    const finalRows = getFinalTableRowsFromComparativo(rowForFinal, payloadParts);
+    const fileName = `Tabela_Telecel_${sanitizeFileName(row.titulo)}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    const buffer = buildFinalTableWorkbookBuffer(finalRows, row.titulo);
+
+    if (!downloadOnly) {
+      const html = buildEmailHtml(body, finalRows);
+
+      await mailTransporter.sendMail({
+        from: process.env.GMAIL_USER,
+        to: COMPARATIVO_EMAIL_LIST.join(','),
+        subject,
+        text: `${body}\n\nTabela enviada no corpo do e-mail e em anexo.`,
+        html,
+        attachments: [
+          {
+            filename: fileName,
+            content: buffer,
+            contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          },
+        ],
+      });
+    }
+
+    const now = new Date().toISOString();
+
+    await db.run(
+      `
+        UPDATE comparativos_fluxo
+        SET email_enviado_para = ?,
+            payload_json = ?,
+            com_ofertas_json = ?,
+            sem_ofertas_json = ?,
+            updated_at = ?
+        WHERE id = ?
+      `,
+      [
+        COMPARATIVO_EMAIL_LIST.join(','),
+        JSON.stringify(payloadParts.payload),
+        JSON.stringify(payloadParts.comOfertas),
+        JSON.stringify(payloadParts.semOfertas),
+        now,
+        req.params.id,
+      ]
+    );
+
+    await db.close();
+
+    return res.json({
+      success: true,
+      message: downloadOnly
+        ? 'Excel gerado para download.'
+        : 'Tabela enviada por e-mail com HTML no corpo e Excel em anexo.',
+      emailTo: COMPARATIVO_EMAIL_LIST,
+      fileName,
+      fileBase64: buffer.toString('base64'),
+      rows: finalRows.map((row: any) => ({
+        ...row.excel,
+        changed: row.changed,
+      })),
+    });
+  } catch (error: any) {
+    try { if (db) await db.close(); } catch {}
+
+    console.error('Erro ao enviar tabela final:', error);
+    return res.status(500).json({
+      success: false,
+      error: error?.message || 'Erro ao enviar tabela final.',
+    });
+  }
+});
 
 // =======================================================
 // Criar/enviar comparativo para análise

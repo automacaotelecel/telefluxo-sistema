@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { CheckCircle2, Eye, RefreshCw, RotateCcw, Search, Send, X } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Download, Eye, Mail, Plus, RefreshCw, RotateCcw, Search, Send, Trash2, X } from 'lucide-react';
 
 type FluxoStatus = 'EM_ANALISE' | 'RESPONDIDO' | 'DEVOLVIDO';
 type AnalysisTab = 'COM_OFERTAS' | 'SEM_OFERTAS';
@@ -19,6 +19,20 @@ type FluxoComparativo = {
   respondidoEm?: string;
   devolvidoEm?: string;
   payload?: any;
+};
+
+type FinalTableRow = {
+  descricao: string;
+  referencia: string;
+  precoSamsung: number;
+  descTelecel: number;
+  descRebate: number;
+  descTradeIn: number;
+  descBogo: number;
+  descSip: number;
+  precoFinal: number;
+  preco18x: number;
+  changed: boolean;
 };
 
 const API_BASE_URL = 'https://telefluxo-aplicacao.onrender.com';
@@ -274,6 +288,33 @@ const getMarginClass = (value: number) => {
   return 'text-slate-800 font-black';
 };
 
+const SmallPlus = () => (
+  <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-sky-200 bg-white text-[10px] font-black text-sky-600 shadow-sm">
+    +
+  </span>
+);
+
+const normalizeFinalTableRow = (row: any): FinalTableRow => ({
+  descricao: String(row?.descricao || row?.['DESCRIÇÃO'] || row?.DESCRICAO || ''),
+  referencia: String(row?.referencia || row?.['REFERÊNCIA'] || row?.REFERENCIA || ''),
+  precoSamsung: toNumber(row?.precoSamsung ?? row?.['PREÇO SAMSUNG']),
+  descTelecel: toNumber(row?.descTelecel ?? row?.['TELECEL DESC. MANUAL']),
+  descRebate: toNumber(row?.descRebate ?? row?.['REBATE DESC. AUTOMATICO']),
+  descTradeIn: toNumber(row?.descTradeIn ?? row?.['TRADE IN DESC. AUTOMATICO']),
+  descBogo: toNumber(row?.descBogo ?? row?.['BOGO / CASH BACK DESC. MANUAL']),
+  descSip: toNumber(row?.descSip ?? row?.['SIP DESC. MANUAL']),
+  precoFinal: toNumber(row?.precoFinal ?? row?.['PREÇO FINAL']),
+  preco18x: toNumber(row?.preco18x ?? row?.['PREÇO PARCELAMENTO 18x']),
+  changed: Boolean(row?.changed || row?.alterado || row?.ALTERADO),
+});
+
+const defaultEmailBody = (titulo: string) =>
+  `Prezados, boa tarde!
+
+Segue tabela atualizada referente ao comparativo ${titulo}.
+
+Qualquer dúvida, fico à disposição.`;
+
 export default function FluxoComparativoModule({ currentUser }: { currentUser?: any }) {
   const user = currentUser || getCurrentUserInfo();
   const userRole = String(user?.role || '').toUpperCase();
@@ -294,6 +335,13 @@ export default function FluxoComparativoModule({ currentUser }: { currentUser?: 
   const [analysisSearch, setAnalysisSearch] = useState('');
   const [showDiscountDetails, setShowDiscountDetails] = useState(true);
   const [showPriceDetails, setShowPriceDetails] = useState(true);
+  const [deleteItem, setDeleteItem] = useState<FluxoComparativo | null>(null);
+  const [sendTableItem, setSendTableItem] = useState<FluxoComparativo | null>(null);
+  const [finalRows, setFinalRows] = useState<FinalTableRow[]>([]);
+  const [emailSubject, setEmailSubject] = useState('');
+  const [emailBody, setEmailBody] = useState('');
+  const [finalTableLoading, setFinalTableLoading] = useState(false);
+  const [finalTableMsg, setFinalTableMsg] = useState('');
 
   const loadItems = async () => {
     setLoading(true);
@@ -487,20 +535,81 @@ export default function FluxoComparativoModule({ currentUser }: { currentUser?: 
     }
   };
 
-  const sendTable = async (item: FluxoComparativo) => {
-    setActionLoadingId(item.id);
+  const canDeleteComparativo = (item: FluxoComparativo) => {
+    const currentUserId = String(user?.id || '');
+    const isCreator = currentUserId && String(item.criadoPorId || '') === currentUserId;
+    const isCeoOrMaster = userRole === 'CEO' || userRole === 'MASTER';
+
+    if (item.status === 'EM_ANALISE') return isCreator || isCeoOrMaster;
+    return isCeoOrMaster;
+  };
+
+  const deleteComparativo = async () => {
+    if (!deleteItem) return;
+
+    setActionLoadingId(deleteItem.id);
     setErrorMsg('');
     setSuccessMsg('');
 
-    const sourceItem = analysisItem?.id === item.id ? analysisItem : item;
+    try {
+      await requestJson(`/api/comparativos/fluxo/${encodeURIComponent(deleteItem.id)}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: user?.id || '' }),
+      });
+
+      setSuccessMsg('Comparativo excluído com sucesso.');
+      setDeleteItem(null);
+      await loadItems();
+    } catch (error: any) {
+      setErrorMsg(error?.message || 'Erro ao excluir comparativo.');
+    } finally {
+      setActionLoadingId('');
+    }
+  };
+
+  const openSendTableModal = async (item: FluxoComparativo) => {
+    setSendTableItem(item);
+    setFinalRows([]);
+    setFinalTableMsg('');
+    setEmailSubject(`Tabela Telecel - ${item.titulo}`);
+    setEmailBody(defaultEmailBody(item.titulo));
+    setFinalTableLoading(true);
+    setErrorMsg('');
+    setSuccessMsg('');
 
     try {
-      const data = await requestJson(`/api/comparativos/fluxo/${encodeURIComponent(item.id)}/send-table`, {
+      const data = await requestJson(`/api/comparativos/fluxo/${encodeURIComponent(item.id)}/final-table-preview?userId=${encodeURIComponent(String(user?.id || ''))}`);
+      const rows = Array.isArray(data?.rows) ? data.rows.map(normalizeFinalTableRow) : [];
+      setFinalRows(rows);
+      if (data?.defaultSubject) setEmailSubject(String(data.defaultSubject));
+      if (data?.defaultBody) setEmailBody(String(data.defaultBody));
+    } catch (error: any) {
+      setFinalTableMsg(error?.message || 'Erro ao montar prévia da tabela final.');
+    } finally {
+      setFinalTableLoading(false);
+    }
+  };
+
+  const sendFinalTable = async (downloadOnly = false) => {
+    if (!sendTableItem) return;
+
+    setActionLoadingId(sendTableItem.id);
+    setFinalTableMsg('');
+    setErrorMsg('');
+    setSuccessMsg('');
+
+    try {
+      const sourceItem = analysisItem?.id === sendTableItem.id ? analysisItem : sendTableItem;
+
+      const data = await requestJson(`/api/comparativos/fluxo/${encodeURIComponent(sendTableItem.id)}/send-final-table`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           userId: user?.id || '',
-          to: 'analista.samsungtelecel@gmail.com',
+          subject: emailSubject,
+          body: emailBody,
+          downloadOnly,
           payload: sourceItem.payload,
         }),
       });
@@ -509,10 +618,15 @@ export default function FluxoComparativoModule({ currentUser }: { currentUser?: 
         downloadBase64File(data.fileBase64, data.fileName);
       }
 
-      setSuccessMsg('Tabela gerada, baixada e enviada por e-mail para analista.samsungtelecel@gmail.com.');
-      await loadItems();
+      if (downloadOnly) {
+        setFinalTableMsg('Excel gerado e baixado com sucesso.');
+      } else {
+        setFinalTableMsg('Tabela enviada por e-mail e Excel baixado com sucesso.');
+        setSuccessMsg('Tabela final enviada por e-mail com sucesso.');
+        await loadItems();
+      }
     } catch (error: any) {
-      setErrorMsg(error?.message || 'Erro ao enviar tabela.');
+      setFinalTableMsg(error?.message || 'Erro ao gerar/enviar tabela final.');
     } finally {
       setActionLoadingId('');
     }
@@ -558,58 +672,58 @@ export default function FluxoComparativoModule({ currentUser }: { currentUser?: 
 
   const renderAnalysisTable = () => (
     <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
-      <div className="max-h-[70vh] overflow-y-auto overflow-x-hidden">
-        <table className="w-full table-fixed border-separate border-spacing-0 text-[11px]">
+      <div className="max-h-[70vh] overflow-auto">
+        <table className="w-max min-w-[2500px] border-separate border-spacing-0 text-xs">
           <thead className="sticky top-0 z-30 bg-slate-100 shadow-sm">
             <tr>
-              <th className="sticky left-0 z-30 w-[230px] border-b border-slate-200 bg-white px-3 py-3 text-left text-[10px] font-black uppercase tracking-widest text-slate-500">Produto</th>
-              {renderHeaderCell('Preço Samsung', 'w-[105px] bg-emerald-50')}
-              {renderHeaderCell('Preço Telecel', 'w-[105px] bg-emerald-50')}
-              {renderHeaderCell('Desc. Telecel', 'w-[135px] bg-orange-50')}
+              <th className="sticky left-0 z-30 min-w-[280px] border-b border-slate-200 bg-white px-3 py-3 text-left text-[10px] font-black uppercase tracking-widest text-slate-500">Produto</th>
+              {renderHeaderCell('Preço Samsung', 'min-w-[120px] bg-emerald-50')}
+              {renderHeaderCell('Preço Telecel', 'min-w-[120px] bg-emerald-50')}
+              {renderHeaderCell('Desc. Telecel', 'min-w-[155px] bg-orange-50')}
               {showDiscountDetails ? (
                 <>
-                  {renderHeaderCell('Descontos', 'w-[105px] bg-sky-50', {
+                  {renderHeaderCell('Descontos', 'min-w-[120px] bg-sky-50', {
                     toggle: true,
                     isOpen: showDiscountDetails,
                     onClick: () => setShowDiscountDetails(false),
                   })}
-                  {renderHeaderCell('Desc. Trade In', 'w-[115px] bg-sky-50')}
-                  {renderHeaderCell('Desc. Bogo', 'w-[105px] bg-sky-50')}
-                  {renderHeaderCell('Desc. SIP', 'w-[100px] bg-sky-50')}
+                  {renderHeaderCell('Desc. Trade In', 'min-w-[130px] bg-sky-50')}
+                  {renderHeaderCell('Desc. Bogo', 'min-w-[120px] bg-sky-50')}
+                  {renderHeaderCell('Desc. SIP', 'min-w-[110px] bg-sky-50')}
                 </>
               ) : (
-                renderHeaderCell('Descontos', 'w-[105px] bg-sky-50', {
+                renderHeaderCell('Descontos', 'min-w-[120px] bg-sky-50', {
                   toggle: true,
                   isOpen: showDiscountDetails,
                   onClick: () => setShowDiscountDetails(true),
                 })
               )}
-              {renderHeaderCell('Total Desconto', 'w-[120px] bg-amber-50')}
-              {renderHeaderCell('Preço Promocional', 'w-[135px] bg-yellow-100')}
-              {renderHeaderCell('Qtd Est.', 'w-[80px] bg-slate-50')}
-              {renderHeaderCell('Custo Médio', 'w-[110px] bg-slate-50')}
-              {renderHeaderCell('Novo Custo Médio', 'w-[135px] bg-slate-50')}
-              {renderHeaderCell('Margem Price', 'w-[100px] bg-slate-50')}
-              {renderHeaderCell('Qtd Vend.', 'w-[80px] bg-slate-50')}
+              {renderHeaderCell('Total Desconto', 'min-w-[135px] bg-amber-50')}
+              {renderHeaderCell('Preço Promocional', 'min-w-[145px] bg-yellow-100')}
+              {renderHeaderCell('Qtd Est.', 'min-w-[90px] bg-slate-50')}
+              {renderHeaderCell('Custo Médio', 'min-w-[125px] bg-slate-50')}
+              {renderHeaderCell('Novo Custo Médio', 'min-w-[145px] bg-slate-50')}
+              {renderHeaderCell('Margem Price', 'min-w-[115px] bg-slate-50')}
+              {renderHeaderCell('Qtd Vend.', 'min-w-[90px] bg-slate-50')}
               {showPriceDetails ? (
                 <>
-                  {renderHeaderCell('Price Rebate', 'w-[110px] bg-lime-50', {
+                  {renderHeaderCell('Price Rebate', 'min-w-[125px] bg-lime-50', {
                     toggle: true,
                     isOpen: showPriceDetails,
                     onClick: () => setShowPriceDetails(false),
                   })}
-                  {renderHeaderCell('Price Trade In', 'w-[120px] bg-lime-50')}
-                  {renderHeaderCell('Price Bogo', 'w-[105px] bg-lime-50')}
-                  {renderHeaderCell('Price SIP', 'w-[100px] bg-lime-50')}
+                  {renderHeaderCell('Price Trade In', 'min-w-[135px] bg-lime-50')}
+                  {renderHeaderCell('Price Bogo', 'min-w-[120px] bg-lime-50')}
+                  {renderHeaderCell('Price SIP', 'min-w-[115px] bg-lime-50')}
                 </>
               ) : (
-                renderHeaderCell('Prices', 'w-[100px] bg-lime-50', {
+                renderHeaderCell('Prices', 'min-w-[110px] bg-lime-50', {
                   toggle: true,
                   isOpen: showPriceDetails,
                   onClick: () => setShowPriceDetails(true),
                 })
               )}
-              {renderHeaderCell('Oferta Atual', 'w-[115px] bg-green-50')}
+              {renderHeaderCell('Oferta Atual', 'min-w-[130px] bg-green-50')}
               {renderHeaderCell('Status', 'min-w-[105px] bg-green-50')}
             </tr>
           </thead>
@@ -630,21 +744,25 @@ export default function FluxoComparativoModule({ currentUser }: { currentUser?: 
 
               return (
                 <tr key={`${computed.descricao}-${index}`} className="hover:bg-slate-50">
-                  <td className="sticky left-0 z-20 border-b border-slate-100 bg-white px-3 py-2 align-middle font-black text-slate-900">
+                  <td className="sticky left-0 z-20 border-b border-slate-100 bg-white px-3 py-3 align-middle font-black text-slate-900">
                     <div>{computed.descricao}</div>
                   </td>
                   <td className="border-b border-slate-100 bg-emerald-50 px-2 py-3 text-right text-slate-700">{formatMoney(computed.precoSamsung)}</td>
                   <td className="border-b border-slate-100 bg-emerald-50 px-2 py-3 text-right text-slate-700">{formatMoney(computed.precoTelecel)}</td>
                   <td className="border-b border-slate-100 bg-orange-50 px-2 py-2 text-right">
                     {isPresidencia ? (
-                      <input
-                        value={descTelecelDisplay}
-                        onChange={(event) => updateDescTelecel(analysisTab, row, event.target.value)}
-                        onBlur={() => formatDescTelecelInput(analysisTab, row)}
-                        inputMode="decimal"
-                        title="Desc. Telecel"
-                        className="w-full rounded-xl border border-orange-200 bg-white px-2 py-2 text-right text-xs font-black text-orange-700 outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100"
-                      />
+                      <div className="flex items-center gap-2">
+                        <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-orange-200 bg-white text-orange-600 shadow-sm">
+                          <Plus size={13} />
+                        </span>
+                        <input
+                          value={descTelecelDisplay}
+                          onChange={(event) => updateDescTelecel(analysisTab, row, event.target.value)}
+                          onBlur={() => formatDescTelecelInput(analysisTab, row)}
+                          inputMode="decimal"
+                          className="w-full rounded-xl border border-orange-200 bg-white px-2 py-2 text-right text-xs font-black text-orange-700 outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100"
+                        />
+                      </div>
                     ) : (
                       <span className="font-black text-orange-700">{formatMoney(computed.descTelecel)}</span>
                     )}
@@ -684,7 +802,7 @@ export default function FluxoComparativoModule({ currentUser }: { currentUser?: 
 
             {analysisRows.length === 0 && (
               <tr>
-                <td colSpan={15 + (showDiscountDetails ? 3 : 0) + (showPriceDetails ? 3 : 0)} className="px-4 py-12 text-center text-slate-400">
+                <td colSpan={15 + (showDiscountDetails ? 4 : 0) + (showPriceDetails ? 3 : 0)} className="px-4 py-12 text-center text-slate-400">
                   Nenhum item encontrado nesta aba.
                 </td>
               </tr>
@@ -816,14 +934,25 @@ export default function FluxoComparativoModule({ currentUser }: { currentUser?: 
                           <Eye size={14} /> Analisar
                         </button>
 
+                        {canDeleteComparativo(item) && (
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => setDeleteItem(item)}
+                            className="inline-flex items-center gap-1 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-black text-red-700 hover:bg-red-100 disabled:opacity-60"
+                          >
+                            <Trash2 size={14} /> Excluir
+                          </button>
+                        )}
+
                         {item.status === 'RESPONDIDO' && (
                           <button
                             type="button"
                             disabled={busy}
-                            onClick={() => sendTable(item)}
+                            onClick={() => openSendTableModal(item)}
                             className="inline-flex items-center gap-1 rounded-xl bg-emerald-600 px-3 py-2 text-xs font-black text-white hover:bg-emerald-700 disabled:opacity-60"
                           >
-                            {busy ? <RefreshCw size={14} /> : <Send size={14} />} Enviar tabela
+                            {busy ? <RefreshCw size={14} /> : <Send size={14} />} Preparar envio
                           </button>
                         )}
                       </div>
@@ -895,10 +1024,10 @@ export default function FluxoComparativoModule({ currentUser }: { currentUser?: 
                     <button
                       type="button"
                       disabled={actionLoadingId === analysisItem.id}
-                      onClick={() => sendTable(analysisItem)}
+                      onClick={() => openSendTableModal(analysisItem)}
                       className="inline-flex items-center gap-2 rounded-2xl bg-slate-900 px-4 py-3 text-xs font-black uppercase text-white hover:bg-slate-800 disabled:opacity-60"
                     >
-                      {actionLoadingId === analysisItem.id ? <RefreshCw size={15} /> : <Send size={15} />} Enviar tabela
+                      {actionLoadingId === analysisItem.id ? <RefreshCw size={15} /> : <Send size={15} />} Preparar envio
                     </button>
                   )}
 
@@ -955,10 +1084,165 @@ export default function FluxoComparativoModule({ currentUser }: { currentUser?: 
               </div>
 
               <div className="mb-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs text-slate-600">
-                <span className="font-black text-orange-700">Desc. Telecel</span> é editável pela presidência. Use os botões <strong>+ / −</strong> nos cabeçalhos para abrir ou ocultar os detalhes de descontos e prices. Margens abaixo de <strong>25%</strong> ficam em vermelho. <span className="font-black text-slate-900">Preço Promocional</span> representa o preço final do aparelho.
+                <span className="font-black text-orange-700">Desc. Telecel</span> é editável pela presidência. Use os botões <strong>+ / −</strong> nos cabeçalhos para abrir ou ocultar descontos e prices. Margens abaixo de <strong>25%</strong> ficam em vermelho. <span className="font-black text-slate-900">Preço Promocional</span> representa o preço final do aparelho.
               </div>
 
               {renderAnalysisTable()}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {deleteItem && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-[26px] border border-slate-200 bg-white p-6 shadow-2xl">
+            <div className="mb-4 flex items-start gap-3">
+              <div className="rounded-2xl bg-red-50 p-3 text-red-600">
+                <AlertTriangle size={22} />
+              </div>
+              <div>
+                <h3 className="text-lg font-black uppercase tracking-tight text-slate-900">Excluir comparativo</h3>
+                <p className="mt-1 text-sm text-slate-500">
+                  Essa ação vai apagar definitivamente o comparativo <strong>{deleteItem.titulo}</strong>.
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <button
+                type="button"
+                onClick={() => setDeleteItem(null)}
+                className="rounded-xl border border-slate-200 px-4 py-2 text-xs font-black uppercase text-slate-600 hover:bg-slate-50"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={actionLoadingId === deleteItem.id}
+                onClick={deleteComparativo}
+                className="rounded-xl bg-red-600 px-4 py-2 text-xs font-black uppercase text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Confirmar exclusão
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {sendTableItem && (
+        <div className="fixed inset-0 z-[85] flex items-center justify-center bg-slate-950/60 p-3 backdrop-blur-sm">
+          <div className="flex h-[92vh] w-full max-w-[96vw] flex-col rounded-[28px] border border-slate-200 bg-white shadow-2xl">
+            <div className="border-b border-slate-200 p-5">
+              <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+                <div>
+                  <h3 className="text-xl font-black uppercase tracking-tight text-slate-900">Prévia da tabela final</h3>
+                  <p className="mt-1 text-sm text-slate-500">
+                    Revise a tabela, defina o assunto e escreva o corpo do e-mail antes do envio.
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setSendTableItem(null)}
+                  className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-xs font-black uppercase text-slate-700 hover:bg-slate-50"
+                >
+                  <X size={15} /> Fechar
+                </button>
+              </div>
+            </div>
+
+            <div className="grid flex-1 min-h-0 gap-4 overflow-hidden p-4 xl:grid-cols-[420px_1fr]">
+              <div className="overflow-y-auto rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <label className="text-[11px] font-black uppercase tracking-widest text-slate-500">Assunto</label>
+                <input
+                  value={emailSubject}
+                  onChange={(event) => setEmailSubject(event.target.value)}
+                  className="mt-2 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold text-slate-800 outline-none focus:border-slate-400"
+                />
+
+                <label className="mt-4 block text-[11px] font-black uppercase tracking-widest text-slate-500">Corpo do e-mail</label>
+                <textarea
+                  value={emailBody}
+                  onChange={(event) => setEmailBody(event.target.value)}
+                  rows={12}
+                  className="mt-2 w-full rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-700 outline-none focus:border-slate-400"
+                />
+
+                <div className="mt-4 rounded-2xl border border-yellow-200 bg-yellow-50 p-3 text-xs text-yellow-800">
+                  As linhas alteradas em relação à tabela original aparecem em amarelo no e-mail e no Excel.
+                </div>
+
+                {finalTableMsg && (
+                  <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-3 text-sm font-semibold text-slate-700">
+                    {finalTableMsg}
+                  </div>
+                )}
+
+                <div className="mt-5 flex flex-col gap-2">
+                  <button
+                    type="button"
+                    disabled={finalTableLoading || actionLoadingId === sendTableItem.id}
+                    onClick={() => sendFinalTable(true)}
+                    className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-xs font-black uppercase text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+                  >
+                    <Download size={15} /> Baixar Excel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={finalTableLoading || actionLoadingId === sendTableItem.id || !emailSubject.trim()}
+                    onClick={() => sendFinalTable(false)}
+                    className="inline-flex items-center justify-center gap-2 rounded-2xl bg-emerald-600 px-4 py-3 text-xs font-black uppercase text-white hover:bg-emerald-700 disabled:opacity-60"
+                  >
+                    <Mail size={15} /> Enviar e-mail + anexo
+                  </button>
+                </div>
+              </div>
+
+              <div className="min-h-0 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                <div className="border-b border-slate-200 bg-slate-50 px-4 py-3 text-xs font-black uppercase tracking-widest text-slate-500">
+                  Tabela final · {finalRows.length} produtos
+                </div>
+                <div className="h-full overflow-auto pb-10">
+                  {finalTableLoading ? (
+                    <div className="flex h-64 items-center justify-center text-slate-500">Montando prévia...</div>
+                  ) : (
+                    <table className="w-max min-w-[1150px] border-separate border-spacing-0 text-xs">
+                      <thead className="sticky top-0 z-20 bg-slate-100">
+                        <tr>
+                          {['DESCRIÇÃO', 'REFERÊNCIA', 'PREÇO SAMSUNG', 'TELECEL DESC. MANUAL', 'REBATE DESC. AUTOMATICO', 'TRADE IN DESC. AUTOMATICO', 'BOGO / CASH BACK DESC. MANUAL', 'SIP DESC. MANUAL', 'PREÇO FINAL', 'PREÇO PARCELAMENTO 18x'].map((header) => (
+                            <th key={header} className="border-b border-slate-200 px-3 py-3 text-left text-[10px] font-black uppercase tracking-widest text-slate-500">
+                              {header}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {finalRows.map((row, index) => (
+                          <tr key={`${row.descricao}-${row.referencia}-${index}`} className={row.changed ? 'bg-yellow-100' : 'bg-white'}>
+                            <td className="border-b border-slate-100 px-3 py-2 font-black text-slate-900">{row.descricao}</td>
+                            <td className="border-b border-slate-100 px-3 py-2 text-slate-700">{row.referencia}</td>
+                            <td className="border-b border-slate-100 px-3 py-2 text-right">{formatMoney(row.precoSamsung)}</td>
+                            <td className="border-b border-slate-100 px-3 py-2 text-right">{formatMoney(row.descTelecel)}</td>
+                            <td className="border-b border-slate-100 px-3 py-2 text-right">{formatMoney(row.descRebate)}</td>
+                            <td className="border-b border-slate-100 px-3 py-2 text-right">{formatMoney(row.descTradeIn)}</td>
+                            <td className="border-b border-slate-100 px-3 py-2 text-right">{formatMoney(row.descBogo)}</td>
+                            <td className="border-b border-slate-100 px-3 py-2 text-right">{formatMoney(row.descSip)}</td>
+                            <td className="border-b border-slate-100 px-3 py-2 text-right font-black">{formatMoney(row.precoFinal)}</td>
+                            <td className="border-b border-slate-100 px-3 py-2 text-right font-black">{formatMoney(row.preco18x)}</td>
+                          </tr>
+                        ))}
+                        {!finalRows.length && !finalTableLoading && (
+                          <tr>
+                            <td colSpan={10} className="px-4 py-12 text-center text-slate-400">
+                              Nenhum item encontrado para a tabela final.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </div>
             </div>
           </div>
         </div>

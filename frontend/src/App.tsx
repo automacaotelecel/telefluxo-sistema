@@ -24,7 +24,9 @@ import SolicitacoesModule from './components/SolicitacoesModule';
 import Stockout from './components/StockOut';
 import ComparativosModule from './components/ComparativosModule';
 import FluxoComparativoModule from './components/FluxoComparativoModule';
-import ComprasVendas from './components/ComprasVendas'; 
+import ComprasVendas from './components/ComprasVendas';
+import Clark from './components/Clark';
+
 import {
   FileText, CheckCircle, LayoutDashboard, Users, LogOut,
   Calendar, BarChart3, ChevronDown, ChevronRight, ChevronLeft, Circle, Plus,
@@ -72,6 +74,7 @@ function App() {
         localStorage.removeItem('telefluxo_user');
       }
     }
+
     setIsLoading(false);
   }, []);
 
@@ -92,12 +95,11 @@ function App() {
   const userRole = String(user?.role || '').toUpperCase();
   const userEmail = String(user?.email || '').toLowerCase();
   const isAdmin = user?.isAdmin === true || Number(user?.isAdmin) === 1;
+
   const isManager =
     userRole.includes('GERENTE') ||
     userRole.includes('GESTOR');
 
-  // Usuário especial da Samsung: acessa somente a área de Comparativos,
-  // sem virar ADM e sem ganhar acesso a Financeiro, Estoque, Equipe etc.
   const isSamsungUser =
     userRole === 'SAMSUNG' ||
     userEmail === 'analista.samsungtelecel@gmail.com';
@@ -106,8 +108,6 @@ function App() {
   const canViewStock = ['CEO', 'DIRETOR', 'LOJA'].includes(userRole) || isAdmin;
   const canViewFinance = ['CEO', 'DIRETOR', 'ADM'].includes(userRole) || isAdmin;
   const canViewTeam = ['CEO', 'DIRETOR', 'ADM'].includes(userRole) || isAdmin;
-
-  // Comparativos liberado para ADM, CEO, Admin e usuário Samsung específico.
   const canViewComparativos = ['ADM', 'CEO'].includes(userRole) || isAdmin || isSamsungUser;
 
   const canViewComprasVendas = userRole === 'ADM' || isAdmin;
@@ -122,8 +122,6 @@ function App() {
     setCurrentView(view);
     setIsMobileMenuOpen(false);
   };
-
-  const resetExpandedMenus = () => setExpanded(DEFAULT_EXPANDED);
 
   const handleSectionToggle = (key: keyof typeof DEFAULT_EXPANDED) => {
     if (isSidebarCollapsed) {
@@ -145,10 +143,12 @@ function App() {
     comparativos_pdf: 'MONTAR COMPARATIVO',
     comparativos_fluxo: 'FLUXO COMPARATIVO',
     comparativo: 'VENDAS ANUAIS',
-    compras_vendas: 'COMPRAS X VENDAS', 
+    compras_vendas: 'COMPRAS X VENDAS',
   };
 
-  const currentViewLabel = viewTitles[currentView] || currentView.replace(/_/g, ' ').toUpperCase();
+  const currentViewLabel =
+    viewTitles[currentView] ||
+    currentView.replace(/_/g, ' ').toUpperCase();
 
   if (isLoading) {
     return (
@@ -179,7 +179,8 @@ function App() {
         onClick={() => handleNavigate(view)}
         className={`pl-12 pr-4 py-2 cursor-pointer flex items-center gap-2 text-[11px] font-black uppercase tracking-tighter transition-all hover:text-white ${active ? 'text-orange-500' : 'text-slate-500'}`}
       >
-        <Circle size={6} fill={active ? "currentColor" : "transparent"} /> {label}
+        <Circle size={6} fill={active ? "currentColor" : "transparent"} />
+        {label}
       </div>
     );
   };
@@ -202,7 +203,10 @@ function App() {
         <Icon size={18} />
         {!isSidebarCollapsed && <span>{label}</span>}
       </div>
-      {!isSidebarCollapsed && hasChevron && (chevronOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />)}
+
+      {!isSidebarCollapsed && hasChevron && (
+        chevronOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />
+      )}
     </div>
   );
 
@@ -224,9 +228,14 @@ function App() {
       >
         <div className={`border-b border-slate-800 flex items-center justify-between ${isSidebarCollapsed ? 'p-4' : 'p-6'}`}>
           <div className={`flex items-center gap-2 ${isSidebarCollapsed ? 'justify-center w-full md:w-auto' : ''}`}>
-            <div className="w-8 h-8 bg-orange-600 rounded text-white flex items-center justify-center font-black italic shadow-lg shrink-0">T</div>
+            <div className="w-8 h-8 bg-orange-600 rounded text-white flex items-center justify-center font-black italic shadow-lg shrink-0">
+              T
+            </div>
+
             {!isSidebarCollapsed && (
-              <span className="tracking-tighter font-black">TELE<span className="text-orange-500">FLUXO</span></span>
+              <span className="tracking-tighter font-black">
+                TELE<span className="text-orange-500">FLUXO</span>
+              </span>
             )}
           </div>
 
@@ -238,7 +247,11 @@ function App() {
             >
               {isSidebarCollapsed ? <ChevronRight size={20} /> : <ChevronLeft size={20} />}
             </button>
-            <button onClick={() => setIsMobileMenuOpen(false)} className="md:hidden text-slate-400 hover:text-white">
+
+            <button
+              onClick={() => setIsMobileMenuOpen(false)}
+              className="md:hidden text-slate-400 hover:text-white"
+            >
               <X size={24} />
             </button>
           </div>
@@ -264,6 +277,7 @@ function App() {
                 chevronOpen={expanded.general}
                 customClass="bg-slate-800 text-white"
               />
+
               {expanded.general && !isSidebarCollapsed && (
                 <div className="mt-1 space-y-1">
                   <SubMenuItem label="Total" view="all" active={currentView === 'all'} />
@@ -285,6 +299,7 @@ function App() {
               chevronOpen={expanded.mine}
               customClass="bg-slate-800 text-white"
             />
+
             {expanded.mine && !isSidebarCollapsed && (
               <div className="mt-1 space-y-1">
                 <SubMenuItem label="Pendentes" view="mine_pending" active={currentView === 'mine_pending'} />
@@ -312,6 +327,7 @@ function App() {
               chevronOpen={expanded.info}
               customClass="bg-slate-800 text-white"
             />
+
             {expanded.info && !isSidebarCollapsed && (
               <div className="mt-1 space-y-1">
                 {(isAdmin || isManager) ? (
@@ -344,6 +360,7 @@ function App() {
                 chevronOpen={expanded.comparativos}
                 customClass="bg-slate-800 text-white shadow-lg"
               />
+
               {expanded.comparativos && !isSidebarCollapsed && (
                 <div className="mt-1 space-y-1">
                   <SubMenuItem label="Montar Comparativo" view="comparativos_pdf" active={currentView === 'comparativos_pdf'} />
@@ -364,6 +381,7 @@ function App() {
                 chevronOpen={expanded.finance}
                 customClass="bg-emerald-600 text-white shadow-lg"
               />
+
               {expanded.finance && !isSidebarCollapsed && (
                 <div className="mt-1 space-y-1">
                   <SubMenuItem label="Contas a pagar e receber" view="finance" active={currentView === 'finance'} />
@@ -384,12 +402,13 @@ function App() {
                 chevronOpen={expanded.stock}
                 customClass="bg-indigo-600 text-white shadow-lg"
               />
+
               {expanded.stock && !isSidebarCollapsed && (
                 <div className="mt-1 space-y-1">
                   <SubMenuItem label="Visão Geral" view="stock" active={currentView === 'stock'} />
                   <SubMenuItem label="Visão Detalhada" view="estoque_detalhado" active={currentView === 'estoque_detalhado'} />
                   <SubMenuItem label="Estoque x Vendas" view="estoque_vendas" active={currentView === 'estoque_vendas'} />
-                  
+
                   {isAdmin && (
                     <SubMenuItem label="Compras x Vendas" view="compras_vendas" active={currentView === 'compras_vendas'} />
                   )}
@@ -397,7 +416,7 @@ function App() {
                   <SubMenuItem label="Estoque Inteligente" view="estoque_inteligente" active={currentView === 'estoque_inteligente'} />
                   <SubMenuItem label="Stockout" view="stockout" active={currentView === 'stockout'} />
                   <SubMenuItem label="Auditoria Lojas" view="auditoria_lojas" active={currentView === 'auditoria_lojas'} />
-                  </div>
+                </div>
               )}
             </div>
           )}
@@ -413,6 +432,7 @@ function App() {
                 chevronOpen={expanded.sales}
                 customClass="bg-blue-600 text-white shadow-lg"
               />
+
               {expanded.sales && !isSidebarCollapsed && (
                 <div className="mt-1 space-y-1">
                   <SubMenuItem label="Vendas Mensal" view="sales_dash" active={currentView === 'sales_dash'} />
@@ -461,8 +481,11 @@ function App() {
           {canViewTeam && (
             <div className={`pt-4 mt-4 border-t border-slate-800 ${isSidebarCollapsed ? 'px-0' : ''}`}>
               {!isSidebarCollapsed && (
-                <p className="px-3 text-[10px] font-black text-slate-500 uppercase mb-2 tracking-widest">Configurações</p>
+                <p className="px-3 text-[10px] font-black text-slate-500 uppercase mb-2 tracking-widest">
+                  Configurações
+                </p>
               )}
+
               <NavButton
                 icon={Users}
                 label="Equipe"
@@ -481,12 +504,21 @@ function App() {
 
           {!isSidebarCollapsed && (
             <div className="flex-1 overflow-hidden">
-              <span className="text-sm font-bold truncate block uppercase tracking-tighter">{user?.name}</span>
-              <span className="text-[9px] text-slate-500 font-black uppercase truncate block tracking-widest italic">{user?.role}</span>
+              <span className="text-sm font-bold truncate block uppercase tracking-tighter">
+                {user?.name}
+              </span>
+
+              <span className="text-[9px] text-slate-500 font-black uppercase truncate block tracking-widest italic">
+                {user?.role}
+              </span>
             </div>
           )}
 
-          <button onClick={handleLogout} title="Sair" className="text-slate-500 hover:text-red-500 shrink-0">
+          <button
+            onClick={handleLogout}
+            title="Sair"
+            className="text-slate-500 hover:text-red-500 shrink-0"
+          >
             <LogOut size={18} />
           </button>
         </div>
@@ -536,7 +568,11 @@ function App() {
           ) : currentView.startsWith('dept_') ? (
             <DeptBulletin department={currentView.replace('dept_', '')} currentUser={user} />
           ) : currentView === 'detail' && selectedTask ? (
-            <TaskDashboard task={selectedTask} currentUser={user} onBack={() => setCurrentView('home')} />
+            <TaskDashboard
+              task={selectedTask}
+              currentUser={user}
+              onBack={() => setCurrentView('home')}
+            />
           ) : currentView === 'agenda' ? (
             <Agenda currentUser={user} />
           ) : currentView === 'manager_dash' ? (
@@ -565,22 +601,46 @@ function App() {
             <div className="flex-1 p-4 md:p-8 overflow-y-auto">
               <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
                 <div>
-                  <h2 className="text-2xl font-black uppercase tracking-tight">Equipe Telecel</h2>
-                  <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest">Gestão de acessos e cargos do sistema.</p>
+                  <h2 className="text-2xl font-black uppercase tracking-tight">
+                    Equipe Telecel
+                  </h2>
+
+                  <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest">
+                    Gestão de acessos e cargos do sistema.
+                  </p>
                 </div>
-                <button onClick={() => setIsUserModalOpen(true)} className="w-full md:w-auto bg-slate-900 text-white px-6 py-3 rounded-2xl font-black text-xs uppercase flex gap-2 hover:bg-slate-800 shadow-lg transition-all active:scale-95 justify-center items-center">
-                  <Plus size={16} /> Novo Membro
+
+                <button
+                  onClick={() => setIsUserModalOpen(true)}
+                  className="w-full md:w-auto bg-slate-900 text-white px-6 py-3 rounded-2xl font-black text-xs uppercase flex gap-2 hover:bg-slate-800 shadow-lg transition-all active:scale-95 justify-center items-center"
+                >
+                  <Plus size={16} />
+                  Novo Membro
                 </button>
               </div>
+
               <UserList />
             </div>
           ) : (
-            <TaskList onOpenTask={(task: any) => { setSelectedTask(task); setCurrentView('detail'); }} viewMode={currentView} currentUser={user} />
+            <TaskList
+              onOpenTask={(task: any) => {
+                setSelectedTask(task);
+                setCurrentView('detail');
+              }}
+              viewMode={currentView}
+              currentUser={user}
+            />
           )}
         </div>
       </main>
 
-      <NewUserModal isOpen={isUserModalOpen} onClose={() => setIsUserModalOpen(false)} />
+      <Clark currentUser={user} />
+
+      <NewUserModal
+        isOpen={isUserModalOpen}
+        onClose={() => setIsUserModalOpen(false)}
+      />
+
       {isNewTaskModalOpen && (
         <NewTaskModal
           isOpen={isNewTaskModalOpen}
