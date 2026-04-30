@@ -1027,21 +1027,41 @@ async function getSalesFilter(userId: string, tableType: 'vendas' | 'kpi'): Prom
 // CLARK IA - ASSISTENTE INTERNO DO TELEFLUXO
 // =======================================================
 
+// =======================================================
+// CLARK IA - ASSISTENTE INTERNO DO TELEFLUXO
+// =======================================================
+
 type ClarkIntent =
-  | 'vendas_hoje'
-  | 'vendas_mes'
-  | 'ranking_lojas_mes'
-  | 'ranking_vendedores_mes'
-  | 'categoria_mes'
+  | 'vendas_resumo'
+  | 'ranking_lojas_vendas'
+  | 'ranking_vendedores_vendas'
+  | 'ranking_categorias_vendas'
+  | 'ranking_vendedores_seguros'
+  | 'ranking_lojas_seguros'
+  | 'estoque_produto_lojas'
   | 'produto_maior_estoque'
   | 'ranking_estoque_produtos'
   | 'ajuda';
+
+type ClarkPeriodo = {
+  inicio: string;
+  fim: string;
+  descricao: string;
+};
 
 type ClarkFiltros = {
   limite: number;
   categoriaOriginal: string | undefined;
   categoriaCanonica: string | undefined;
   aliasesCategoria: string[];
+  termoProduto: string;
+  tokensProduto: string[];
+};
+
+type ClarkUserScope = {
+  isSuperUser: boolean;
+  allowedStoreNames: string[];
+  allowedCnpjs: string[];
 };
 
 function todayIsoSaoPaulo() {
@@ -1053,11 +1073,6 @@ function todayIsoSaoPaulo() {
   }).format(new Date());
 }
 
-function monthStartIsoSaoPaulo() {
-  const today = todayIsoSaoPaulo();
-  return `${today.slice(0, 7)}-01`;
-}
-
 function formatBRL(value: any) {
   const n = Number(value || 0);
 
@@ -1067,9 +1082,9 @@ function formatBRL(value: any) {
   });
 }
 
-function traduzirCnpjParaLoja(cnpj: any) {
-  const key = String(cnpj || '').replace(/\D/g, '');
-  return LOJAS_MAP_GLOBAL[key] || String(cnpj || 'Loja não identificada');
+function safeNumberClark(value: any, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
 }
 
 function normalizarTextoClark(value: any) {
@@ -1077,74 +1092,408 @@ function normalizarTextoClark(value: any) {
     .toUpperCase()
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^\w\s\-\/]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function normalizarTokenClark(value: any) {
+  let t = normalizarTextoClark(value)
+    .replace(/[^\w]/g, '')
+    .trim();
+
+  if (t.length > 3 && t.endsWith('S')) {
+    t = t.slice(0, -1);
+  }
+
+  return t;
+}
+
+function normalizarLojaClark(value: any) {
+  let loja = normalizarTextoClark(value);
+
+  loja = loja.replace(/^SAMSUNG\s*-\s*MRF\s*-\s*/i, '').trim();
+  loja = loja.replace(/^SSG\s+/i, '').trim();
+
+  const corrigida = CORRECAO_NOMES_SERVER[loja];
+  if (corrigida) return normalizarTextoClark(corrigida);
+
+  return loja;
+}
+
+function cnpjLimpoClark(value: any) {
+  return String(value || '').replace(/\D/g, '');
+}
+
+function traduzirCnpjParaLoja(cnpj: any) {
+  const key = cnpjLimpoClark(cnpj);
+  return LOJAS_MAP_GLOBAL[key] || '';
+}
+
+function montarReverseLojasClark() {
+  const reverse: Record<string, string> = {};
+
+  Object.entries(LOJAS_MAP_GLOBAL).forEach(([cnpj, nome]) => {
+    reverse[normalizarLojaClark(nome)] = cnpj;
+  });
+
+  return reverse;
+}
+
+const REVERSE_LOJAS_CLARK = montarReverseLojasClark();
+
+function resolverNomeLojaClark(row: any) {
+  const byCnpj = traduzirCnpjParaLoja(row?.cnpj_empresa || row?.cnpj || '');
+
+  if (byCnpj) return byCnpj;
+
+  const lojaRaw = String(row?.loja || row?.storeName || row?.nome_fantasia || '').trim();
+
+  if (lojaRaw) {
+    const lojaNorm = normalizarLojaClark(lojaRaw);
+    const corrigida = CORRECAO_NOMES_SERVER[lojaNorm];
+
+    if (corrigida) return corrigida;
+
+    const cnpj = REVERSE_LOJAS_CLARK[lojaNorm];
+    if (cnpj && LOJAS_MAP_GLOBAL[cnpj]) return LOJAS_MAP_GLOBAL[cnpj];
+
+    return lojaRaw.toUpperCase();
+  }
+
+  return 'Loja não identificada';
+}
+
+function obterUltimoDiaMes(ano: number, mes: number) {
+  return new Date(ano, mes, 0).getDate();
+}
+
+function parseDataBRParaIsoClark(value: string) {
+  const m = String(value || '').match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+
+  if (!m) return '';
+
+  const diaRaw = m[1] || '';
+  const mesRaw = m[2] || '';
+  let anoRaw = m[3] || '';
+
+  if (!diaRaw || !mesRaw || !anoRaw) return '';
+
+  const dia = diaRaw.padStart(2, '0');
+  const mes = mesRaw.padStart(2, '0');
+
+  if (anoRaw.length === 2) {
+    anoRaw = `20${anoRaw}`;
+  }
+
+  return `${anoRaw}-${mes}-${dia}`;
+}
+
+function extrairPeriodoClark(pergunta: string): ClarkPeriodo {
+  const hoje = todayIsoSaoPaulo();
+  const anoAtual = Number(hoje.slice(0, 4));
+  const mesAtual = Number(hoje.slice(5, 7));
+  const inicioMesAtual = `${hoje.slice(0, 7)}-01`;
+
+  const perguntaOriginal = String(pergunta || '');
+  const texto = normalizarTextoClark(perguntaOriginal);
+
+  const datasBR = perguntaOriginal.match(/\b\d{1,2}\/\d{1,2}\/\d{2,4}\b/g) || [];
+
+  if (datasBR.length >= 2) {
+  const dataInicioBR = datasBR[0] || '';
+  const dataFimBR = datasBR[1] || '';
+
+  const inicio = parseDataBRParaIsoClark(dataInicioBR);
+  const fim = parseDataBRParaIsoClark(dataFimBR);
+
+  if (inicio && fim) {
+    return {
+      inicio,
+      fim,
+      descricao: `${dataInicioBR} até ${dataFimBR}`,
+    };
+  }
+}
+
+  const datasIso = perguntaOriginal.match(/\b\d{4}-\d{2}-\d{2}\b/g) || [];
+
+  if (datasIso.length >= 2) {
+  const dataInicioIso = datasIso[0] || '';
+  const dataFimIso = datasIso[1] || '';
+
+  if (dataInicioIso && dataFimIso) {
+    return {
+      inicio: dataInicioIso,
+      fim: dataFimIso,
+      descricao: `${dataInicioIso} até ${dataFimIso}`,
+    };
+  }
+}
+
+  if (texto.includes('HOJE')) {
+    return {
+      inicio: hoje,
+      fim: hoje,
+      descricao: `Hoje (${hoje})`,
+    };
+  }
+
+  if (texto.includes('ONTEM')) {
+    const d = new Date(`${hoje}T00:00:00`);
+    d.setDate(d.getDate() - 1);
+    const ontem = d.toISOString().slice(0, 10);
+
+    return {
+      inicio: ontem,
+      fim: ontem,
+      descricao: `Ontem (${ontem})`,
+    };
+  }
+
+  const meses: Record<string, number> = {
+    JANEIRO: 1,
+    FEVEREIRO: 2,
+    MARCO: 3,
+    MARÇO: 3,
+    ABRIL: 4,
+    MAIO: 5,
+    JUNHO: 6,
+    JULHO: 7,
+    AGOSTO: 8,
+    SETEMBRO: 9,
+    OUTUBRO: 10,
+    NOVEMBRO: 11,
+    DEZEMBRO: 12,
+  };
+
+  for (const [nomeMes, numeroMes] of Object.entries(meses)) {
+    if (texto.includes(nomeMes)) {
+      const anoMatch = texto.match(/\b(20\d{2})\b/);
+      const ano = anoMatch ? Number(anoMatch[1]) : anoAtual;
+      const ultimoDia = obterUltimoDiaMes(ano, numeroMes);
+
+      return {
+        inicio: `${ano}-${String(numeroMes).padStart(2, '0')}-01`,
+        fim: `${ano}-${String(numeroMes).padStart(2, '0')}-${String(ultimoDia).padStart(2, '0')}`,
+        descricao: `${nomeMes} de ${ano}`,
+      };
+    }
+  }
+
+  if (
+    texto.includes('ANO') ||
+    texto.includes('ANUAL') ||
+    texto.includes('2026') ||
+    texto.includes('2025')
+  ) {
+    const anoMatch = texto.match(/\b(20\d{2})\b/);
+    const ano = anoMatch ? Number(anoMatch[1]) : anoAtual;
+
+    const fimAno = ano === anoAtual ? hoje : `${ano}-12-31`;
+
+    return {
+      inicio: `${ano}-01-01`,
+      fim: fimAno,
+      descricao: `Ano ${ano} (${ano}-01-01 até ${fimAno})`,
+    };
+  }
+
+  return {
+    inicio: inicioMesAtual,
+    fim: hoje,
+    descricao: `Mês atual (${inicioMesAtual} até ${hoje})`,
+  };
+}
+
+function extrairCategoriaClark(textoNormalizado: string) {
+  if (
+    textoNormalizado.includes('SMARTPHONE') ||
+    textoNormalizado.includes('SMARTPHONES') ||
+    textoNormalizado.includes('APARELHO') ||
+    textoNormalizado.includes('APARELHOS') ||
+    textoNormalizado.includes('CELULAR') ||
+    textoNormalizado.includes('CELULARES')
+  ) {
+    return {
+      categoriaOriginal: 'SMARTPHONES',
+      categoriaCanonica: 'SMARTPHONES',
+      aliasesCategoria: ['SMARTPHONE', 'SMARTPHONES', 'APARELHO', 'APARELHOS', 'CELULAR', 'CELULARES'],
+    };
+  }
+
+  if (
+    textoNormalizado.includes('ACESSORIO') ||
+    textoNormalizado.includes('ACESSORIOS') ||
+    textoNormalizado.includes('ACESSÓRIO') ||
+    textoNormalizado.includes('ACESSÓRIOS')
+  ) {
+    return {
+      categoriaOriginal: 'ACESSÓRIOS',
+      categoriaCanonica: 'ACESSÓRIOS',
+      aliasesCategoria: ['ACESSORIO', 'ACESSORIOS', 'ACESSÓRIO', 'ACESSÓRIOS'],
+    };
+  }
+
+  if (
+    textoNormalizado.includes('WEARABLE') ||
+    textoNormalizado.includes('WEARABLES') ||
+    textoNormalizado.includes('RELOGIO') ||
+    textoNormalizado.includes('RELÓGIO') ||
+    textoNormalizado.includes('BUDS') ||
+    textoNormalizado.includes('FONE') ||
+    textoNormalizado.includes('FONES')
+  ) {
+    return {
+      categoriaOriginal: 'WEARABLES',
+      categoriaCanonica: 'WEARABLES',
+      aliasesCategoria: ['WEARABLE', 'WEARABLES', 'RELOGIO', 'RELÓGIO', 'BUDS', 'FONE', 'FONES'],
+    };
+  }
+
+  if (
+    textoNormalizado.includes('TABLET') ||
+    textoNormalizado.includes('TABLETS')
+  ) {
+    return {
+      categoriaOriginal: 'TABLETS',
+      categoriaCanonica: 'TABLETS',
+      aliasesCategoria: ['TABLET', 'TABLETS'],
+    };
+  }
+
+  return {
+    categoriaOriginal: undefined as string | undefined,
+    categoriaCanonica: undefined as string | undefined,
+    aliasesCategoria: [] as string[],
+  };
+}
+
+function extrairTermoProdutoClark(pergunta: string) {
+  const original = String(pergunta || '');
+
+  const entreAspas =
+    original.match(/"([^"]+)"/)?.[1] ||
+    original.match(/'([^']+)'/)?.[1] ||
+    '';
+
+  if (entreAspas.trim()) {
+    return entreAspas.trim();
+  }
+
+  let texto = normalizarTextoClark(original);
+
+  const frasesRemover = [
+    'ME LISTE AS LOJAS QUE TEM',
+    'ME LISTE AS LOJAS QUE TÊM',
+    'LISTE AS LOJAS QUE TEM',
+    'LISTE AS LOJAS QUE TÊM',
+    'QUAIS LOJAS TEM',
+    'QUAIS LOJAS TÊM',
+    'QUAL LOJA TEM',
+    'QUAL LOJA TÊM',
+    'EM ESTOQUE',
+    'NA CATEGORIA',
+    'DA CATEGORIA',
+    'CATEGORIA',
+    'SMARTPHONES',
+    'SMARTPHONE',
+    'APARELHOS',
+    'APARELHO',
+    'ACESSORIOS',
+    'ACESSORIO',
+    'WEARABLES',
+    'WEARABLE',
+    'TABLETS',
+    'TABLET',
+  ];
+
+  for (const f of frasesRemover) {
+    texto = texto.replace(f, ' ');
+  }
+
+  texto = texto.replace(/\s+/g, ' ').trim();
+
+  const palavrasIgnorar = new Set([
+    'ME',
+    'LISTE',
+    'LOJAS',
+    'LOJA',
+    'QUE',
+    'TEM',
+    'TÊM',
+    'QUAL',
+    'QUAIS',
+    'PRODUTO',
+    'PRODUTOS',
+    'MODELO',
+    'MODELOS',
+    'ESTOQUE',
+    'HOJE',
+    'COM',
+    'MAIOR',
+    'MAIORES',
+    'TOP',
+    'OS',
+    'AS',
+    'DE',
+    'DO',
+    'DA',
+    'DOS',
+    'DAS',
+    'E',
+    'EM',
+    'NO',
+    'NA',
+  ]);
+
+  const tokens = texto
+    .split(' ')
+    .map((t) => t.trim())
+    .filter(Boolean)
+    .filter((t) => !palavrasIgnorar.has(t));
+
+  if (tokens.length >= 2) return tokens.join(' ');
+
+  return '';
 }
 
 function extrairFiltrosClark(pergunta: string): ClarkFiltros {
   const texto = normalizarTextoClark(pergunta);
 
-  const numeroEncontrado = texto.match(/\b(\d{1,2})\b/);
+  const numeroEncontrado =
+    texto.match(/\bTOP\s+(\d{1,2})\b/) ||
+    texto.match(/\b(\d{1,2})\s+MAIORES\b/) ||
+    texto.match(/\b(\d{1,2})\s+MODELOS\b/) ||
+    texto.match(/\b(\d{1,2})\s+PRODUTOS\b/) ||
+    texto.match(/\b(\d{1,2})\b/);
+
   let limite = numeroEncontrado ? Number(numeroEncontrado[1]) : 10;
 
   if (!Number.isFinite(limite) || limite <= 0) limite = 10;
-  if (limite > 20) limite = 20;
+  if (limite > 30) limite = 30;
 
-  let categoriaOriginal: string | undefined;
-  let categoriaCanonica: string | undefined;
-  let aliasesCategoria: string[] = [];
+  const categoria = extrairCategoriaClark(texto);
+  const termoProduto = extrairTermoProdutoClark(pergunta);
 
-  if (
-    texto.includes('SMARTPHONE') ||
-    texto.includes('SMARTPHONES') ||
-    texto.includes('APARELHO') ||
-    texto.includes('APARELHOS') ||
-    texto.includes('CELULAR') ||
-    texto.includes('CELULARES')
-  ) {
-    categoriaOriginal = 'SMARTPHONES';
-    categoriaCanonica = 'SMARTPHONES';
-    aliasesCategoria = ['SMARTPHONE', 'SMARTPHONES', 'APARELHO', 'APARELHOS', 'CELULAR', 'CELULARES'];
-  }
+  const palavrasIgnorar = new Set([
+    'GALAXY', // não ignora no matching final? Remova daqui se quiser exigir "GALAXY".
+  ]);
 
-  else if (
-    texto.includes('ACESSORIO') ||
-    texto.includes('ACESSORIOS') ||
-    texto.includes('ACESSÓRIO') ||
-    texto.includes('ACESSÓRIOS')
-  ) {
-    categoriaOriginal = 'ACESSÓRIOS';
-    categoriaCanonica = 'ACESSÓRIOS';
-    aliasesCategoria = ['ACESSORIO', 'ACESSORIOS', 'ACESSÓRIO', 'ACESSÓRIOS'];
-  }
-
-  else if (
-    texto.includes('WEARABLE') ||
-    texto.includes('WEARABLES') ||
-    texto.includes('RELOGIO') ||
-    texto.includes('RELÓGIO') ||
-    texto.includes('BUDS') ||
-    texto.includes('FONE')
-  ) {
-    categoriaOriginal = 'WEARABLES';
-    categoriaCanonica = 'WEARABLES';
-    aliasesCategoria = ['WEARABLE', 'WEARABLES', 'RELOGIO', 'RELÓGIO', 'BUDS', 'FONE', 'FONES'];
-  }
-
-  else if (
-    texto.includes('TABLET') ||
-    texto.includes('TABLETS')
-  ) {
-    categoriaOriginal = 'TABLETS';
-    categoriaCanonica = 'TABLETS';
-    aliasesCategoria = ['TABLET', 'TABLETS'];
-  }
+  const tokensProduto = termoProduto
+    .split(/\s+/)
+    .map(normalizarTokenClark)
+    .filter(Boolean)
+    .filter((t) => t.length >= 2)
+    .filter((t) => !palavrasIgnorar.has(t));
 
   return {
     limite,
-    categoriaOriginal,
-    categoriaCanonica,
-    aliasesCategoria,
+    categoriaOriginal: categoria.categoriaOriginal,
+    categoriaCanonica: categoria.categoriaCanonica,
+    aliasesCategoria: categoria.aliasesCategoria,
+    termoProduto,
+    tokensProduto,
   };
 }
 
@@ -1170,6 +1519,26 @@ function detectarIntencaoClark(pergunta: string): ClarkIntent {
     p.includes('temos em loja') ||
     p.includes('temos nas lojas');
 
+  const falaDeSeguro =
+    p.includes('seguro') ||
+    p.includes('seguros') ||
+    p.includes('premio') ||
+    p.includes('prêmio');
+
+  const falaDeVendedor =
+    p.includes('vendedor') ||
+    p.includes('vendedores');
+
+  const falaDeLoja =
+    p.includes('loja') ||
+    p.includes('lojas') ||
+    p.includes('unidade') ||
+    p.includes('unidades');
+
+  if (falaDeEstoque && falaDeLoja && !p.includes('ranking') && !p.includes('maiores')) {
+    return 'estoque_produto_lojas';
+  }
+
   if (
     falaDeEstoque &&
     (
@@ -1190,22 +1559,30 @@ function detectarIntencaoClark(pergunta: string): ClarkIntent {
     return 'ranking_estoque_produtos';
   }
 
-  if (
-    p.includes('ranking') &&
-    (p.includes('vendedor') || p.includes('vendedores'))
-  ) {
-    return 'ranking_vendedores_mes';
+  if (falaDeSeguro && falaDeVendedor) {
+    return 'ranking_vendedores_seguros';
+  }
+
+  if (falaDeSeguro && falaDeLoja) {
+    return 'ranking_lojas_seguros';
   }
 
   if (
     p.includes('ranking') &&
-    (p.includes('loja') || p.includes('lojas'))
+    falaDeVendedor
   ) {
-    return 'ranking_lojas_mes';
+    return 'ranking_vendedores_vendas';
   }
 
   if (
-    (p.includes('loja') || p.includes('lojas')) &&
+    p.includes('ranking') &&
+    falaDeLoja
+  ) {
+    return 'ranking_lojas_vendas';
+  }
+
+  if (
+    falaDeLoja &&
     (
       p.includes('mais vendeu') ||
       p.includes('melhor') ||
@@ -1213,11 +1590,11 @@ function detectarIntencaoClark(pergunta: string): ClarkIntent {
       p.includes('primeira')
     )
   ) {
-    return 'ranking_lojas_mes';
+    return 'ranking_lojas_vendas';
   }
 
   if (
-    (p.includes('vendedor') || p.includes('vendedores')) &&
+    falaDeVendedor &&
     (
       p.includes('mais vendeu') ||
       p.includes('melhor') ||
@@ -1225,7 +1602,7 @@ function detectarIntencaoClark(pergunta: string): ClarkIntent {
       p.includes('primeiro')
     )
   ) {
-    return 'ranking_vendedores_mes';
+    return 'ranking_vendedores_vendas';
   }
 
   if (
@@ -1234,147 +1611,108 @@ function detectarIntencaoClark(pergunta: string): ClarkIntent {
     p.includes('produto mais vendido') ||
     p.includes('o que mais vendeu')
   ) {
-    return 'categoria_mes';
-  }
-
-  if (p.includes('hoje') && falaDeVenda) {
-    return 'vendas_hoje';
-  }
-
-  if (
-    p.includes('mes') ||
-    p.includes('mensal') ||
-    p.includes('esse mes') ||
-    p.includes('este mes') ||
-    p.includes('mes atual')
-  ) {
-    return 'vendas_mes';
+    return 'ranking_categorias_vendas';
   }
 
   if (falaDeVenda) {
-    return 'vendas_mes';
+    return 'vendas_resumo';
   }
 
   return 'ajuda';
 }
 
-async function consultarResumoVendasClark(
-  db: any,
-  securityFilter: string,
-  startDate: string,
-  endDate: string
-) {
-  return await db.get(
-    `
-      SELECT
-        COALESCE(SUM(total_liquido), 0) AS total_vendas,
-        COALESCE(SUM(quantidade), 0) AS total_pecas,
-        CASE
-          WHEN COALESCE(SUM(quantidade), 0) > 0
-          THEN COALESCE(SUM(total_liquido), 0) / COALESCE(SUM(quantidade), 0)
-          ELSE 0
-        END AS ticket_medio
-      FROM vendas
-      WHERE ${securityFilter}
-        AND data_emissao >= ?
-        AND data_emissao <= ?
-    `,
-    [startDate, endDate]
-  );
+async function obterEscopoUsuarioClark(userId: string): Promise<ClarkUserScope> {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+    });
+
+    if (!user) {
+      return {
+        isSuperUser: false,
+        allowedStoreNames: [],
+        allowedCnpjs: [],
+      };
+    }
+
+    const superRoles = [
+      'CEO',
+      'DIRETOR',
+      'ADM',
+      'ADMIN',
+      'GESTOR',
+      'SÓCIO',
+      'SOCIO',
+      'MASTER',
+    ];
+
+    const userRole = String(user.role || '').toUpperCase();
+
+    const isSuperUser =
+      Boolean(user.isAdmin) ||
+      superRoles.includes(userRole);
+
+    const lojasTexto = [
+      String(user.allowedStores || ''),
+      String(user.operation || ''),
+    ]
+      .filter(Boolean)
+      .join(',');
+
+    const allowedStoreNames = lojasTexto
+      .split(',')
+      .map((s) => normalizarLojaClark(s))
+      .map((s) => {
+        const corrigido = CORRECAO_NOMES_SERVER[s];
+        return corrigido ? normalizarLojaClark(corrigido) : s;
+      })
+      .filter((loja): loja is string => Boolean(loja));
+
+    const allowedCnpjs = allowedStoreNames
+      .map((loja) => REVERSE_LOJAS_CLARK[loja])
+      .filter((cnpj): cnpj is string => Boolean(cnpj));
+
+    return {
+      isSuperUser,
+      allowedStoreNames,
+      allowedCnpjs,
+    };
+  } catch (error) {
+    console.error('❌ Erro ao obter escopo da Clark:', error);
+
+    return {
+      isSuperUser: false,
+      allowedStoreNames: [],
+      allowedCnpjs: [],
+    };
+  }
 }
 
-async function consultarRankingLojasClark(
-  db: any,
-  securityFilter: string,
-  startDate: string,
-  endDate: string
-) {
-  return await db.all(
-    `
-      SELECT
-        cnpj_empresa,
-        COALESCE(SUM(total_liquido), 0) AS total_vendas,
-        COALESCE(SUM(quantidade), 0) AS total_pecas,
-        CASE
-          WHEN COALESCE(SUM(quantidade), 0) > 0
-          THEN COALESCE(SUM(total_liquido), 0) / COALESCE(SUM(quantidade), 0)
-          ELSE 0
-        END AS ticket_medio
-      FROM vendas
-      WHERE ${securityFilter}
-        AND data_emissao >= ?
-        AND data_emissao <= ?
-      GROUP BY cnpj_empresa
-      ORDER BY total_vendas DESC
-      LIMIT 10
-    `,
-    [startDate, endDate]
-  );
+function rowPermitidaClark(row: any, scope: ClarkUserScope) {
+  if (scope.isSuperUser) return true;
+
+  const cnpj = cnpjLimpoClark(row?.cnpj_empresa || row?.cnpj || '');
+  const loja = normalizarLojaClark(row?.loja || row?.storeName || row?.nome_fantasia || '');
+
+  if (cnpj && scope.allowedCnpjs.includes(cnpj)) return true;
+
+  if (loja && scope.allowedStoreNames.length) {
+    return scope.allowedStoreNames.some((permitida) => {
+      return loja === permitida || loja.includes(permitida) || permitida.includes(loja);
+    });
+  }
+
+  return false;
 }
 
-async function consultarRankingVendedoresClark(
-  db: any,
-  securityFilter: string,
-  startDate: string,
-  endDate: string
-) {
-  return await db.all(
-    `
-      SELECT
-        nome_vendedor,
-        cnpj_empresa,
-        COALESCE(SUM(total_liquido), 0) AS total_vendas,
-        COALESCE(SUM(quantidade), 0) AS total_pecas,
-        CASE
-          WHEN COALESCE(SUM(quantidade), 0) > 0
-          THEN COALESCE(SUM(total_liquido), 0) / COALESCE(SUM(quantidade), 0)
-          ELSE 0
-        END AS ticket_medio
-      FROM vendas
-      WHERE ${securityFilter}
-        AND data_emissao >= ?
-        AND data_emissao <= ?
-        AND nome_vendedor IS NOT NULL
-        AND TRIM(nome_vendedor) <> ''
-      GROUP BY nome_vendedor, cnpj_empresa
-      ORDER BY total_vendas DESC
-      LIMIT 10
-    `,
-    [startDate, endDate]
-  );
-}
-
-async function consultarCategoriasClark(
-  db: any,
-  securityFilter: string,
-  startDate: string,
-  endDate: string
-) {
-  return await db.all(
-    `
-      SELECT
-        COALESCE(familia, 'OUTROS') AS familia,
-        COALESCE(SUM(total_liquido), 0) AS total_vendas,
-        COALESCE(SUM(quantidade), 0) AS total_pecas
-      FROM vendas
-      WHERE ${securityFilter}
-        AND data_emissao >= ?
-        AND data_emissao <= ?
-      GROUP BY COALESCE(familia, 'OUTROS')
-      ORDER BY total_vendas DESC
-      LIMIT 10
-    `,
-    [startDate, endDate]
-  );
-}
-
-function categoriaEstoqueConfere(categoriaItem: any, filtros: ClarkFiltros) {
+function categoriaEstoqueConfereClark(categoriaItem: any, filtros: ClarkFiltros) {
   if (!filtros.aliasesCategoria.length) return true;
 
   const categoriaNormalizada = normalizarTextoClark(categoriaItem);
 
   return filtros.aliasesCategoria.some((alias) => {
     const aliasNormalizado = normalizarTextoClark(alias);
+
     return (
       categoriaNormalizada === aliasNormalizado ||
       categoriaNormalizada.includes(aliasNormalizado) ||
@@ -1383,37 +1721,359 @@ function categoriaEstoqueConfere(categoriaItem: any, filtros: ClarkFiltros) {
   });
 }
 
-async function consultarRankingEstoqueProdutosClark(
+async function abrirDbAnualClark() {
+  return await open({
+    filename: ANUAL_DB_PATH,
+    driver: sqlite3.Database,
+  });
+}
+
+async function consultarResumoVendasPeriodoClark(
+  db: any,
+  periodo: ClarkPeriodo,
+  scope: ClarkUserScope
+) {
+  const rows = await db.all(
+    `
+      SELECT
+        loja,
+        cnpj_empresa,
+        regiao,
+        COALESCE(SUM(total_liquido), 0) AS total_vendas,
+        COALESCE(SUM(quantidade), 0) AS total_pecas
+      FROM vendas_anuais
+      WHERE data_emissao >= ?
+        AND data_emissao <= ?
+      GROUP BY loja, cnpj_empresa, regiao
+    `,
+    [periodo.inicio, periodo.fim]
+  );
+
+  const filtradas = (rows as any[]).filter((r) => rowPermitidaClark(r, scope));
+
+  const totalVendas = filtradas.reduce((acc, r) => acc + safeNumberClark(r.total_vendas), 0);
+  const totalPecas = filtradas.reduce((acc, r) => acc + safeNumberClark(r.total_pecas), 0);
+  const ticketMedio = totalPecas > 0 ? totalVendas / totalPecas : 0;
+
+  return {
+    modulo: 'vendas',
+    tipo: 'resumo_periodo',
+    periodo,
+    total_vendas: totalVendas,
+    total_vendas_formatado: formatBRL(totalVendas),
+    total_pecas: totalPecas,
+    ticket_medio: ticketMedio,
+    ticket_medio_formatado: formatBRL(ticketMedio),
+    lojas_analisadas: filtradas.length,
+  };
+}
+
+async function consultarRankingLojasVendasClark(
+  db: any,
+  periodo: ClarkPeriodo,
+  scope: ClarkUserScope,
+  limite: number
+) {
+  const rows = await db.all(
+    `
+      SELECT
+        loja,
+        cnpj_empresa,
+        regiao,
+        COALESCE(SUM(total_liquido), 0) AS total_vendas,
+        COALESCE(SUM(quantidade), 0) AS total_pecas
+      FROM vendas_anuais
+      WHERE data_emissao >= ?
+        AND data_emissao <= ?
+      GROUP BY loja, cnpj_empresa, regiao
+    `,
+    [periodo.inicio, periodo.fim]
+  );
+
+  const ranking = (rows as any[])
+    .filter((r) => rowPermitidaClark(r, scope))
+    .map((r) => {
+      const totalVendas = safeNumberClark(r.total_vendas);
+      const totalPecas = safeNumberClark(r.total_pecas);
+      const ticketMedio = totalPecas > 0 ? totalVendas / totalPecas : 0;
+
+      return {
+        loja: resolverNomeLojaClark(r),
+        cnpj_empresa: cnpjLimpoClark(r.cnpj_empresa),
+        regiao: r.regiao || '',
+        total_vendas: totalVendas,
+        total_vendas_formatado: formatBRL(totalVendas),
+        total_pecas: totalPecas,
+        ticket_medio: ticketMedio,
+        ticket_medio_formatado: formatBRL(ticketMedio),
+      };
+    })
+    .sort((a, b) => b.total_vendas - a.total_vendas)
+    .slice(0, limite)
+    .map((item, index) => ({
+      posicao: index + 1,
+      ...item,
+    }));
+
+  return {
+    modulo: 'vendas',
+    tipo: 'ranking_lojas',
+    periodo,
+    ranking,
+  };
+}
+
+async function consultarRankingVendedoresVendasClark(
+  db: any,
+  periodo: ClarkPeriodo,
+  scope: ClarkUserScope,
+  limite: number
+) {
+  const rows = await db.all(
+    `
+      SELECT
+        nome_vendedor,
+        loja,
+        cnpj_empresa,
+        regiao,
+        COALESCE(SUM(total_liquido), 0) AS total_vendas,
+        COALESCE(SUM(quantidade), 0) AS total_pecas
+      FROM vendas_anuais
+      WHERE data_emissao >= ?
+        AND data_emissao <= ?
+        AND nome_vendedor IS NOT NULL
+        AND TRIM(nome_vendedor) <> ''
+      GROUP BY nome_vendedor, loja, cnpj_empresa, regiao
+    `,
+    [periodo.inicio, periodo.fim]
+  );
+
+  const ranking = (rows as any[])
+    .filter((r) => rowPermitidaClark(r, scope))
+    .map((r) => {
+      const totalVendas = safeNumberClark(r.total_vendas);
+      const totalPecas = safeNumberClark(r.total_pecas);
+      const ticketMedio = totalPecas > 0 ? totalVendas / totalPecas : 0;
+
+      return {
+        vendedor: String(r.nome_vendedor || '').trim(),
+        loja: resolverNomeLojaClark(r),
+        cnpj_empresa: cnpjLimpoClark(r.cnpj_empresa),
+        regiao: r.regiao || '',
+        total_vendas: totalVendas,
+        total_vendas_formatado: formatBRL(totalVendas),
+        total_pecas: totalPecas,
+        ticket_medio: ticketMedio,
+        ticket_medio_formatado: formatBRL(ticketMedio),
+      };
+    })
+    .sort((a, b) => b.total_vendas - a.total_vendas)
+    .slice(0, limite)
+    .map((item, index) => ({
+      posicao: index + 1,
+      ...item,
+    }));
+
+  return {
+    modulo: 'vendas',
+    tipo: 'ranking_vendedores',
+    periodo,
+    ranking,
+  };
+}
+
+async function consultarCategoriasVendasClark(
+  db: any,
+  periodo: ClarkPeriodo,
+  scope: ClarkUserScope,
+  limite: number
+) {
+  const rows = await db.all(
+    `
+      SELECT
+        loja,
+        cnpj_empresa,
+        COALESCE(familia, 'OUTROS') AS familia,
+        COALESCE(SUM(total_liquido), 0) AS total_vendas,
+        COALESCE(SUM(quantidade), 0) AS total_pecas
+      FROM vendas_anuais
+      WHERE data_emissao >= ?
+        AND data_emissao <= ?
+      GROUP BY loja, cnpj_empresa, COALESCE(familia, 'OUTROS')
+    `,
+    [periodo.inicio, periodo.fim]
+  );
+
+  const mapa = new Map<string, any>();
+
+  for (const r of rows as any[]) {
+    if (!rowPermitidaClark(r, scope)) continue;
+
+    const familia = String(r.familia || 'OUTROS').trim() || 'OUTROS';
+
+    if (!mapa.has(familia)) {
+      mapa.set(familia, {
+        familia,
+        total_vendas: 0,
+        total_pecas: 0,
+      });
+    }
+
+    const atual = mapa.get(familia);
+    atual.total_vendas += safeNumberClark(r.total_vendas);
+    atual.total_pecas += safeNumberClark(r.total_pecas);
+  }
+
+  const ranking = Array.from(mapa.values())
+    .sort((a, b) => b.total_vendas - a.total_vendas)
+    .slice(0, limite)
+    .map((item, index) => ({
+      posicao: index + 1,
+      familia: item.familia,
+      total_vendas: item.total_vendas,
+      total_vendas_formatado: formatBRL(item.total_vendas),
+      total_pecas: item.total_pecas,
+    }));
+
+  return {
+    modulo: 'vendas',
+    tipo: 'ranking_categorias',
+    periodo,
+    ranking,
+  };
+}
+
+async function consultarRankingVendedoresSegurosClark(
+  db: any,
+  periodo: ClarkPeriodo,
+  scope: ClarkUserScope,
+  limite: number
+) {
+  const rows = await db.all(
+    `
+      SELECT
+        nome_vendedor,
+        loja,
+        cnpj_empresa,
+        regiao,
+        COALESCE(SUM(premio), 0) AS seguros_total,
+        COALESCE(SUM(qtd), 0) AS seguros_qtd
+      FROM seguros_anuais
+      WHERE data_emissao >= ?
+        AND data_emissao <= ?
+        AND nome_vendedor IS NOT NULL
+        AND TRIM(nome_vendedor) <> ''
+      GROUP BY nome_vendedor, loja, cnpj_empresa, regiao
+    `,
+    [periodo.inicio, periodo.fim]
+  );
+
+  const ranking = (rows as any[])
+    .filter((r) => rowPermitidaClark(r, scope))
+    .map((r) => ({
+      vendedor: String(r.nome_vendedor || '').trim(),
+      loja: resolverNomeLojaClark(r),
+      cnpj_empresa: cnpjLimpoClark(r.cnpj_empresa),
+      regiao: r.regiao || '',
+      seguros_total: safeNumberClark(r.seguros_total),
+      seguros_total_formatado: formatBRL(r.seguros_total),
+      seguros_qtd: safeNumberClark(r.seguros_qtd),
+    }))
+    .sort((a, b) => b.seguros_total - a.seguros_total)
+    .slice(0, limite)
+    .map((item, index) => ({
+      posicao: index + 1,
+      ...item,
+    }));
+
+  return {
+    modulo: 'seguros',
+    tipo: 'ranking_vendedores_seguros',
+    periodo,
+    ranking,
+  };
+}
+
+async function consultarRankingLojasSegurosClark(
+  db: any,
+  periodo: ClarkPeriodo,
+  scope: ClarkUserScope,
+  limite: number
+) {
+  const rows = await db.all(
+    `
+      SELECT
+        loja,
+        cnpj_empresa,
+        regiao,
+        COALESCE(SUM(premio), 0) AS seguros_total,
+        COALESCE(SUM(qtd), 0) AS seguros_qtd
+      FROM seguros_anuais
+      WHERE data_emissao >= ?
+        AND data_emissao <= ?
+      GROUP BY loja, cnpj_empresa, regiao
+    `,
+    [periodo.inicio, periodo.fim]
+  );
+
+  const ranking = (rows as any[])
+    .filter((r) => rowPermitidaClark(r, scope))
+    .map((r) => ({
+      loja: resolverNomeLojaClark(r),
+      cnpj_empresa: cnpjLimpoClark(r.cnpj_empresa),
+      regiao: r.regiao || '',
+      seguros_total: safeNumberClark(r.seguros_total),
+      seguros_total_formatado: formatBRL(r.seguros_total),
+      seguros_qtd: safeNumberClark(r.seguros_qtd),
+    }))
+    .sort((a, b) => b.seguros_total - a.seguros_total)
+    .slice(0, limite)
+    .map((item, index) => ({
+      posicao: index + 1,
+      ...item,
+    }));
+
+  return {
+    modulo: 'seguros',
+    tipo: 'ranking_lojas_seguros',
+    periodo,
+    ranking,
+  };
+}
+
+function calcularScoreProdutoClark(item: any, filtros: ClarkFiltros) {
+  if (!filtros.tokensProduto.length) return 0;
+
+  const textoItem = normalizarTextoClark([
+    item.description,
+    item.reference,
+    item.productCode,
+    item.category,
+  ].join(' '));
+
+  const tokensItem = textoItem
+    .split(/\s+/)
+    .map(normalizarTokenClark)
+    .filter(Boolean);
+
+  let score = 0;
+
+  for (const token of filtros.tokensProduto) {
+    const encontrou =
+      tokensItem.includes(token) ||
+      textoItem.includes(token);
+
+    if (encontrou) score += 1;
+  }
+
+  return score;
+}
+
+async function carregarEstoquePermitidoClark(
   userId: string,
   filtros: ClarkFiltros
 ) {
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-  });
-
-  if (!user) {
-    return {
-      acesso_negado: true,
-      total_itens_estoque: 0,
-      total_itens_filtrados: 0,
-      categoria_solicitada: filtros.categoriaCanonica || null,
-      categorias_encontradas: [],
-      ranking: [],
-    };
-  }
-
-  const superRoles = ['CEO', 'DIRETOR', 'ADM', 'ADMIN', 'GESTOR', 'SÓCIO', 'MASTER'];
-  const userRole = String(user.role || '').toUpperCase();
-  const isSuperUser = Boolean(user.isAdmin) || superRoles.includes(userRole);
-
-  const allowedStores = String(user.allowedStores || '')
-    .split(',')
-    .map((s) => {
-      const clean = normStore(s);
-      const corrigido = CORRECAO_NOMES_SERVER[clean];
-      return corrigido ? normStore(corrigido) : clean;
-    })
-    .filter(Boolean);
+  const scope = await obterEscopoUsuarioClark(userId);
 
   const estoqueRaw = await prisma.stock.findMany({
     where: {
@@ -1423,48 +2083,54 @@ async function consultarRankingEstoqueProdutosClark(
     },
     select: {
       storeName: true,
+      cnpj: true,
       productCode: true,
       reference: true,
       description: true,
       category: true,
       quantity: true,
       salePrice: true,
+      serial: true,
+      emLinha: true,
+      cluster: true,
     },
   });
 
-  const estoquePorPermissao = isSuperUser
-    ? estoqueRaw
-    : estoqueRaw.filter((item: any) => {
-        const lojaItem = normStore(item.storeName);
+  const estoquePermitido = (estoqueRaw as any[])
+    .filter((item) => rowPermitidaClark(item, scope))
+    .filter((item) => categoriaEstoqueConfereClark(item.category, filtros));
 
-        return allowedStores.some((lojaPermitida) => {
-          return lojaItem === lojaPermitida || lojaItem.includes(lojaPermitida);
-        });
-      });
+  return {
+    scope,
+    estoquePermitido,
+    estoqueTotalPermitido: estoquePermitido.length,
+  };
+}
+
+async function consultarRankingEstoqueProdutosClark(
+  userId: string,
+  filtros: ClarkFiltros
+) {
+  const { estoquePermitido, estoqueTotalPermitido } = await carregarEstoquePermitidoClark(userId, filtros);
 
   const categoriasMap = new Map<string, number>();
 
-  for (const item of estoquePorPermissao as any[]) {
-    const categoria = String(item.category || 'SEM CATEGORIA').trim();
-    const categoriaKey = categoria || 'SEM CATEGORIA';
-    categoriasMap.set(categoriaKey, (categoriasMap.get(categoriaKey) || 0) + Number(item.quantity || 0));
+  for (const item of estoquePermitido) {
+    const categoria = String(item.category || 'SEM CATEGORIA').trim() || 'SEM CATEGORIA';
+    categoriasMap.set(categoria, (categoriasMap.get(categoria) || 0) + safeNumberClark(item.quantity));
   }
 
   const categoriasEncontradas = Array.from(categoriasMap.entries())
-    .sort((a, b) => Number(b[1]) - Number(a[1]))
+    .sort((a, b) => b[1] - a[1])
     .slice(0, 20)
     .map(([categoria, quantidade]) => ({
       categoria,
       quantidade,
     }));
 
-  const estoqueFiltrado = estoquePorPermissao.filter((item: any) => {
-    return categoriaEstoqueConfere(item.category, filtros);
-  });
-
   const produtosMap = new Map<string, any>();
 
-  for (const item of estoqueFiltrado as any[]) {
+  for (const item of estoquePermitido) {
     const descricao = String(item.description || 'SEM DESCRIÇÃO').trim();
     const referencia = String(item.reference || '').trim();
     const codigo = String(item.productCode || '').trim();
@@ -1472,8 +2138,8 @@ async function consultarRankingEstoqueProdutosClark(
 
     const key = `${descricao.toUpperCase()}|${referencia.toUpperCase()}|${codigo.toUpperCase()}`;
 
-    const qtd = Number(item.quantity || 0);
-    const precoVenda = Number(item.salePrice || 0);
+    const qtd = safeNumberClark(item.quantity);
+    const precoVenda = safeNumberClark(item.salePrice);
 
     if (!produtosMap.has(key)) {
       produtosMap.set(key, {
@@ -1491,7 +2157,12 @@ async function consultarRankingEstoqueProdutosClark(
     atual.quantidade_total += qtd;
     atual.valor_estimado_estoque += qtd * precoVenda;
 
-    const loja = String(item.storeName || 'LOJA NÃO IDENTIFICADA').trim();
+    const loja = resolverNomeLojaClark({
+      loja: item.storeName,
+      storeName: item.storeName,
+      cnpj_empresa: item.cnpj,
+    });
+
     atual.lojas.set(loja, (atual.lojas.get(loja) || 0) + qtd);
   }
 
@@ -1525,97 +2196,290 @@ async function consultarRankingEstoqueProdutosClark(
     });
 
   return {
-    acesso_negado: false,
-    total_itens_estoque: estoquePorPermissao.length,
-    total_itens_filtrados: estoqueFiltrado.length,
+    modulo: 'estoque',
+    tipo: filtros.categoriaCanonica ? 'ranking_estoque_categoria' : 'ranking_estoque_geral',
     categoria_solicitada: filtros.categoriaCanonica || null,
+    total_itens_filtrados: estoqueTotalPermitido,
     categorias_encontradas: categoriasEncontradas,
     ranking,
+  };
+}
+
+async function consultarLojasProdutoEstoqueClark(
+  userId: string,
+  filtros: ClarkFiltros
+) {
+  const { estoquePermitido, estoqueTotalPermitido } = await carregarEstoquePermitidoClark(userId, filtros);
+
+  const itensPontuados = estoquePermitido
+    .map((item) => ({
+      item,
+      score: calcularScoreProdutoClark(item, filtros),
+    }))
+    .filter((x) => x.score > 0);
+
+  const scoreMax = itensPontuados.reduce((acc, x) => Math.max(acc, x.score), 0);
+
+  const exigeTodosTokens = filtros.tokensProduto.length >= 3;
+  const scoreMinimo = exigeTodosTokens
+    ? filtros.tokensProduto.length
+    : Math.max(1, Math.ceil(filtros.tokensProduto.length * 0.7));
+
+  const itensEncontrados = itensPontuados
+    .filter((x) => x.score >= scoreMinimo)
+    .map((x) => x.item);
+
+  const sugestoes = itensPontuados
+    .filter((x) => x.score === scoreMax)
+    .slice(0, 8)
+    .map((x) => ({
+      descricao: x.item.description,
+      referencia: x.item.reference,
+      categoria: x.item.category,
+      loja: resolverNomeLojaClark({
+        loja: x.item.storeName,
+        storeName: x.item.storeName,
+        cnpj_empresa: x.item.cnpj,
+      }),
+      quantidade: safeNumberClark(x.item.quantity),
+      score: x.score,
+    }));
+
+  const produtosMap = new Map<string, any>();
+
+  for (const item of itensEncontrados) {
+    const descricao = String(item.description || 'SEM DESCRIÇÃO').trim();
+    const referencia = String(item.reference || '').trim();
+    const codigo = String(item.productCode || '').trim();
+    const categoria = String(item.category || 'GERAL').trim();
+
+    const key = `${descricao.toUpperCase()}|${referencia.toUpperCase()}|${codigo.toUpperCase()}`;
+
+    const qtd = safeNumberClark(item.quantity);
+    const precoVenda = safeNumberClark(item.salePrice);
+
+    if (!produtosMap.has(key)) {
+      produtosMap.set(key, {
+        descricao,
+        referencia,
+        codigo_produto: codigo,
+        categoria,
+        quantidade_total: 0,
+        valor_estimado_estoque: 0,
+        lojas: new Map<string, number>(),
+      });
+    }
+
+    const atual = produtosMap.get(key);
+    atual.quantidade_total += qtd;
+    atual.valor_estimado_estoque += qtd * precoVenda;
+
+    const loja = resolverNomeLojaClark({
+      loja: item.storeName,
+      storeName: item.storeName,
+      cnpj_empresa: item.cnpj,
+    });
+
+    atual.lojas.set(loja, (atual.lojas.get(loja) || 0) + qtd);
+  }
+
+  const produtos = Array.from(produtosMap.values())
+    .sort((a: any, b: any) => Number(b.quantidade_total) - Number(a.quantidade_total))
+    .slice(0, filtros.limite)
+    .map((item: any, index: number) => {
+      const lojasEntries = Array.from(
+        (item.lojas as Map<string, number>).entries()
+      ) as Array<[string, number]>;
+
+      const lojas = lojasEntries
+        .sort((a, b) => Number(b[1]) - Number(a[1]))
+        .map(([loja, quantidade]) => ({
+          loja,
+          quantidade: Number(quantidade || 0),
+        }));
+
+      return {
+        posicao: index + 1,
+        descricao: item.descricao,
+        referencia: item.referencia,
+        codigo_produto: item.codigo_produto,
+        categoria: item.categoria,
+        quantidade_total: Number(item.quantidade_total || 0),
+        valor_estimado_estoque: Number(item.valor_estimado_estoque || 0),
+        valor_estimado_estoque_formatado: formatBRL(item.valor_estimado_estoque),
+        lojas,
+      };
+    });
+
+  return {
+    modulo: 'estoque',
+    tipo: 'estoque_produto_lojas',
+    termo_pesquisado: filtros.termoProduto,
+    categoria_solicitada: filtros.categoriaCanonica || null,
+    tokens_usados: filtros.tokensProduto,
+    total_itens_filtrados: estoqueTotalPermitido,
+    produtos,
+    sugestoes_se_nao_encontrou: produtos.length ? [] : sugestoes,
   };
 }
 
 function montarPromptClark(params: {
   pergunta: string;
   intencao: string;
+  periodo: ClarkPeriodo;
   filtros: ClarkFiltros;
   dados: any;
 }) {
   return `
 Você é a Clark, assistente de IA interna do sistema TeleFluxo.
 
-Personalidade:
-- Profissional, clara e objetiva.
-- Inteligente, calma e analítica.
-- Fala como uma consultora de gestão.
-- Não usa linguagem robótica.
-- Não inventa números.
-- Não promete ações que o sistema ainda não executa.
-- Usa apenas o JSON de dados fornecido.
-- Responde em português do Brasil.
-- Quando houver valores, usa formato de moeda em R$.
-- Quando fizer sentido, encerra com uma sugestão prática.
-- Se o módulo for estoque, explique os produtos com maior quantidade, a quantidade total e as principais lojas quando essa informação existir.
-- Se o usuário pediu uma categoria específica, responda somente com base nessa categoria filtrada.
-- Se o JSON filtrado vier vazio, diga que não encontrou itens naquela categoria e mostre as categorias encontradas para ajudar o usuário a ajustar a pergunta.
-- Se o módulo for vendas, destaque total vendido, peças, ticket médio, ranking ou categoria conforme os dados disponíveis.
-
-Contexto:
-O TeleFluxo é um sistema interno de gestão com dados de vendas, lojas, vendedores, estoque e operação.
-Nesta versão, você responde sobre vendas e estoque usando apenas os dados fornecidos em JSON.
+Regras obrigatórias:
+- Responda em português do Brasil.
+- Use apenas os dados do JSON fornecido.
+- Não invente números, nomes de lojas, produtos ou vendedores.
+- Nunca omita nomes de lojas, vendedores ou produtos quando estiverem presentes no JSON.
+- Se for ranking, liste item por item.
+- Se for estoque de produto específico, responda somente com os produtos encontrados. Não substitua por ranking geral.
+- Se não encontrar o produto solicitado, diga que não encontrou e mostre sugestões próximas se existirem.
+- Se for seguros, use seguros_total e seguros_qtd.
+- Seja direto, executivo e útil.
 
 Pergunta do usuário:
 ${params.pergunta}
 
-Intenção identificada:
+Intenção:
 ${params.intencao}
 
-Filtros extraídos da pergunta:
+Período:
+${JSON.stringify(params.periodo, null, 2)}
+
+Filtros:
 ${JSON.stringify(params.filtros, null, 2)}
 
-Dados disponíveis em JSON:
+Dados:
 ${JSON.stringify(params.dados, null, 2)}
 
-Gere a resposta final para o usuário.
+Gere a resposta final.
 `;
 }
 
-function gerarRespostaFallbackClark(intencao: ClarkIntent, dados: any, filtros: ClarkFiltros) {
-  if (dados?.modulo === 'estoque') {
-    const ranking = dados?.ranking_top || dados?.ranking_top_10 || [];
-    const categoria = dados?.categoria_solicitada || filtros.categoriaCanonica;
+function gerarRespostaFallbackClark(intencao: ClarkIntent, dados: any, filtros: ClarkFiltros, periodo: ClarkPeriodo) {
+  if (dados?.modulo === 'vendas' && dados?.tipo === 'resumo_periodo') {
+    return `Resumo de vendas — ${periodo.descricao}:
 
-    if (!ranking.length) {
-      const cats = Array.isArray(dados?.categorias_encontradas)
-        ? dados.categorias_encontradas
-            .slice(0, 8)
-            .map((c: any) => `- ${c.categoria}: ${c.quantidade} unidades`)
+Total vendido: ${dados.total_vendas_formatado}
+Peças vendidas: ${dados.total_pecas}
+Ticket médio: ${dados.ticket_medio_formatado}
+
+Lojas analisadas: ${dados.lojas_analisadas}
+
+Sugestão: compare esse resultado com a meta do período e com o mesmo intervalo do mês anterior.`;
+  }
+
+  if (dados?.modulo === 'vendas' && Array.isArray(dados?.ranking)) {
+    const titulo =
+      dados.tipo === 'ranking_lojas'
+        ? `Top ${dados.ranking.length} lojas em vendas — ${periodo.descricao}`
+        : dados.tipo === 'ranking_vendedores'
+          ? `Top ${dados.ranking.length} vendedores em vendas — ${periodo.descricao}`
+          : `Top ${dados.ranking.length} categorias em vendas — ${periodo.descricao}`;
+
+    const linhas = dados.ranking.map((item: any) => {
+      const nome = item.loja || item.vendedor || item.familia || 'Item não identificado';
+
+      return `${item.posicao}. ${nome}
+   Total: ${item.total_vendas_formatado}
+   Peças: ${item.total_pecas}${item.ticket_medio_formatado ? `
+   Ticket médio: ${item.ticket_medio_formatado}` : ''}`;
+    }).join('\n\n');
+
+    return `${titulo}:
+
+${linhas}`;
+  }
+
+  if (dados?.modulo === 'seguros' && Array.isArray(dados?.ranking)) {
+    const titulo =
+      dados.tipo === 'ranking_vendedores_seguros'
+        ? `Top ${dados.ranking.length} vendedores com maior venda de seguros — ${periodo.descricao}`
+        : `Top ${dados.ranking.length} lojas com maior venda de seguros — ${periodo.descricao}`;
+
+    const linhas = dados.ranking.map((item: any) => {
+      const nome = item.vendedor || item.loja || 'Item não identificado';
+
+      return `${item.posicao}. ${nome}
+   Loja: ${item.loja || '-'}
+   Total em seguros: ${item.seguros_total_formatado}
+   Quantidade: ${item.seguros_qtd}`;
+    }).join('\n\n');
+
+    return `${titulo}:
+
+${linhas}
+
+Sugestão: compare os líderes de seguros com o ranking de vendas para identificar quem está vendendo bem e também agregando proteção.`;
+  }
+
+  if (dados?.modulo === 'estoque' && dados?.tipo === 'estoque_produto_lojas') {
+    const produtos = dados.produtos || [];
+
+    if (!produtos.length) {
+      const sugestoes = Array.isArray(dados.sugestoes_se_nao_encontrou)
+        ? dados.sugestoes_se_nao_encontrou
+            .slice(0, 5)
+            .map((s: any, index: number) => `${index + 1}. ${s.descricao} — Ref. ${s.referencia || '-'} | ${s.loja}: ${s.quantidade} un.`)
             .join('\n')
         : '';
 
-      return `Não encontrei produtos em estoque para a categoria ${categoria || 'solicitada'}.
+      return `Não encontrei estoque positivo para "${dados.termo_pesquisado}"${dados.categoria_solicitada ? ` na categoria ${dados.categoria_solicitada}` : ''}.
 
-Categorias encontradas no estoque:
-${cats || 'Nenhuma categoria disponível no retorno atual.'}
+${sugestoes ? `Sugestões próximas encontradas:\n${sugestoes}` : 'Também não encontrei sugestões próximas com estoque positivo.'}
 
-Sugestão: confira se a categoria está cadastrada no sistema como SMARTPHONES, APARELHOS, ACESSÓRIOS, WEARABLES ou outro nome parecido.`;
+Sugestão: confira se o nome/modelo foi digitado exatamente como está no cadastro do produto.`;
     }
 
-    const titulo = categoria
-      ? `Top ${ranking.length} produtos em estoque da categoria ${categoria}`
-      : `Top ${ranking.length} produtos com maior estoque`;
-
-    const linhas = ranking.map((item: any) => {
-      const lojas = Array.isArray(item.principais_lojas)
-        ? item.principais_lojas
-            .slice(0, 5)
+    const linhas = produtos.map((produto: any) => {
+      const lojas = Array.isArray(produto.lojas)
+        ? produto.lojas
             .map((l: any) => `${l.loja}: ${l.quantidade} un.`)
             .join(' | ')
-        : 'Lojas não informadas';
+        : '';
+
+      return `${produto.posicao}. ${produto.descricao}${produto.referencia ? ` — Ref. ${produto.referencia}` : ''}
+   Categoria: ${produto.categoria}
+   Quantidade total: ${produto.quantidade_total} un.
+   Valor estimado: ${produto.valor_estimado_estoque_formatado}
+   Lojas: ${lojas || 'Nenhuma loja informada'}`;
+    }).join('\n\n');
+
+    return `Lojas com estoque para "${dados.termo_pesquisado}"${dados.categoria_solicitada ? ` na categoria ${dados.categoria_solicitada}` : ''}:
+
+${linhas}`;
+  }
+
+  if (dados?.modulo === 'estoque' && Array.isArray(dados?.ranking)) {
+    if (!dados.ranking.length) {
+      return `Não encontrei produtos em estoque para a categoria ${dados.categoria_solicitada || 'solicitada'}.
+
+Sugestão: confira se a categoria está cadastrada como SMARTPHONES, APARELHOS, ACESSÓRIOS, WEARABLES ou outro nome semelhante.`;
+    }
+
+    const titulo = dados.categoria_solicitada
+      ? `Top ${dados.ranking.length} produtos em estoque da categoria ${dados.categoria_solicitada}`
+      : `Top ${dados.ranking.length} produtos com maior estoque`;
+
+    const linhas = dados.ranking.map((item: any) => {
+      const lojas = Array.isArray(item.principais_lojas)
+        ? item.principais_lojas
+            .slice(0, 8)
+            .map((l: any) => `${l.loja}: ${l.quantidade} un.`)
+            .join(' | ')
+        : '';
 
       return `${item.posicao}. ${item.descricao}${item.referencia ? ` — Ref. ${item.referencia}` : ''}
    Quantidade: ${item.quantidade_total} un.
    Valor estimado: ${item.valor_estimado_estoque_formatado}
-   Principais lojas: ${lojas}`;
+   Principais lojas: ${lojas || 'Lojas não informadas'}`;
     }).join('\n\n');
 
     return `${titulo}:
@@ -1625,33 +2489,28 @@ ${linhas}
 Sugestão: use esse ranking para avaliar redistribuição entre lojas com maior concentração e lojas com maior giro.`;
   }
 
-  if (dados?.modulo === 'vendas') {
-    if (dados?.total_vendas_formatado) {
-      return `Resumo de vendas para ${dados?.periodo?.descricao || 'o período consultado'}:
+  return `Posso responder perguntas sobre vendas, ranking de lojas, ranking de vendedores, seguros e estoque.
 
-Total vendido: ${dados.total_vendas_formatado}
-Peças vendidas: ${dados.total_pecas}
-Ticket médio: ${dados.ticket_medio_formatado}
+Exemplos:
+- Quanto vendemos no período de 01/03/2026 até 09/04/2026?
+- Qual loja mais vendeu no mês?
+- Top 5 vendedores com maior venda de seguros no mês.
+- Liste as lojas que têm "Galaxy A56 128GB Preto" em estoque.
+- Liste os 5 maiores modelos da categoria SMARTPHONES em estoque.`;
+}
 
-Sugestão: compare esse resultado com a meta do período para identificar se precisa reforçar ação comercial hoje.`;
-    }
-
-    if (Array.isArray(dados?.ranking)) {
-      const linhas = dados.ranking
-        .slice(0, 10)
-        .map((item: any) => {
-          const nome = item.loja || item.vendedor || item.familia || 'Item';
-          return `${item.posicao}. ${nome} — ${item.total_vendas_formatado || ''} | ${item.total_pecas || 0} peças`;
-        })
-        .join('\n');
-
-      return `Ranking do período ${dados?.periodo?.descricao || ''}:
-
-${linhas}`;
-    }
-  }
-
-  return `Ainda estou evoluindo. No momento, consigo responder melhor perguntas sobre vendas, ranking de lojas, vendedores, categorias e estoque.`;
+function deveResponderLocalmenteClark(intencao: ClarkIntent) {
+  return [
+    'vendas_resumo',
+    'ranking_lojas_vendas',
+    'ranking_vendedores_vendas',
+    'ranking_categorias_vendas',
+    'ranking_vendedores_seguros',
+    'ranking_lojas_seguros',
+    'estoque_produto_lojas',
+    'produto_maior_estoque',
+    'ranking_estoque_produtos',
+  ].includes(intencao);
 }
 
 app.post('/api/clark/perguntar', async (req, res) => {
@@ -1672,195 +2531,75 @@ app.post('/api/clark/perguntar', async (req, res) => {
       });
     }
 
-    if (!process.env.GEMINI_API_KEY) {
-      return res.status(500).json({
-        error: 'GEMINI_API_KEY não configurada no backend.',
-      });
-    }
-
     const perguntaLimpa = String(pergunta).trim();
     const intencao = detectarIntencaoClark(perguntaLimpa);
+    const periodo = extrairPeriodoClark(perguntaLimpa);
     const filtros = extrairFiltrosClark(perguntaLimpa);
-
-    const hoje = todayIsoSaoPaulo();
-    const inicioMes = monthStartIsoSaoPaulo();
+    const scope = await obterEscopoUsuarioClark(String(userId));
 
     let dados: any = {};
 
-    const precisaBancoVendas = [
-      'vendas_hoje',
-      'vendas_mes',
-      'ranking_lojas_mes',
-      'ranking_vendedores_mes',
-      'categoria_mes',
+    const precisaDbAnual = [
+      'vendas_resumo',
+      'ranking_lojas_vendas',
+      'ranking_vendedores_vendas',
+      'ranking_categorias_vendas',
+      'ranking_vendedores_seguros',
+      'ranking_lojas_seguros',
     ].includes(intencao);
 
-    let securityFilter = '';
-
-    if (precisaBancoVendas) {
-      securityFilter = await getSalesFilter(String(userId), 'vendas');
-
-      if (securityFilter === '1=0') {
-        return res.status(403).json({
-          error: 'Você não tem permissão para consultar esses dados.',
-        });
-      }
-
-      db = await open({
-        filename: GLOBAL_DB_PATH,
-        driver: sqlite3.Database,
-      });
+    if (precisaDbAnual) {
+      db = await abrirDbAnualClark();
     }
 
-    if (intencao === 'vendas_hoje') {
-      const resumo = await consultarResumoVendasClark(db, securityFilter, hoje, hoje);
-
-      dados = {
-        modulo: 'vendas',
-        periodo: {
-          descricao: `Hoje (${hoje})`,
-          data_inicio: hoje,
-          data_fim: hoje,
-        },
-        total_vendas: Number(resumo?.total_vendas || 0),
-        total_vendas_formatado: formatBRL(resumo?.total_vendas || 0),
-        total_pecas: Number(resumo?.total_pecas || 0),
-        ticket_medio: Number(resumo?.ticket_medio || 0),
-        ticket_medio_formatado: formatBRL(resumo?.ticket_medio || 0),
-      };
+    if (intencao === 'vendas_resumo') {
+      dados = await consultarResumoVendasPeriodoClark(db, periodo, scope);
     }
 
-    else if (intencao === 'vendas_mes') {
-      const resumo = await consultarResumoVendasClark(db, securityFilter, inicioMes, hoje);
-
-      dados = {
-        modulo: 'vendas',
-        periodo: {
-          descricao: `Mês atual (${inicioMes} até ${hoje})`,
-          data_inicio: inicioMes,
-          data_fim: hoje,
-        },
-        total_vendas: Number(resumo?.total_vendas || 0),
-        total_vendas_formatado: formatBRL(resumo?.total_vendas || 0),
-        total_pecas: Number(resumo?.total_pecas || 0),
-        ticket_medio: Number(resumo?.ticket_medio || 0),
-        ticket_medio_formatado: formatBRL(resumo?.ticket_medio || 0),
-      };
+    else if (intencao === 'ranking_lojas_vendas') {
+      dados = await consultarRankingLojasVendasClark(db, periodo, scope, filtros.limite);
     }
 
-    else if (intencao === 'ranking_lojas_mes') {
-      const ranking = await consultarRankingLojasClark(db, securityFilter, inicioMes, hoje);
-
-      dados = {
-        modulo: 'vendas',
-        periodo: {
-          descricao: `Mês atual (${inicioMes} até ${hoje})`,
-          data_inicio: inicioMes,
-          data_fim: hoje,
-        },
-        ranking: ranking.map((r: any, index: number) => ({
-          posicao: index + 1,
-          loja: traduzirCnpjParaLoja(r.cnpj_empresa),
-          cnpj_empresa: r.cnpj_empresa,
-          total_vendas: Number(r.total_vendas || 0),
-          total_vendas_formatado: formatBRL(r.total_vendas || 0),
-          total_pecas: Number(r.total_pecas || 0),
-          ticket_medio: Number(r.ticket_medio || 0),
-          ticket_medio_formatado: formatBRL(r.ticket_medio || 0),
-        })),
-      };
+    else if (intencao === 'ranking_vendedores_vendas') {
+      dados = await consultarRankingVendedoresVendasClark(db, periodo, scope, filtros.limite);
     }
 
-    else if (intencao === 'ranking_vendedores_mes') {
-      const ranking = await consultarRankingVendedoresClark(db, securityFilter, inicioMes, hoje);
-
-      dados = {
-        modulo: 'vendas',
-        periodo: {
-          descricao: `Mês atual (${inicioMes} até ${hoje})`,
-          data_inicio: inicioMes,
-          data_fim: hoje,
-        },
-        ranking: ranking.map((r: any, index: number) => ({
-          posicao: index + 1,
-          vendedor: r.nome_vendedor,
-          loja: traduzirCnpjParaLoja(r.cnpj_empresa),
-          cnpj_empresa: r.cnpj_empresa,
-          total_vendas: Number(r.total_vendas || 0),
-          total_vendas_formatado: formatBRL(r.total_vendas || 0),
-          total_pecas: Number(r.total_pecas || 0),
-          ticket_medio: Number(r.ticket_medio || 0),
-          ticket_medio_formatado: formatBRL(r.ticket_medio || 0),
-        })),
-      };
+    else if (intencao === 'ranking_categorias_vendas') {
+      dados = await consultarCategoriasVendasClark(db, periodo, scope, filtros.limite);
     }
 
-    else if (intencao === 'categoria_mes') {
-      const categorias = await consultarCategoriasClark(db, securityFilter, inicioMes, hoje);
+    else if (intencao === 'ranking_vendedores_seguros') {
+      dados = await consultarRankingVendedoresSegurosClark(db, periodo, scope, filtros.limite);
+    }
 
-      dados = {
-        modulo: 'vendas',
-        periodo: {
-          descricao: `Mês atual (${inicioMes} até ${hoje})`,
-          data_inicio: inicioMes,
-          data_fim: hoje,
-        },
-        categorias: categorias.map((r: any, index: number) => ({
-          posicao: index + 1,
-          familia: r.familia,
-          total_vendas: Number(r.total_vendas || 0),
-          total_vendas_formatado: formatBRL(r.total_vendas || 0),
-          total_pecas: Number(r.total_pecas || 0),
-        })),
-      };
+    else if (intencao === 'ranking_lojas_seguros') {
+      dados = await consultarRankingLojasSegurosClark(db, periodo, scope, filtros.limite);
+    }
+
+    else if (intencao === 'estoque_produto_lojas') {
+      dados = await consultarLojasProdutoEstoqueClark(String(userId), filtros);
     }
 
     else if (intencao === 'produto_maior_estoque') {
-      const estoque = await consultarRankingEstoqueProdutosClark(String(userId), {
+      dados = await consultarRankingEstoqueProdutosClark(String(userId), {
         ...filtros,
-        limite: filtros.limite || 1,
+        limite: 1,
       });
-
-      dados = {
-        modulo: 'estoque',
-        pergunta_respondida: 'Produto com maior quantidade em estoque hoje',
-        data_consulta: hoje,
-        categoria_solicitada: estoque.categoria_solicitada,
-        total_itens_estoque_analisados: estoque.total_itens_estoque,
-        total_itens_filtrados: estoque.total_itens_filtrados,
-        categorias_encontradas: estoque.categorias_encontradas,
-        produto_mais_em_estoque: estoque.ranking[0] || null,
-        ranking_top: estoque.ranking,
-      };
     }
 
     else if (intencao === 'ranking_estoque_produtos') {
-      const estoque = await consultarRankingEstoqueProdutosClark(String(userId), filtros);
-
-      dados = {
-        modulo: 'estoque',
-        pergunta_respondida: 'Ranking de produtos com maior quantidade em estoque',
-        data_consulta: hoje,
-        categoria_solicitada: estoque.categoria_solicitada,
-        total_itens_estoque_analisados: estoque.total_itens_estoque,
-        total_itens_filtrados: estoque.total_itens_filtrados,
-        categorias_encontradas: estoque.categorias_encontradas,
-        ranking_top: estoque.ranking,
-      };
+      dados = await consultarRankingEstoqueProdutosClark(String(userId), filtros);
     }
 
     else {
       dados = {
         modulo: 'ajuda',
-        mensagem:
-          'Posso responder perguntas sobre vendas, ranking de lojas, ranking de vendedores, categorias e estoque.',
+        mensagem: 'Posso responder perguntas sobre vendas, ranking de lojas, vendedores, seguros e estoque.',
         exemplos: [
-          'Quanto vendemos hoje?',
-          'Quanto vendemos no mês?',
+          'Quanto vendemos no período de 01/03/2026 até 09/04/2026?',
           'Qual loja mais vendeu no mês?',
-          'Me mostre o ranking de vendedores.',
-          'Qual categoria mais vendeu no mês?',
-          'Qual produto temos mais em estoque hoje?',
+          'Me liste o top 5 vendedores com maior venda de seguros no mês.',
+          'Liste as lojas que têm "Galaxy A56 128GB Preto" em estoque.',
           'Liste os 5 maiores modelos da categoria SMARTPHONES em estoque.',
         ],
       };
@@ -1871,46 +2610,62 @@ app.post('/api/clark/perguntar', async (req, res) => {
       db = null;
     }
 
-    const prompt = montarPromptClark({
-      pergunta: perguntaLimpa,
-      intencao,
-      filtros,
-      dados,
-    });
+    const respostaLocal = gerarRespostaFallbackClark(intencao, dados, filtros, periodo);
 
-    let resposta = '';
+    const usarGemini =
+      Boolean(GEMINI_API_KEY) &&
+      process.env.CLARK_USAR_GEMINI === 'true' &&
+      !deveResponderLocalmenteClark(intencao);
+
+    if (!usarGemini) {
+      return res.json({
+        ok: true,
+        clark: respostaLocal,
+        intencao,
+        periodo,
+        filtros,
+        dados,
+        resposta_origem: 'local_precisa',
+      });
+    }
 
     try {
+      const prompt = montarPromptClark({
+        pergunta: perguntaLimpa,
+        intencao,
+        periodo,
+        filtros,
+        dados,
+      });
+
       const geminiResponse = await genAI.models.generateContent({
         model: GEMINI_MODEL,
         contents: prompt,
       });
 
-      resposta =
-        geminiResponse.text ||
-        gerarRespostaFallbackClark(intencao, dados, filtros);
+      const resposta = geminiResponse.text || respostaLocal;
 
       return res.json({
         ok: true,
         clark: resposta,
         intencao,
+        periodo,
         filtros,
         dados,
-        fallback: false,
+        resposta_origem: 'gemini',
       });
 
     } catch (geminiError: any) {
-      console.warn('⚠️ Gemini falhou. Usando fallback local:', geminiError?.message || geminiError);
-
-      resposta = gerarRespostaFallbackClark(intencao, dados, filtros);
+      console.warn('⚠️ Gemini falhou. Usando resposta local:', geminiError?.message || geminiError);
 
       return res.json({
         ok: true,
-        clark: resposta,
+        clark: respostaLocal,
         intencao,
+        periodo,
         filtros,
         dados,
-        fallback: true,
+        resposta_origem: 'fallback_local',
         gemini_error: geminiError?.message || 'Falha temporária no Gemini',
       });
     }

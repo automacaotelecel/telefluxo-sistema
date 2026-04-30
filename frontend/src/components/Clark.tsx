@@ -84,35 +84,40 @@ export default function Clark({ currentUser }: ClarkProps) {
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   const suggestions = useMemo(
-    () => [
-      {
-        label: 'Vendas hoje',
-        prompt: 'Quanto vendemos hoje?',
-        icon: CalendarDays,
-      },
-      {
-        label: 'Vendas mês',
-        prompt: 'Quanto vendemos no mês?',
-        icon: TrendingUp,
-      },
-      {
-        label: 'Ranking lojas',
-        prompt: 'Qual loja mais vendeu no mês?',
-        icon: Building2,
-      },
-      {
-        label: 'Ranking vendedores',
-        prompt: 'Me mostre o ranking de vendedores do mês.',
-        icon: Users,
-      },
-      {
-        label: 'Top smartphones',
-        prompt: 'Liste os 5 maiores modelos da categoria SMARTPHONES em estoque e quais lojas estão.',
-        icon: Package,
-      },
-    ],
-    []
-  );
+  () => [
+    {
+      label: 'Vendas hoje',
+      prompt: 'Quanto vendemos hoje?',
+      icon: CalendarDays,
+    },
+    {
+      label: 'Vendas período',
+      prompt: 'Quanto vendemos no período de 01/03/2026 até 09/04/2026?',
+      icon: TrendingUp,
+    },
+    {
+      label: 'Ranking lojas',
+      prompt: 'Qual loja mais vendeu no mês?',
+      icon: Building2,
+    },
+    {
+      label: 'Seguros vendedores',
+      prompt: 'Me liste o top 5 vendedores com maior venda de seguros no mês.',
+      icon: Users,
+    },
+    {
+      label: 'Top smartphones',
+      prompt: 'Liste os 5 maiores modelos da categoria SMARTPHONES em estoque e quais lojas estão.',
+      icon: Package,
+    },
+    {
+      label: 'Buscar produto',
+      prompt: 'Me liste as lojas que têm "Galaxy A56 128GB Preto" em estoque na categoria SMARTPHONES.',
+      icon: Package,
+    },
+  ],
+  []
+);
 
   const addMessage = (role: 'user' | 'assistant', text: string) => {
     setMessages((prev) => [
