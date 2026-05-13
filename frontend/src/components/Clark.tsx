@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useMemo, useRef, useState } from "react";
 import {
   Send,
   Loader2,
@@ -14,25 +14,54 @@ import {
   Minimize2,
   Maximize2,
   Package,
-} from 'lucide-react';
+  Download,
+} from "lucide-react";
 
 type ClarkMessage = {
   id: string;
-  role: 'user' | 'assistant';
+  role: "user" | "assistant";
   text: string;
   createdAt: string;
+  dados?: any;
+  actions?: Array<{
+    type: string;
+    label: string;
+  }>;
 };
 
 type ClarkProps = {
   currentUser: any;
 };
 
-const API_URL =
-  import.meta.env.VITE_API_URL ||
-  'http://localhost:3000';
+type QuickAction =
+  | "buscar_produto"
+  | "vendas_periodo"
+  | "vendas_por_loja"
+  | "seguros_vendedores"
+  | "relatorio_executivo";
+
+type QuickSuggestion = {
+  label: string;
+  icon: any;
+  prompt?: string;
+  action?: QuickAction;
+  assistantMessage?: string;
+};
+
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
+
+function respostaVisivelClark(data: any) {
+  const clark = String(data?.clark || "").trim();
+  if (clark && clark !== "{}" && clark !== "[]") return clark;
+
+  const fallback = String(data?.answer || data?.message || "").trim();
+  if (fallback && fallback !== "{}" && fallback !== "[]") return fallback;
+
+  return "Não consegui montar uma resposta segura agora. Nenhum dado foi inventado.";
+}
 
 function ClarkAvatar({ small = false }: { small?: boolean }) {
-  const sizeClass = small ? 'w-9 h-9' : 'w-14 h-14';
+  const sizeClass = small ? "w-9 h-9" : "w-14 h-14";
 
   return (
     <div
@@ -68,106 +97,188 @@ export default function Clark({ currentUser }: ClarkProps) {
 
   const [messages, setMessages] = useState<ClarkMessage[]>([
     {
-      id: 'welcome',
-      role: 'assistant',
-      text:
-        'Olá, eu sou a Clark. Posso te ajudar com perguntas sobre vendas, lojas, vendedores, categorias e estoque. Comece perguntando: "Quanto vendemos hoje?"',
-      createdAt: new Date().toLocaleTimeString('pt-BR', {
-        hour: '2-digit',
-        minute: '2-digit',
+      id: "welcome",
+      role: "assistant",
+      text: 'Olá, eu sou a Clark. Posso te ajudar com perguntas sobre vendas, lojas, vendedores, categorias e estoque. Comece perguntando: "Quanto vendemos hoje?"',
+      createdAt: new Date().toLocaleTimeString("pt-BR", {
+        hour: "2-digit",
+        minute: "2-digit",
       }),
     },
   ]);
 
-  const [input, setInput] = useState('');
+  const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [pendingAction, setPendingAction] = useState<QuickAction | null>(null);
+  const [excelDownloadingId, setExcelDownloadingId] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
-  const suggestions = useMemo(
-  () => [
-    {
-      label: 'Vendas hoje',
-      prompt: 'Quanto vendemos hoje?',
-      icon: CalendarDays,
-    },
-    {
-      label: 'Vendas período',
-      prompt: 'Quanto vendemos no período de 01/03/2026 até 09/04/2026?',
-      icon: TrendingUp,
-    },
-    {
-      label: 'Ranking lojas',
-      prompt: 'Qual loja mais vendeu no mês?',
-      icon: Building2,
-    },
-    {
-      label: 'Seguros vendedores',
-      prompt: 'Me liste o top 5 vendedores com maior venda de seguros no mês.',
-      icon: Users,
-    },
-    {
-      label: 'Top smartphones',
-      prompt: 'Liste os 5 maiores modelos da categoria SMARTPHONES em estoque e quais lojas estão.',
-      icon: Package,
-    },
-    {
-      label: 'Buscar produto',
-      prompt: 'Me liste as lojas que têm "Galaxy A56 128GB Preto" em estoque na categoria SMARTPHONES.',
-      icon: Package,
-    },
-  ],
-  []
-);
-
-  const addMessage = (role: 'user' | 'assistant', text: string) => {
-    setMessages((prev) => [
-      ...prev,
+  const suggestions = useMemo<QuickSuggestion[]>(
+    () => [
       {
-        id: `${role}-${Date.now()}-${Math.random()}`,
-        role,
-        text,
-        createdAt: new Date().toLocaleTimeString('pt-BR', {
-          hour: '2-digit',
-          minute: '2-digit',
-        }),
+        label: "Buscar produto",
+        action: "buscar_produto",
+        assistantMessage:
+          "Qual produto você deseja buscar? Pode escrever do seu jeito. Exemplo: Galaxy A56 128GB Preto.",
+        icon: Package,
       },
-    ]);
+      {
+        label: "Vendas período",
+        action: "vendas_periodo",
+        assistantMessage:
+          "Qual período você deseja consultar? Exemplo: 25/03/2026 até 04/04/2026.",
+        icon: CalendarDays,
+      },
+      {
+        label: "Vendas por loja",
+        action: "vendas_por_loja",
+        assistantMessage:
+          "Qual período você deseja consultar para listar as vendas por loja? Exemplo: 25/03/2026 até 04/04/2026.",
+        icon: Building2,
+      },
+      {
+        label: "Seguros vendedores",
+        action: "seguros_vendedores",
+        assistantMessage:
+          "Qual período você deseja consultar para ranking de seguros por vendedor? Exemplo: este mês ou 25/03/2026 até 04/04/2026.",
+        icon: Users,
+      },
+      {
+        label: "Top smartphones",
+        prompt:
+          "Liste os 5 maiores modelos da categoria SMARTPHONES em estoque e quais lojas estão.",
+        icon: Package,
+      },
+      {
+        label: "Relatório executivo",
+        action: "relatorio_executivo",
+        assistantMessage:
+          "Qual período você deseja usar no relatório executivo de vendas, estoque e seguros? Exemplo: 25/03/2026 até 04/04/2026.",
+        icon: TrendingUp,
+      },
+    ],
+    [],
+  );
+
+  const addMessage = (
+  role: "user" | "assistant",
+  text: string,
+  extras?: {
+        dados?: any;
+        actions?: Array<{ type: string; label: string }>;
+      },
+    ) => {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `${role}-${Date.now()}-${Math.random()}`,
+          role,
+          text,
+          dados: extras?.dados,
+          actions: extras?.actions,
+          createdAt: new Date().toLocaleTimeString("pt-BR", {
+            hour: "2-digit",
+            minute: "2-digit",
+          }),
+        },
+      ]);
+    };
+
+  const montarPerguntaDaAcaoRapida = (
+    action: QuickAction,
+    respostaUsuario: string,
+  ) => {
+    const texto = respostaUsuario.trim();
+
+    switch (action) {
+      case "buscar_produto":
+        return `Me liste as lojas que têm "${texto}" em estoque na categoria SMARTPHONES.`;
+
+      case "vendas_periodo":
+        return `Vendas de ${texto}. Traga um resumo executivo com total vendido, peças vendidas e ticket médio.`;
+
+      case "vendas_por_loja":
+        return `Vendas de ${texto} e me liste as lojas e o valor de cada uma.`;
+
+      case "seguros_vendedores":
+        return `Me liste o top 5 vendedores com maior venda de seguros no período ${texto}.`;
+
+      case "relatorio_executivo":
+        return `Me faça um relatório executivo de vendas, estoque e seguros de ${texto}. Ao final, disponibilize a opção de baixar em Excel.`;
+
+      default:
+        return texto;
+    }
+  };
+
+  const handleQuickSuggestion = (item: QuickSuggestion) => {
+    if (loading) return;
+
+    if (item.action) {
+      setPendingAction(item.action);
+      addMessage(
+        "assistant",
+        item.assistantMessage || "Me diga o que você deseja consultar.",
+      );
+      setTimeout(() => inputRef.current?.focus(), 100);
+      return;
+    }
+
+    if (item.prompt) {
+      sendQuestion(item.prompt);
+    }
   };
 
   const sendQuestion = async (question?: string) => {
-    const pergunta = String(question || input).trim();
+    const perguntaDigitada = String(question || input).trim();
 
-    if (!pergunta || loading) return;
+    if (!perguntaDigitada || loading) return;
 
-    setInput('');
-    addMessage('user', pergunta);
+    const acaoPendente = pendingAction;
+    const pergunta = acaoPendente
+      ? montarPerguntaDaAcaoRapida(acaoPendente, perguntaDigitada)
+      : perguntaDigitada;
+
+    setInput("");
+    setPendingAction(null);
+    addMessage("user", perguntaDigitada);
     setLoading(true);
 
     try {
       const response = await fetch(`${API_URL}/api/clark/perguntar`, {
-        method: 'POST',
+        method: "POST",
         headers: {
-          'Content-Type': 'application/json',
+          "Content-Type": "application/json",
         },
         body: JSON.stringify({
           userId: currentUser?.id,
           pergunta,
+          historico: messages
+            .filter((msg) => msg.id !== "welcome")
+            .slice(-12)
+            .map((msg) => ({
+              role: msg.role,
+              text: msg.text,
+            })),
         }),
       });
 
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(data?.error || 'Erro ao consultar a Clark.');
+        throw new Error(data?.error || "Erro ao consultar a Clark.");
       }
 
-      addMessage('assistant', data?.clark || 'Não consegui responder agora.');
+      addMessage("assistant", respostaVisivelClark(data), {
+        dados: data?.dados,
+        actions: data?.actions,
+      });
     } catch (error: any) {
       addMessage(
-        'assistant',
+        "assistant",
         `Não consegui processar sua pergunta agora. Motivo: ${
-          error?.message || 'erro desconhecido'
-        }`
+          error?.message || "erro desconhecido"
+        }`,
       );
     } finally {
       setLoading(false);
@@ -180,11 +291,65 @@ export default function Clark({ currentUser }: ClarkProps) {
     setIsExpanded(false);
   };
 
-  const panelClass = isExpanded
-    ? 'fixed inset-3 md:inset-8 z-[9999] bg-white rounded-3xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col'
-    : 'fixed bottom-4 right-4 md:bottom-6 md:right-6 z-[9999] w-[calc(100vw-32px)] md:w-[430px] h-[620px] max-h-[calc(100vh-32px)] bg-white rounded-3xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col';
+  const baixarExcelRelatorio = async (msg: ClarkMessage) => {
+    if (!msg.dados || excelDownloadingId) return;
 
-  const messageMaxClass = isExpanded ? 'max-w-[900px]' : 'max-w-[78%]';
+    try {
+      setExcelDownloadingId(msg.id);
+
+      const response = await fetch(`${API_URL}/api/clark/relatorio/excel`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          periodo: msg.dados?.periodo || {
+            inicio: "",
+            fim: "",
+          },
+          dados: msg.dados,
+        }),
+      });
+
+      if (!response.ok) {
+        let erro = "Erro ao gerar Excel.";
+
+        try {
+          const json = await response.json();
+          erro = json?.details || json?.error || erro;
+        } catch (_) {}
+
+        throw new Error(erro);
+      }
+
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `relatorio-clark-${Date.now()}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+
+      window.URL.revokeObjectURL(url);
+    } catch (error: any) {
+      addMessage(
+        "assistant",
+        `Não consegui gerar o Excel agora. Motivo: ${
+          error?.message || "erro desconhecido"
+        }`,
+      );
+    } finally {
+      setExcelDownloadingId(null);
+    }
+  };
+
+  const panelClass = isExpanded
+    ? "fixed inset-3 md:inset-8 z-[9999] bg-white rounded-3xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col"
+    : "fixed bottom-4 right-4 md:bottom-6 md:right-6 z-[9999] w-[calc(100vw-32px)] md:w-[430px] h-[620px] max-h-[calc(100vh-32px)] bg-white rounded-3xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col";
+
+  const messageMaxClass = isExpanded ? "max-w-[900px]" : "max-w-[78%]";
 
   return (
     <>
@@ -237,7 +402,7 @@ export default function Clark({ currentUser }: ClarkProps) {
               <button
                 onClick={() => setIsExpanded((prev) => !prev)}
                 className="w-9 h-9 rounded-xl bg-slate-800 hover:bg-orange-600 flex items-center justify-center transition-colors"
-                title={isExpanded ? 'Reduzir chat' : 'Expandir chat'}
+                title={isExpanded ? "Reduzir chat" : "Expandir chat"}
               >
                 {isExpanded ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
               </button>
@@ -263,7 +428,7 @@ export default function Clark({ currentUser }: ClarkProps) {
                   Usuário conectado
                 </p>
                 <p className="text-xs font-black text-slate-800 truncate">
-                  {currentUser?.name || 'Usuário'}
+                  {currentUser?.name || "Usuário"}
                 </p>
               </div>
             </div>
@@ -277,7 +442,7 @@ export default function Clark({ currentUser }: ClarkProps) {
                 return (
                   <button
                     key={item.label}
-                    onClick={() => sendQuestion(item.prompt)}
+                    onClick={() => handleQuickSuggestion(item)}
                     disabled={loading}
                     className="shrink-0 flex items-center gap-2 px-3 py-2 rounded-2xl bg-slate-100 hover:bg-orange-100 text-slate-700 hover:text-orange-700 border border-slate-200 hover:border-orange-200 transition-all text-[10px] font-black uppercase disabled:opacity-50 disabled:cursor-not-allowed"
                   >
@@ -289,15 +454,17 @@ export default function Clark({ currentUser }: ClarkProps) {
             </div>
           </div>
 
-          <div className={`flex-1 overflow-y-auto bg-slate-50 ${isExpanded ? 'px-8 py-6' : 'p-4'} space-y-4`}>
+          <div
+            className={`flex-1 overflow-y-auto bg-slate-50 ${isExpanded ? "px-8 py-6" : "p-4"} space-y-4`}
+          >
             {messages.map((msg) => {
-              const isUser = msg.role === 'user';
+              const isUser = msg.role === "user";
 
               return (
                 <div
                   key={msg.id}
                   className={`flex gap-2 ${
-                    isUser ? 'justify-end' : 'justify-start'
+                    isUser ? "justify-end" : "justify-start"
                   }`}
                 >
                   {!isUser && <ClarkAvatar small />}
@@ -305,17 +472,42 @@ export default function Clark({ currentUser }: ClarkProps) {
                   <div
                     className={`${messageMaxClass} rounded-2xl px-4 py-3 text-sm shadow-sm border ${
                       isUser
-                        ? 'bg-orange-600 text-white border-orange-600'
-                        : 'bg-white text-slate-800 border-slate-200'
+                        ? "bg-orange-600 text-white border-orange-600"
+                        : "bg-white text-slate-800 border-slate-200"
                     }`}
                   >
                     <div className="whitespace-pre-wrap leading-relaxed font-medium">
                       {msg.text}
                     </div>
 
+                    {!isUser &&
+                      msg.actions?.some((action) => action.type === "download_excel") && (
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {msg.actions
+                            .filter((action) => action.type === "download_excel")
+                            .map((action, index) => (
+                              <button
+                                key={`${msg.id}-${action.type}-${index}`}
+                                onClick={() => baixarExcelRelatorio(msg)}
+                                disabled={excelDownloadingId === msg.id}
+                                className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-300 disabled:cursor-not-allowed text-white text-[11px] font-black uppercase transition-colors"
+                              >
+                                {excelDownloadingId === msg.id ? (
+                                  <Loader2 size={14} className="animate-spin" />
+                                ) : (
+                                  <Download size={14} />
+                                )}
+                                {excelDownloadingId === msg.id
+                                  ? "Gerando Excel..."
+                                  : action.label || "Baixar Excel"}
+                              </button>
+                            ))}
+                        </div>
+                      )}
+
                     <div
                       className={`mt-2 text-[9px] font-black uppercase tracking-widest ${
-                        isUser ? 'text-orange-100' : 'text-slate-400'
+                        isUser ? "text-orange-100" : "text-slate-400"
                       }`}
                     >
                       {msg.createdAt}
@@ -354,9 +546,13 @@ export default function Clark({ currentUser }: ClarkProps) {
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter') sendQuestion();
+                  if (e.key === "Enter") sendQuestion();
                 }}
-                placeholder="Pergunte à Clark..."
+                placeholder={
+                  pendingAction
+                    ? "Responda à pergunta da Clark..."
+                    : "Pergunte à Clark..."
+                }
                 disabled={loading}
                 className="flex-1 bg-transparent outline-none text-sm font-semibold text-slate-700 placeholder:text-slate-400 px-1 py-2"
               />

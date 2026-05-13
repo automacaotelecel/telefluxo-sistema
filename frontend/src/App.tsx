@@ -26,6 +26,7 @@ import ComparativosModule from './components/ComparativosModule';
 import FluxoComparativoModule from './components/FluxoComparativoModule';
 import ComprasVendas from './components/ComprasVendas';
 import Clark from './components/Clark';
+import RhModule from './components/RhModule';
 
 import {
   FileText, CheckCircle, LayoutDashboard, Users, LogOut,
@@ -43,6 +44,35 @@ const DEFAULT_EXPANDED = {
   finance: false,
   comparativos: false,
 };
+
+const STORE_HOME_VIEW = 'home';
+
+const STORE_ALLOWED_VIEWS = new Set([
+  'home',
+  'rh',
+  'stock',
+  'estoque_detalhado',
+  'estoque_vendas',
+  'estoque_inteligente',
+  'stockout',
+  'sales_dash',
+  'comparativo',
+  'price_table',
+  'agenda',
+  'solicitacoes',
+]);
+
+function isStoreRole(userData: any): boolean {
+  return String(userData?.role || '').trim().toUpperCase() === 'LOJA';
+}
+
+function getInitialViewForUser(userData: any): string {
+  return isStoreRole(userData) ? STORE_HOME_VIEW : 'home';
+}
+
+function isViewAllowedForStore(view: string): boolean {
+  return STORE_ALLOWED_VIEWS.has(view);
+}
 
 function App() {
   const [user, setUser] = useState<any>(null);
@@ -68,7 +98,7 @@ function App() {
       try {
         const parsedUser = JSON.parse(savedUser);
         setUser(parsedUser);
-        setCurrentView('home');
+        setCurrentView(getInitialViewForUser(parsedUser));
         setExpanded(DEFAULT_EXPANDED);
       } catch (e) {
         localStorage.removeItem('telefluxo_user');
@@ -113,6 +143,15 @@ function App() {
   const canViewComprasVendas = userRole === 'ADM' || isAdmin;
   const isStoreOnly = userRole === 'LOJA';
 
+  useEffect(() => {
+  if (!user || !isStoreOnly) return;
+
+  if (!isViewAllowedForStore(currentView)) {
+    setCurrentView(STORE_HOME_VIEW);
+    setExpanded(DEFAULT_EXPANDED);
+  }
+  }, [user, isStoreOnly, currentView]);
+
   const handleLogout = () => {
     localStorage.clear();
     window.location.reload();
@@ -144,6 +183,7 @@ function App() {
     comparativos_fluxo: 'FLUXO COMPARATIVO',
     comparativo: 'VENDAS ANUAIS',
     compras_vendas: 'COMPRAS X VENDAS',
+    rh: 'RH',
   };
 
   const currentViewLabel =
@@ -164,10 +204,10 @@ function App() {
         onLogin={(data: any) => {
           setUser(data);
           localStorage.setItem('telefluxo_user', JSON.stringify(data));
-          setCurrentView('home');
+          setCurrentView(getInitialViewForUser(data));
           setExpanded(DEFAULT_EXPANDED);
         }}
-      />
+/>
     );
   }
 
@@ -228,8 +268,12 @@ function App() {
       >
         <div className={`border-b border-slate-800 flex items-center justify-between ${isSidebarCollapsed ? 'p-4' : 'p-6'}`}>
           <div className={`flex items-center gap-2 ${isSidebarCollapsed ? 'justify-center w-full md:w-auto' : ''}`}>
-            <div className="w-8 h-8 bg-orange-600 rounded text-white flex items-center justify-center font-black italic shadow-lg shrink-0">
-              T
+            <div className="w-9 h-9 bg-white rounded-xl flex items-center justify-center shadow-lg overflow-hidden shrink-0">
+              <img
+                src="/logo2.png"
+                alt="TeleFluxo"
+                className="w-full h-full object-contain scale-[1.35]"
+              />
             </div>
 
             {!isSidebarCollapsed && (
@@ -289,65 +333,71 @@ function App() {
             </div>
           )}
 
-          <div>
+          {!isStoreOnly && (
+            <div>
+              <NavButton
+                icon={FileText}
+                label="Minhas Demandas"
+                active={currentView.startsWith('mine_')}
+                onClick={() => handleSectionToggle('mine')}
+                hasChevron
+                chevronOpen={expanded.mine}
+                customClass="bg-slate-800 text-white"
+              />
+
+              {expanded.mine && !isSidebarCollapsed && (
+                <div className="mt-1 space-y-1">
+                  <SubMenuItem label="Pendentes" view="mine_pending" active={currentView === 'mine_pending'} />
+                  <SubMenuItem label="Em Tratativa" view="mine_doing" active={currentView === 'mine_doing'} />
+                  <SubMenuItem label="Finalizadas" view="mine_done" active={currentView === 'mine_done'} />
+                </div>
+              )}
+            </div>
+          )}
+
+          {!isStoreOnly && (
             <NavButton
-              icon={FileText}
-              label="Minhas Demandas"
-              active={currentView.startsWith('mine_')}
-              onClick={() => handleSectionToggle('mine')}
-              hasChevron
-              chevronOpen={expanded.mine}
-              customClass="bg-slate-800 text-white"
+              icon={CheckCircle}
+              label="Histórico Geral"
+              active={currentView === 'completed'}
+              onClick={() => handleNavigate('completed')}
+              customClass="bg-orange-600 text-white shadow-lg"
             />
+          )}
 
-            {expanded.mine && !isSidebarCollapsed && (
-              <div className="mt-1 space-y-1">
-                <SubMenuItem label="Pendentes" view="mine_pending" active={currentView === 'mine_pending'} />
-                <SubMenuItem label="Em Tratativa" view="mine_doing" active={currentView === 'mine_doing'} />
-                <SubMenuItem label="Finalizadas" view="mine_done" active={currentView === 'mine_done'} />
-              </div>
-            )}
-          </div>
+          {!isStoreOnly && (
+            <div>
+              <NavButton
+                icon={MessageSquare}
+                label="Informativos"
+                active={currentView.startsWith('dept_')}
+                onClick={() => handleSectionToggle('info')}
+                hasChevron
+                chevronOpen={expanded.info}
+                customClass="bg-slate-800 text-white"
+              />
 
-          <NavButton
-            icon={CheckCircle}
-            label="Histórico Geral"
-            active={currentView === 'completed'}
-            onClick={() => handleNavigate('completed')}
-            customClass="bg-orange-600 text-white shadow-lg"
-          />
-
-          <div>
-            <NavButton
-              icon={MessageSquare}
-              label="Informativos"
-              active={currentView.startsWith('dept_')}
-              onClick={() => handleSectionToggle('info')}
-              hasChevron
-              chevronOpen={expanded.info}
-              customClass="bg-slate-800 text-white"
-            />
-
-            {expanded.info && !isSidebarCollapsed && (
-              <div className="mt-1 space-y-1">
-                {(isAdmin || isManager) ? (
-                  <>
-                    <SubMenuItem label="Samsung" view="dept_Samsung" active={currentView === 'dept_Samsung'} />
-                    <SubMenuItem label="Tim" view="dept_Tim" active={currentView === 'dept_Tim'} />
-                    <SubMenuItem label="Motorola" view="dept_Motorola" active={currentView === 'dept_Motorola'} />
-                    <SubMenuItem label="Automação" view="dept_Automação" active={currentView === 'dept_Automação'} />
-                    <SubMenuItem label="Financeiro" view="dept_Financeiro" active={currentView === 'dept_Financeiro'} />
-                  </>
-                ) : (
-                  <SubMenuItem
-                    label={user.operation || "Meu Setor"}
-                    view={`dept_${user.operation}`}
-                    active={currentView === `dept_${user.operation}`}
-                  />
-                )}
-              </div>
-            )}
-          </div>
+              {expanded.info && !isSidebarCollapsed && (
+                <div className="mt-1 space-y-1">
+                  {(isAdmin || isManager) ? (
+                    <>
+                      <SubMenuItem label="Samsung" view="dept_Samsung" active={currentView === 'dept_Samsung'} />
+                      <SubMenuItem label="Tim" view="dept_Tim" active={currentView === 'dept_Tim'} />
+                      <SubMenuItem label="Motorola" view="dept_Motorola" active={currentView === 'dept_Motorola'} />
+                      <SubMenuItem label="Automação" view="dept_Automação" active={currentView === 'dept_Automação'} />
+                      <SubMenuItem label="Financeiro" view="dept_Financeiro" active={currentView === 'dept_Financeiro'} />
+                    </>
+                  ) : (
+                    <SubMenuItem
+                      label={user.operation || "Meu Setor"}
+                      view={`dept_${user.operation}`}
+                      active={currentView === `dept_${user.operation}`}
+                    />
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
           {canViewComparativos && (
             <div>
@@ -415,7 +465,9 @@ function App() {
 
                   <SubMenuItem label="Estoque Inteligente" view="estoque_inteligente" active={currentView === 'estoque_inteligente'} />
                   <SubMenuItem label="Stockout" view="stockout" active={currentView === 'stockout'} />
-                  <SubMenuItem label="Auditoria Lojas" view="auditoria_lojas" active={currentView === 'auditoria_lojas'} />
+                  {!isStoreOnly && (
+                    <SubMenuItem label="Auditoria Lojas" view="auditoria_lojas" active={currentView === 'auditoria_lojas'} />
+                  )}
                 </div>
               )}
             </div>
@@ -476,6 +528,14 @@ function App() {
             active={currentView === 'solicitacoes'}
             onClick={() => handleNavigate('solicitacoes')}
             customClass="bg-fuchsia-600 text-white shadow-lg"
+          />
+
+          <NavButton
+            icon={Users}
+            label="RH"
+            active={currentView === 'rh'}
+            onClick={() => handleNavigate('rh')}
+            customClass="bg-slate-700 text-white shadow-lg"
           />
 
           {canViewTeam && (
@@ -597,7 +657,9 @@ function App() {
             <SolicitacoesModule currentUser={user} />
           ) : currentView === 'compras_vendas' && isAdmin ? (
             <ComprasVendas />
-          ) : currentView === 'team' ? (
+          ) : currentView === 'rh' ? (
+            <RhModule currentUser={user} />
+          ): currentView === 'team' ? (
             <div className="flex-1 p-4 md:p-8 overflow-y-auto">
               <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
                 <div>

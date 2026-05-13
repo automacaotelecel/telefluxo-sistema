@@ -44,17 +44,29 @@ export default function Login({ onLogin }: LoginProps) {
       <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl overflow-hidden flex flex-col animate-in fade-in zoom-in duration-300">
         
         {/* Header com Identidade Telecel */}
-        <div className="bg-orange-600 p-8 text-center">
-          <div className="w-12 h-12 bg-white rounded-lg flex items-center justify-center shadow-lg mx-auto mb-4 text-orange-600 text-xl font-bold">T</div>
-          <h1 className="text-2xl font-bold text-white uppercase tracking-tight">TeleFluxo</h1>
-          <p className="text-orange-100 text-xs font-bold uppercase tracking-widest mt-1">Grupo Telecel</p>
+        <div className="bg-orange-600 px-8 py-8 text-center flex flex-col items-center justify-center">
+         <div className="w-20 h-20 bg-white rounded-3xl flex items-center justify-center shadow-2xl overflow-hidden mb-4">
+            <img
+              src="/logo2.png"
+              alt="TeleFluxo"
+              className="w-full h-full object-contain scale-[1.45]"
+            />
+          </div>
+          
+          <h1 className="text-2xl font-black text-white tracking-tight leading-none">
+            TELEFLUXO
+          </h1>
+
+          <p className="mt-2 text-[11px] font-black text-white/90 uppercase tracking-widest">
+            GRUPO TELECEL
+          </p>
         </div>
 
         <div className="p-8 pt-10">
           <form onSubmit={handleLogin} className="space-y-6">
             
             <div className="space-y-2">
-              <label className="text-sm font-bold text-slate-700">Email Corporativo</label>
+              <label className="text-sm font-bold text-slate-700">Email</label>
               <div className="relative">
                 <Mail className="absolute left-3 top-3 text-slate-400" size={20} />
                 <input 

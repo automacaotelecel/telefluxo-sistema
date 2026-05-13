@@ -1,3 +1,5 @@
+// TABELA DE PREÇOS, CONSULTADA NO SHEETS - MENU - OFERTAS
+
 import React, { useEffect, useState } from 'react';
 import { Search, Smartphone, Archive, Headphones, AlertTriangle, Calendar, X, Tag, ChevronRight, Filter } from 'lucide-react';
 
