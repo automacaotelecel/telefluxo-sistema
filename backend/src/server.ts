@@ -15,8 +15,165 @@ import nodemailer from 'nodemailer';
 import dotenv from 'dotenv';
 import clarkRoutes from './modules/clark/clark.routes'; //IMPORT ROTAS DA CLARK
 import rhRoutes from './modules/rh/rh.routes'; 
+import { google } from 'googleapis';
+
 
 dotenv.config();
+
+// BLOCO PARA ENVIO DAS INFORMAÇÕES DAS LOJAS PARA O RH - SAMSUNG //
+
+const KEYFILEPATH_CANDIDATES = [
+  path.join(process.cwd(), 'rhmodule.json'),
+  path.join(process.cwd(), 'src', 'rhmodule.json'),
+  path.join(__dirname, 'rhmodule.json'),
+];
+
+const KEYFILEPATH = KEYFILEPATH_CANDIDATES.find((candidate) =>
+  fs.existsSync(candidate)
+);
+
+if (!KEYFILEPATH) {
+  throw new Error(
+    `Arquivo rhmodule.json não encontrado. Locais testados: ${KEYFILEPATH_CANDIDATES.join(' | ')}`
+  );
+}
+
+const SCOPES = ['https://www.googleapis.com/auth/drive'];
+const ROOT_FOLDER_ID = '1EYs0wRUwLfMuDssbts6nSDocH35jhmeb';
+
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
+const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI;
+const GOOGLE_REFRESH_TOKEN = process.env.GOOGLE_REFRESH_TOKEN;
+
+if (!GOOGLE_CLIENT_ID) {
+  throw new Error('GOOGLE_CLIENT_ID não configurado no .env');
+}
+
+if (!GOOGLE_CLIENT_SECRET) {
+  throw new Error('GOOGLE_CLIENT_SECRET não configurado no .env');
+}
+
+if (!GOOGLE_REDIRECT_URI) {
+  throw new Error('GOOGLE_REDIRECT_URI não configurado no .env');
+}
+
+if (!GOOGLE_REFRESH_TOKEN) {
+  throw new Error('GOOGLE_REFRESH_TOKEN não configurado no .env');
+}
+
+const oauth2Client = new google.auth.OAuth2(
+  GOOGLE_CLIENT_ID,
+  GOOGLE_CLIENT_SECRET,
+  GOOGLE_REDIRECT_URI
+);
+
+oauth2Client.setCredentials({
+  refresh_token: GOOGLE_REFRESH_TOKEN,
+});
+
+const drive = google.drive({
+  version: 'v3',
+  auth: oauth2Client,
+});
+
+async function getOrCreateFolder(name: string, parentId: string): Promise<string> {
+  const safeName = String(name || '').trim();
+
+  if (!safeName) {
+    throw new Error('Nome da pasta não informado.');
+  }
+
+  if (!parentId) {
+    throw new Error(`Parent ID não informado para a pasta "${safeName}".`);
+  }
+
+  const escapedName = safeName.replace(/'/g, "\\'");
+
+  const res = await drive.files.list({
+    q: `name = '${escapedName}' and '${parentId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+    fields: 'files(id, name)',
+    supportsAllDrives: true,
+    includeItemsFromAllDrives: true,
+  });
+
+  const existingFolderId = res.data.files?.[0]?.id;
+
+  if (existingFolderId) {
+    return existingFolderId;
+  }
+
+  const folder = await drive.files.create({
+    requestBody: {
+      name: safeName,
+      mimeType: 'application/vnd.google-apps.folder',
+      parents: [parentId],
+    },
+    fields: 'id',
+    supportsAllDrives: true,
+  });
+
+  const createdFolderId = folder.data.id;
+
+  if (!createdFolderId) {
+    throw new Error(`Google Drive não retornou ID ao criar a pasta "${safeName}".`);
+  }
+
+  return createdFolderId;
+}
+
+function getRhMonthFolderName(date = new Date()): string {
+  const month = new Intl.DateTimeFormat('pt-BR', {
+    month: 'long',
+  })
+    .format(date)
+    .toUpperCase();
+
+  const year = date.getFullYear();
+
+  return `${month} ${year}`;
+}
+
+function normalizeDriveFolderName(value: any, fallback: string): string {
+  const text = String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return text || fallback;
+}
+
+async function getOrCreateRhDrivePath(params: {
+  storeName: string;
+  collaboratorName: string;
+}) {
+  const monthName = getRhMonthFolderName();
+
+  const safeStoreName = normalizeDriveFolderName(
+    params.storeName,
+    'LOJA NÃO INFORMADA'
+  );
+
+  const safeCollaboratorName = normalizeDriveFolderName(
+    params.collaboratorName,
+    'COLABORADOR NÃO INFORMADO'
+  );
+
+  const monthFolderId = await getOrCreateFolder(monthName, ROOT_FOLDER_ID);
+  const storeFolderId = await getOrCreateFolder(safeStoreName, monthFolderId);
+  const collaboratorFolderId = await getOrCreateFolder(
+    safeCollaboratorName,
+    storeFolderId
+  );
+
+  return {
+    monthName,
+    monthFolderId,
+    storeFolderId,
+    collaboratorFolderId,
+  };
+}
+
+//////////////////////////// FIM DO BLOCO DO ENVIO DAS DOCUMENTAÇÕES AO RH   //////////////
 
 const uploadSolicitacao = multer({
   storage: multer.memoryStorage(),
@@ -41,7 +198,7 @@ const ROOT_DIR = process.cwd();
 
 // Define a pasta do banco (Render vs Local)
 const DATABASE_DIR = process.env.RENDER 
-    ? path.join(__dirname, '../../database') 
+    ? '/var/data'  // <--- Caminho fixo no banco de dados do render
     : path.join(ROOT_DIR, 'database');
 
 // Garante que a pasta existe
@@ -258,14 +415,17 @@ const prisma = new PrismaClient();
 app.use(cors({
   origin: '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-User-Id'],
 }));
 
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ limit: '100mb', extended: true }));
 
 app.use('/uploads', express.static(path.join(ROOT_DIR, 'uploads')));
-app.use('/api/rh', rhRoutes);
+
+if (process.env.RENDER) {
+  app.use('/uploads/rh', express.static('/var/data/uploads/rh'));
+}
 
 app.use('/api/clark', clarkRoutes);
 
@@ -5662,6 +5822,654 @@ app.post('/api/comparativos/fluxo/:id/send-table', async (req, res) => {
     });
   }
 });
+
+ async function ensureRhCollaboratorExists(params: {
+  id: string;
+  name: string;
+  store: string;
+}) {
+  const requestedId = String(params.id || '').trim();
+
+  const name = String(params.name || requestedId)
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const storeName = String(params.store || 'LOJA NÃO INFORMADA')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!requestedId) {
+    throw new Error('ID do colaborador não informado.');
+  }
+
+  if (!name) {
+    throw new Error('Nome do colaborador não informado.');
+  }
+
+  if (!storeName) {
+    throw new Error('Loja do colaborador não informada.');
+  }
+
+  // 1. Primeiro tenta achar pelo ID que veio do frontend
+  const existingById = await prisma.rhCollaborator.findUnique({
+    where: { id: requestedId },
+  });
+
+  if (existingById) {
+    return prisma.rhCollaborator.update({
+      where: { id: existingById.id },
+      data: {
+        name,
+        storeName,
+        active: true,
+      },
+    });
+  }
+
+  // 2. Depois tenta achar pela chave única do Prisma: name + storeName
+  const existingByNameStore = await prisma.rhCollaborator.findUnique({
+    where: {
+      name_storeName: {
+        name,
+        storeName,
+      },
+    },
+  });
+
+  if (existingByNameStore) {
+    return prisma.rhCollaborator.update({
+      where: { id: existingByNameStore.id },
+      data: {
+        name,
+        storeName,
+        active: true,
+      },
+    });
+  }
+
+  // 3. Se não existir, cria com o ID enviado pelo frontend
+  return prisma.rhCollaborator.create({
+    data: {
+      id: requestedId,
+      name,
+      storeName,
+      active: true,
+    },
+  });
+} 
+
+// ==========================================
+// ROTAS DO BACKEND PARA DOCUMENTAÇÃO RH
+// ==========================================
+
+const RH_UPLOAD_DIR = process.env.RENDER
+  ? '/var/data/uploads/rh'
+  : path.join(ROOT_DIR, 'uploads', 'rh');
+
+if (!fs.existsSync(RH_UPLOAD_DIR)) {
+  fs.mkdirSync(RH_UPLOAD_DIR, { recursive: true });
+}
+
+// ==========================================
+// HELPERS RH
+// ==========================================
+
+function normalizeRhText(value: any): string {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\bSSG\b/g, '')
+    .replace(/\bSAMSUNG\b/g, '')
+    .replace(/\bLOJA\b/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toUpperCase();
+}
+
+function makeRhCollaboratorSlug(storeName: any, collaboratorName: any): string {
+  return `${normalizeRhText(storeName)}-${normalizeRhText(collaboratorName)}`
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)/g, '');
+}
+
+function resolveRhPhysicalFile(fileNameOnDisk: string | null | undefined): string | null {
+  if (!fileNameOnDisk) return null;
+
+  const candidates = [
+    path.join(RH_UPLOAD_DIR, fileNameOnDisk),
+    path.join(ROOT_DIR, 'uploads', 'rh', fileNameOnDisk),
+    path.join(process.cwd(), 'uploads', 'rh', fileNameOnDisk),
+    path.join(__dirname, '..', 'uploads', 'rh', fileNameOnDisk),
+  ];
+
+  return candidates.find((candidate) => fs.existsSync(candidate)) || null;
+}
+
+async function findRhDocumentSafe(params: {
+  collaboratorId: string;
+  docType: string;
+}) {
+  const collaboratorId = String(params.collaboratorId || '').trim();
+  const docType = String(params.docType || '').trim();
+
+  if (!collaboratorId || !docType) return null;
+
+  const direct = await prisma.rhDocument.findUnique({
+    where: {
+      collaboratorId_documentType: {
+        collaboratorId,
+        documentType: docType,
+      },
+    },
+    include: {
+      collaborator: true,
+    },
+  });
+
+  if (direct) return direct;
+
+  const docs = await prisma.rhDocument.findMany({
+    where: {
+      documentType: docType,
+    },
+    include: {
+      collaborator: true,
+    },
+  });
+
+  return (
+    docs.find((doc) => {
+      const slug = makeRhCollaboratorSlug(
+        doc.collaborator?.storeName,
+        doc.collaborator?.name
+      );
+
+      return slug === collaboratorId;
+    }) || null
+  );
+}
+
+// ==========================================
+// NOTIFICAR LOJA SOBRE PENDÊNCIAS
+// ==========================================
+
+app.post('/api/rh/notificar-pendencias', async (req, res) => {
+  const { loja, mensagem } = req.body;
+
+  try {
+    if (!loja || !mensagem) {
+      return res.status(400).json({
+        success: false,
+        error: 'Loja e mensagem são obrigatórios.',
+      });
+    }
+
+    const storeUsers = await prisma.user.findMany({
+      where: {
+        OR: [
+          { operation: String(loja) },
+          { department: String(loja) },
+          { allowedStores: { contains: String(loja) } },
+        ],
+      },
+    });
+
+    if (storeUsers.length > 0) {
+      await prisma.notification.createMany({
+        data: storeUsers.map((user) => ({
+          userId: user.id,
+          text: String(mensagem),
+          read: false,
+        })),
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Notificação criada com sucesso.',
+      totalNotificados: storeUsers.length,
+    });
+  } catch (error: any) {
+    console.error('Erro na rota de notificar loja:', error);
+
+    return res.status(500).json({
+      success: false,
+      error: error?.message || 'Erro ao notificar loja.',
+    });
+  }
+});
+
+// ==========================================
+// CONFIGURAÇÃO DE UPLOAD DOS DOCUMENTOS RH
+// ==========================================
+
+const rhStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => {
+    cb(null, RH_UPLOAD_DIR);
+  },
+
+  filename: (req, file, cb) => {
+    const collaboratorId = String(req.params.collaboratorId || 'colaborador')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-zA-Z0-9.\-_]/g, '_');
+
+    const documentType = String(req.params.documentType || 'documento')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-zA-Z0-9.\-_]/g, '_');
+
+    const safeOriginalName = file.originalname
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-zA-Z0-9.\-_]/g, '_');
+
+    cb(null, `${Date.now()}-${collaboratorId}-${documentType}-${safeOriginalName}`);
+  },
+});
+
+const uploadRhDocument = multer({
+  storage: rhStorage,
+  limits: {
+    fileSize: 8 * 1024 * 1024,
+  },
+});
+
+// ==========================================
+// ENVIAR DOCUMENTO DO COLABORADOR
+// ==========================================
+
+app.post(
+  '/api/rh/colaboradores/:collaboratorId/documentos/:documentType',
+  uploadRhDocument.single('file'),
+  async (req: any, res) => {
+    try {
+      const { collaboratorId, documentType } = req.params;
+      const file = req.file;
+
+      if (!collaboratorId || !documentType) {
+        return res.status(400).json({
+          success: false,
+          error: 'Colaborador e tipo de documento são obrigatórios.',
+        });
+      }
+
+      if (!file) {
+        return res.status(400).json({
+          success: false,
+          error: 'Nenhum arquivo enviado.',
+        });
+      }
+
+      const rawStoreName = String(req.body.storeName || req.body.loja || '').trim();
+
+      const rawCollaboratorName = String(
+        req.body.collaboratorName || req.body.nome || ''
+      ).trim();
+
+      const collaborator = await ensureRhCollaboratorExists({
+        id: String(collaboratorId),
+        name: rawCollaboratorName || String(collaboratorId),
+        store: rawStoreName || 'LOJA NÃO INFORMADA',
+      });
+
+      const dbCollaboratorId = collaborator.id;
+      const fileUrl = `/uploads/rh/${file.filename}`;
+
+      const savedDocument = await prisma.rhDocument.upsert({
+        where: {
+          collaboratorId_documentType: {
+            collaboratorId: dbCollaboratorId,
+            documentType: String(documentType),
+          },
+        },
+        update: {
+          status: 'ENVIADO',
+          fileName: file.originalname,
+          originalName: file.originalname,
+          filePath: file.filename,
+          fileUrl,
+          mimeType: file.mimetype,
+          sizeBytes: file.size,
+          uploadedById: req.body.userId ? String(req.body.userId) : null,
+          uploadedByName: req.body.userName ? String(req.body.userName) : null,
+          uploadedAt: new Date(),
+        },
+        create: {
+          collaboratorId: dbCollaboratorId,
+          documentType: String(documentType),
+          status: 'ENVIADO',
+          fileName: file.originalname,
+          originalName: file.originalname,
+          filePath: file.filename,
+          fileUrl,
+          mimeType: file.mimetype,
+          sizeBytes: file.size,
+          uploadedById: req.body.userId ? String(req.body.userId) : null,
+          uploadedByName: req.body.userName ? String(req.body.userName) : null,
+          uploadedAt: new Date(),
+        },
+      });
+
+      return res.json({
+        success: true,
+        message: 'Documento enviado com sucesso.',
+        collaboratorId: dbCollaboratorId,
+        documentId: savedDocument.id,
+        documentType: savedDocument.documentType,
+        status: savedDocument.status,
+        fileName: savedDocument.fileName,
+        originalName: savedDocument.originalName,
+        filePath: savedDocument.filePath,
+        url: savedDocument.fileUrl,
+      });
+    } catch (error: any) {
+      console.error('Erro ao enviar documento RH:', error);
+
+      return res.status(500).json({
+        success: false,
+        error: error?.message || 'Erro ao enviar documento RH.',
+      });
+    }
+  }
+);
+
+// ==========================================
+// BAIXAR DOCUMENTO RH
+// ==========================================
+
+app.get('/api/rh/baixar-documento', async (req, res) => {
+  try {
+    const collaboratorId = String(req.query.collaboratorId || '').trim();
+    const docType = String(req.query.docType || '').trim();
+
+    if (!collaboratorId || !docType) {
+      return res.status(400).json({
+        success: false,
+        error: 'Colaborador e tipo de documento são obrigatórios.',
+      });
+    }
+
+    const document = await findRhDocumentSafe({
+      collaboratorId,
+      docType,
+    });
+
+    if (!document) {
+      return res.status(404).json({
+        success: false,
+        error: 'Documento não encontrado no banco.',
+      });
+    }
+
+    const fullPath = resolveRhPhysicalFile(document.filePath || document.fileName);
+
+    if (!fullPath) {
+      return res.status(404).json({
+        success: false,
+        error: 'Arquivo físico não encontrado na pasta de uploads.',
+        filePath: path.join(RH_UPLOAD_DIR, document.filePath || document.fileName || ''),
+      });
+    }
+
+    return res.download(
+      fullPath,
+      document.originalName || document.fileName || document.filePath || 'documento-rh'
+    );
+  } catch (error: any) {
+    console.error('Erro ao baixar documento RH:', error);
+
+    return res.status(500).json({
+      success: false,
+      error: error?.message || 'Erro ao baixar documento RH.',
+    });
+  }
+});
+
+// ==========================================
+// INVALIDAR / RECUSAR DOCUMENTO RH
+// Ao recusar, remove arquivo local e apaga o registro do banco.
+// Se já foi removido, retorna sucesso para não travar a tela.
+// ==========================================
+
+app.post('/api/rh/invalidar-documento', async (req, res) => {
+  const { collaboratorId, docType } = req.body;
+
+  try {
+    if (!collaboratorId || !docType) {
+      return res.status(400).json({
+        success: false,
+        error: 'Colaborador e tipo de documento são obrigatórios.',
+      });
+    }
+
+    const document = await findRhDocumentSafe({
+      collaboratorId: String(collaboratorId),
+      docType: String(docType),
+    });
+
+    // Idempotente: se não existe mais, considera como já removido.
+    // Isso evita erro quando o usuário clica duas vezes ou a tela ficou desatualizada.
+    if (!document) {
+      return res.json({
+        success: true,
+        alreadyRemoved: true,
+        message: 'Documento já estava removido.',
+      });
+    }
+
+    const fullPath = resolveRhPhysicalFile(
+      document.filePath || document.fileName
+    );
+
+    if (fullPath && fs.existsSync(fullPath)) {
+      try {
+        fs.unlinkSync(fullPath);
+        console.log(`🗑️ Arquivo RH excluído: ${fullPath}`);
+      } catch (fileError) {
+        console.warn('⚠️ Não consegui excluir arquivo físico RH:', fileError);
+      }
+    }
+
+    await prisma.rhDocument.delete({
+      where: {
+        id: document.id,
+      },
+    });
+
+    return res.json({
+      success: true,
+      message: 'Documento recusado e excluído com sucesso.',
+      deletedDocumentId: document.id,
+    });
+  } catch (error: any) {
+    console.error('Erro ao recusar/excluir documento RH:', error);
+
+    return res.status(500).json({
+      success: false,
+      error: error?.message || 'Erro ao recusar/excluir documento RH.',
+    });
+  }
+});
+
+// ==========================================
+// VALIDAR DOCUMENTO E ENVIAR PARA O GOOGLE DRIVE
+// ==========================================
+
+app.post('/api/rh/validar-documento', async (req, res) => {
+  const { collaboratorId, docType, storeName, collaboratorName } = req.body;
+
+  try {
+    if (!collaboratorId || !docType || !storeName || !collaboratorName) {
+      return res.status(400).json({
+        success: false,
+        error: 'Dados obrigatórios ausentes para validar documento.',
+        required: ['collaboratorId', 'docType', 'storeName', 'collaboratorName'],
+      });
+    }
+
+    const document = await findRhDocumentSafe({
+      collaboratorId: String(collaboratorId),
+      docType: String(docType),
+    });
+
+    if (!document) {
+      return res.status(404).json({
+        success: false,
+        error: 'Documento não encontrado no banco para validação.',
+      });
+    }
+
+    const fullPath = resolveRhPhysicalFile(document.filePath || document.fileName);
+
+    if (!fullPath) {
+      return res.status(404).json({
+        success: false,
+        error: 'Arquivo físico não encontrado no servidor.',
+        path: path.join(RH_UPLOAD_DIR, document.filePath || document.fileName || ''),
+      });
+    }
+
+    const mesAtual = new Intl.DateTimeFormat('pt-BR', {
+      month: 'long',
+      year: 'numeric',
+    })
+      .format(new Date())
+      .toUpperCase();
+
+    const monthId = await getOrCreateFolder(mesAtual, ROOT_FOLDER_ID);
+    const storeId = await getOrCreateFolder(String(storeName), monthId);
+    const collabId = await getOrCreateFolder(String(collaboratorName), storeId);
+
+    const driveUpload = await drive.files.create({
+      requestBody: {
+        name: document.originalName || document.fileName || document.filePath || 'documento-rh',
+        parents: [collabId],
+      },
+      media: {
+        mimeType: document.mimeType || 'application/octet-stream',
+        body: fs.createReadStream(fullPath),
+      },
+      fields: 'id, name, webViewLink, webContentLink',
+      supportsAllDrives: true,
+    });
+
+    await prisma.rhDocument.update({
+      where: {
+        id: document.id,
+      },
+      data: {
+        status: 'VALIDADO',
+      },
+    });
+
+    return res.json({
+      success: true,
+      message: 'Documento validado e enviado para o Google Drive.',
+      driveFileId: driveUpload.data.id,
+      driveFileName: driveUpload.data.name,
+      driveViewLink: driveUpload.data.webViewLink,
+      driveDownloadLink: driveUpload.data.webContentLink,
+    });
+  } catch (error: any) {
+    console.error('Erro ao validar e subir para o Drive:', error);
+
+    const message = String(error?.message || '');
+
+    if (message.includes('Service Accounts do not have storage quota')) {
+      return res.status(500).json({
+        success: false,
+        error:
+          'A conta de serviço do Google não tem cota de armazenamento. Use uma pasta dentro de um Drive compartilhado ou troque para OAuth com uma conta Google real.',
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      error: error?.message || 'Erro ao validar e subir para o Drive.',
+    });
+  }
+});
+
+// ==========================================
+// EXCLUIR COLABORADOR RH
+// ==========================================
+
+app.delete('/api/rh/colaboradores/:collaboratorId', async (req, res) => {
+  try {
+    const collaboratorId = String(req.params.collaboratorId || '').trim();
+
+    if (!collaboratorId) {
+      return res.status(400).json({
+        success: false,
+        error: 'ID do colaborador não informado.',
+      });
+    }
+
+    let collaborator = await prisma.rhCollaborator.findUnique({
+      where: {
+        id: collaboratorId,
+      },
+      include: {
+        documents: true,
+      },
+    });
+
+    if (!collaborator) {
+      const allCollaborators = await prisma.rhCollaborator.findMany({
+        include: {
+          documents: true,
+        },
+      });
+
+      collaborator =
+        allCollaborators.find((item) => {
+          const slug = makeRhCollaboratorSlug(item.storeName, item.name);
+          return slug === collaboratorId;
+        }) || null;
+    }
+
+    if (!collaborator) {
+      return res.status(404).json({
+        success: false,
+        error: 'Colaborador não encontrado.',
+      });
+    }
+
+    for (const doc of collaborator.documents) {
+      const fullPath = resolveRhPhysicalFile(doc.filePath || doc.fileName);
+
+      if (fullPath && fs.existsSync(fullPath)) {
+        try {
+          fs.unlinkSync(fullPath);
+        } catch (fileError) {
+          console.warn('Não consegui excluir arquivo físico RH:', fileError);
+        }
+      }
+    }
+
+    await prisma.rhCollaborator.delete({
+      where: {
+        id: collaborator.id,
+      },
+    });
+
+    return res.json({
+      success: true,
+      message: 'Colaborador excluído com sucesso.',
+      deletedId: collaborator.id,
+    });
+  } catch (error: any) {
+    console.error('Erro ao excluir colaborador RH:', error);
+
+    return res.status(500).json({
+      success: false,
+      error: error?.message || 'Erro ao excluir colaborador.',
+    });
+  }
+});
+
 
 // Define a porta: Usa a do Render (process.env.PORT) ou a 3000 se for local
 const PORT = process.env.PORT || 3000;

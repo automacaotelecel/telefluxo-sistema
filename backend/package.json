@@ -5,7 +5,7 @@
   "main": "src/server.ts",
   "scripts": {
     "dev": "nodemon src/server.ts",
-    "build": "tsc",
+    "build": "npx prisma generate && npx prisma db push && tsc",
     "start": "node dist/server.js"
   },
   "keywords": [],
@@ -20,6 +20,7 @@
     "dotenv": "^17.4.1",
     "exceljs": "^4.4.0",
     "express": "^5.2.1",
+    "googleapis": "^171.4.0",
     "multer": "^2.0.2",
     "nodemailer": "^8.0.5",
     "pg": "^8.16.3",

@@ -267,17 +267,17 @@ function App() {
         `}
       >
         <div className={`border-b border-slate-800 flex items-center justify-between ${isSidebarCollapsed ? 'p-4' : 'p-6'}`}>
-          <div className={`flex items-center gap-2 ${isSidebarCollapsed ? 'justify-center w-full md:w-auto' : ''}`}>
-            <div className="w-9 h-9 bg-white rounded-xl flex items-center justify-center shadow-lg overflow-hidden shrink-0">
+          <div className={`flex items-center gap-3 ${isSidebarCollapsed ? 'justify-center w-full md:w-auto' : ''}`}>
+            <div className="w-14 h-14 bg-white rounded-2xl flex items-center justify-center shadow-lg overflow-hidden shrink-0">
               <img
                 src="/logo2.png"
                 alt="TeleFluxo"
-                className="w-full h-full object-contain scale-[1.35]"
+                className="w-[99%] h-[99%] object-contain scale-[1.0]"
               />
             </div>
 
             {!isSidebarCollapsed && (
-              <span className="tracking-tighter font-black">
+              <span className="text-lg tracking-tighter font-black leading-none">
                 TELE<span className="text-orange-500">FLUXO</span>
               </span>
             )}
