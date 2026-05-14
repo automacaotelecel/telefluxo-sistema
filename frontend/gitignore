@@ -7,20 +7,28 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-node_modules
-dist
-dist-ssr
+# Node
+node_modules/
+backend/node_modules/
+frontend/node_modules/
+
+# Build
+dist/
+dist-ssr/
+backend/dist/
+frontend/dist/
+
+# Env / variáveis locais
+.env
+.env.*
+backend/.env
+frontend/.env
 *.local
 
-# Editor directories and files
-.vscode/*
-!.vscode/extensions.json
-.idea
-.DS_Store
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
-
-/src/generated/prisma
+# Google / OAuth / Service Account / credenciais
+rhmodule.json
+backend/rhmodule.json
+backend/src/rhmodule.json
+database/RhModule - JSON Cloud Console/
+*telefluxo-integracao*.json
+*credentials
