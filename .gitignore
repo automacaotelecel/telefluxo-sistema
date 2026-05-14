@@ -26,18 +26,27 @@ database/RhModule - JSON Cloud Console/
 *oauth*.json
 token.json
 
-# Databases
-*.db
-*.sqlite
-*.sqlite3
-*.db-shm
-*.db-wal
+# Backend local Prisma/dev DB
 backend/dev.db
 backend/dev.db-journal
 backend/prisma/dev.db
 backend/prisma/dev.db-journal
-database/
-backend/database/
+
+# SQLite temporários
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Database - bloqueia tudo por padrão
+database/*
+
+# Database - permite somente os arquivos necessários do sistema
+!database/samsung_vendas.db
+!database/samsung_anual.db
+!database/samsung_vendas_anuais.db
+!database/db_samsung.xlsx
+!database/vendas_anuais.xlsm
 
 # Uploads
 uploads/
@@ -60,6 +69,6 @@ Thumbs.db
 .idea/
 *.suo
 *.ntvs*
-*.njsproj
+*.njsproj*
 *.sln
 *.sw?
