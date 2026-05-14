@@ -2,20 +2,25 @@
   "compilerOptions": {
     "rootDir": "./src",
     "outDir": "./dist",
+
     "module": "commonjs",
     "moduleResolution": "node",
-    "target": "es2020",
+    "target": "ES2020",
+
     "esModuleInterop": true,
-    "sourceMap": true,
-    "declaration": true,
-    "declarationMap": true,
+    "resolveJsonModule": true,
+
+    "strict": true,
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
-    "strict": true,
+
     "verbatimModuleSyntax": false,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "jsx": "react-jsx"
+
+    "sourceMap": false,
+    "declaration": false,
+    "declarationMap": false
   },
   "include": [
     "src/server.ts",
