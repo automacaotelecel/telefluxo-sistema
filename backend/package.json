@@ -4,8 +4,10 @@
   "description": "",
   "main": "src/server.ts",
   "scripts": {
-    "dev": "nodemon src/server.ts",
-    "build": "npx prisma generate && npx prisma db push && tsc",
+    "dev": "nodemon --exec ts-node src/server.ts",
+    "prisma:generate": "node ./node_modules/prisma/build/index.js generate",
+    "prisma:push": "node ./node_modules/prisma/build/index.js db push",
+    "build": "node ./node_modules/prisma/build/index.js generate && tsc",
     "start": "node dist/server.js"
   },
   "keywords": [],
