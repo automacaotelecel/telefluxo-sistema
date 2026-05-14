@@ -27,10 +27,6 @@ database/RhModule - JSON Cloud Console/
 token.json
 
 # Backend local Prisma/dev DB
-backend/dev.db
-backend/dev.db-journal
-backend/prisma/dev.db
-backend/prisma/dev.db-journal
 
 # SQLite temporários
 *.db-shm
@@ -47,6 +43,10 @@ database/*
 !database/samsung_vendas_anuais.db
 !database/db_samsung.xlsx
 !database/vendas_anuais.xlsm
+!backend/dev.db
+!backend/dev.db-journal
+!backend/prisma/dev.db-journal
+!backend/prisma/dev.db
 
 # Uploads
 uploads/
