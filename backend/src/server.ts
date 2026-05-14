@@ -20,26 +20,9 @@ import { google } from 'googleapis';
 
 dotenv.config();
 
-// BLOCO PARA ENVIO DAS INFORMAÇÕES DAS LOJAS PARA O RH - SAMSUNG //
-
-const KEYFILEPATH_CANDIDATES = [
-  path.join(process.cwd(), 'rhmodule.json'),
-  path.join(process.cwd(), 'src', 'rhmodule.json'),
-  path.join(__dirname, 'rhmodule.json'),
-];
-
-const KEYFILEPATH = KEYFILEPATH_CANDIDATES.find((candidate) =>
-  fs.existsSync(candidate)
-);
-
-if (!KEYFILEPATH) {
-  throw new Error(
-    `Arquivo rhmodule.json não encontrado. Locais testados: ${KEYFILEPATH_CANDIDATES.join(' | ')}`
-  );
-}
-
+//Bloco para enviar as informações ao RH//
 const SCOPES = ['https://www.googleapis.com/auth/drive'];
-const ROOT_FOLDER_ID = '1EYs0wRUwLfMuDssbts6nSDocH35jhmeb';
+const ROOT_FOLDER_ID = process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID || '1EYs0wRUwLfMuDssbts6nSDocH35jhmeb';
 
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
@@ -47,19 +30,19 @@ const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI;
 const GOOGLE_REFRESH_TOKEN = process.env.GOOGLE_REFRESH_TOKEN;
 
 if (!GOOGLE_CLIENT_ID) {
-  throw new Error('GOOGLE_CLIENT_ID não configurado no .env');
+  throw new Error('GOOGLE_CLIENT_ID não configurado.');
 }
 
 if (!GOOGLE_CLIENT_SECRET) {
-  throw new Error('GOOGLE_CLIENT_SECRET não configurado no .env');
+  throw new Error('GOOGLE_CLIENT_SECRET não configurado.');
 }
 
 if (!GOOGLE_REDIRECT_URI) {
-  throw new Error('GOOGLE_REDIRECT_URI não configurado no .env');
+  throw new Error('GOOGLE_REDIRECT_URI não configurado.');
 }
 
 if (!GOOGLE_REFRESH_TOKEN) {
-  throw new Error('GOOGLE_REFRESH_TOKEN não configurado no .env');
+  throw new Error('GOOGLE_REFRESH_TOKEN não configurado.');
 }
 
 const oauth2Client = new google.auth.OAuth2(
