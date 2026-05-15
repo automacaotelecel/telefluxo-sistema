@@ -97,7 +97,9 @@ export default function BarcodeScannerPage() {
 
       hints.set(DecodeHintType.TRY_HARDER, true);
 
-      const reader = new BrowserMultiFormatReader(hints, 500);
+      const reader = new BrowserMultiFormatReader(hints, {
+        delayBetweenScanAttempts: 500,
+        });
 
       const controls = await reader.decodeFromConstraints(
         {
