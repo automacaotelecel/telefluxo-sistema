@@ -10,7 +10,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font-family: inherit;
 }
 
@@ -21,10 +22,17 @@ input {
   background:
     radial-gradient(circle at top left, rgba(37, 99, 235, 0.12), transparent 32%),
     #eef2f7;
+  transition: background 0.18s ease;
+}
+
+.scanner-page.scan-success {
+  background:
+    radial-gradient(circle at top left, rgba(34, 197, 94, 0.22), transparent 36%),
+    #ecfdf5;
 }
 
 .scanner-header {
-  max-width: 780px;
+  max-width: 820px;
   margin: 0 auto 18px auto;
   padding: 22px 4px 6px 4px;
 }
@@ -58,13 +66,24 @@ input {
 }
 
 .scanner-card {
-  max-width: 780px;
+  max-width: 820px;
   margin: 0 auto 16px auto;
   padding: 16px;
   background: #ffffff;
   border: 1px solid #e5e7eb;
   border-radius: 22px;
   box-shadow: 0 14px 40px rgba(15, 23, 42, 0.08);
+  transition:
+    border 0.18s ease,
+    box-shadow 0.18s ease,
+    transform 0.18s ease;
+}
+
+.scanner-card.card-success {
+  border-color: #22c55e;
+  box-shadow:
+    0 0 0 4px rgba(34, 197, 94, 0.18),
+    0 14px 40px rgba(15, 23, 42, 0.08);
 }
 
 .scanner-card-header {
@@ -85,6 +104,7 @@ input {
   margin: 0;
   color: #6b7280;
   font-size: 14px;
+  line-height: 1.45;
 }
 
 .status {
@@ -103,6 +123,35 @@ input {
 .status.offline {
   background: #f3f4f6;
   color: #4b5563;
+}
+
+.batch-summary {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.batch-summary div {
+  padding: 12px;
+  border-radius: 16px;
+  background: #f8fafc;
+  border: 1px solid #e5e7eb;
+}
+
+.batch-summary span {
+  display: block;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.batch-summary strong {
+  display: block;
+  color: #111827;
+  font-size: 18px;
+  line-height: 1.1;
 }
 
 .alert {
@@ -124,6 +173,43 @@ input {
   background: #ecfdf5;
   color: #065f46;
   border: 1px solid #bbf7d0;
+  font-weight: 800;
+}
+
+.big-success {
+  width: 100%;
+  margin-bottom: 12px;
+  padding: 16px;
+  border-radius: 18px;
+  background: linear-gradient(135deg, #16a34a, #22c55e);
+  color: #ffffff;
+  text-align: center;
+  animation: popSuccess 0.25s ease;
+}
+
+.big-success strong {
+  display: block;
+  font-size: 28px;
+  letter-spacing: -0.04em;
+}
+
+.big-success span {
+  display: block;
+  margin-top: 4px;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+@keyframes popSuccess {
+  from {
+    transform: scale(0.96);
+    opacity: 0.5;
+  }
+
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
 }
 
 .video-box {
@@ -131,16 +217,62 @@ input {
   overflow: hidden;
   border-radius: 18px;
   background: #020617;
-  border: 1px solid #111827;
-  min-height: 310px;
+  border: 2px solid #111827;
+  min-height: 390px;
+  position: relative;
+  transition:
+    border 0.18s ease,
+    box-shadow 0.18s ease;
+}
+
+.video-box.video-success {
+  border-color: #22c55e;
+  box-shadow: 0 0 0 5px rgba(34, 197, 94, 0.26);
 }
 
 .video-box video {
   display: block;
   width: 100%;
-  min-height: 310px;
-  max-height: 520px;
+  min-height: 390px;
+  max-height: 660px;
   object-fit: cover;
+}
+
+.scan-guide {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 82%;
+  height: 34%;
+  transform: translate(-50%, -50%);
+  border: 2px solid rgba(255, 255, 255, 0.88);
+  border-radius: 16px;
+  pointer-events: none;
+  box-shadow:
+    0 0 0 999px rgba(0, 0, 0, 0.18),
+    0 0 20px rgba(255, 255, 255, 0.16);
+}
+
+.scan-guide span {
+  position: absolute;
+  left: 8%;
+  right: 8%;
+  top: 50%;
+  height: 2px;
+  background: rgba(34, 197, 94, 0.95);
+  transform: translateY(-50%);
+  box-shadow: 0 0 10px rgba(34, 197, 94, 0.8);
+}
+
+.scanner-tip {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: #eff6ff;
+  color: #1e3a8a;
+  border: 1px solid #bfdbfe;
+  font-size: 13px;
+  line-height: 1.4;
 }
 
 .scanner-actions {
@@ -148,6 +280,24 @@ input {
   flex-wrap: wrap;
   gap: 10px;
   margin-top: 14px;
+}
+
+.camera-select {
+  min-height: 46px;
+  border: 1px solid #d1d5db;
+  border-radius: 14px;
+  padding: 0 12px;
+  background: #ffffff;
+  color: #111827;
+  font-size: 14px;
+  font-weight: 700;
+  outline: none;
+  max-width: 100%;
+}
+
+.camera-select:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
 }
 
 .btn {
@@ -160,7 +310,8 @@ input {
   cursor: pointer;
   transition:
     transform 0.12s ease,
-    opacity 0.12s ease;
+    opacity 0.12s ease,
+    box-shadow 0.12s ease;
 }
 
 .btn:active {
@@ -191,23 +342,29 @@ input {
   margin-top: 14px;
   padding: 14px;
   border-radius: 16px;
-  background: #f8fafc;
-  border: 1px solid #e5e7eb;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
   display: flex;
   flex-direction: column;
   gap: 5px;
 }
 
 .last-code span {
-  color: #64748b;
+  color: #166534;
   font-size: 13px;
   font-weight: 700;
 }
 
 .last-code strong {
   color: #111827;
-  font-size: 22px;
+  font-size: 24px;
   word-break: break-all;
+}
+
+.last-code small {
+  color: #15803d;
+  font-size: 13px;
+  font-weight: 700;
 }
 
 .manual-form {
@@ -259,6 +416,26 @@ input {
   background: #f9fafb;
   border: 1px solid #e5e7eb;
   border-radius: 16px;
+}
+
+.scan-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.scan-number {
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: #111827;
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 900;
 }
 
 .scan-item strong {
@@ -318,17 +495,30 @@ input {
     width: fit-content;
   }
 
+  .batch-summary {
+    grid-template-columns: 1fr;
+  }
+
   .video-box {
-    min-height: 280px;
+    min-height: 390px;
   }
 
   .video-box video {
-    min-height: 280px;
+    min-height: 390px;
+  }
+
+  .scan-guide {
+    width: 88%;
+    height: 28%;
   }
 
   .scanner-actions {
     display: grid;
     grid-template-columns: 1fr;
+  }
+
+  .camera-select {
+    width: 100%;
   }
 
   .btn {
@@ -348,11 +538,19 @@ input {
     flex-direction: column;
   }
 
+  .scan-main {
+    align-items: flex-start;
+  }
+
   .scan-item-actions {
     width: 100%;
   }
 
   .scan-item-actions button {
     flex: 1;
+  }
+
+  .big-success strong {
+    font-size: 24px;
   }
 }
