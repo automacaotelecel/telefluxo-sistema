@@ -107,8 +107,33 @@ function historicoPediuProduto(ctx: ClarkBrainContext) {
   });
 }
 
+function perguntaAtualEhConsultaDiretaDeProduto(pergunta: string) {
+  const texto = normalizarTextoClark(pergunta);
+
+  if (!perguntaAtualPareceProduto(pergunta)) return false;
+
+  /**
+   * Quando o usuário escreve apenas "Galaxy A56", "Galaxy A56 128GB",
+   * "S26", "Modelos S26" etc., isso deve ser tratado como consulta de estoque.
+   * Antes a Clark só entendia como estoque se viesse "quais lojas", "onde" ou se
+   * o histórico tivesse pedido um produto. Isso fazia a pergunta cair em ajuda.
+   */
+  const assuntoNaoEhEstoque =
+    texto.includes('VENDA') ||
+    texto.includes('VENDAS') ||
+    texto.includes('FATURAMENTO') ||
+    texto.includes('SEGURO') ||
+    texto.includes('SEGUROS') ||
+    texto.includes('RELATORIO') ||
+    texto.includes('RELATÓRIO') ||
+    texto.includes('EXECUTIVO');
+
+  return !assuntoNaoEhEstoque;
+}
+
 function deveForcarBuscaProduto(ctx: ClarkBrainContext) {
   if (perguntaAtualTemProdutoEstoque(ctx.perguntaOriginal)) return true;
+  if (perguntaAtualEhConsultaDiretaDeProduto(ctx.perguntaOriginal)) return true;
   return perguntaAtualPareceProduto(ctx.perguntaOriginal) && historicoPediuProduto(ctx);
 }
 
@@ -126,6 +151,92 @@ function perguntaAtualPedeRankingEstoque(pergunta: string) {
   return falaEstoque && ranking;
 }
 
+
+function perguntaAtualPedeModoDiretoria(pergunta: string) {
+  const texto = normalizarTextoClark(pergunta);
+  return (
+    texto.includes('MODO DIRETORIA') ||
+    texto.includes('RESUMO DA OPERACAO') ||
+    texto.includes('RESUMO DA OPERAÇÃO') ||
+    texto.includes('O QUE EU PRECISO OLHAR') ||
+    texto.includes('PONTOS DE ATENCAO') ||
+    texto.includes('PONTOS DE ATENÇÃO') ||
+    texto.includes('LOJAS PREOCUPANTES') ||
+    texto.includes('PRODUTOS PREOCUPANTES') ||
+    texto.includes('RESUMO EXECUTIVO DA OPERACAO') ||
+    texto.includes('RESUMO EXECUTIVO DA OPERAÇÃO')
+  );
+}
+
+function perguntaAtualPedeAnaliseComercialProduto(pergunta: string) {
+  const texto = normalizarTextoClark(pergunta);
+  if (!perguntaAtualPareceProduto(pergunta)) return false;
+
+  return (
+    texto.includes('ANALISE') ||
+    texto.includes('ANÁLISE') ||
+    texto.includes('COMO ESTA') ||
+    texto.includes('COMO ESTÁ') ||
+    texto.includes('GIRO') ||
+    texto.includes('COBERTURA') ||
+    texto.includes('PARADO') ||
+    texto.includes('PARADOS') ||
+    texto.includes('VENDE POUCO') ||
+    texto.includes('VENDENDO POUCO') ||
+    texto.includes('EXCESSO') ||
+    texto.includes('RUPTURA') ||
+    texto.includes('STOCKOUT') ||
+    texto.includes('REDISTRIBU') ||
+    texto.includes('TRANSFERIR') ||
+    texto.includes('TRANSFERENCIA') ||
+    texto.includes('TRANSFERÊNCIA') ||
+    texto.includes('ESTOQUE VS VENDA') ||
+    texto.includes('VENDAS VS ESTOQUE')
+  );
+}
+
+function ferramentaComercialProduto(pergunta: string): { tool: ClarkToolName; taskType: ClarkAgentPlan['taskType']; reason: string } {
+  const texto = normalizarTextoClark(pergunta);
+
+  if (texto.includes('REDISTRIBU') || texto.includes('TRANSFERIR') || texto.includes('TRANSFERENCIA') || texto.includes('TRANSFERÊNCIA')) {
+    return {
+      tool: 'consultar_redistribuicao_estoque',
+      taskType: 'stock_redistribution',
+      reason: 'Sugerir redistribuição cruzando estoque por loja e vendas do produto.',
+    };
+  }
+
+  if (texto.includes('RUPTURA') || texto.includes('STOCKOUT') || texto.includes('FALTA')) {
+    return {
+      tool: 'consultar_risco_stockout',
+      taskType: 'stockout_risk',
+      reason: 'Identificar lojas com venda recente e baixo/zero estoque.',
+    };
+  }
+
+  if (texto.includes('EXCESSO') || texto.includes('PARADO') || texto.includes('PARADOS') || texto.includes('VENDE POUCO') || texto.includes('VENDENDO POUCO')) {
+    return {
+      tool: 'consultar_excesso_estoque',
+      taskType: 'excess_stock',
+      reason: 'Identificar lojas com estoque alto e baixo giro no período.',
+    };
+  }
+
+  if (texto.includes('VS') || texto.includes('VERSUS') || texto.includes('GIRO') || texto.includes('COBERTURA')) {
+    return {
+      tool: 'consultar_vendas_vs_estoque',
+      taskType: 'stock_sales_cross',
+      reason: 'Cruzar estoque atual com vendas do período para calcular giro e cobertura.',
+    };
+  }
+
+  return {
+    tool: 'consultar_analise_produto_comercial',
+    taskType: 'product_commercial_analysis',
+    reason: 'Analisar comercialmente o produto cruzando estoque, vendas, giro, riscos e recomendações.',
+  };
+}
+
 export function planejarLocalClark(ctx: ClarkBrainContext): ClarkAgentPlan {
   const perguntaAtualProduto = deveForcarBuscaProduto(ctx);
   const perguntaAtualRanking = perguntaAtualPedeRankingEstoque(ctx.perguntaOriginal);
@@ -141,7 +252,42 @@ export function planejarLocalClark(ctx: ClarkBrainContext): ClarkAgentPlan {
   const falaEstoque = texto.includes('ESTOQUE') || texto.includes('LOJAS') || texto.includes('POSSUEM') || texto.includes('ONDE') || texto.includes('PECA') || texto.includes('PEÇAS') || texto.includes('UNIDADES') || texto.includes('APARELHOS') || texto.includes('PRODUTO');
   const rankingEstoque = texto.includes('RANKING') || texto.includes('TOP') || texto.includes('MAIORES') || texto.includes('MAIOR ESTOQUE') || texto.includes('MODELOS QUE MAIS') || texto.includes('MAIS TEMOS EM ESTOQUE');
 
-  if (falaEstoque && falaProduto) {
+  if (perguntaAtualPedeModoDiretoria(ctx.perguntaOriginal)) {
+    return {
+      understoodQuestion: pergunta,
+      taskType: 'director_mode',
+      mode: 'analitico',
+      confidence: 0.94,
+      entities: { limit: limite, period: { inicio: ctx.periodo.inicio, fim: ctx.periodo.fim, descricao: ctx.periodo.descricao } },
+      toolCalls: [
+        call('consultar_modo_diretoria', { limit: limite }, 'Gerar resumo executivo da operação com vendas, estoque, alertas e recomendações.', ctx.periodo, pergunta),
+      ],
+      validationRules: ['Usar apenas dados reais.', 'Trazer resumo executivo, alertas e ações recomendadas.'],
+      answerStyle: { shouldExplainUncertainty: false, shouldIncludeTables: true, shouldIncludeInsights: true, shouldIncludeSuggestions: true },
+    };
+  }
+
+  if (perguntaAtualPedeAnaliseComercialProduto(ctx.perguntaOriginal)) {
+    const ferramenta = ferramentaComercialProduto(ctx.perguntaOriginal);
+    return {
+      understoodQuestion: pergunta,
+      taskType: ferramenta.taskType,
+      mode: 'analitico',
+      confidence: 0.95,
+      entities: { category: categoria, limit: 100, period: { inicio: ctx.periodo.inicio, fim: ctx.periodo.fim, descricao: ctx.periodo.descricao } },
+      toolCalls: [
+        call(ferramenta.tool, { query: pergunta, originalQuestion: ctx.perguntaOriginal, category: categoria, categoria, limit: 100 }, ferramenta.reason, ctx.periodo, pergunta),
+      ],
+      validationRules: [
+        'Cruzar estoque atual com vendas do período.',
+        'Não inventar giro, cobertura, loja, produto ou quantidade.',
+        'Quando não houver venda no período, informar claramente.',
+      ],
+      answerStyle: { shouldExplainUncertainty: true, shouldIncludeTables: true, shouldIncludeInsights: true, shouldIncludeSuggestions: true },
+    };
+  }
+
+  if (falaProduto && (falaEstoque || perguntaAtualProduto)) {
     return {
       understoodQuestion: pergunta,
       taskType: 'stock_product_search',
@@ -150,9 +296,14 @@ export function planejarLocalClark(ctx: ClarkBrainContext): ClarkAgentPlan {
       entities: { category: categoria, limit: 50, period: { inicio: ctx.periodo.inicio, fim: ctx.periodo.fim, descricao: ctx.periodo.descricao } },
       toolCalls: [
         call('resolver_produto', { query: pergunta, originalQuestion: ctx.perguntaOriginal, category: categoria, categoria }, 'Resolver produto apenas como etapa interna.', ctx.periodo, pergunta),
-        call('consultar_estoque_produto', { query: pergunta, originalQuestion: ctx.perguntaOriginal, category: categoria, categoria, strict: true, limit: 50 }, 'Consultar estoque exato por loja.', ctx.periodo, pergunta),
+        call('consultar_estoque_produto', { query: pergunta, originalQuestion: ctx.perguntaOriginal, category: categoria, categoria, strict: true, limit: 200 }, 'Consultar estoque por família/modelo, respeitando memória e cor quando informadas.', ctx.periodo, pergunta),
       ],
-      validationRules: ['Produto específico deve bater família/modelo, memória, cor e categoria.', 'Não retornar produtos parecidos como se fossem exatos.'],
+      validationRules: [
+        'Se o usuário informou apenas família/modelo, retornar todas as variações encontradas dessa família/modelo.',
+        'Se o usuário informou memória, respeitar a memória.',
+        'Se o usuário informou cor, respeitar a cor.',
+        'Não retornar produtos parecidos de outra família/modelo como se fossem corretos.',
+      ],
       answerStyle: { shouldExplainUncertainty: true, shouldIncludeTables: true, shouldIncludeInsights: true, shouldIncludeSuggestions: true },
     };
   }
@@ -276,6 +427,12 @@ Ferramentas disponíveis:
 - consultar_seguros_por_vendedor
 - consultar_seguros_por_loja
 - gerar_relatorio_executivo
+- consultar_analise_produto_comercial
+- consultar_vendas_vs_estoque
+- consultar_risco_stockout
+- consultar_excesso_estoque
+- consultar_redistribuicao_estoque
+- consultar_modo_diretoria
 - executar_sql_analitico
 - responder_ajuda
 
@@ -286,7 +443,7 @@ Plano local sugerido pelo backend: ${JSON.stringify(planoLocal)}
 Retorne SOMENTE JSON válido neste formato:
 {
   "understoodQuestion": string,
-  "taskType": "stock_product_search" | "stock_ranking" | "sales_summary" | "sales_store_ranking" | "sales_seller_ranking" | "sales_category_ranking" | "sales_report" | "sales_growth" | "insurance_seller_ranking" | "insurance_store_ranking" | "sql_analytics" | "help",
+  "taskType": "stock_product_search" | "stock_ranking" | "sales_summary" | "sales_store_ranking" | "sales_seller_ranking" | "sales_category_ranking" | "sales_report" | "sales_growth" | "insurance_seller_ranking" | "insurance_store_ranking" | "sql_analytics" | "product_commercial_analysis" | "stock_sales_cross" | "stockout_risk" | "excess_stock" | "stock_redistribution" | "director_mode" | "help",
   "mode": "simples" | "analitico",
   "confidence": number,
   "entities": object,
@@ -299,8 +456,8 @@ Retorne SOMENTE JSON válido neste formato:
 export async function planejarClark(ctx: ClarkBrainContext): Promise<{ plan: ClarkAgentPlan; usedGemini: boolean }> {
   const local = planejarLocalClark(ctx);
 
-  // Produto específico e ranking explícito são determinísticos.
-  // Não deixamos a Gemini reaproveitar histórico e trocar por ranking/top 50.
+  // Consulta de produto e ranking explícito são determinísticos.
+  // Não deixamos a Gemini reaproveitar histórico e trocar por ajuda/ranking errado.
   if (deveForcarBuscaProduto(ctx) || perguntaAtualPedeRankingEstoque(ctx.perguntaOriginal)) {
     return { plan: local, usedGemini: false };
   }

@@ -14,6 +14,12 @@ export type ClarkToolName =
   | 'consultar_seguros_por_loja'
   | 'executar_sql_analitico'
   | 'gerar_relatorio_executivo'
+  | 'consultar_analise_produto_comercial'
+  | 'consultar_vendas_vs_estoque'
+  | 'consultar_risco_stockout'
+  | 'consultar_excesso_estoque'
+  | 'consultar_redistribuicao_estoque'
+  | 'consultar_modo_diretoria'
   | 'responder_ajuda';
 
 export type ClarkToolCall = {
@@ -40,6 +46,12 @@ export type ClarkAgentTaskType =
   | 'insurance_seller_ranking'
   | 'insurance_store_ranking'
   | 'sql_analytics'
+  | 'product_commercial_analysis'
+  | 'stock_sales_cross'
+  | 'stockout_risk'
+  | 'excess_stock'
+  | 'stock_redistribution'
+  | 'director_mode'
   | 'help';
 
 export type ClarkAgentPlan = {

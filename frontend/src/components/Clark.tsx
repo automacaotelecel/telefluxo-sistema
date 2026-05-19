@@ -23,6 +23,7 @@ type ClarkMessage = {
   text: string;
   createdAt: string;
   dados?: any;
+  perguntaOriginal?: string;
   actions?: Array<{
     type: string;
     label: string;
@@ -31,6 +32,7 @@ type ClarkMessage = {
 
 type ClarkProps = {
   currentUser: any;
+  placement?: "floating" | "header";
 };
 
 type QuickAction =
@@ -38,7 +40,9 @@ type QuickAction =
   | "vendas_periodo"
   | "vendas_por_loja"
   | "seguros_vendedores"
-  | "relatorio_executivo";
+  | "relatorio_executivo"
+  | "analise_produto"
+  | "modo_diretoria";
 
 type QuickSuggestion = {
   label: string;
@@ -91,7 +95,7 @@ function ClarkAvatar({ small = false }: { small?: boolean }) {
   );
 }
 
-export default function Clark({ currentUser }: ClarkProps) {
+export default function Clark({ currentUser, placement = "floating" }: ClarkProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
 
@@ -121,6 +125,20 @@ export default function Clark({ currentUser }: ClarkProps) {
         assistantMessage:
           "Qual produto você deseja buscar? Pode escrever do seu jeito. Exemplo: Galaxy A56 128GB Preto.",
         icon: Package,
+      },
+      {
+        label: "Analisar produto",
+        action: "analise_produto",
+        assistantMessage:
+          "Qual produto você deseja analisar? Exemplo: Galaxy A56. Eu vou cruzar estoque, vendas, giro, excesso, ruptura e redistribuição.",
+        icon: Sparkles,
+      },
+      {
+        label: "Modo diretoria",
+        action: "modo_diretoria",
+        assistantMessage:
+          "Qual período você deseja analisar no modo diretoria? Exemplo: este mês ou 01/05/2026 até 10/05/2026.",
+        icon: Crown,
       },
       {
         label: "Vendas período",
@@ -165,6 +183,7 @@ export default function Clark({ currentUser }: ClarkProps) {
   text: string,
   extras?: {
         dados?: any;
+        perguntaOriginal?: string;
         actions?: Array<{ type: string; label: string }>;
       },
     ) => {
@@ -175,6 +194,7 @@ export default function Clark({ currentUser }: ClarkProps) {
           role,
           text,
           dados: extras?.dados,
+          perguntaOriginal: extras?.perguntaOriginal,
           actions: extras?.actions,
           createdAt: new Date().toLocaleTimeString("pt-BR", {
             hour: "2-digit",
@@ -205,6 +225,12 @@ export default function Clark({ currentUser }: ClarkProps) {
 
       case "relatorio_executivo":
         return `Me faça um relatório executivo de vendas, estoque e seguros de ${texto}. Ao final, disponibilize a opção de baixar em Excel.`;
+
+      case "analise_produto":
+        return `Analise comercialmente o produto ${texto}. Cruze estoque atual, vendas do período, giro, cobertura, risco de ruptura, excesso e sugestões de redistribuição.`;
+
+      case "modo_diretoria":
+        return `Modo diretoria: me dê um resumo executivo da operação no período ${texto}, com vendas, estoque, pontos de atenção e ações recomendadas.`;
 
       default:
         return texto;
@@ -271,6 +297,7 @@ export default function Clark({ currentUser }: ClarkProps) {
 
       addMessage("assistant", respostaVisivelClark(data), {
         dados: data?.dados,
+        perguntaOriginal: pergunta,
         actions: data?.actions,
       });
     } catch (error: any) {
@@ -303,10 +330,7 @@ export default function Clark({ currentUser }: ClarkProps) {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          periodo: msg.dados?.periodo || {
-            inicio: "",
-            fim: "",
-          },
+          pergunta: msg.perguntaOriginal || "",
           dados: msg.dados,
         }),
       });
@@ -327,7 +351,7 @@ export default function Clark({ currentUser }: ClarkProps) {
 
       const a = document.createElement("a");
       a.href = url;
-      a.download = `relatorio-clark-${Date.now()}.xlsx`;
+      a.download = `clark-exportacao-${Date.now()}.xlsx`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -359,18 +383,34 @@ export default function Clark({ currentUser }: ClarkProps) {
             setIsOpen(true);
             setTimeout(() => inputRef.current?.focus(), 150);
           }}
-          className="fixed bottom-6 right-6 z-[9999] group"
+          className={
+            placement === "header"
+              ? "relative z-[60] group"
+              : "fixed bottom-6 right-6 z-[9999] group"
+          }
           title="Abrir Clark IA"
         >
           <div className="relative">
-            <div className="absolute inset-0 rounded-full bg-orange-500 blur-xl opacity-50 group-hover:opacity-80 transition-opacity" />
+            <div
+              className={
+                placement === "header"
+                  ? "absolute inset-0 rounded-full bg-orange-500 blur-md opacity-30 group-hover:opacity-60 transition-opacity"
+                  : "absolute inset-0 rounded-full bg-orange-500 blur-xl opacity-50 group-hover:opacity-80 transition-opacity"
+              }
+            />
 
-            <div className="relative w-16 h-16 rounded-full bg-slate-950 text-white shadow-2xl border border-orange-400/30 flex items-center justify-center hover:scale-105 transition-transform">
+            <div
+              className={
+                placement === "header"
+                  ? "relative w-11 h-11 rounded-2xl bg-slate-950 text-white shadow border border-orange-400/30 flex items-center justify-center hover:scale-105 transition-transform"
+                  : "relative w-16 h-16 rounded-full bg-slate-950 text-white shadow-2xl border border-orange-400/30 flex items-center justify-center hover:scale-105 transition-transform"
+              }
+            >
               <ClarkAvatar small />
             </div>
 
-            <div className="absolute -top-1 -right-1 w-6 h-6 rounded-full bg-orange-600 text-white flex items-center justify-center border-2 border-white shadow-lg">
-              <MessageCircle size={13} />
+            <div className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-orange-600 text-white flex items-center justify-center border-2 border-white shadow-lg">
+              <MessageCircle size={11} />
             </div>
           </div>
         </button>

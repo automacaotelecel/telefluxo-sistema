@@ -133,6 +133,36 @@ function itemBateComReferenciaCandidata(item: any, referencePrefixes: string[]) 
   });
 }
 
+
+function itemBateComFamiliaAberta(params: {
+  item: any;
+  produto: ClarkProdutoPlanejado | null;
+  referencePrefixes: string[];
+}) {
+  const { item, produto, referencePrefixes } = params;
+
+  if (!produto) return true;
+
+  if (!itemEhCategoriaSolicitada(item, produto)) {
+    return false;
+  }
+
+  const textoItem = getTextoItemEstoque(item);
+  const familiaItem = getFamiliaItemEstoque(item);
+  const familiaSolicitada = normalizar(produto.family || produto.model || '');
+  const modeloSolicitado = normalizar(produto.model || '');
+  const bateReferencia = itemBateComReferenciaCandidata(item, referencePrefixes);
+
+  if (!familiaSolicitada && !modeloSolicitado) return true;
+
+  return (
+    Boolean(familiaSolicitada && familiaItem === familiaSolicitada) ||
+    Boolean(familiaSolicitada && textoItem.includes(familiaSolicitada)) ||
+    Boolean(modeloSolicitado && textoItem.includes(modeloSolicitado)) ||
+    bateReferencia
+  );
+}
+
 function itemBateComProdutoPlanejado(params: {
   item: any;
   produto: ClarkProdutoPlanejado | null;
@@ -421,6 +451,39 @@ export async function consultarLojasProdutoEstoqueClark(
       return typeof value === 'string' && value.trim().length > 0;
     });
   });
+
+  const buscaFamiliaAberta =
+    resolver.searchPrecision === 'family_open' &&
+    Boolean(resolver.request.family || resolver.request.model);
+
+  if (buscaFamiliaAberta) {
+    const itensFamilia = estoquePermitido.filter((item) =>
+      itemBateComFamiliaAberta({
+        item,
+        produto: produtoPlanejado,
+        referencePrefixes: resolver.referencePrefixes,
+      })
+    );
+
+    const produtos = agruparProdutosEstoque(itensFamilia, filtros.limite);
+
+    return {
+      modulo: 'estoque',
+      tipo: 'estoque_produto_lojas',
+      termo_pesquisado: filtros.termoProduto,
+      categoria_solicitada: filtros.categoriaCanonica || null,
+      filtro_loja: filtros.lojaCanonica || null,
+      tokens_usados: filtros.tokensProduto,
+      total_itens_filtrados: estoqueTotalPermitido,
+      produto_nao_encontrado_exato: produtos.length === 0,
+      produto_planejado: produtoPlanejado,
+      produto_resolvido: resolver,
+      produtos,
+      sugestoes_se_nao_encontrou: produtos.length
+        ? []
+        : resolver.similarDictionaryCandidates.slice(0, 8),
+    };
+  }
 
   const buscaEspecifica = resolver.strictMode;
 

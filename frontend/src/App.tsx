@@ -609,7 +609,10 @@ function App() {
             </div>
           </div>
 
-          <NotificationBell currentUser={user} />
+          <div className="flex items-center gap-3">
+            <Clark currentUser={user} placement="header" />
+            <NotificationBell currentUser={user} />
+          </div>
         </header>
 
         <div className="flex-1 overflow-hidden relative flex flex-col">
@@ -696,7 +699,6 @@ function App() {
         </div>
       </main>
 
-      <Clark currentUser={user} />
 
       <NewUserModal
         isOpen={isUserModalOpen}

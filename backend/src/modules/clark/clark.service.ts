@@ -6,6 +6,7 @@ import { GoogleGenAI } from '@google/genai';
 import { processarComClarkBrain } from './brain/clarkBrain.service';
 
 import {
+  ClarkAction,
   ClarkDbContext,
   ClarkFiltros,
   ClarkHistoricoItem,
@@ -962,58 +963,101 @@ function montarDadosExcelBasico(resposta: ClarkResposta) {
   };
 }
 
+const TOOLS_EXPORTAVEIS_EXCEL = new Set<string>([
+  'consultar_estoque_produto',
+  'consultar_ranking_estoque',
+  'consultar_vendas_por_loja',
+  'consultar_vendas_por_vendedor',
+  'consultar_vendas_por_categoria',
+  'consultar_vendas_resumo',
+  'consultar_seguros_por_loja',
+  'consultar_seguros_por_vendedor',
+  'executar_sql_analitico',
+  'gerar_relatorio_executivo',
+  'consultar_relatorio_vendas',
+  'consultar_analise_produto_comercial',
+  'consultar_vendas_vs_estoque',
+  'consultar_risco_stockout',
+  'consultar_excesso_estoque',
+  'consultar_redistribuicao_estoque',
+  'consultar_modo_diretoria',
+]);
+
+function temDadosExportaveisExcel(resposta: ClarkResposta): boolean {
+  const dados: any = resposta?.dados;
+
+  const toolResults = Array.isArray(dados?.toolResults)
+    ? dados.toolResults
+    : Array.isArray(dados?.results)
+      ? dados.results
+      : Array.isArray(dados?.resultado?.toolResults)
+        ? dados.resultado.toolResults
+        : [];
+
+  if (!toolResults.length) {
+    return false;
+  }
+
+  const ferramentasExportaveis = new Set([
+    'consultar_estoque_produto',
+    'consultar_ranking_estoque',
+
+    'consultar_vendas_resumo',
+    'consultar_vendas_por_loja',
+    'consultar_vendas_por_vendedor',
+    'consultar_vendas_por_categoria',
+
+    'consultar_seguros_por_loja',
+    'consultar_seguros_por_vendedor',
+
+    'executar_sql_analitico',
+    'gerar_relatorio_executivo',
+    'consultar_relatorio_vendas',
+    'consultar_analise_produto_comercial',
+    'consultar_vendas_vs_estoque',
+    'consultar_risco_stockout',
+    'consultar_excesso_estoque',
+    'consultar_redistribuicao_estoque',
+    'consultar_modo_diretoria',
+  ]);
+
+  return toolResults.some((item: any) => {
+    const tool = String(item?.tool || item?.name || item?.nome || '').trim();
+
+    if (!tool) return false;
+
+    return ferramentasExportaveis.has(tool);
+  });
+}
+
 function anexarAcaoExcelSeNecessario(
-  input: ClarkPerguntaInput,
-  resposta: ClarkResposta
+  _input: ClarkPerguntaInput,
+  resposta: ClarkResposta,
 ): ClarkResposta {
-  const pergunta = String(input?.pergunta || '');
-  const perguntaNormalizada = normalizarTextoClark(pergunta);
-
-  const pediuExcel =
-    perguntaNormalizada.includes('EXCEL') ||
-    perguntaNormalizada.includes('XLSX') ||
-    perguntaNormalizada.includes('PLANILHA');
-
-  const pediuRelatorio =
-    perguntaNormalizada.includes('RELATORIO') ||
-    perguntaNormalizada.includes('RELATÓRIO') ||
-    perguntaNormalizada.includes('EXECUTIVO');
-
-  if (!pediuExcel && !pediuRelatorio) {
+  if (!temDadosExportaveisExcel(resposta)) {
     return resposta;
   }
 
-  const actionsAtuais = Array.isArray((resposta as any).actions)
-    ? ((resposta as any).actions as Array<{ type: string; label: string; payload?: unknown }>)
-    : [];
+  const actionsAtuais = Array.isArray(resposta.actions) ? resposta.actions : [];
 
-  const jaTemDownloadExcel = actionsAtuais.some(
-    (a) => a?.type === 'download_excel'
-  );
+  const jaTemExcel = actionsAtuais.some((action) => {
+    return action?.type === 'download_excel';
+  });
 
-  const actionsFinais = jaTemDownloadExcel
-    ? actionsAtuais
-    : [
-        ...actionsAtuais,
-        {
-          type: 'download_excel',
-          label: 'Baixar Excel',
-        },
-      ];
+  if (jaTemExcel) {
+    return resposta;
+  }
 
-  const texto = String(resposta.clark || '').trim();
-  const jaMencionaExcel = normalizarTextoClark(texto).includes('EXCEL');
+  const actionsFinais: ClarkAction[] = [
+    ...actionsAtuais,
+    {
+      type: 'download_excel',
+      label: 'Baixar Excel',
+    },
+  ];
 
-  const respostaFinal: ClarkResposta & {
-    actions?: Array<{ type: string; label: string; payload?: unknown }>;
-  } = {
+  const respostaFinal: ClarkResposta = {
     ...resposta,
-    clark: jaMencionaExcel
-      ? resposta.clark
-      : `${resposta.clark}
-
-Gerei também uma versão em Excel. Clique no botão abaixo para baixar.`,
-    dados: montarDadosExcelBasico(resposta),
   };
 
   if (actionsFinais.length > 0) {

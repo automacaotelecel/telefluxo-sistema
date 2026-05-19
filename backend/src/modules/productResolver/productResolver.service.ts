@@ -16,6 +16,7 @@ import {
   ProductResolverDictionaryCandidate,
   ProductResolverInput,
   ProductResolverResult,
+  ProductSearchPrecision,
 } from './productResolver.types';
 
 function cleanNullable(value: any) {
@@ -235,13 +236,36 @@ function extractReferencePrefixesFromEntry(entry: ProductDictionaryEntry) {
   return Array.from(prefixes);
 }
 
-function isSpecificRequest(request: ProductResolvedRequest) {
-  return Boolean(
-    request.family ||
-      request.model ||
-      request.storage ||
-      request.color
-  );
+function hasExplicitReference(value: any) {
+  const text = normalizeReference(value);
+  return /\bSM-[A-Z0-9]/i.test(text) || /\bBSM-[A-Z0-9]/i.test(text);
+}
+
+function getSearchPrecision(
+  request: ProductResolvedRequest,
+  input: ProductResolverInput
+): ProductSearchPrecision {
+  if (!request.family && !request.model && !request.storage && !request.color) {
+    return 'generic';
+  }
+
+  if (request.color || hasExplicitReference(input.query) || hasExplicitReference(request.raw)) {
+    return 'exact_variant';
+  }
+
+  if (request.storage) {
+    return 'family_storage';
+  }
+
+  /**
+   * Ex.: "Galaxy A56", "A56", "modelos S26".
+   * Isso NÃO é produto exato. É busca aberta de família/linha.
+   */
+  if (request.family || request.model) {
+    return 'family_open';
+  }
+
+  return 'generic';
 }
 
 export async function resolveProductRequest(
@@ -288,24 +312,31 @@ export async function resolveProductRequest(
     )
   );
 
-  const hasEnoughSpecificity = isSpecificRequest(request);
+  const searchPrecision = getSearchPrecision(request, input);
+  const hasEnoughSpecificity = searchPrecision !== 'generic';
+  const strictMode = searchPrecision === 'family_storage' || searchPrecision === 'exact_variant';
 
   return {
     request,
+    searchPrecision,
     exactDictionaryCandidates: exactMatches.slice(0, 30),
     similarDictionaryCandidates: similarMatches.slice(0, 20),
     referencePrefixes,
     hasEnoughSpecificity,
-    strictMode: hasEnoughSpecificity,
+    strictMode,
     diagnostics: {
       query: input.query,
       requestedFamily: request.family,
       requestedStorage: request.storage,
       requestedColor: request.color,
       requestedCategory: request.category,
-      reason: hasEnoughSpecificity
-        ? 'Busca específica: aplicar validação rígida no estoque.'
-        : 'Busca genérica: permitir busca por score.',
+      searchPrecision,
+      reason:
+        searchPrecision === 'family_open'
+          ? 'Busca aberta de família: retornar todas as variações da família/modelo, sem exigir memória/cor.'
+          : strictMode
+            ? 'Busca específica: aplicar somente os filtros que o usuário informou, como memória/cor/referência.'
+            : 'Busca genérica: permitir busca por score.',
     },
   };
 }

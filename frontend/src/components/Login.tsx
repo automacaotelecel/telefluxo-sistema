@@ -49,7 +49,7 @@ export default function Login({ onLogin }: LoginProps) {
             <img
               src="/logo2.png"
               alt="TeleFluxo"
-              className="w-full h-full object-contain scale-[1.00]"
+              className="w-full h-full object-contain scale-[1.45]"
             />
           </div>
           

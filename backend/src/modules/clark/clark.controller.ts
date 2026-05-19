@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import { processarPerguntaClark } from './clark.service';
 import { ClarkHistoricoMensagem } from './clark.types';
-import { gerarExcelRelatorioClark } from './reports/excelReport.service';
+import { gerarExcelUniversalClark } from './reports/excelUniversal.service';
 
 function normalizarHistorico(value: any): ClarkHistoricoMensagem[] {
   if (!Array.isArray(value)) return [];
@@ -62,21 +62,15 @@ export async function perguntarClarkController(req: Request, res: Response) {
 
 export async function exportarRelatorioExcelClark(req: Request, res: Response) {
   try {
-    const { periodo, dados } = req.body || {};
+    const { pergunta, dados } = req.body || {};
 
-    const buffer = await gerarExcelRelatorioClark({
-      titulo: 'Relatório Executivo Clark',
-      periodo,
-      resumo: dados?.resumo,
-      vendasPorLoja: dados?.vendasPorLoja,
-      vendasPorVendedor: dados?.vendasPorVendedor,
-      estoqueDestaque: dados?.estoqueDestaque,
-      segurosPorLoja: dados?.segurosPorLoja,
-      segurosPorVendedor: dados?.segurosPorVendedor,
-      recomendacoes: dados?.recomendacoes,
+    const buffer = await gerarExcelUniversalClark({
+      titulo: 'Exportação Clark IA',
+      pergunta: String(pergunta || ''),
+      dados,
     });
 
-    const fileName = `relatorio-clark-${Date.now()}.xlsx`;
+    const fileName = `clark-exportacao-${Date.now()}.xlsx`;
 
     res.setHeader(
       'Content-Type',
@@ -87,7 +81,7 @@ export async function exportarRelatorioExcelClark(req: Request, res: Response) {
 
     return res.send(buffer);
   } catch (error: any) {
-    console.error('Erro ao gerar Excel da Clark:', error);
+    console.error('Erro ao gerar Excel universal da Clark:', error);
 
     return res.status(500).json({
       ok: false,

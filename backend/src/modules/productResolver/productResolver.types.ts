@@ -26,8 +26,15 @@ export type ProductResolverDictionaryCandidate = {
   hasExactColor: boolean;
 };
 
+export type ProductSearchPrecision =
+  | 'generic'
+  | 'family_open'
+  | 'family_storage'
+  | 'exact_variant';
+
 export type ProductResolverResult = {
   request: ProductResolvedRequest;
+  searchPrecision: ProductSearchPrecision;
   exactDictionaryCandidates: ProductResolverDictionaryCandidate[];
   similarDictionaryCandidates: ProductResolverDictionaryCandidate[];
   referencePrefixes: string[];
@@ -39,6 +46,7 @@ export type ProductResolverResult = {
     requestedStorage: string | null;
     requestedColor: string | null;
     requestedCategory: string | null;
+    searchPrecision: ProductSearchPrecision;
     reason: string;
   };
 };

@@ -28,7 +28,17 @@ function intentFromPlan(plan: ClarkAgentPlan): ClarkIntent {
   if (first === 'consultar_vendas_por_categoria') return 'ranking_categorias_vendas';
   if (first === 'consultar_vendas_resumo') return 'vendas_resumo';
   if (first === 'consultar_crescimento_mensal') return 'crescimento_mensal';
-  if (first === 'consultar_relatorio_vendas' || first === 'gerar_relatorio_executivo' || first === 'executar_sql_analitico') return 'relatorio_analitico_vendas';
+  if (
+    first === 'consultar_relatorio_vendas' ||
+    first === 'gerar_relatorio_executivo' ||
+    first === 'executar_sql_analitico' ||
+    first === 'consultar_analise_produto_comercial' ||
+    first === 'consultar_vendas_vs_estoque' ||
+    first === 'consultar_risco_stockout' ||
+    first === 'consultar_excesso_estoque' ||
+    first === 'consultar_redistribuicao_estoque' ||
+    first === 'consultar_modo_diretoria'
+  ) return 'relatorio_analitico_vendas';
   if (first === 'consultar_seguros_por_vendedor') return 'ranking_vendedores_seguros';
   if (first === 'consultar_seguros_por_loja') return 'ranking_lojas_seguros';
   return 'ajuda';

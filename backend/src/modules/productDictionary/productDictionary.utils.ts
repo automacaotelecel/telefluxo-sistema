@@ -122,6 +122,11 @@ export function getBaseModelFamily(value: any) {
     if (code.startsWith('S918')) return 'GALAXY S23 ULTRA';
     if (code.startsWith('S908')) return 'GALAXY S22 ULTRA';
 
+    const serieModelo = code.match(/^([AMF])(\d{2})\d/i);
+    if (serieModelo?.[1] && serieModelo?.[2]) {
+      return `GALAXY ${serieModelo[1].toUpperCase()}${serieModelo[2]}`;
+    }
+
     return `SM-${code}`;
   }
 

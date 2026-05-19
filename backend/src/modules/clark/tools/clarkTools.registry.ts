@@ -17,6 +17,15 @@ import {
   toolConsultarVendasResumo,
 } from './sales.tools';
 
+import {
+  toolConsultarAnaliseProdutoComercial,
+  toolConsultarExcessoEstoque,
+  toolConsultarModoDiretoria,
+  toolConsultarRedistribuicaoEstoque,
+  toolConsultarRiscoStockout,
+  toolConsultarVendasVsEstoque,
+} from './business.tools';
+
 import { toolExecutarSqlAnalitico } from './sql.tools';
 import { toolGerarRelatorioExecutivo } from './report.tools';
 
@@ -37,6 +46,13 @@ export const clarkToolsRegistry: ClarkToolRegistry = {
 
   executar_sql_analitico: toolExecutarSqlAnalitico,
   gerar_relatorio_executivo: toolGerarRelatorioExecutivo,
+
+  consultar_analise_produto_comercial: toolConsultarAnaliseProdutoComercial,
+  consultar_vendas_vs_estoque: toolConsultarVendasVsEstoque,
+  consultar_risco_stockout: toolConsultarRiscoStockout,
+  consultar_excesso_estoque: toolConsultarExcessoEstoque,
+  consultar_redistribuicao_estoque: toolConsultarRedistribuicaoEstoque,
+  consultar_modo_diretoria: toolConsultarModoDiretoria,
 
   responder_ajuda: async (args) => ({
     tool: 'responder_ajuda',
