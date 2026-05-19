@@ -72,3 +72,19 @@ Thumbs.db
 *.njsproj*
 *.sln
 *.sw?
+# Bancos locais
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+database/
+backend/database/
+backend/prisma/*.db
+backend/prisma/**/*.db
+frontend/prisma/*.db
+frontend/prisma/*.db-journal
+
+# Dependencias e backups
+node_modules/
+**/node_modules/
+"BACKUP - 20.01/"
