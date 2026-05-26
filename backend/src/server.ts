@@ -16,6 +16,8 @@ import dotenv from 'dotenv';
 import clarkRoutes from './modules/clark/clark.routes'; //IMPORT ROTAS DA CLARK
 import rhRoutes from './modules/rh/rh.routes'; 
 import { google } from 'googleapis';
+import { spawn } from 'child_process';
+import os from 'os';
 
 
 dotenv.config();
@@ -171,9 +173,19 @@ const mailTransporter = nodemailer.createTransport({
   },
 });
 
-mailTransporter.verify()
-  .then(() => console.log('📧 SMTP Gmail pronto para envio'))
-  .catch((err) => console.error('❌ Erro no SMTP Gmail:', err));
+if (process.env.NODE_ENV === 'production') {
+  mailTransporter.verify()
+    .then(() => console.log('📧 SMTP Gmail pronto para envio'))
+    .catch((err) => {
+      console.warn('⚠️ SMTP Gmail não validou no startup:', {
+        code: err?.code,
+        command: err?.command,
+        message: err?.message,
+      });
+    });
+} else {
+  console.log('ℹ️ Verificação SMTP ignorada em ambiente local/dev.');
+}
   
 
 // --- CONFIGURAÇÃO CENTRALIZADA DE CAMINHOS (CORREÇÃO) ---
@@ -409,6 +421,299 @@ app.use('/uploads', express.static(path.join(ROOT_DIR, 'uploads')));
 if (process.env.RENDER) {
   app.use('/uploads/rh', express.static('/var/data/uploads/rh'));
 }
+
+// ============================================================================
+// RECEBIMENTO CARTÃO / MOTOR STONE EM PYTHON
+// ============================================================================
+
+const uploadRecebimentoCartao = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 80 * 1024 * 1024 }, // 80 MB
+  fileFilter: (_req, file, cb) => {
+    const ext = path.extname(file.originalname || '').toLowerCase();
+
+    if (!['.xlsb', '.xlsx', '.xlsm'].includes(ext)) {
+      cb(new Error('Envie uma planilha .xlsb, .xlsx ou .xlsm.'));
+      return;
+    }
+
+    cb(null, true);
+  },
+});
+
+function getPythonCommand(): string {
+  return process.env.PYTHON_BIN || process.env.PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
+}
+
+function runStoneRecebimentoEngine(filePath: string): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const scriptPath = path.join(ROOT_DIR, 'src', 'modules', 'finance', 'stone_recebimentos_engine.py');
+
+    if (!fs.existsSync(scriptPath)) {
+      reject(new Error(`Motor Python não encontrado em: ${scriptPath}`));
+      return;
+    }
+
+    const child = spawn(getPythonCommand(), [scriptPath, filePath], {
+      cwd: ROOT_DIR,
+      windowsHide: true,
+      env: {
+        ...process.env,
+        PYTHONIOENCODING: 'utf-8',
+      },
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk.toString('utf8');
+    });
+
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString('utf8');
+    });
+
+    child.on('error', (error) => {
+      reject(error);
+    });
+
+    child.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(stderr || stdout || `Motor Python finalizou com código ${code}.`));
+        return;
+      }
+
+      try {
+        const trimmed = stdout.trim();
+        resolve(JSON.parse(trimmed));
+      } catch (error: any) {
+        reject(
+          new Error(
+            `Não foi possível ler o JSON do motor Python. ${error?.message || error}\nSTDOUT: ${stdout}\nSTDERR: ${stderr}`
+          )
+        );
+      }
+    });
+  });
+}
+
+app.get('/api/financeiro/recebimento-cartao/ping', (_req: Request, res: Response) => {
+  return res.json({
+    ok: true,
+    modulo: 'Recebimento Cartão',
+    motor: 'Python Stone',
+    timestamp: new Date().toISOString(),
+  });
+});
+
+type RecebimentoCartaoPersistido = {
+  ok: boolean;
+  generatedAt: string;
+  persistedAt: string;
+  processedBy?: string;
+  fileName?: string;
+  resumo?: any;
+  mensal?: any[];
+  diario?: any[];
+  descartadas?: any[];
+  meta?: any;
+};
+
+function normalizeRole(value: any): string {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toUpperCase();
+}
+
+async function canAccessRecebimentoCartao(userId: string): Promise<boolean> {
+  if (!userId || userId === 'undefined' || userId === 'null') return false;
+
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+  });
+
+  if (!user) return false;
+
+  const role = normalizeRole(user.role);
+
+  return Boolean(
+    user.isAdmin ||
+      ['ADMIN', 'ADM', 'CEO', 'DIRETOR', 'DIRETORIA', 'MASTER', 'SOCIO', 'SÓCIO'].includes(role)
+  );
+}
+
+function getRecebimentoCartaoCacheDir(): string {
+  const dir = path.join(DATABASE_DIR, 'financeiro');
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function getRecebimentoCartaoCachePath(): string {
+  return path.join(getRecebimentoCartaoCacheDir(), 'recebimento-cartao-cache.json');
+}
+
+function readRecebimentoCartaoCache(): RecebimentoCartaoPersistido | null {
+  const cachePath = getRecebimentoCartaoCachePath();
+
+  if (!fs.existsSync(cachePath)) {
+    return null;
+  }
+
+  try {
+    const raw = fs.readFileSync(cachePath, 'utf8');
+    return JSON.parse(raw) as RecebimentoCartaoPersistido;
+  } catch (error) {
+    console.warn('⚠️ Não consegui ler cache de recebimento cartão:', error);
+    return null;
+  }
+}
+
+function saveRecebimentoCartaoCache(payload: RecebimentoCartaoPersistido) {
+  const cachePath = getRecebimentoCartaoCachePath();
+  fs.writeFileSync(cachePath, JSON.stringify(payload, null, 2), 'utf8');
+}
+
+function deleteRecebimentoCartaoCache() {
+  const cachePath = getRecebimentoCartaoCachePath();
+
+  if (fs.existsSync(cachePath)) {
+    fs.unlinkSync(cachePath);
+  }
+}
+
+app.get('/api/financeiro/recebimento-cartao/ultimo', async (req: Request, res: Response) => {
+  try {
+    const userId = String(req.query.userId || '');
+
+    const allowed = await canAccessRecebimentoCartao(userId);
+
+    if (!allowed) {
+      return res.status(403).json({
+        ok: false,
+        error: 'Acesso permitido apenas para usuários administrativos.',
+      });
+    }
+
+    const data = readRecebimentoCartaoCache();
+
+    return res.json({
+      ok: true,
+      hasData: Boolean(data),
+      data,
+    });
+  } catch (error: any) {
+    console.error('❌ Erro ao buscar último recebimento cartão:', error);
+
+    return res.status(500).json({
+      ok: false,
+      error: error?.message || 'Erro ao buscar último recebimento cartão.',
+    });
+  }
+});
+
+app.delete('/api/financeiro/recebimento-cartao/ultimo', async (req: Request, res: Response) => {
+  try {
+    const userId = String(req.query.userId || '');
+
+    const allowed = await canAccessRecebimentoCartao(userId);
+
+    if (!allowed) {
+      return res.status(403).json({
+        ok: false,
+        error: 'Acesso permitido apenas para usuários administrativos.',
+      });
+    }
+
+    deleteRecebimentoCartaoCache();
+
+    return res.json({
+      ok: true,
+      message: 'Resultado de recebimento cartão apagado com sucesso.',
+    });
+  } catch (error: any) {
+    console.error('❌ Erro ao apagar recebimento cartão:', error);
+
+    return res.status(500).json({
+      ok: false,
+      error: error?.message || 'Erro ao apagar recebimento cartão.',
+    });
+  }
+});
+
+app.post(
+  '/api/financeiro/recebimento-cartao/processar',
+  uploadRecebimentoCartao.single('file'),
+  async (req: Request, res: Response) => {
+    let tempPath = '';
+
+    try {
+      if (!req.file) {
+        return res.status(400).json({
+          ok: false,
+          error: 'Nenhum arquivo foi enviado.',
+        });
+      }
+
+      const userId = String(req.body?.userId || '');
+
+      const allowed = await canAccessRecebimentoCartao(userId);
+
+      if (!allowed) {
+        return res.status(403).json({
+          ok: false,
+          error: 'Acesso permitido apenas para usuários administrativos.',
+        });
+}
+
+      const tempDir = path.join(os.tmpdir(), 'telefluxo-recebimento-cartao');
+      fs.mkdirSync(tempDir, { recursive: true });
+
+      const originalName = req.file.originalname || 'base-stone.xlsx';
+      const safeName = originalName.replace(/[^\w.\-]+/g, '_');
+
+      tempPath = path.join(tempDir, `${Date.now()}-${crypto.randomUUID()}-${safeName}`);
+
+      fs.writeFileSync(tempPath, req.file.buffer);
+
+      console.log('📥 Recebimento Cartão - arquivo chegou no backend:', {
+        originalName,
+        size: req.file.size,
+        mimetype: req.file.mimetype,
+        tempPath,
+      });
+
+      const result = await runStoneRecebimentoEngine(tempPath);
+
+      const persistedResult: RecebimentoCartaoPersistido = {
+        ...result,
+        ok: true,
+        fileName: originalName,
+        persistedAt: new Date().toISOString(),
+        processedBy: userId,
+      };
+
+      saveRecebimentoCartaoCache(persistedResult);
+
+      return res.json(persistedResult);
+
+      
+    } catch (error: any) {
+      console.error('❌ Erro ao processar recebimento cartão:', error);
+
+      return res.status(500).json({
+        ok: false,
+        error: error?.message || 'Erro ao processar recebimento de cartão.',
+      });
+    } finally {
+      if (tempPath) {
+        fs.promises.unlink(tempPath).catch(() => undefined);
+      }
+    }
+  }
+);
 
 app.use('/api/clark', clarkRoutes);
 
@@ -1159,6 +1464,3094 @@ async function getSalesFilter(userId: string, tableType: 'vendas' | 'kpi'): Prom
         return `cnpj_empresa IN (${cnpjsSql})`;
     }
 }
+
+// =======================================================
+// 📦 VISÃO DETALHADA DE ESTOQUE - BASE CONFIÁVEL
+// Rota usada pelo submenu "Visão Detalhada"
+// Calcula estoque + vendas mês atual + vendas 60/90 dias no backend
+// =======================================================
+
+type EstoqueDetalhadoStoreAgg = {
+  loja: string;
+  regiao: string;
+  estoque: number;
+  vendasMes: number;
+  vendas60: number;
+  vendas90: number;
+  giroDiario: number;
+  coberturaDias: number | null;
+};
+
+type EstoqueDetalhadoProductAgg = {
+  modelo: string;
+  referencia: string;
+  categoria: string;
+  estoque: number;
+  vendasMes: number;
+  vendas60: number;
+  vendas90: number;
+  giroDiario: number;
+  coberturaDias: number | null;
+  stores: EstoqueDetalhadoStoreAgg[];
+  debug: {
+    matchedBy: string[];
+    salesKeys: string[];
+  };
+};
+
+const ESTOQUE_DETALHADO_STORE_REGIONS: Record<string, string> = {
+  'ARAGUAIA SHOPPING': 'GOIÁS',
+  'BOULEVARD SHOPPING': 'DF',
+  'BRASILIA SHOPPING': 'DF',
+  'CONJUNTO NACIONAL': 'DF',
+  'CONJUNTO NACIONAL QUIOSQUE': 'DF',
+  'GOIANIA SHOPPING': 'GOIÁS',
+  'IGUATEMI SHOPPING': 'DF',
+  'JK SHOPPING': 'DF',
+  'PARK SHOPPING': 'DF',
+  'PATIO BRASIL': 'DF',
+  'TAGUATINGA SHOPPING': 'DF',
+  'TERRAÇO SHOPPING': 'DF',
+  'TAGUATINGA SHOPPING QQ': 'DF',
+  'UBERLÂNDIA SHOPPING': 'MINAS GERAIS',
+  'UBERABA SHOPPING': 'MINAS GERAIS',
+  'FLAMBOYANT SHOPPING': 'GOIÁS',
+  'BURITI SHOPPING': 'GOIÁS',
+  'PASSEIO DAS AGUAS': 'GOIÁS',
+  'PORTAL SHOPPING': 'GOIÁS',
+  'SHOPPING SUL': 'GOIÁS',
+  'BURITI RIO VERDE': 'GOIÁS',
+  'PARK ANAPOLIS': 'GOIÁS',
+  'SHOPPING RECIFE': 'NORDESTE',
+  'MANAIRA SHOPPING': 'NORDESTE',
+  'IGUATEMI FORTALEZA': 'NORDESTE',
+  'CD TAGUATINGA': 'CD',
+};
+
+function estoqueDetalhadoNormalizeText(value: any): string {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toUpperCase();
+}
+
+function estoqueDetalhadoNormalizeKey(value: any): string {
+  return estoqueDetalhadoNormalizeText(value).replace(/[^A-Z0-9]/g, '');
+}
+
+function estoqueDetalhadoToNumber(value: any): number {
+  if (value === null || value === undefined || value === '') return 0;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+
+  const text = String(value).trim();
+  if (!text) return 0;
+
+  const normalized = text.includes(',')
+    ? text.replace(/\./g, '').replace(',', '.')
+    : text;
+
+  const n = Number(normalized.replace(/[^\d.-]/g, ''));
+  return Number.isFinite(n) ? n : 0;
+}
+
+function estoqueDetalhadoDateToIso(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function estoqueDetalhadoAddDays(date: Date, days: number): Date {
+  const copy = new Date(date);
+  copy.setDate(copy.getDate() + days);
+  copy.setHours(0, 0, 0, 0);
+  return copy;
+}
+
+function estoqueDetalhadoParseDate(value: any): Date | null {
+  if (value === null || value === undefined || value === '') return null;
+
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    const d = new Date(value);
+    d.setHours(12, 0, 0, 0);
+    return d;
+  }
+
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    if (value > 20000 && value < 80000) {
+      const excelEpoch = new Date(Date.UTC(1899, 11, 30));
+      const d = new Date(excelEpoch.getTime() + value * 86400000);
+      return new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 12, 0, 0, 0);
+    }
+
+    const d = new Date(value);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+
+  const s = String(value).trim();
+  if (!s) return null;
+
+  if (/^\d+(\.\d+)?$/.test(s)) {
+    return estoqueDetalhadoParseDate(Number(s));
+  }
+
+  const onlyDate = s.split(' ')[0] ?? '';
+
+  const br = onlyDate.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (br) {
+    return new Date(Number(br[3]), Number(br[2]) - 1, Number(br[1]), 12, 0, 0, 0);
+  }
+
+  const brDash = onlyDate.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+  if (brDash) {
+    return new Date(Number(brDash[3]), Number(brDash[2]) - 1, Number(brDash[1]), 12, 0, 0, 0);
+  }
+
+  const iso = onlyDate.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) {
+    return new Date(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]), 12, 0, 0, 0);
+  }
+
+  const parsed = new Date(s);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function estoqueDetalhadoStoreName(row: any): string {
+  const rawLoja =
+    row?.loja ||
+    row?.LOJA ||
+    row?.nome_fantasia ||
+    row?.NOME_FANTASIA ||
+    row?.storeName ||
+    row?.STORENAME ||
+    '';
+
+  const rawCnpj =
+    row?.cnpj_empresa ||
+    row?.CNPJ_EMPRESA ||
+    row?.cnpj ||
+    row?.CNPJ ||
+    '';
+
+  const cleanCnpj = String(rawCnpj || '').replace(/\D/g, '');
+
+  if (cleanCnpj && LOJAS_MAP_GLOBAL[cleanCnpj]) {
+    return LOJAS_MAP_GLOBAL[cleanCnpj];
+  }
+
+  const normalized = estoqueDetalhadoNormalizeText(rawLoja);
+  return CORRECAO_NOMES_SERVER[normalized] || normalized || 'LOJA NÃO INFORMADA';
+}
+
+function estoqueDetalhadoGetAnnualDbPath(): string {
+  const candidates = [
+    ANUAL_DB_PATH,
+    path.join(DATABASE_DIR, 'samsung_vendas_anual.db'),
+    path.join(ROOT_DIR, 'database', 'samsung_vendas_anuais.db'),
+    path.join(ROOT_DIR, 'database', 'samsung_vendas_anual.db'),
+  ];
+
+  return candidates.find((candidate) => fs.existsSync(candidate)) || ANUAL_DB_PATH;
+}
+
+async function estoqueDetalhadoTableExists(db: any, tableName: string): Promise<boolean> {
+  const row = await db.get(
+    `SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`,
+    [tableName]
+  );
+
+  return Boolean(row?.name);
+}
+
+function estoqueDetalhadoEnsureStore(
+  product: EstoqueDetalhadoProductAgg,
+  loja: string
+): EstoqueDetalhadoStoreAgg {
+  const safeLoja = loja || 'LOJA NÃO INFORMADA';
+
+  let store = product.stores.find((item) => item.loja === safeLoja);
+
+  if (!store) {
+    store = {
+      loja: safeLoja,
+      regiao: ESTOQUE_DETALHADO_STORE_REGIONS[safeLoja] || 'OUTROS',
+      estoque: 0,
+      vendasMes: 0,
+      vendas60: 0,
+      vendas90: 0,
+      giroDiario: 0,
+      coberturaDias: null,
+    };
+
+    product.stores.push(store);
+  }
+
+  return store;
+}
+
+app.get('/api/estoque-visao-detalhada', async (req, res) => {
+  let annualDb: any;
+  let globalDb: any;
+
+  try {
+    const userId = String(req.query.userId || '');
+
+    const now = new Date();
+    now.setHours(12, 0, 0, 0);
+
+    const startMonth = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+    const start60 = estoqueDetalhadoAddDays(now, -60);
+    const start90 = estoqueDetalhadoAddDays(now, -90);
+
+    const annualDbPath = estoqueDetalhadoGetAnnualDbPath();
+    const securityFilter = await getSalesFilter(userId, 'vendas');
+
+    const user = userId
+      ? await prisma.user.findUnique({ where: { id: userId } })
+      : null;
+
+    const superRoles = ['CEO', 'DIRETOR', 'ADM', 'ADMIN', 'GESTOR', 'SÓCIO', 'MASTER'];
+    const canSeeAll = Boolean(
+      user?.isAdmin || superRoles.includes(String(user?.role || '').toUpperCase())
+    );
+
+    const allowedStores = String(user?.allowedStores || '')
+      .split(',')
+      .map((item) =>
+        estoqueDetalhadoNormalizeText(
+          CORRECAO_NOMES_SERVER[estoqueDetalhadoNormalizeText(item)] || item
+        )
+      )
+      .filter(Boolean);
+
+    const stockRows = await prisma.stock.findMany({
+      select: {
+        cnpj: true,
+        storeName: true,
+        productCode: true,
+        reference: true,
+        description: true,
+        category: true,
+        quantity: true,
+      },
+    });
+
+    const productMap = new Map<string, EstoqueDetalhadoProductAgg>();
+    const byReference = new Map<string, string>();
+    const byDescription = new Map<string, string>();
+
+    const getOrCreateProduct = (params: {
+      productKey?: string;
+      modelo: string;
+      referencia?: string;
+      categoria?: string;
+      matchedBy: string;
+      salesKey?: string;
+    }): EstoqueDetalhadoProductAgg => {
+      const referenciaKey = estoqueDetalhadoNormalizeKey(params.referencia || '');
+      const descKey = estoqueDetalhadoNormalizeKey(params.modelo);
+
+      const productKey =
+        params.productKey ||
+        byReference.get(referenciaKey) ||
+        byDescription.get(descKey) ||
+        descKey ||
+        referenciaKey;
+
+      let product = productMap.get(productKey);
+
+      if (!product) {
+        product = {
+          modelo: params.modelo || params.referencia || 'PRODUTO NÃO INFORMADO',
+          referencia: params.referencia || '',
+          categoria: params.categoria || 'GERAL',
+          estoque: 0,
+          vendasMes: 0,
+          vendas60: 0,
+          vendas90: 0,
+          giroDiario: 0,
+          coberturaDias: null,
+          stores: [],
+          debug: {
+            matchedBy: [],
+            salesKeys: [],
+          },
+        };
+
+        productMap.set(productKey, product);
+      }
+
+      if (!product.referencia && params.referencia) product.referencia = params.referencia;
+      if ((!product.categoria || product.categoria === 'GERAL') && params.categoria) {
+        product.categoria = params.categoria;
+      }
+
+      if (!product.debug.matchedBy.includes(params.matchedBy)) {
+        product.debug.matchedBy.push(params.matchedBy);
+      }
+
+      if (params.salesKey && !product.debug.salesKeys.includes(params.salesKey)) {
+        product.debug.salesKeys.push(params.salesKey);
+      }
+
+      if (referenciaKey) byReference.set(referenciaKey, productKey);
+      if (descKey) byDescription.set(descKey, productKey);
+
+      return product;
+    };
+
+    for (const stock of stockRows) {
+      const loja = estoqueDetalhadoStoreName(stock);
+
+      if (
+        !canSeeAll &&
+        allowedStores.length > 0 &&
+        !allowedStores.includes(estoqueDetalhadoNormalizeText(loja))
+      ) {
+        continue;
+      }
+
+      const modelo = String(stock.description || '').trim();
+      if (!modelo) continue;
+
+      const referencia = String(stock.reference || stock.productCode || '').trim();
+      const productKey =
+        estoqueDetalhadoNormalizeKey(referencia) || estoqueDetalhadoNormalizeKey(modelo);
+
+      const product = getOrCreateProduct({
+        productKey,
+        modelo,
+        referencia,
+        categoria: String(stock.category || 'GERAL').toUpperCase(),
+        matchedBy: 'ESTOQUE',
+      });
+
+      const qty = estoqueDetalhadoToNumber(stock.quantity);
+
+      product.estoque += qty;
+      estoqueDetalhadoEnsureStore(product, loja).estoque += qty;
+    }
+
+    const addSale = (row: any, bucket: 'MES' | 'ANUAL') => {
+      const date = estoqueDetalhadoParseDate(
+        row.data_emissao || row.DATA_EMISSAO || row.data || row.DATA
+      );
+
+      if (!date) return;
+
+      const qty = estoqueDetalhadoToNumber(
+        row.qtd_real ??
+          row.QTD_REAL ??
+          row.quantidade ??
+          row.QUANTIDADE ??
+          row.qtd ??
+          row.QTD ??
+          1
+      );
+
+      if (!qty) return;
+
+      const referencia = String(
+        row.referencia || row.REFERENCIA || row.codigo_produto || row.CODIGO_PRODUTO || ''
+      ).trim();
+
+      const descricao = String(
+        row.descricao || row.DESCRICAO || row.produto || row.PRODUTO || referencia || ''
+      ).trim();
+
+      if (!referencia && !descricao) return;
+
+      const referenciaKey = estoqueDetalhadoNormalizeKey(referencia);
+      const descKey = estoqueDetalhadoNormalizeKey(descricao);
+
+      const productKey =
+        byReference.get(referenciaKey) ||
+        byDescription.get(descKey) ||
+        referenciaKey ||
+        descKey;
+
+      const product = getOrCreateProduct({
+        productKey,
+        modelo: descricao || referencia,
+        referencia,
+        categoria: String(
+          row.categoria_real ||
+            row.CATEGORIA_REAL ||
+            row.categoria ||
+            row.CATEGORIA ||
+            row.familia ||
+            row.FAMILIA ||
+            'GERAL'
+        ).toUpperCase(),
+        matchedBy: byReference.get(referenciaKey)
+          ? 'REFERENCIA'
+          : byDescription.get(descKey)
+            ? 'DESCRICAO'
+            : 'VENDA_SEM_ESTOQUE',
+        salesKey: referenciaKey || descKey,
+      });
+
+      const loja = estoqueDetalhadoStoreName(row);
+      const store = estoqueDetalhadoEnsureStore(product, loja);
+
+      if (bucket === 'MES' && date >= startMonth && date <= now) {
+        product.vendasMes += qty;
+        store.vendasMes += qty;
+      }
+
+      if (bucket === 'ANUAL') {
+        if (date >= start60 && date <= now) {
+          product.vendas60 += qty;
+          store.vendas60 += qty;
+        }
+
+        if (date >= start90 && date <= now) {
+          product.vendas90 += qty;
+          store.vendas90 += qty;
+        }
+      }
+    };
+
+    if (fs.existsSync(GLOBAL_DB_PATH)) {
+      globalDb = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+
+      const hasDetailed = await estoqueDetalhadoTableExists(globalDb, 'vendas_detalhadas_imei');
+      const hasLegacy = await estoqueDetalhadoTableExists(globalDb, 'vendas');
+
+      if (hasDetailed) {
+        const rows = await globalDb.all(`
+          SELECT
+            data_emissao,
+            cnpj_empresa,
+            nome_fantasia AS loja,
+            referencia,
+            codigo_produto,
+            descricao,
+            categoria,
+            quantidade
+          FROM vendas_detalhadas_imei
+          WHERE ${securityFilter}
+        `);
+
+        rows.forEach((row: any) => addSale(row, 'MES'));
+      } else if (hasLegacy) {
+        const rows = await globalDb.all(`
+          SELECT
+            data_emissao,
+            cnpj_empresa,
+            NULL AS loja,
+            familia AS referencia,
+            descricao,
+            familia AS categoria,
+            quantidade
+          FROM vendas
+          WHERE ${securityFilter}
+        `);
+
+        rows.forEach((row: any) => addSale(row, 'MES'));
+      }
+
+      await globalDb.close();
+      globalDb = null;
+    }
+
+    if (fs.existsSync(annualDbPath)) {
+      annualDb = await open({ filename: annualDbPath, driver: sqlite3.Database });
+
+      const hasRaw = await estoqueDetalhadoTableExists(annualDb, 'vendas_anuais_raw');
+      const hasAnnual = await estoqueDetalhadoTableExists(annualDb, 'vendas_anuais');
+
+      if (hasRaw) {
+        const rows = await annualDb.all(`
+          SELECT
+            data_emissao,
+            cnpj_empresa,
+            loja,
+            referencia,
+            codigo_produto,
+            descricao,
+            categoria,
+            categoria_real,
+            quantidade,
+            qtd_real,
+            cancelado
+          FROM vendas_anuais_raw
+          WHERE COALESCE(cancelado, 'N') = 'N'
+            AND ${securityFilter}
+        `);
+
+        rows.forEach((row: any) => addSale(row, 'ANUAL'));
+      } else if (hasAnnual) {
+        const rows = await annualDb.all(`
+          SELECT
+            data_emissao,
+            cnpj_empresa,
+            loja,
+            familia AS referencia,
+            descricao,
+            familia AS categoria,
+            quantidade
+          FROM vendas_anuais
+          WHERE ${securityFilter}
+        `);
+
+        rows.forEach((row: any) => addSale(row, 'ANUAL'));
+      }
+
+      await annualDb.close();
+      annualDb = null;
+    }
+
+    const products = Array.from(productMap.values()).map((product) => {
+      product.giroDiario = product.vendas90 > 0 ? product.vendas90 / 90 : 0;
+      product.coberturaDias = product.giroDiario > 0 ? product.estoque / product.giroDiario : null;
+
+      product.stores = product.stores
+        .map((store) => ({
+          ...store,
+          giroDiario: store.vendas90 > 0 ? store.vendas90 / 90 : 0,
+          coberturaDias: store.vendas90 > 0 ? store.estoque / (store.vendas90 / 90) : null,
+        }))
+        .sort((a, b) => b.estoque - a.estoque || b.vendas90 - a.vendas90 || a.loja.localeCompare(b.loja));
+
+      return product;
+    });
+
+    products.sort((a, b) => b.estoque - a.estoque || b.vendas90 - a.vendas90 || a.modelo.localeCompare(b.modelo));
+
+    return res.json({
+      success: true,
+      generatedAt: new Date().toISOString(),
+      periodo: {
+        mesAtualInicio: estoqueDetalhadoDateToIso(startMonth),
+        ultimos60Inicio: estoqueDetalhadoDateToIso(start60),
+        ultimos90Inicio: estoqueDetalhadoDateToIso(start90),
+        hoje: estoqueDetalhadoDateToIso(now),
+      },
+      sources: {
+        estoque: 'Prisma Stock / dev.db',
+        vendasMes: GLOBAL_DB_PATH,
+        vendas60e90: annualDbPath,
+      },
+      total: products.length,
+      products,
+    });
+  } catch (error: any) {
+    console.error('Erro /api/estoque-visao-detalhada:', error);
+
+    try {
+      if (globalDb) await globalDb.close();
+      if (annualDb) await annualDb.close();
+    } catch {}
+
+    return res.status(500).json({
+      success: false,
+      error: error?.message || 'Erro ao montar visão detalhada de estoque.',
+    });
+  }
+});
+
+
+// =======================================================
+// 🚨 CENTRAL DE ALERTAS INTELIGENTES - TELEFLUXO
+// Cole este bloco depois da rota /api/estoque-visao-detalhada
+// e antes da rota /sales.
+// =======================================================
+
+type SmartAlertSeverity = 'critica' | 'alta' | 'media' | 'baixa';
+type SmartAlertModule = 'estoque' | 'vendas' | 'remanejamento' | 'operacao';
+
+type SmartAlertMetric = {
+  label: string;
+  value: string | number;
+  helper?: string;
+};
+
+type SmartAlert = {
+  id: string;
+  type: string;
+  severity: SmartAlertSeverity;
+  status: 'aberto';
+  title: string;
+  description: string;
+  module: SmartAlertModule;
+  createdAt: string;
+  store?: string;
+  product?: string;
+  category?: string;
+  metric?: SmartAlertMetric;
+  action?: string;
+  details?: Record<string, any>;
+};
+
+type SmartStoreProductAgg = {
+  key: string;
+  product: string;
+  reference: string;
+  category: string;
+  store: string;
+  region: string;
+  stock: number;
+  stockValue: number;
+  salesMonth: number;
+  sales30: number;
+  sales60: number;
+  sales90: number;
+  previous30: number;
+};
+
+type SmartProductNetworkAgg = {
+  key: string;
+  product: string;
+  reference: string;
+  category: string;
+  stock: number;
+  stockValue: number;
+  salesMonth: number;
+  sales30: number;
+  sales60: number;
+  sales90: number;
+  previous30: number;
+  stores: SmartStoreProductAgg[];
+};
+
+function smartAlertsNormalizeText(value: any): string {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toUpperCase();
+}
+
+function smartAlertsNormalizeKey(value: any): string {
+  return smartAlertsNormalizeText(value).replace(/[^A-Z0-9]/g, '');
+}
+
+function smartAlertsToNumber(value: any): number {
+  if (value === null || value === undefined || value === '') return 0;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+
+  const text = String(value).trim();
+  if (!text) return 0;
+
+  const normalized = text.includes(',')
+    ? text.replace(/\./g, '').replace(',', '.')
+    : text;
+
+  const parsed = Number(normalized.replace(/[^\d.-]/g, ''));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function smartAlertsParseDate(value: any): Date | null {
+  if (value === null || value === undefined || value === '') return null;
+
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    const copy = new Date(value);
+    copy.setHours(12, 0, 0, 0);
+    return copy;
+  }
+
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    if (value > 20000 && value < 90000) {
+      const excelEpoch = new Date(Date.UTC(1899, 11, 30));
+      const date = new Date(excelEpoch.getTime() + value * 86400000);
+      return new Date(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), 12, 0, 0, 0);
+    }
+
+    const direct = new Date(value);
+    return Number.isNaN(direct.getTime()) ? null : direct;
+  }
+
+  const raw = String(value).trim();
+  if (!raw) return null;
+
+  if (/^\d+(\.\d+)?$/.test(raw)) {
+    return smartAlertsParseDate(Number(raw));
+  }
+
+  const onlyDate = raw.split(' ')[0] ?? '';
+
+  const brSlash = onlyDate.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (brSlash) {
+    return new Date(Number(brSlash[3] ?? 0), Number(brSlash[2] ?? 1) - 1, Number(brSlash[1] ?? 1), 12, 0, 0, 0);
+  }
+
+  const brDash = onlyDate.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+  if (brDash) {
+    return new Date(Number(brDash[3] ?? 0), Number(brDash[2] ?? 1) - 1, Number(brDash[1] ?? 1), 12, 0, 0, 0);
+  }
+
+  const iso = onlyDate.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) {
+    return new Date(Number(iso[1] ?? 0), Number(iso[2] ?? 1) - 1, Number(iso[3] ?? 1), 12, 0, 0, 0);
+  }
+
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function smartAlertsAddDays(date: Date, days: number): Date {
+  const copy = new Date(date);
+  copy.setDate(copy.getDate() + days);
+  copy.setHours(0, 0, 0, 0);
+  return copy;
+}
+
+function smartAlertsStoreName(row: any): string {
+  const rawCnpj = String(row?.cnpj_empresa || row?.CNPJ_EMPRESA || row?.cnpj || row?.CNPJ || '').replace(/\D/g, '');
+  if (rawCnpj && LOJAS_MAP_GLOBAL[rawCnpj]) return LOJAS_MAP_GLOBAL[rawCnpj];
+
+  const rawStore = row?.loja || row?.LOJA || row?.storeName || row?.STORENAME || row?.nome_fantasia || row?.NOME_FANTASIA || '';
+  const normalized = smartAlertsNormalizeText(rawStore);
+
+  return CORRECAO_NOMES_SERVER[normalized] || normalized || 'LOJA NÃO INFORMADA';
+}
+
+function smartAlertsRegionByStore(store: string): string {
+  const normalized = smartAlertsNormalizeText(store);
+  const regionMap: Record<string, string> = {
+    'ARAGUAIA SHOPPING': 'GOIÁS',
+    'BOULEVARD SHOPPING': 'DF',
+    'BRASILIA SHOPPING': 'DF',
+    'CONJUNTO NACIONAL': 'DF',
+    'CONJUNTO NACIONAL QUIOSQUE': 'DF',
+    'GOIANIA SHOPPING': 'GOIÁS',
+    'IGUATEMI SHOPPING': 'DF',
+    'JK SHOPPING': 'DF',
+    'PARK SHOPPING': 'DF',
+    'PATIO BRASIL': 'DF',
+    'TAGUATINGA SHOPPING': 'DF',
+    'TERRAÇO SHOPPING': 'DF',
+    'TAGUATINGA SHOPPING QQ': 'DF',
+    'UBERLÂNDIA SHOPPING': 'MINAS GERAIS',
+    'UBERABA SHOPPING': 'MINAS GERAIS',
+    'FLAMBOYANT SHOPPING': 'GOIÁS',
+    'BURITI SHOPPING': 'GOIÁS',
+    'PASSEIO DAS AGUAS': 'GOIÁS',
+    'PORTAL SHOPPING': 'GOIÁS',
+    'SHOPPING SUL': 'GOIÁS',
+    'BURITI RIO VERDE': 'GOIÁS',
+    'PARK ANAPOLIS': 'GOIÁS',
+    'SHOPPING RECIFE': 'NORDESTE',
+    'MANAIRA SHOPPING': 'NORDESTE',
+    'IGUATEMI FORTALEZA': 'NORDESTE',
+    'CD TAGUATINGA': 'CD',
+  };
+
+  return regionMap[normalized] || 'OUTROS';
+}
+
+async function smartAlertsTableExists(db: any, tableName: string): Promise<boolean> {
+  const row = await db.get(
+    `SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`,
+    [tableName]
+  );
+
+  return Boolean(row?.name);
+}
+
+function smartAlertsAnnualDbPath(): string {
+  const candidates = [
+    ANUAL_DB_PATH,
+    path.join(DATABASE_DIR, 'samsung_vendas_anual.db'),
+    path.join(ROOT_DIR, 'database', 'samsung_vendas_anuais.db'),
+    path.join(ROOT_DIR, 'database', 'samsung_vendas_anual.db'),
+  ];
+
+  return candidates.find((candidate) => fs.existsSync(candidate)) || ANUAL_DB_PATH;
+}
+
+function smartAlertsBuildId(parts: Array<string | number>): string {
+  return parts
+    .map((part) => smartAlertsNormalizeKey(part))
+    .filter(Boolean)
+    .join('-')
+    .slice(0, 180);
+}
+
+function smartAlertsCoverageDays(stock: number, sales90: number): number | null {
+  if (sales90 <= 0) return null;
+  return stock / (sales90 / 90);
+}
+
+function smartAlertsFormatDays(days: number | null): string {
+  if (days === null) return 'sem giro';
+  return `${Math.round(days)} dias`;
+}
+
+function smartAlertsAddAlert(alerts: SmartAlert[], alert: SmartAlert) {
+  alerts.push(alert);
+}
+
+app.get('/api/intelligent-alerts', async (req, res) => {
+  let globalDb: any;
+  let annualDb: any;
+
+  try {
+    const userId = String(req.query.userId || '');
+
+    if (!userId || userId === 'undefined' || userId === 'null') {
+      return res.status(400).json({
+        success: false,
+        error: 'Usuário não informado.',
+      });
+    }
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: 'Usuário não encontrado.',
+      });
+    }
+
+    const role = smartAlertsNormalizeText(user.role);
+    const superRoles = ['CEO', 'DIRETOR', 'ADM', 'ADMIN', 'GESTOR', 'SÓCIO', 'SOCIO', 'MASTER'];
+    const canSeeAll = Boolean(user.isAdmin || superRoles.includes(role));
+
+    const allowedStores = String(user.allowedStores || '')
+      .split(',')
+      .map((store) => smartAlertsNormalizeText(CORRECAO_NOMES_SERVER[smartAlertsNormalizeText(store)] || store))
+      .filter(Boolean);
+
+    const canUseStore = (store: string) => {
+      if (canSeeAll) return true;
+      if (allowedStores.length === 0) return false;
+      return allowedStores.includes(smartAlertsNormalizeText(store));
+    };
+
+    const now = new Date();
+    now.setHours(12, 0, 0, 0);
+
+    const startMonth = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+    const start30 = smartAlertsAddDays(now, -30);
+    const start60 = smartAlertsAddDays(now, -60);
+    const start90 = smartAlertsAddDays(now, -90);
+    const startPrevious30 = smartAlertsAddDays(now, -60);
+    const endPrevious30 = smartAlertsAddDays(now, -31);
+
+    const productMap = new Map<string, SmartProductNetworkAgg>();
+    const storeProductMap = new Map<string, SmartStoreProductAgg>();
+    const byReference = new Map<string, string>();
+    const byDescription = new Map<string, string>();
+
+    const getProduct = (params: {
+      key?: string;
+      product: string;
+      reference?: string;
+      category?: string;
+    }): SmartProductNetworkAgg => {
+      const referenceKey = smartAlertsNormalizeKey(params.reference || '');
+      const descriptionKey = smartAlertsNormalizeKey(params.product);
+      const key = params.key || byReference.get(referenceKey) || byDescription.get(descriptionKey) || referenceKey || descriptionKey;
+
+      let product = productMap.get(key);
+
+      if (!product) {
+        product = {
+          key,
+          product: params.product || params.reference || 'PRODUTO NÃO INFORMADO',
+          reference: params.reference || '',
+          category: params.category || 'GERAL',
+          stock: 0,
+          stockValue: 0,
+          salesMonth: 0,
+          sales30: 0,
+          sales60: 0,
+          sales90: 0,
+          previous30: 0,
+          stores: [],
+        };
+
+        productMap.set(key, product);
+      }
+
+      if (!product.reference && params.reference) product.reference = params.reference;
+      if ((!product.category || product.category === 'GERAL') && params.category) product.category = params.category;
+
+      if (referenceKey) byReference.set(referenceKey, key);
+      if (descriptionKey) byDescription.set(descriptionKey, key);
+
+      return product;
+    };
+
+    const getStoreProduct = (product: SmartProductNetworkAgg, store: string): SmartStoreProductAgg => {
+      const normalizedStore = smartAlertsNormalizeText(store);
+      const storeKey = `${product.key}::${normalizedStore}`;
+      let storeProduct = storeProductMap.get(storeKey);
+
+      if (!storeProduct) {
+        storeProduct = {
+          key: product.key,
+          product: product.product,
+          reference: product.reference,
+          category: product.category,
+          store: normalizedStore || 'LOJA NÃO INFORMADA',
+          region: smartAlertsRegionByStore(normalizedStore),
+          stock: 0,
+          stockValue: 0,
+          salesMonth: 0,
+          sales30: 0,
+          sales60: 0,
+          sales90: 0,
+          previous30: 0,
+        };
+
+        storeProductMap.set(storeKey, storeProduct);
+        product.stores.push(storeProduct);
+      }
+
+      return storeProduct;
+    };
+
+    const stockRows = await prisma.stock.findMany({
+      select: {
+        storeName: true,
+        cnpj: true,
+        productCode: true,
+        reference: true,
+        description: true,
+        category: true,
+        quantity: true,
+        costPrice: true,
+        averageCost: true,
+      },
+    });
+
+    for (const stock of stockRows) {
+      const store = smartAlertsStoreName(stock);
+      if (!canUseStore(store)) continue;
+
+      const productName = String(stock.description || '').trim();
+      if (!productName) continue;
+
+      const reference = String(stock.reference || stock.productCode || '').trim();
+      const category = String(stock.category || 'GERAL').toUpperCase();
+      const key = smartAlertsNormalizeKey(reference) || smartAlertsNormalizeKey(productName);
+
+      const product = getProduct({
+        key,
+        product: productName,
+        reference,
+        category,
+      });
+
+      const storeProduct = getStoreProduct(product, store);
+      const quantity = smartAlertsToNumber(stock.quantity);
+      const unitCost = smartAlertsToNumber(stock.averageCost || stock.costPrice);
+      const value = quantity * unitCost;
+
+      product.stock += quantity;
+      product.stockValue += value;
+      storeProduct.stock += quantity;
+      storeProduct.stockValue += value;
+    }
+
+    const addSale = (row: any, source: 'global' | 'annual') => {
+      const date = smartAlertsParseDate(row.data_emissao || row.DATA_EMISSAO || row.data || row.DATA);
+      if (!date) return;
+
+      const store = smartAlertsStoreName(row);
+      if (!canUseStore(store)) return;
+
+      const quantity = smartAlertsToNumber(
+        row.qtd_real ??
+          row.QTD_REAL ??
+          row.quantidade ??
+          row.QUANTIDADE ??
+          row.qtd ??
+          row.QTD ??
+          1
+      );
+
+      if (!quantity) return;
+
+      const reference = String(
+        row.referencia ||
+          row.REFERENCIA ||
+          row.codigo_produto ||
+          row.CODIGO_PRODUTO ||
+          row.productCode ||
+          row.PRODUCTCODE ||
+          ''
+      ).trim();
+
+      const productName = String(
+        row.descricao ||
+          row.DESCRICAO ||
+          row.produto ||
+          row.PRODUTO ||
+          reference ||
+          ''
+      ).trim();
+
+      if (!reference && !productName) return;
+
+      const referenceKey = smartAlertsNormalizeKey(reference);
+      const descriptionKey = smartAlertsNormalizeKey(productName);
+      const productKey = byReference.get(referenceKey) || byDescription.get(descriptionKey) || referenceKey || descriptionKey;
+
+      const product = getProduct({
+        key: productKey,
+        product: productName || reference,
+        reference,
+        category: String(row.categoria || row.CATEGORIA || row.categoria_real || row.CATEGORIA_REAL || row.familia || row.FAMILIA || 'GERAL').toUpperCase(),
+      });
+
+      const storeProduct = getStoreProduct(product, store);
+
+      if (date >= startMonth && date <= now) {
+        product.salesMonth += quantity;
+        storeProduct.salesMonth += quantity;
+      }
+
+      if (source === 'annual') {
+        if (date >= start30 && date <= now) {
+          product.sales30 += quantity;
+          storeProduct.sales30 += quantity;
+        }
+
+        if (date >= start60 && date <= now) {
+          product.sales60 += quantity;
+          storeProduct.sales60 += quantity;
+        }
+
+        if (date >= start90 && date <= now) {
+          product.sales90 += quantity;
+          storeProduct.sales90 += quantity;
+        }
+
+        if (date >= startPrevious30 && date <= endPrevious30) {
+          product.previous30 += quantity;
+          storeProduct.previous30 += quantity;
+        }
+      }
+    };
+
+    if (fs.existsSync(GLOBAL_DB_PATH)) {
+      globalDb = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+
+      if (await smartAlertsTableExists(globalDb, 'vendas_detalhadas_imei')) {
+        const rows = await globalDb.all(`
+          SELECT
+            data_emissao,
+            cnpj_empresa,
+            nome_fantasia AS loja,
+            referencia,
+            codigo_produto,
+            descricao,
+            categoria,
+            quantidade
+          FROM vendas_detalhadas_imei
+        `);
+
+        rows.forEach((row: any) => addSale(row, 'global'));
+      } else if (await smartAlertsTableExists(globalDb, 'vendas')) {
+        const rows = await globalDb.all(`
+          SELECT
+            data_emissao,
+            cnpj_empresa,
+            NULL AS loja,
+            familia AS referencia,
+            descricao,
+            familia AS categoria,
+            quantidade
+          FROM vendas
+        `);
+
+        rows.forEach((row: any) => addSale(row, 'global'));
+      }
+
+      await globalDb.close();
+      globalDb = null;
+    }
+
+    const annualDbPath = smartAlertsAnnualDbPath();
+
+    if (fs.existsSync(annualDbPath)) {
+      annualDb = await open({ filename: annualDbPath, driver: sqlite3.Database });
+
+      if (await smartAlertsTableExists(annualDb, 'vendas_anuais_raw')) {
+        const rows = await annualDb.all(`
+          SELECT
+            data_emissao,
+            cnpj_empresa,
+            loja,
+            referencia,
+            codigo_produto,
+            descricao,
+            categoria,
+            categoria_real,
+            quantidade,
+            qtd_real,
+            cancelado
+          FROM vendas_anuais_raw
+          WHERE COALESCE(cancelado, 'N') = 'N'
+        `);
+
+        rows.forEach((row: any) => addSale(row, 'annual'));
+      } else if (await smartAlertsTableExists(annualDb, 'vendas_anuais')) {
+        const rows = await annualDb.all(`
+          SELECT
+            data_emissao,
+            cnpj_empresa,
+            loja,
+            familia AS referencia,
+            descricao,
+            familia AS categoria,
+            quantidade
+          FROM vendas_anuais
+        `);
+
+        rows.forEach((row: any) => addSale(row, 'annual'));
+      }
+
+      await annualDb.close();
+      annualDb = null;
+    }
+
+    const alerts: SmartAlert[] = [];
+    const createdAt = new Date().toISOString();
+
+    const storeProducts = Array.from(storeProductMap.values());
+    const products = Array.from(productMap.values());
+
+    const storeProductsWithDemand = storeProducts
+      .filter((item) => item.sales90 > 0 || item.salesMonth > 0 || item.stock > 0)
+      .map((item) => ({
+        ...item,
+        coverageDays: smartAlertsCoverageDays(item.stock, item.sales90),
+        avgDailySales: item.sales90 > 0 ? item.sales90 / 90 : 0,
+      }));
+
+    for (const item of storeProductsWithDemand) {
+      const coverageDays = item.coverageDays;
+
+      if (item.stock <= 0 && item.sales90 >= 2) {
+        smartAlertsAddAlert(alerts, {
+          id: smartAlertsBuildId(['stockout', item.store, item.key]),
+          type: 'stockout_produto_loja',
+          severity: 'critica',
+          status: 'aberto',
+          title: `${item.product} zerado em ${item.store}`,
+          description: `A loja vendeu ${item.sales90} unidade(s) nos últimos 90 dias, mas está sem estoque físico do produto.`,
+          module: 'estoque',
+          store: item.store,
+          product: item.product,
+          category: item.category,
+          metric: {
+            label: 'Estoque',
+            value: 0,
+            helper: `${item.sales90} venda(s) nos últimos 90 dias`,
+          },
+          action: `Priorizar reposição ou remanejamento para ${item.store}.`,
+          createdAt,
+          details: {
+            vendas90: item.sales90,
+            vendas60: item.sales60,
+            vendasMes: item.salesMonth,
+            coberturaDias: 0,
+          },
+        });
+
+        continue;
+      }
+
+      if (coverageDays !== null && coverageDays <= 7 && item.sales90 >= 2) {
+        smartAlertsAddAlert(alerts, {
+          id: smartAlertsBuildId(['ruptura-critica', item.store, item.key]),
+          type: 'risco_ruptura_critico',
+          severity: 'critica',
+          status: 'aberto',
+          title: `Risco crítico de ruptura em ${item.store}`,
+          description: `${item.product} tem cobertura estimada de apenas ${smartAlertsFormatDays(coverageDays)} na loja.`,
+          module: 'estoque',
+          store: item.store,
+          product: item.product,
+          category: item.category,
+          metric: {
+            label: 'Cobertura',
+            value: smartAlertsFormatDays(coverageDays),
+            helper: `${item.stock} em estoque / ${item.sales90} venda(s) em 90 dias`,
+          },
+          action: `Enviar estoque para ${item.store} antes da ruptura.`,
+          createdAt,
+          details: {
+            estoque: item.stock,
+            vendas90: item.sales90,
+            giroDiario: item.avgDailySales,
+          },
+        });
+      } else if (coverageDays !== null && coverageDays <= 15 && item.sales90 >= 3) {
+        smartAlertsAddAlert(alerts, {
+          id: smartAlertsBuildId(['ruptura-alta', item.store, item.key]),
+          type: 'risco_ruptura_alto',
+          severity: 'alta',
+          status: 'aberto',
+          title: `Baixa cobertura em ${item.store}`,
+          description: `${item.product} tem cobertura aproximada de ${smartAlertsFormatDays(coverageDays)}.`,
+          module: 'estoque',
+          store: item.store,
+          product: item.product,
+          category: item.category,
+          metric: {
+            label: 'Cobertura',
+            value: smartAlertsFormatDays(coverageDays),
+            helper: `${item.stock} em estoque / ${item.sales90} venda(s) em 90 dias`,
+          },
+          action: 'Avaliar reposição ou remanejamento preventivo.',
+          createdAt,
+          details: {
+            estoque: item.stock,
+            vendas90: item.sales90,
+            giroDiario: item.avgDailySales,
+          },
+        });
+      }
+
+      if (coverageDays !== null && coverageDays >= 150 && item.stock >= 4) {
+        smartAlertsAddAlert(alerts, {
+          id: smartAlertsBuildId(['excesso', item.store, item.key]),
+          type: 'excesso_estoque_loja',
+          severity: coverageDays >= 240 ? 'alta' : 'media',
+          status: 'aberto',
+          title: `Possível excesso de estoque em ${item.store}`,
+          description: `${item.product} possui cobertura estimada de ${smartAlertsFormatDays(coverageDays)}.`,
+          module: 'estoque',
+          store: item.store,
+          product: item.product,
+          category: item.category,
+          metric: {
+            label: 'Cobertura',
+            value: smartAlertsFormatDays(coverageDays),
+            helper: `${item.stock} em estoque / ${item.sales90} venda(s) em 90 dias`,
+          },
+          action: 'Avaliar remanejamento para lojas com maior giro.',
+          createdAt,
+          details: {
+            estoque: item.stock,
+            vendas90: item.sales90,
+            valorEstoque: item.stockValue,
+          },
+        });
+      }
+
+      if (item.stock >= 3 && item.sales90 === 0) {
+        smartAlertsAddAlert(alerts, {
+          id: smartAlertsBuildId(['parado', item.store, item.key]),
+          type: 'estoque_sem_giro',
+          severity: item.stock >= 8 ? 'alta' : 'media',
+          status: 'aberto',
+          title: `Estoque sem giro em ${item.store}`,
+          description: `${item.product} possui ${item.stock} unidade(s) em estoque e nenhuma venda nos últimos 90 dias.`,
+          module: 'estoque',
+          store: item.store,
+          product: item.product,
+          category: item.category,
+          metric: {
+            label: 'Estoque sem giro',
+            value: item.stock,
+            helper: '0 venda nos últimos 90 dias',
+          },
+          action: 'Analisar preço, exposição, campanha ou remanejamento.',
+          createdAt,
+          details: {
+            estoque: item.stock,
+            vendas90: item.sales90,
+            valorEstoque: item.stockValue,
+          },
+        });
+      }
+    }
+
+    for (const product of products) {
+      const origins = product.stores
+        .map((storeItem) => ({
+          ...storeItem,
+          coverageDays: smartAlertsCoverageDays(storeItem.stock, storeItem.sales90),
+        }))
+        .filter((storeItem) => storeItem.stock >= 3 && (storeItem.coverageDays === null || storeItem.coverageDays >= 90))
+        .sort((a, b) => b.stock - a.stock);
+
+      const destinations = product.stores
+        .map((storeItem) => ({
+          ...storeItem,
+          coverageDays: smartAlertsCoverageDays(storeItem.stock, storeItem.sales90),
+        }))
+        .filter((storeItem) => {
+          if (storeItem.sales90 < 2) return false;
+          if (storeItem.stock <= 0) return true;
+          return storeItem.coverageDays !== null && storeItem.coverageDays <= 15;
+        })
+        .sort((a, b) => {
+          const covA = a.coverageDays ?? 0;
+          const covB = b.coverageDays ?? 0;
+          return covA - covB || b.sales90 - a.sales90;
+        });
+
+      if (origins.length === 0 || destinations.length === 0) continue;
+
+      const origin = origins[0];
+      const destination = destinations[0];
+
+      if (!origin || !destination || origin.store === destination.store) continue;
+
+      const suggestedQty = Math.max(1, Math.min(5, Math.floor(origin.stock / 2)));
+
+      smartAlertsAddAlert(alerts, {
+        id: smartAlertsBuildId(['remanejamento', product.key, origin.store, destination.store]),
+        type: 'oportunidade_remanejamento',
+        severity: destination.stock <= 0 ? 'alta' : 'media',
+        status: 'aberto',
+        title: `Remanejamento sugerido: ${product.product}`,
+        description: `${destination.store} tem baixa cobertura e ${origin.store} possui estoque com maior folga.`,
+        module: 'remanejamento',
+        store: destination.store,
+        product: product.product,
+        category: product.category,
+        metric: {
+          label: 'Sugestão',
+          value: `${suggestedQty} un.`,
+          helper: `${origin.store} → ${destination.store}`,
+        },
+        action: `Remanejar até ${suggestedQty} unidade(s) de ${origin.store} para ${destination.store}.`,
+        createdAt,
+        details: {
+          origem: origin.store,
+          destino: destination.store,
+          estoqueOrigem: origin.stock,
+          estoqueDestino: destination.stock,
+          vendas90Destino: destination.sales90,
+          coberturaDestino: destination.coverageDays,
+        },
+      });
+    }
+
+    const storeSales = new Map<string, { store: string; sales30: number; previous30: number }>();
+
+    for (const item of storeProductsWithDemand) {
+      const key = smartAlertsNormalizeText(item.store);
+      const current = storeSales.get(key) || { store: item.store, sales30: 0, previous30: 0 };
+      current.sales30 += item.sales30;
+      current.previous30 += item.previous30;
+      storeSales.set(key, current);
+    }
+
+    for (const store of Array.from(storeSales.values())) {
+      if (store.previous30 < 10) continue;
+
+      const dropPercent = ((store.previous30 - store.sales30) / store.previous30) * 100;
+
+      if (dropPercent >= 35) {
+        smartAlertsAddAlert(alerts, {
+          id: smartAlertsBuildId(['queda-vendas', store.store]),
+          type: 'queda_vendas_loja',
+          severity: dropPercent >= 50 ? 'alta' : 'media',
+          status: 'aberto',
+          title: `Queda de vendas em ${store.store}`,
+          description: `A loja caiu ${Math.round(dropPercent)}% nos últimos 30 dias em comparação aos 30 dias anteriores.`,
+          module: 'vendas',
+          store: store.store,
+          metric: {
+            label: 'Queda',
+            value: `${Math.round(dropPercent)}%`,
+            helper: `${store.previous30} → ${store.sales30} unidade(s)`,
+          },
+          action: 'Verificar campanha, exposição, escala da equipe e estoque dos produtos de maior giro.',
+          createdAt,
+          details: {
+            vendas30: store.sales30,
+            vendasPeriodoAnterior: store.previous30,
+          },
+        });
+      }
+    }
+
+    const sortedAlerts = alerts
+      .sort((a, b) => {
+        const severityScore: Record<SmartAlertSeverity, number> = {
+          critica: 4,
+          alta: 3,
+          media: 2,
+          baixa: 1,
+        };
+
+        const severityDiff = severityScore[b.severity] - severityScore[a.severity];
+        if (severityDiff !== 0) return severityDiff;
+
+        const moduleOrder: Record<SmartAlertModule, number> = {
+          remanejamento: 4,
+          estoque: 3,
+          vendas: 2,
+          operacao: 1,
+        };
+
+        return moduleOrder[b.module] - moduleOrder[a.module];
+      })
+      .slice(0, 250);
+
+    const summary = {
+      total: sortedAlerts.length,
+      criticas: sortedAlerts.filter((alert) => alert.severity === 'critica').length,
+      altas: sortedAlerts.filter((alert) => alert.severity === 'alta').length,
+      medias: sortedAlerts.filter((alert) => alert.severity === 'media').length,
+      baixas: sortedAlerts.filter((alert) => alert.severity === 'baixa').length,
+      estoque: sortedAlerts.filter((alert) => alert.module === 'estoque').length,
+      vendas: sortedAlerts.filter((alert) => alert.module === 'vendas').length,
+      remanejamento: sortedAlerts.filter((alert) => alert.module === 'remanejamento').length,
+    };
+
+    return res.json({
+      success: true,
+      generatedAt: createdAt,
+      summary,
+      alerts: sortedAlerts,
+      sources: {
+        estoque: 'Prisma Stock / dev.db',
+        vendasMes: GLOBAL_DB_PATH,
+        vendasHistoricas: annualDbPath,
+      },
+      meta: {
+        produtosAnalisados: products.length,
+        produtosLojaAnalisados: storeProducts.length,
+        escopo: canSeeAll ? 'todos' : allowedStores.join(', '),
+      },
+    });
+  } catch (error: any) {
+    console.error('Erro /api/intelligent-alerts:', error);
+
+    try {
+      if (globalDb) await globalDb.close();
+      if (annualDb) await annualDb.close();
+    } catch {}
+
+    return res.status(500).json({
+      success: false,
+      error: error?.message || 'Erro ao gerar alertas inteligentes.',
+    });
+  }
+});
+
+// =======================================================
+// 🔁 REMANEJAMENTO COM APROVAÇÃO - PASSO 4
+// Cole este bloco no backend/src/server.ts depois da rota
+// /api/intelligent-alerts e antes da rota /sales.
+// =======================================================
+
+type RemapPriority = 'critica' | 'alta' | 'media' | 'baixa';
+type RemapStatus = 'solicitado' | 'aprovado' | 'em_separacao' | 'enviado' | 'recebido' | 'cancelado';
+
+type RemapStoreProductAgg = {
+  key: string;
+  product: string;
+  reference: string;
+  category: string;
+  store: string;
+  stock: number;
+  sales90: number;
+  coverageDays: number | null;
+};
+
+type RemapSuggestion = {
+  id: string;
+  product: string;
+  reference: string;
+  category: string;
+  fromStore: string;
+  toStore: string;
+  suggestedQty: number;
+  priority: RemapPriority;
+  reason: string;
+  originStock: number;
+  originSales90: number;
+  originCoverageDays: number | null;
+  destinationStock: number;
+  destinationSales90: number;
+  destinationCoverageDays: number | null;
+  networkStock: number;
+  networkSales90: number;
+  createdFrom: 'engine';
+};
+
+function remapNormalizeText(value: any): string {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toUpperCase();
+}
+
+function remapNormalizeKey(value: any): string {
+  return remapNormalizeText(value).replace(/[^A-Z0-9]/g, '');
+}
+
+function remapToNumber(value: any): number {
+  if (value === null || value === undefined || value === '') return 0;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+
+  const text = String(value).trim();
+  if (!text) return 0;
+
+  const normalized = text.includes(',')
+    ? text.replace(/\./g, '').replace(',', '.')
+    : text;
+
+  const n = Number(normalized.replace(/[^\d.-]/g, ''));
+  return Number.isFinite(n) ? n : 0;
+}
+
+function remapAddDays(date: Date, days: number): Date {
+  const copy = new Date(date);
+  copy.setDate(copy.getDate() + days);
+  copy.setHours(0, 0, 0, 0);
+  return copy;
+}
+
+function remapParseDate(value: any): Date | null {
+  if (value === null || value === undefined || value === '') return null;
+
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    const d = new Date(value);
+    d.setHours(12, 0, 0, 0);
+    return d;
+  }
+
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    if (value > 20000 && value < 80000) {
+      const excelEpoch = new Date(Date.UTC(1899, 11, 30));
+      const d = new Date(excelEpoch.getTime() + value * 86400000);
+      return new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 12, 0, 0, 0);
+    }
+
+    const d = new Date(value);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+
+  const s = String(value).trim();
+  if (!s) return null;
+
+  if (/^\d+(\.\d+)?$/.test(s)) {
+    return remapParseDate(Number(s));
+  }
+
+  const onlyDate = s.split(' ')[0] ?? '';
+
+  const br = onlyDate.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (br) {
+    return new Date(Number(br[3]), Number(br[2]) - 1, Number(br[1]), 12, 0, 0, 0);
+  }
+
+  const brDash = onlyDate.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+  if (brDash) {
+    return new Date(Number(brDash[3]), Number(brDash[2]) - 1, Number(brDash[1]), 12, 0, 0, 0);
+  }
+
+  const iso = onlyDate.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) {
+    return new Date(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]), 12, 0, 0, 0);
+  }
+
+  const parsed = new Date(s);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function remapStoreName(row: any): string {
+  const rawLoja =
+    row?.loja ||
+    row?.LOJA ||
+    row?.nome_fantasia ||
+    row?.NOME_FANTASIA ||
+    row?.storeName ||
+    row?.STORENAME ||
+    '';
+
+  const rawCnpj =
+    row?.cnpj_empresa ||
+    row?.CNPJ_EMPRESA ||
+    row?.cnpj ||
+    row?.CNPJ ||
+    '';
+
+  const cleanCnpj = String(rawCnpj || '').replace(/\D/g, '');
+
+  if (cleanCnpj && LOJAS_MAP_GLOBAL[cleanCnpj]) {
+    return LOJAS_MAP_GLOBAL[cleanCnpj];
+  }
+
+  const normalized = remapNormalizeText(rawLoja);
+  return CORRECAO_NOMES_SERVER[normalized] || normalized || 'LOJA NÃO INFORMADA';
+}
+
+function remapAnnualDbPath(): string {
+  const candidates = [
+    ANUAL_DB_PATH,
+    path.join(DATABASE_DIR, 'samsung_vendas_anual.db'),
+    path.join(ROOT_DIR, 'database', 'samsung_vendas_anuais.db'),
+    path.join(ROOT_DIR, 'database', 'samsung_vendas_anual.db'),
+  ];
+
+  return candidates.find((candidate) => fs.existsSync(candidate)) || ANUAL_DB_PATH;
+}
+
+async function remapTableExists(db: any, tableName: string): Promise<boolean> {
+  const row = await db.get(
+    `SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`,
+    [tableName]
+  );
+
+  return Boolean(row?.name);
+}
+
+async function remapEnsureTable(): Promise<void> {
+  await prisma.$executeRawUnsafe(`
+    CREATE TABLE IF NOT EXISTS RemanejamentoSolicitacao (
+      id TEXT PRIMARY KEY,
+      product TEXT NOT NULL,
+      reference TEXT,
+      category TEXT,
+      fromStore TEXT NOT NULL,
+      toStore TEXT NOT NULL,
+      requestedQty REAL NOT NULL DEFAULT 0,
+      approvedQty REAL NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'solicitado',
+      priority TEXT NOT NULL DEFAULT 'media',
+      reason TEXT,
+      metricsJson TEXT,
+      createdById TEXT,
+      createdByName TEXT,
+      approvedById TEXT,
+      approvedByName TEXT,
+      lastActionById TEXT,
+      lastActionByName TEXT,
+      createdAt TEXT NOT NULL,
+      updatedAt TEXT NOT NULL,
+      approvedAt TEXT,
+      sentAt TEXT,
+      receivedAt TEXT,
+      cancelledAt TEXT
+    )
+  `);
+
+  await prisma.$executeRawUnsafe(`
+    CREATE INDEX IF NOT EXISTS idx_remanejamento_status
+    ON RemanejamentoSolicitacao(status)
+  `);
+
+  await prisma.$executeRawUnsafe(`
+    CREATE INDEX IF NOT EXISTS idx_remanejamento_lojas
+    ON RemanejamentoSolicitacao(fromStore, toStore)
+  `);
+}
+
+function remapIsSuperUser(user: any): boolean {
+  const role = remapNormalizeText(user?.role);
+  const superRoles = ['CEO', 'DIRETOR', 'ADM', 'ADMIN', 'GESTOR', 'GERENTE', 'SOCIO', 'SÓCIO', 'MASTER'];
+  return Boolean(user?.isAdmin || superRoles.includes(role));
+}
+
+function remapAllowedStores(user: any): string[] {
+  return String(user?.allowedStores || '')
+    .split(',')
+    .map((store) => remapNormalizeText(CORRECAO_NOMES_SERVER[remapNormalizeText(store)] || store))
+    .filter(Boolean);
+}
+
+function remapCanSeeStore(user: any, store: string): boolean {
+  if (remapIsSuperUser(user)) return true;
+  const allowed = remapAllowedStores(user);
+  if (allowed.length === 0) return false;
+  return allowed.includes(remapNormalizeText(store));
+}
+
+function remapCanSeeFlow(user: any, fromStore: string, toStore: string): boolean {
+  return remapCanSeeStore(user, fromStore) || remapCanSeeStore(user, toStore);
+}
+
+function remapPriority(destinationStock: number, destinationCoverage: number | null, destinationSales90: number): RemapPriority {
+  if (destinationStock <= 0 && destinationSales90 > 0) return 'critica';
+  if (destinationCoverage !== null && destinationCoverage <= 7) return 'critica';
+  if (destinationCoverage !== null && destinationCoverage <= 15) return 'alta';
+  if (destinationCoverage !== null && destinationCoverage <= 30) return 'media';
+  return 'baixa';
+}
+
+function remapRecommendedQty(origin: RemapStoreProductAgg, destination: RemapStoreProductAgg): number {
+  const originDailySales = origin.sales90 / 90;
+  const destinationDailySales = destination.sales90 / 90;
+
+  const originSafetyStock = Math.max(1, Math.ceil(originDailySales * 20));
+  const destinationTargetStock = Math.max(2, Math.ceil(destinationDailySales * 20));
+
+  const originExcess = Math.max(0, Math.floor(origin.stock - originSafetyStock));
+  const destinationNeed = Math.max(0, Math.ceil(destinationTargetStock - destination.stock));
+
+  if (destination.stock <= 0 && destination.sales90 > 0) {
+    return Math.max(1, Math.min(originExcess, Math.max(2, destinationNeed), 6));
+  }
+
+  return Math.max(0, Math.min(originExcess, destinationNeed, 5));
+}
+
+async function remapGenerateSuggestionsForUser(user: any): Promise<RemapSuggestion[]> {
+  let annualDb: any;
+
+  const now = new Date();
+  now.setHours(12, 0, 0, 0);
+
+  const start90 = remapAddDays(now, -90);
+  const annualDbPath = remapAnnualDbPath();
+  const securityFilter = await getSalesFilter(String(user?.id || ''), 'vendas');
+
+  const productStoreMap = new Map<string, RemapStoreProductAgg>();
+  const byReference = new Map<string, string>();
+  const byDescription = new Map<string, string>();
+
+  const getStoreProduct = (params: {
+    productKey?: string;
+    product: string;
+    reference?: string;
+    category?: string;
+    store: string;
+  }): RemapStoreProductAgg => {
+    const referenceKey = remapNormalizeKey(params.reference || '');
+    const descriptionKey = remapNormalizeKey(params.product);
+    const productKey =
+      params.productKey ||
+      byReference.get(referenceKey) ||
+      byDescription.get(descriptionKey) ||
+      referenceKey ||
+      descriptionKey;
+
+    const store = remapNormalizeText(params.store || 'LOJA NÃO INFORMADA');
+    const key = `${productKey}::${store}`;
+
+    let item = productStoreMap.get(key);
+
+    if (!item) {
+      item = {
+        key: productKey,
+        product: params.product || params.reference || 'PRODUTO NÃO INFORMADO',
+        reference: params.reference || '',
+        category: params.category || 'GERAL',
+        store,
+        stock: 0,
+        sales90: 0,
+        coverageDays: null,
+      };
+
+      productStoreMap.set(key, item);
+    }
+
+    if (!item.reference && params.reference) item.reference = params.reference;
+    if ((!item.category || item.category === 'GERAL') && params.category) item.category = params.category;
+
+    if (referenceKey) byReference.set(referenceKey, productKey);
+    if (descriptionKey) byDescription.set(descriptionKey, productKey);
+
+    return item;
+  };
+
+  const stockRows = await prisma.stock.findMany({
+    select: {
+      cnpj: true,
+      storeName: true,
+      productCode: true,
+      reference: true,
+      description: true,
+      category: true,
+      quantity: true,
+    },
+  });
+
+  for (const stock of stockRows) {
+    const store = remapStoreName(stock);
+
+    if (!remapCanSeeStore(user, store)) {
+      continue;
+    }
+
+    const product = String(stock.description || '').trim();
+    if (!product) continue;
+
+    const reference = String(stock.reference || stock.productCode || '').trim();
+    const productKey = remapNormalizeKey(reference) || remapNormalizeKey(product);
+
+    const item = getStoreProduct({
+      productKey,
+      product,
+      reference,
+      category: String(stock.category || 'GERAL').toUpperCase(),
+      store,
+    });
+
+    item.stock += remapToNumber(stock.quantity);
+  }
+
+  const addSale = (row: any) => {
+    const date = remapParseDate(row.data_emissao || row.DATA_EMISSAO || row.data || row.DATA);
+    if (!date || date < start90 || date > now) return;
+
+    const store = remapStoreName(row);
+    if (!remapCanSeeStore(user, store)) return;
+
+    const qty = remapToNumber(
+      row.qtd_real ??
+        row.QTD_REAL ??
+        row.quantidade ??
+        row.QUANTIDADE ??
+        row.qtd ??
+        row.QTD ??
+        1
+    );
+
+    if (!qty) return;
+
+    const reference = String(
+      row.referencia || row.REFERENCIA || row.codigo_produto || row.CODIGO_PRODUTO || ''
+    ).trim();
+
+    const product = String(
+      row.descricao || row.DESCRICAO || row.produto || row.PRODUTO || reference || ''
+    ).trim();
+
+    if (!reference && !product) return;
+
+    const referenceKey = remapNormalizeKey(reference);
+    const descriptionKey = remapNormalizeKey(product);
+    const productKey = byReference.get(referenceKey) || byDescription.get(descriptionKey) || referenceKey || descriptionKey;
+
+    const item = getStoreProduct({
+      productKey,
+      product: product || reference,
+      reference,
+      category: String(row.categoria_real || row.CATEGORIA_REAL || row.categoria || row.CATEGORIA || row.familia || row.FAMILIA || 'GERAL').toUpperCase(),
+      store,
+    });
+
+    item.sales90 += qty;
+  };
+
+  if (fs.existsSync(annualDbPath)) {
+    annualDb = await open({ filename: annualDbPath, driver: sqlite3.Database });
+
+    const hasRaw = await remapTableExists(annualDb, 'vendas_anuais_raw');
+    const hasAnnual = await remapTableExists(annualDb, 'vendas_anuais');
+
+    if (hasRaw) {
+      const rows = await annualDb.all(`
+        SELECT
+          data_emissao,
+          cnpj_empresa,
+          loja,
+          referencia,
+          codigo_produto,
+          descricao,
+          categoria,
+          categoria_real,
+          quantidade,
+          qtd_real,
+          cancelado
+        FROM vendas_anuais_raw
+        WHERE COALESCE(cancelado, 'N') = 'N'
+          AND ${securityFilter}
+      `);
+
+      rows.forEach((row: any) => addSale(row));
+    } else if (hasAnnual) {
+      const rows = await annualDb.all(`
+        SELECT
+          data_emissao,
+          cnpj_empresa,
+          loja,
+          familia AS referencia,
+          descricao,
+          familia AS categoria,
+          quantidade
+        FROM vendas_anuais
+        WHERE ${securityFilter}
+      `);
+
+      rows.forEach((row: any) => addSale(row));
+    }
+
+    await annualDb.close();
+    annualDb = null;
+  }
+
+  const items = Array.from(productStoreMap.values()).map((item) => {
+    item.coverageDays = item.sales90 > 0 ? item.stock / (item.sales90 / 90) : null;
+    return item;
+  });
+
+  const groupedByProduct = new Map<string, RemapStoreProductAgg[]>();
+
+  for (const item of items) {
+    if (!groupedByProduct.has(item.key)) groupedByProduct.set(item.key, []);
+    groupedByProduct.get(item.key)?.push(item);
+  }
+
+  const suggestions: RemapSuggestion[] = [];
+
+  for (const [, storeItems] of groupedByProduct.entries()) {
+    const networkStock = storeItems.reduce((sum, item) => sum + item.stock, 0);
+    const networkSales90 = storeItems.reduce((sum, item) => sum + item.sales90, 0);
+
+    if (networkStock <= 1 || networkSales90 <= 0) continue;
+
+    const origins = storeItems
+      .filter((item) => {
+        const coverage = item.coverageDays;
+        return item.stock >= 2 && (item.sales90 === 0 || coverage === null || coverage >= 45);
+      })
+      .sort((a, b) => {
+        const ac = a.coverageDays ?? 9999;
+        const bc = b.coverageDays ?? 9999;
+        return bc - ac || b.stock - a.stock;
+      });
+
+    const destinations = storeItems
+      .filter((item) => {
+        const coverage = item.coverageDays;
+        return item.sales90 > 0 && (item.stock <= 0 || (coverage !== null && coverage <= 30));
+      })
+      .sort((a, b) => {
+        const ap = remapPriority(a.stock, a.coverageDays, a.sales90);
+        const bp = remapPriority(b.stock, b.coverageDays, b.sales90);
+        const order: Record<RemapPriority, number> = { critica: 4, alta: 3, media: 2, baixa: 1 };
+        return order[bp] - order[ap] || a.stock - b.stock;
+      });
+
+    for (const destination of destinations) {
+      const origin = origins.find((candidate) => candidate.store !== destination.store);
+      if (!origin) continue;
+
+      const qty = remapRecommendedQty(origin, destination);
+      if (qty <= 0) continue;
+
+      const priority = remapPriority(destination.stock, destination.coverageDays, destination.sales90);
+      const reason =
+        destination.stock <= 0
+          ? `${destination.store} está sem estoque, mas vendeu ${destination.sales90} un. nos últimos 90 dias. ${origin.store} tem estoque disponível para remanejamento.`
+          : `${destination.store} está com cobertura baixa (${Math.round(destination.coverageDays || 0)} dias). ${origin.store} tem cobertura superior e pode abastecer sem ficar descoberta.`;
+
+      const rawId = `${origin.key}-${origin.store}-${destination.store}-${qty}`;
+      const id = crypto.createHash('md5').update(rawId).digest('hex');
+
+      suggestions.push({
+        id,
+        product: destination.product || origin.product,
+        reference: destination.reference || origin.reference,
+        category: destination.category || origin.category || 'GERAL',
+        fromStore: origin.store,
+        toStore: destination.store,
+        suggestedQty: qty,
+        priority,
+        reason,
+        originStock: origin.stock,
+        originSales90: origin.sales90,
+        originCoverageDays: origin.coverageDays,
+        destinationStock: destination.stock,
+        destinationSales90: destination.sales90,
+        destinationCoverageDays: destination.coverageDays,
+        networkStock,
+        networkSales90,
+        createdFrom: 'engine',
+      });
+    }
+  }
+
+  suggestions.sort((a, b) => {
+    const order: Record<RemapPriority, number> = { critica: 4, alta: 3, media: 2, baixa: 1 };
+    return order[b.priority] - order[a.priority] || b.destinationSales90 - a.destinationSales90;
+  });
+
+  return suggestions.slice(0, 250);
+}
+
+function remapDbRowToRequest(row: any) {
+  let metrics: any = {};
+
+  try {
+    metrics = row.metricsJson ? JSON.parse(row.metricsJson) : {};
+  } catch {
+    metrics = {};
+  }
+
+  const result: any = {
+    id: row.id,
+    product: row.product,
+    reference: row.reference || '',
+    category: row.category || 'GERAL',
+    fromStore: row.fromStore,
+    toStore: row.toStore,
+    requestedQty: remapToNumber(row.requestedQty),
+    approvedQty: remapToNumber(row.approvedQty),
+    status: row.status,
+    priority: row.priority,
+    reason: row.reason || '',
+    metrics,
+    createdByName: row.createdByName || '',
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+
+  if (row.approvedByName) result.approvedByName = row.approvedByName;
+  if (row.lastActionByName) result.lastActionByName = row.lastActionByName;
+  if (row.approvedAt) result.approvedAt = row.approvedAt;
+  if (row.sentAt) result.sentAt = row.sentAt;
+  if (row.receivedAt) result.receivedAt = row.receivedAt;
+  if (row.cancelledAt) result.cancelledAt = row.cancelledAt;
+
+  return result;
+}
+
+app.get('/api/remanejamento-aprovacao/sugestoes', async (req, res) => {
+  try {
+    await remapEnsureTable();
+
+    const userId = String(req.query.userId || '');
+
+    if (!userId || userId === 'undefined' || userId === 'null') {
+      return res.status(400).json({
+        success: false,
+        error: 'Usuário não informado.',
+      });
+    }
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: 'Usuário não encontrado.',
+      });
+    }
+
+    const suggestions = await remapGenerateSuggestionsForUser(user);
+
+    return res.json({
+      success: true,
+      generatedAt: new Date().toISOString(),
+      total: suggestions.length,
+      suggestions,
+    });
+  } catch (error: any) {
+    console.error('Erro /api/remanejamento-aprovacao/sugestoes:', error);
+
+    return res.status(500).json({
+      success: false,
+      error: error?.message || 'Erro ao gerar sugestões de remanejamento.',
+    });
+  }
+});
+
+app.get('/api/remanejamento-aprovacao/solicitacoes', async (req, res) => {
+  try {
+    await remapEnsureTable();
+
+    const userId = String(req.query.userId || '');
+
+    if (!userId || userId === 'undefined' || userId === 'null') {
+      return res.status(400).json({
+        success: false,
+        error: 'Usuário não informado.',
+      });
+    }
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: 'Usuário não encontrado.',
+      });
+    }
+
+    const rows = await prisma.$queryRawUnsafe<any[]>(`
+      SELECT *
+      FROM RemanejamentoSolicitacao
+      ORDER BY
+        CASE status
+          WHEN 'solicitado' THEN 1
+          WHEN 'aprovado' THEN 2
+          WHEN 'em_separacao' THEN 3
+          WHEN 'enviado' THEN 4
+          WHEN 'recebido' THEN 5
+          WHEN 'cancelado' THEN 6
+          ELSE 7
+        END,
+        datetime(createdAt) DESC
+    `);
+
+    const requests = rows
+      .map((row) => remapDbRowToRequest(row))
+      .filter((item) => remapCanSeeFlow(user, item.fromStore, item.toStore));
+
+    return res.json({
+      success: true,
+      total: requests.length,
+      requests,
+    });
+  } catch (error: any) {
+    console.error('Erro /api/remanejamento-aprovacao/solicitacoes:', error);
+
+    return res.status(500).json({
+      success: false,
+      error: error?.message || 'Erro ao listar solicitações de remanejamento.',
+    });
+  }
+});
+
+app.post('/api/remanejamento-aprovacao/solicitacoes', async (req, res) => {
+  try {
+    await remapEnsureTable();
+
+    const { userId, suggestion } = req.body || {};
+    const safeUserId = String(userId || '');
+
+    if (!safeUserId || safeUserId === 'undefined' || safeUserId === 'null') {
+      return res.status(400).json({
+        success: false,
+        error: 'Usuário não informado.',
+      });
+    }
+
+    const user = await prisma.user.findUnique({ where: { id: safeUserId } });
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: 'Usuário não encontrado.',
+      });
+    }
+
+    if (!suggestion || typeof suggestion !== 'object') {
+      return res.status(400).json({
+        success: false,
+        error: 'Sugestão inválida.',
+      });
+    }
+
+    const fromStore = remapNormalizeText(suggestion.fromStore);
+    const toStore = remapNormalizeText(suggestion.toStore);
+
+    if (!fromStore || !toStore || fromStore === toStore) {
+      return res.status(400).json({
+        success: false,
+        error: 'Origem e destino inválidos.',
+      });
+    }
+
+    if (!remapCanSeeFlow(user, fromStore, toStore)) {
+      return res.status(403).json({
+        success: false,
+        error: 'Usuário sem acesso às lojas deste remanejamento.',
+      });
+    }
+
+    const product = String(suggestion.product || '').trim();
+    const reference = String(suggestion.reference || '').trim();
+    const category = String(suggestion.category || 'GERAL').trim();
+    const requestedQty = Math.max(1, Math.round(remapToNumber(suggestion.suggestedQty)));
+    const priority = ['critica', 'alta', 'media', 'baixa'].includes(String(suggestion.priority))
+      ? String(suggestion.priority)
+      : 'media';
+
+    if (!product || requestedQty <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Produto ou quantidade inválida.',
+      });
+    }
+
+    const openDuplicate = await prisma.$queryRawUnsafe<any[]>(
+      `
+        SELECT id
+        FROM RemanejamentoSolicitacao
+        WHERE product = ?
+          AND COALESCE(reference, '') = ?
+          AND fromStore = ?
+          AND toStore = ?
+          AND status NOT IN ('recebido', 'cancelado')
+        LIMIT 1
+      `,
+      product,
+      reference,
+      fromStore,
+      toStore
+    );
+
+    if (openDuplicate.length > 0) {
+      return res.status(409).json({
+        success: false,
+        error: 'Já existe uma solicitação aberta para este produto entre essas lojas.',
+      });
+    }
+
+    const id = crypto.randomUUID();
+    const nowIso = new Date().toISOString();
+    const createdByName = String(user.name || user.email || 'Usuário');
+
+    await prisma.$executeRawUnsafe(
+      `
+        INSERT INTO RemanejamentoSolicitacao (
+          id,
+          product,
+          reference,
+          category,
+          fromStore,
+          toStore,
+          requestedQty,
+          approvedQty,
+          status,
+          priority,
+          reason,
+          metricsJson,
+          createdById,
+          createdByName,
+          lastActionById,
+          lastActionByName,
+          createdAt,
+          updatedAt
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      id,
+      product,
+      reference,
+      category,
+      fromStore,
+      toStore,
+      requestedQty,
+      requestedQty,
+      'solicitado',
+      priority,
+      String(suggestion.reason || ''),
+      JSON.stringify(suggestion),
+      safeUserId,
+      createdByName,
+      safeUserId,
+      createdByName,
+      nowIso,
+      nowIso
+    );
+
+    const rows = await prisma.$queryRawUnsafe<any[]>(
+      `SELECT * FROM RemanejamentoSolicitacao WHERE id = ? LIMIT 1`,
+      id
+    );
+
+    return res.status(201).json({
+      success: true,
+      data: remapDbRowToRequest(rows[0]),
+    });
+  } catch (error: any) {
+    console.error('Erro POST /api/remanejamento-aprovacao/solicitacoes:', error);
+
+    return res.status(500).json({
+      success: false,
+      error: error?.message || 'Erro ao criar solicitação de remanejamento.',
+    });
+  }
+});
+
+app.patch('/api/remanejamento-aprovacao/solicitacoes/:id/status', async (req, res) => {
+  try {
+    await remapEnsureTable();
+
+    const id = String(req.params.id || '');
+    const { userId, status } = req.body || {};
+    const safeUserId = String(userId || '');
+    const nextStatus = String(status || '') as RemapStatus;
+
+    const validStatuses: RemapStatus[] = ['solicitado', 'aprovado', 'em_separacao', 'enviado', 'recebido', 'cancelado'];
+
+    if (!id) {
+      return res.status(400).json({
+        success: false,
+        error: 'Solicitação não informada.',
+      });
+    }
+
+    if (!safeUserId || safeUserId === 'undefined' || safeUserId === 'null') {
+      return res.status(400).json({
+        success: false,
+        error: 'Usuário não informado.',
+      });
+    }
+
+    if (!validStatuses.includes(nextStatus)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Status inválido.',
+      });
+    }
+
+    const user = await prisma.user.findUnique({ where: { id: safeUserId } });
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: 'Usuário não encontrado.',
+      });
+    }
+
+    const rows = await prisma.$queryRawUnsafe<any[]>(
+      `SELECT * FROM RemanejamentoSolicitacao WHERE id = ? LIMIT 1`,
+      id
+    );
+
+    const current = rows[0];
+
+    if (!current) {
+      return res.status(404).json({
+        success: false,
+        error: 'Solicitação não encontrada.',
+      });
+    }
+
+    if (!remapCanSeeFlow(user, current.fromStore, current.toStore)) {
+      return res.status(403).json({
+        success: false,
+        error: 'Usuário sem acesso às lojas deste remanejamento.',
+      });
+    }
+
+    const isSuper = remapIsSuperUser(user);
+
+    if (nextStatus === 'aprovado' || nextStatus === 'cancelado') {
+      if (!isSuper) {
+        return res.status(403).json({
+          success: false,
+          error: 'Apenas gestão/diretoria pode aprovar ou cancelar remanejamentos.',
+        });
+      }
+    }
+
+    const transitionAllowed: Record<RemapStatus, RemapStatus[]> = {
+      solicitado: ['aprovado', 'cancelado'],
+      aprovado: ['em_separacao', 'cancelado'],
+      em_separacao: ['enviado', 'cancelado'],
+      enviado: ['recebido', 'cancelado'],
+      recebido: [],
+      cancelado: [],
+    };
+
+    const currentStatus = String(current.status || 'solicitado') as RemapStatus;
+
+    if (!transitionAllowed[currentStatus]?.includes(nextStatus)) {
+      return res.status(400).json({
+        success: false,
+        error: `Transição inválida: ${currentStatus} → ${nextStatus}.`,
+      });
+    }
+
+    const nowIso = new Date().toISOString();
+    const userName = String(user.name || user.email || 'Usuário');
+
+    const setParts = [
+      'status = ?',
+      'updatedAt = ?',
+      'lastActionById = ?',
+      'lastActionByName = ?',
+    ];
+    const values: any[] = [nextStatus, nowIso, safeUserId, userName];
+
+    if (nextStatus === 'aprovado') {
+      setParts.push('approvedById = ?');
+      setParts.push('approvedByName = ?');
+      setParts.push('approvedAt = ?');
+      values.push(safeUserId, userName, nowIso);
+    }
+
+    if (nextStatus === 'enviado') {
+      setParts.push('sentAt = ?');
+      values.push(nowIso);
+    }
+
+    if (nextStatus === 'recebido') {
+      setParts.push('receivedAt = ?');
+      values.push(nowIso);
+    }
+
+    if (nextStatus === 'cancelado') {
+      setParts.push('cancelledAt = ?');
+      values.push(nowIso);
+    }
+
+    values.push(id);
+
+    await prisma.$executeRawUnsafe(
+      `
+        UPDATE RemanejamentoSolicitacao
+        SET ${setParts.join(', ')}
+        WHERE id = ?
+      `,
+      ...values
+    );
+
+    const updatedRows = await prisma.$queryRawUnsafe<any[]>(
+      `SELECT * FROM RemanejamentoSolicitacao WHERE id = ? LIMIT 1`,
+      id
+    );
+
+    return res.json({
+      success: true,
+      data: remapDbRowToRequest(updatedRows[0]),
+    });
+  } catch (error: any) {
+    console.error('Erro PATCH /api/remanejamento-aprovacao/solicitacoes/:id/status:', error);
+
+    return res.status(500).json({
+      success: false,
+      error: error?.message || 'Erro ao atualizar solicitação de remanejamento.',
+    });
+  }
+});
+
+// =======================================================
+// 🧭 PAINEL DIRETORIA / RESUMO EXECUTIVO
+// Acesso exclusivo ADM/isAdmin
+// Cole este bloco depois das rotas de remanejamento e antes da rota /sales
+// =======================================================
+
+type ExecutiveStoreAgg = {
+  loja: string;
+  faturamentoMes: number;
+  pecasMes: number;
+  faturamento30: number;
+  faturamento30Anterior: number;
+  vendas90: number;
+  estoque: number;
+  valorEstoque: number;
+  coberturaDias: number | null;
+  status: 'saudavel' | 'atencao' | 'critico';
+};
+
+type ExecutiveProductAgg = {
+  produto: string;
+  referencia: string;
+  categoria: string;
+  faturamentoMes: number;
+  pecasMes: number;
+  faturamento30: number;
+  vendas90: number;
+  estoque: number;
+  valorEstoque: number;
+  coberturaDias: number | null;
+};
+
+type ExecutiveInsight = {
+  id: string;
+  tipo: 'risco' | 'oportunidade' | 'acao' | 'alerta';
+  prioridade: 'critica' | 'alta' | 'media' | 'baixa';
+  titulo: string;
+  descricao: string;
+  acao: string;
+  loja?: string;
+  produto?: string;
+};
+
+function execDashNormalizeText(value: any): string {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toUpperCase();
+}
+
+function execDashNormalizeKey(value: any): string {
+  return execDashNormalizeText(value).replace(/[^A-Z0-9]/g, '');
+}
+
+function execDashToNumber(value: any): number {
+  if (value === null || value === undefined || value === '') return 0;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+
+  const text = String(value).trim();
+  if (!text) return 0;
+
+  const normalized = text.includes(',')
+    ? text.replace(/\./g, '').replace(',', '.')
+    : text;
+
+  const numberValue = Number(normalized.replace(/[^\d.-]/g, ''));
+  return Number.isFinite(numberValue) ? numberValue : 0;
+}
+
+function execDashAddDays(date: Date, days: number): Date {
+  const copy = new Date(date);
+  copy.setDate(copy.getDate() + days);
+  copy.setHours(0, 0, 0, 0);
+  return copy;
+}
+
+function execDashDateToIso(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function execDashParseDate(value: any): Date | null {
+  if (value === null || value === undefined || value === '') return null;
+
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    const date = new Date(value);
+    date.setHours(12, 0, 0, 0);
+    return date;
+  }
+
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    if (value > 20000 && value < 80000) {
+      const excelEpoch = new Date(Date.UTC(1899, 11, 30));
+      const parsed = new Date(excelEpoch.getTime() + value * 86400000);
+      return new Date(parsed.getUTCFullYear(), parsed.getUTCMonth(), parsed.getUTCDate(), 12, 0, 0, 0);
+    }
+
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  const text = String(value).trim();
+  if (!text) return null;
+
+  if (/^\d+(\.\d+)?$/.test(text)) {
+    return execDashParseDate(Number(text));
+  }
+
+  const onlyDate = text.split(' ')[0] ?? '';
+
+  const br = onlyDate.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (br) {
+    return new Date(Number(br[3]), Number(br[2]) - 1, Number(br[1]), 12, 0, 0, 0);
+  }
+
+  const brDash = onlyDate.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+  if (brDash) {
+    return new Date(Number(brDash[3]), Number(brDash[2]) - 1, Number(brDash[1]), 12, 0, 0, 0);
+  }
+
+  const iso = onlyDate.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) {
+    return new Date(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]), 12, 0, 0, 0);
+  }
+
+  const parsed = new Date(text);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function execDashStoreName(row: any): string {
+  const rawCnpj = row?.cnpj_empresa || row?.CNPJ_EMPRESA || row?.cnpj || row?.CNPJ || row?.cnpjEmpresa || '';
+  const cleanCnpj = String(rawCnpj || '').replace(/\D/g, '');
+
+  if (cleanCnpj && LOJAS_MAP_GLOBAL[cleanCnpj]) {
+    return LOJAS_MAP_GLOBAL[cleanCnpj];
+  }
+
+  const rawStore = row?.loja || row?.LOJA || row?.nome_fantasia || row?.NOME_FANTASIA || row?.storeName || row?.STORENAME || '';
+  const normalized = execDashNormalizeText(rawStore);
+  return CORRECAO_NOMES_SERVER[normalized] || normalized || 'LOJA NÃO INFORMADA';
+}
+
+function execDashProductLabel(row: any): string {
+  return String(
+    row?.descricao || row?.DESCRICAO || row?.produto || row?.PRODUTO || row?.description || row?.familia || row?.FAMILIA || 'PRODUTO NÃO INFORMADO'
+  ).trim();
+}
+
+function execDashReference(row: any): string {
+  return String(row?.referencia || row?.REFERENCIA || row?.codigo_produto || row?.CODIGO_PRODUTO || row?.productCode || row?.familia || '').trim();
+}
+
+function execDashCategory(row: any): string {
+  return execDashNormalizeText(row?.categoria_real || row?.CATEGORIA_REAL || row?.categoria || row?.CATEGORIA || row?.category || row?.familia || 'GERAL');
+}
+
+async function execDashTableExists(db: any, tableName: string): Promise<boolean> {
+  const row = await db.get(
+    `SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`,
+    [tableName],
+  );
+
+  return Boolean(row?.name);
+}
+
+function execDashAnnualDbPath(): string {
+  const candidates = [
+    ANUAL_DB_PATH,
+    path.join(DATABASE_DIR, 'samsung_vendas_anual.db'),
+    path.join(ROOT_DIR, 'database', 'samsung_vendas_anuais.db'),
+    path.join(ROOT_DIR, 'database', 'samsung_vendas_anual.db'),
+  ];
+
+  return candidates.find((candidate) => fs.existsSync(candidate)) || ANUAL_DB_PATH;
+}
+
+function execDashGetStore(map: Map<string, ExecutiveStoreAgg>, loja: string): ExecutiveStoreAgg {
+  const safeLoja = loja || 'LOJA NÃO INFORMADA';
+  const existing = map.get(safeLoja);
+  if (existing) return existing;
+
+  const created: ExecutiveStoreAgg = {
+    loja: safeLoja,
+    faturamentoMes: 0,
+    pecasMes: 0,
+    faturamento30: 0,
+    faturamento30Anterior: 0,
+    vendas90: 0,
+    estoque: 0,
+    valorEstoque: 0,
+    coberturaDias: null,
+    status: 'saudavel',
+  };
+
+  map.set(safeLoja, created);
+  return created;
+}
+
+function execDashGetProduct(map: Map<string, ExecutiveProductAgg>, params: {
+  produto: string;
+  referencia: string;
+  categoria: string;
+}): ExecutiveProductAgg {
+  const key = execDashNormalizeKey(params.referencia) || execDashNormalizeKey(params.produto);
+  const safeKey = key || `PRODUTO_${map.size + 1}`;
+  const existing = map.get(safeKey);
+
+  if (existing) {
+    if (!existing.referencia && params.referencia) existing.referencia = params.referencia;
+    if ((!existing.categoria || existing.categoria === 'GERAL') && params.categoria) existing.categoria = params.categoria;
+    return existing;
+  }
+
+  const created: ExecutiveProductAgg = {
+    produto: params.produto || params.referencia || 'PRODUTO NÃO INFORMADO',
+    referencia: params.referencia || '',
+    categoria: params.categoria || 'GERAL',
+    faturamentoMes: 0,
+    pecasMes: 0,
+    faturamento30: 0,
+    vendas90: 0,
+    estoque: 0,
+    valorEstoque: 0,
+    coberturaDias: null,
+  };
+
+  map.set(safeKey, created);
+  return created;
+}
+
+function execDashCalculateCoverage(estoque: number, vendas90: number): number | null {
+  if (!vendas90 || vendas90 <= 0) return null;
+  return estoque / (vendas90 / 90);
+}
+
+function execDashStatus(store: ExecutiveStoreAgg): 'saudavel' | 'atencao' | 'critico' {
+  if (store.pecasMes <= 0 && store.estoque > 0) return 'critico';
+  if (store.coberturaDias !== null && store.coberturaDias <= 7) return 'critico';
+  if (store.faturamento30Anterior > 0 && store.faturamento30 < store.faturamento30Anterior * 0.75) return 'atencao';
+  if (store.coberturaDias !== null && store.coberturaDias <= 15) return 'atencao';
+  if (store.coberturaDias === null && store.estoque > 15) return 'atencao';
+  return 'saudavel';
+}
+
+function execDashCreateBriefing(params: {
+  faturamentoMes: number;
+  pecasMes: number;
+  crescimento: number | null;
+  topStores: ExecutiveStoreAgg[];
+  risks: ExecutiveInsight[];
+  opportunities: ExecutiveInsight[];
+  actions: ExecutiveInsight[];
+}) {
+  const topStore = params.topStores[0]?.loja || 'sem loja líder definida';
+  const crescimentoTexto = params.crescimento === null
+    ? 'sem base segura de comparação com os 30 dias anteriores'
+    : `${params.crescimento.toFixed(1).replace('.', ',')}% vs. os 30 dias anteriores`;
+
+  const riskText = params.risks[0]?.descricao || 'não há risco crítico claro neste momento.';
+  const actionText = params.actions[0]?.acao || params.opportunities[0]?.acao || 'manter acompanhamento diário de vendas, estoque e remanejamento.';
+
+  return `A operação está com faturamento mensal de ${params.faturamentoMes.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}, totalizando ${params.pecasMes.toLocaleString('pt-BR')} peças vendidas no mês. A loja de maior destaque é ${topStore}. O desempenho recente está ${crescimentoTexto}. Principal ponto de atenção: ${riskText} Ação recomendada: ${actionText}`;
+}
+
+app.get('/api/painel-diretoria/resumo', async (req, res) => {
+  let globalDb: any;
+  let annualDb: any;
+
+  try {
+    const userId = String(req.query.userId || '').trim();
+
+    if (!userId || userId === 'undefined' || userId === 'null') {
+      return res.status(400).json({ success: false, error: 'Usuário não informado.' });
+    }
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+
+    if (!user) {
+      return res.status(404).json({ success: false, error: 'Usuário não encontrado.' });
+    }
+
+    const role = execDashNormalizeText(user.role);
+    const canAccess = role === 'ADM' || Boolean(user.isAdmin);
+
+    if (!canAccess) {
+      return res.status(403).json({ success: false, error: 'Painel Diretoria disponível apenas para usuários ADM.' });
+    }
+
+    const now = new Date();
+    now.setHours(12, 0, 0, 0);
+
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+    const start30 = execDashAddDays(now, -30);
+    const start90 = execDashAddDays(now, -90);
+    const startPrevious30 = execDashAddDays(now, -60);
+    const endPrevious30 = execDashAddDays(now, -31);
+
+    const storeMap = new Map<string, ExecutiveStoreAgg>();
+    const productMap = new Map<string, ExecutiveProductAgg>();
+    const seenStores = new Set<string>();
+    const seenProducts = new Set<string>();
+
+    const stockRows = await prisma.stock.findMany({
+      select: {
+        storeName: true,
+        cnpj: true,
+        productCode: true,
+        reference: true,
+        description: true,
+        category: true,
+        quantity: true,
+        salePrice: true,
+      },
+    });
+
+    for (const stock of stockRows) {
+      const loja = execDashStoreName(stock);
+      const produto = String(stock.description || '').trim() || 'PRODUTO NÃO INFORMADO';
+      const referencia = String(stock.reference || stock.productCode || '').trim();
+      const categoria = execDashCategory(stock);
+      const quantidade = execDashToNumber(stock.quantity);
+      const valorVenda = quantidade * execDashToNumber(stock.salePrice);
+
+      const store = execDashGetStore(storeMap, loja);
+      store.estoque += quantidade;
+      store.valorEstoque += valorVenda;
+
+      const product = execDashGetProduct(productMap, { produto, referencia, categoria });
+      product.estoque += quantidade;
+      product.valorEstoque += valorVenda;
+
+      if (loja !== 'LOJA NÃO INFORMADA') seenStores.add(loja);
+      seenProducts.add(execDashNormalizeKey(referencia) || execDashNormalizeKey(produto));
+    }
+
+    const addSale = (row: any) => {
+      const date = execDashParseDate(row.data_emissao || row.DATA_EMISSAO || row.data || row.DATA);
+      if (!date) return;
+
+      const qty = execDashToNumber(row.qtd_real ?? row.QTD_REAL ?? row.quantidade ?? row.QUANTIDADE ?? row.qtd ?? row.QTD ?? 1);
+      if (!qty) return;
+
+      const total = execDashToNumber(row.total_liquido ?? row.TOTAL_LIQUIDO ?? row.valor_total ?? row.VALOR_TOTAL ?? row.total ?? row.TOTAL ?? row.preco ?? row.PRECO ?? 0);
+      const loja = execDashStoreName(row);
+      const produto = execDashProductLabel(row);
+      const referencia = execDashReference(row);
+      const categoria = execDashCategory(row);
+
+      const store = execDashGetStore(storeMap, loja);
+      const product = execDashGetProduct(productMap, { produto, referencia, categoria });
+
+      if (date >= monthStart && date <= now) {
+        store.faturamentoMes += total;
+        store.pecasMes += qty;
+        product.faturamentoMes += total;
+        product.pecasMes += qty;
+      }
+
+      if (date >= start30 && date <= now) {
+        store.faturamento30 += total;
+        product.faturamento30 += total;
+      }
+
+      if (date >= startPrevious30 && date <= endPrevious30) {
+        store.faturamento30Anterior += total;
+      }
+
+      if (date >= start90 && date <= now) {
+        store.vendas90 += qty;
+        product.vendas90 += qty;
+      }
+    };
+
+    if (fs.existsSync(GLOBAL_DB_PATH)) {
+      globalDb = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+      const hasDetailed = await execDashTableExists(globalDb, 'vendas_detalhadas_imei');
+      const hasLegacy = await execDashTableExists(globalDb, 'vendas');
+
+      if (hasDetailed) {
+        const rows = await globalDb.all(`
+          SELECT
+            data_emissao,
+            cnpj_empresa,
+            nome_fantasia AS loja,
+            referencia,
+            codigo_produto,
+            descricao,
+            categoria,
+            quantidade,
+            total_liquido
+          FROM vendas_detalhadas_imei
+        `);
+        rows.forEach(addSale);
+      } else if (hasLegacy) {
+        const rows = await globalDb.all(`
+          SELECT
+            data_emissao,
+            cnpj_empresa,
+            NULL AS loja,
+            familia AS referencia,
+            descricao,
+            familia AS categoria,
+            quantidade,
+            total_liquido
+          FROM vendas
+        `);
+        rows.forEach(addSale);
+      }
+
+      await globalDb.close();
+      globalDb = null;
+    }
+
+    const annualPath = execDashAnnualDbPath();
+    if (fs.existsSync(annualPath)) {
+      annualDb = await open({ filename: annualPath, driver: sqlite3.Database });
+      const hasRaw = await execDashTableExists(annualDb, 'vendas_anuais_raw');
+      const hasAnnual = await execDashTableExists(annualDb, 'vendas_anuais');
+
+      if (hasRaw) {
+        const rows = await annualDb.all(`
+          SELECT
+            data_emissao,
+            cnpj_empresa,
+            loja,
+            referencia,
+            codigo_produto,
+            descricao,
+            categoria,
+            categoria_real,
+            quantidade,
+            qtd_real,
+            total_liquido,
+            cancelado
+          FROM vendas_anuais_raw
+          WHERE COALESCE(cancelado, 'N') = 'N'
+        `);
+        rows.forEach(addSale);
+      } else if (hasAnnual) {
+        const rows = await annualDb.all(`
+          SELECT
+            data_emissao,
+            cnpj_empresa,
+            loja,
+            familia AS referencia,
+            descricao,
+            familia AS categoria,
+            quantidade,
+            total_liquido
+          FROM vendas_anuais
+        `);
+        rows.forEach(addSale);
+      }
+
+      await annualDb.close();
+      annualDb = null;
+    }
+
+    const stores = Array.from(storeMap.values()).map((store) => {
+      store.coberturaDias = execDashCalculateCoverage(store.estoque, store.vendas90);
+      store.status = execDashStatus(store);
+      return store;
+    });
+
+    const products = Array.from(productMap.values()).map((product) => {
+      product.coberturaDias = execDashCalculateCoverage(product.estoque, product.vendas90);
+      return product;
+    });
+
+    const faturamentoMes = stores.reduce((sum, item) => sum + item.faturamentoMes, 0);
+    const pecasMes = stores.reduce((sum, item) => sum + item.pecasMes, 0);
+    const faturamentoUltimos30 = stores.reduce((sum, item) => sum + item.faturamento30, 0);
+    const faturamento30Anterior = stores.reduce((sum, item) => sum + item.faturamento30Anterior, 0);
+    const vendasUltimos30 = products.reduce((sum, item) => sum + item.pecasMes, 0);
+    const estoqueTotal = stores.reduce((sum, item) => sum + item.estoque, 0);
+    const valorEstoque = stores.reduce((sum, item) => sum + item.valorEstoque, 0);
+    const crescimentoVs30Anterior = faturamento30Anterior > 0
+      ? ((faturamentoUltimos30 - faturamento30Anterior) / faturamento30Anterior) * 100
+      : null;
+
+    const topStores = stores
+      .filter((item) => item.faturamentoMes > 0 || item.estoque > 0)
+      .sort((a, b) => b.faturamentoMes - a.faturamentoMes)
+      .slice(0, 8);
+
+    const bottomStores = stores
+      .filter((item) => item.estoque > 0 || item.pecasMes > 0)
+      .sort((a, b) => {
+        const statusRank: Record<'critico' | 'atencao' | 'saudavel', number> = { critico: 0, atencao: 1, saudavel: 2 };
+        return statusRank[a.status] - statusRank[b.status] || a.faturamentoMes - b.faturamentoMes;
+      })
+      .slice(0, 8);
+
+    const topProducts = products
+      .filter((item) => item.faturamentoMes > 0 || item.vendas90 > 0)
+      .sort((a, b) => b.faturamentoMes - a.faturamentoMes || b.pecasMes - a.pecasMes)
+      .slice(0, 10);
+
+    const risks: ExecutiveInsight[] = [];
+    const opportunities: ExecutiveInsight[] = [];
+    const actions: ExecutiveInsight[] = [];
+
+    for (const product of products) {
+      if (product.vendas90 > 0 && product.estoque <= 0) {
+        risks.push({
+          id: `risk-stockout-${risks.length + 1}`,
+          tipo: 'risco',
+          prioridade: 'critica',
+          titulo: 'Produto com venda recente e estoque zerado',
+          descricao: `${product.produto} vendeu ${product.vendas90.toLocaleString('pt-BR')} un. nos últimos 90 dias e está sem estoque atual.`,
+          acao: 'Priorizar compra ou remanejamento imediato.',
+          produto: product.produto,
+        });
+      } else if (product.coberturaDias !== null && product.coberturaDias <= 7) {
+        risks.push({
+          id: `risk-coverage-${risks.length + 1}`,
+          tipo: 'risco',
+          prioridade: 'alta',
+          titulo: 'Baixa cobertura de produto',
+          descricao: `${product.produto} tem cobertura estimada de ${product.coberturaDias.toFixed(0)} dias.`,
+          acao: 'Verificar estoque no CD e lojas com excesso para remanejamento.',
+          produto: product.produto,
+        });
+      } else if (product.estoque >= 20 && product.vendas90 <= 0) {
+        opportunities.push({
+          id: `opp-slow-${opportunities.length + 1}`,
+          tipo: 'oportunidade',
+          prioridade: 'media',
+          titulo: 'Estoque parado ou baixo giro',
+          descricao: `${product.produto} possui ${product.estoque.toLocaleString('pt-BR')} un. em estoque e não teve venda relevante nos últimos 90 dias.`,
+          acao: 'Criar ação comercial, revisar preço ou redistribuir para lojas com demanda.',
+          produto: product.produto,
+        });
+      }
+    }
+
+    for (const store of stores) {
+      if (store.status === 'critico') {
+        risks.push({
+          id: `risk-store-${risks.length + 1}`,
+          tipo: 'risco',
+          prioridade: 'alta',
+          titulo: 'Loja em atenção operacional',
+          descricao: `${store.loja} está com ${store.estoque.toLocaleString('pt-BR')} un. em estoque, ${store.pecasMes.toLocaleString('pt-BR')} peças vendidas no mês e cobertura ${store.coberturaDias === null ? 'sem giro' : `${store.coberturaDias.toFixed(0)} dias`}.`,
+          acao: 'Avaliar venda, mix de produtos, ruptura e necessidade de remanejamento.',
+          loja: store.loja,
+        });
+      }
+    }
+
+    const suggestedRemapCount = products.filter((product) => {
+      return product.coberturaDias !== null && product.coberturaDias <= 15 && product.vendas90 > 0;
+    }).length;
+
+    if (suggestedRemapCount > 0) {
+      actions.push({
+        id: 'action-remap-1',
+        tipo: 'acao',
+        prioridade: 'alta',
+        titulo: 'Remanejamento recomendado',
+        descricao: `${suggestedRemapCount.toLocaleString('pt-BR')} produtos apresentam baixa cobertura com venda recente.`,
+        acao: 'Abrir o submenu Remanejamento e criar solicitações para os itens críticos.',
+      });
+    }
+
+    const topStoreName = topStores[0]?.loja;
+    if (topStoreName) {
+      actions.push({
+        id: 'action-top-store-1',
+        tipo: 'acao',
+        prioridade: 'media',
+        titulo: 'Replicar boa performance',
+        descricao: `${topStoreName} lidera o faturamento do mês.`,
+        acao: 'Comparar mix, estoque e abordagem comercial com lojas em atenção.',
+        loja: topStoreName,
+      });
+    }
+
+    const kpis = {
+      faturamentoMes,
+      pecasMes,
+      ticketMedio: pecasMes > 0 ? faturamentoMes / pecasMes : 0,
+      vendasUltimos30,
+      faturamentoUltimos30,
+      faturamento30Anterior,
+      crescimentoVs30Anterior,
+      estoqueTotal,
+      valorEstoque,
+      lojasAtivas: seenStores.size || stores.filter((item) => item.loja !== 'LOJA NÃO INFORMADA').length,
+      produtosAtivos: seenProducts.size || products.length,
+      alertasCriticos: risks.filter((item) => item.prioridade === 'critica' || item.prioridade === 'alta').length,
+      sugestoesRemanejamento: suggestedRemapCount,
+    };
+
+    return res.json({
+      success: true,
+      generatedAt: new Date().toISOString(),
+      periodo: {
+        mesInicio: execDashDateToIso(monthStart),
+        hoje: execDashDateToIso(now),
+        ultimos30Inicio: execDashDateToIso(start30),
+        ultimos90Inicio: execDashDateToIso(start90),
+      },
+      kpis,
+      topStores,
+      bottomStores,
+      topProducts,
+      risks: risks.slice(0, 10),
+      opportunities: opportunities.slice(0, 10),
+      actions: actions.slice(0, 10),
+      clarkBriefing: execDashCreateBriefing({
+        faturamentoMes,
+        pecasMes,
+        crescimento: crescimentoVs30Anterior,
+        topStores,
+        risks,
+        opportunities,
+        actions,
+      }),
+    });
+  } catch (error: any) {
+    console.error('Erro /api/painel-diretoria/resumo:', error);
+
+    try {
+      if (globalDb) await globalDb.close();
+      if (annualDb) await annualDb.close();
+    } catch {}
+
+    return res.status(500).json({
+      success: false,
+      error: error?.message || 'Erro ao montar Painel Diretoria.',
+    });
+  }
+});
+
 
 // ==========================================
 // 2. ROTA /sales (VERSÃO FINAL LIMPA) -- ROTA DE VENDAS

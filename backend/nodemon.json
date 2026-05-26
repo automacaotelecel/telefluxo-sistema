@@ -1,0 +1,12 @@
+{
+  "watch": ["src"],
+  "ext": "ts,json",
+  "ignore": [
+    "uploads/**",
+    "database/**",
+    "tmp/**",
+    "*.db",
+    "*.db-journal"
+  ],
+  "exec": "ts-node src/server.ts"
+}
