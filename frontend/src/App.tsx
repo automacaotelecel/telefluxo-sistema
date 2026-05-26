@@ -9,10 +9,14 @@ import Agenda from "./components/Agenda";
 import ManagerDashboard from "./components/ManagerDashboard";
 import SalesDashboard from "./components/SalesDashboard";
 import NotificationBell from "./components/NotificationBell";
+import IntelligentAlerts from './components/IntelligentAlerts';
+import RemanejamentoAprovacao from './components/RemanejamentoAprovacao';
+import ExecutiveDashboard from './components/ExecutiveDashboard';
 import Home from "./components/home";
 import DeptBulletin from "./components/DeptBulletin";
 import FinanceModule from "./components/FinanceModule";
 import ControleStone from "./components/ControleStone";
+import RecebimentoCartao from "./components/RecebimentoCartao";
 import StockModule from "./components/StockModule";
 import PriceTablePage from './components/PriceTablePage';
 import { EstoqueVendas } from './components/EstoqueVendas';
@@ -29,10 +33,27 @@ import Clark from './components/Clark';
 import RhModule from './components/RhModule';
 
 import {
-  FileText, CheckCircle, LayoutDashboard, Users, LogOut,
-  Calendar, BarChart3, ChevronDown, ChevronRight, ChevronLeft, Circle, Plus,
-  TrendingUp, Home as HomeIcon, MessageSquare, DollarSign,
-  Package, Menu, X, Tag
+  FileText,
+  CheckCircle,
+  LayoutDashboard,
+  Users,
+  LogOut,
+  Calendar,
+  BarChart3,
+  ChevronDown,
+  ChevronRight,
+  ChevronLeft,
+  Circle,
+  Plus,
+  TrendingUp,
+  Home as HomeIcon,
+  MessageSquare,
+  DollarSign,
+  Package,
+  Menu,
+  X,
+  Tag,
+  ShieldCheck,
 } from 'lucide-react';
 
 const DEFAULT_EXPANDED = {
@@ -51,6 +72,8 @@ const STORE_ALLOWED_VIEWS = new Set([
   'home',
   'rh',
   'stock',
+  'alertas_inteligentes',
+  'remanejamento_aprovacao',
   'estoque_detalhado',
   'estoque_vendas',
   'estoque_inteligente',
@@ -139,17 +162,17 @@ function App() {
   const canViewFinance = ['CEO', 'DIRETOR', 'ADM'].includes(userRole) || isAdmin;
   const canViewTeam = ['CEO', 'DIRETOR', 'ADM'].includes(userRole) || isAdmin;
   const canViewComparativos = ['ADM', 'CEO'].includes(userRole) || isAdmin || isSamsungUser;
+  const canViewExecutiveDashboard = userRole === 'ADM' || isAdmin;
 
-  const canViewComprasVendas = userRole === 'ADM' || isAdmin;
   const isStoreOnly = userRole === 'LOJA';
 
   useEffect(() => {
-  if (!user || !isStoreOnly) return;
+    if (!user || !isStoreOnly) return;
 
-  if (!isViewAllowedForStore(currentView)) {
-    setCurrentView(STORE_HOME_VIEW);
-    setExpanded(DEFAULT_EXPANDED);
-  }
+    if (!isViewAllowedForStore(currentView)) {
+      setCurrentView(STORE_HOME_VIEW);
+      setExpanded(DEFAULT_EXPANDED);
+    }
   }, [user, isStoreOnly, currentView]);
 
   const handleLogout = () => {
@@ -184,6 +207,15 @@ function App() {
     comparativo: 'VENDAS ANUAIS',
     compras_vendas: 'COMPRAS X VENDAS',
     rh: 'RH',
+    executive_dashboard: 'PAINEL DIRETORIA / RESUMO EXECUTIVO',
+    stock: 'CONTROLE DE ESTOQUE',
+    alertas_inteligentes: 'CENTRAL DE ALERTAS INTELIGENTES',
+    remanejamento_aprovacao: 'REMANEJAMENTO COM APROVAÇÃO',
+    estoque_detalhado: 'VISÃO DETALHADA DE ESTOQUE',
+    estoque_vendas: 'ESTOQUE X VENDAS',
+    estoque_inteligente: 'ESTOQUE INTELIGENTE',
+    stockout: 'STOCKOUT',
+    auditoria_lojas: 'AUDITORIA DE LOJAS',
   };
 
   const currentViewLabel =
@@ -207,7 +239,7 @@ function App() {
           setCurrentView(getInitialViewForUser(data));
           setExpanded(DEFAULT_EXPANDED);
         }}
-/>
+      />
     );
   }
 
@@ -217,7 +249,9 @@ function App() {
     return (
       <div
         onClick={() => handleNavigate(view)}
-        className={`pl-12 pr-4 py-2 cursor-pointer flex items-center gap-2 text-[11px] font-black uppercase tracking-tighter transition-all hover:text-white ${active ? 'text-orange-500' : 'text-slate-500'}`}
+        className={`pl-12 pr-4 py-2 cursor-pointer flex items-center gap-2 text-[11px] font-black uppercase tracking-tighter transition-all hover:text-white ${
+          active ? 'text-orange-500' : 'text-slate-500'
+        }`}
       >
         <Circle size={6} fill={active ? "currentColor" : "transparent"} />
         {label}
@@ -237,7 +271,11 @@ function App() {
     <div
       onClick={onClick}
       title={label}
-      className={`p-3 rounded-xl cursor-pointer flex items-center ${isSidebarCollapsed ? 'justify-center' : 'justify-between'} transition-all ${active ? customClass : 'text-slate-400 hover:bg-slate-800'}`}
+      className={`p-3 rounded-xl cursor-pointer flex items-center ${
+        isSidebarCollapsed ? 'justify-center' : 'justify-between'
+      } transition-all ${
+        active ? customClass : 'text-slate-400 hover:bg-slate-800'
+      }`}
     >
       <div className={`flex items-center gap-3 font-bold text-sm ${isSidebarCollapsed ? 'justify-center' : ''}`}>
         <Icon size={18} />
@@ -309,6 +347,16 @@ function App() {
             onClick={() => handleNavigate('home')}
             customClass="bg-orange-600 text-white shadow-lg"
           />
+
+          {canViewExecutiveDashboard && (
+            <NavButton
+              icon={ShieldCheck}
+              label="Painel Diretoria"
+              active={currentView === 'executive_dashboard'}
+              onClick={() => handleNavigate('executive_dashboard')}
+              customClass="bg-slate-800 text-white shadow-lg ring-1 ring-orange-500/30"
+            />
+          )}
 
           {(isAdmin || isManager) && !isStoreOnly && (
             <div>
@@ -425,7 +473,7 @@ function App() {
               <NavButton
                 icon={DollarSign}
                 label="Controle Financeiro"
-                active={['finance', 'controle_stone'].includes(currentView)}
+                active={['finance', 'controle_stone', 'recebimento_cartao'].includes(currentView)}
                 onClick={() => handleSectionToggle('finance')}
                 hasChevron
                 chevronOpen={expanded.finance}
@@ -436,6 +484,7 @@ function App() {
                 <div className="mt-1 space-y-1">
                   <SubMenuItem label="Contas a pagar e receber" view="finance" active={currentView === 'finance'} />
                   <SubMenuItem label="Conciliação Stone" view="controle_stone" active={currentView === 'controle_stone'} />
+                  <SubMenuItem label="Recebimento Cartão" view="recebimento_cartao" active={currentView === 'recebimento_cartao'} />
                 </div>
               )}
             </div>
@@ -446,7 +495,17 @@ function App() {
               <NavButton
                 icon={Package}
                 label="Controle de Estoque"
-                active={['stock', 'estoque_vendas', 'estoque_inteligente', 'auditoria_lojas', 'estoque_detalhado', 'stockout', 'compras_vendas'].includes(currentView)}
+                active={[
+                  'stock',
+                  'alertas_inteligentes',
+                  'remanejamento_aprovacao',
+                  'estoque_vendas',
+                  'estoque_inteligente',
+                  'auditoria_lojas',
+                  'estoque_detalhado',
+                  'stockout',
+                  'compras_vendas',
+                ].includes(currentView)}
                 onClick={() => handleSectionToggle('stock')}
                 hasChevron
                 chevronOpen={expanded.stock}
@@ -456,17 +515,57 @@ function App() {
               {expanded.stock && !isSidebarCollapsed && (
                 <div className="mt-1 space-y-1">
                   <SubMenuItem label="Visão Geral" view="stock" active={currentView === 'stock'} />
-                  <SubMenuItem label="Visão Detalhada" view="estoque_detalhado" active={currentView === 'estoque_detalhado'} />
-                  <SubMenuItem label="Estoque x Vendas" view="estoque_vendas" active={currentView === 'estoque_vendas'} />
+
+                  <SubMenuItem
+                    label="Alertas Inteligentes"
+                    view="alertas_inteligentes"
+                    active={currentView === 'alertas_inteligentes'}
+                  />
+
+                  <SubMenuItem
+                    label="Remanejamento"
+                    view="remanejamento_aprovacao"
+                    active={currentView === 'remanejamento_aprovacao'}
+                  />
+
+                  <SubMenuItem
+                    label="Visão Detalhada"
+                    view="estoque_detalhado"
+                    active={currentView === 'estoque_detalhado'}
+                  />
+
+                  <SubMenuItem
+                    label="Estoque x Vendas"
+                    view="estoque_vendas"
+                    active={currentView === 'estoque_vendas'}
+                  />
 
                   {isAdmin && (
-                    <SubMenuItem label="Compras x Vendas" view="compras_vendas" active={currentView === 'compras_vendas'} />
+                    <SubMenuItem
+                      label="Compras x Vendas"
+                      view="compras_vendas"
+                      active={currentView === 'compras_vendas'}
+                    />
                   )}
 
-                  <SubMenuItem label="Estoque Inteligente" view="estoque_inteligente" active={currentView === 'estoque_inteligente'} />
-                  <SubMenuItem label="Stockout" view="stockout" active={currentView === 'stockout'} />
+                  <SubMenuItem
+                    label="Estoque Inteligente"
+                    view="estoque_inteligente"
+                    active={currentView === 'estoque_inteligente'}
+                  />
+
+                  <SubMenuItem
+                    label="Stockout"
+                    view="stockout"
+                    active={currentView === 'stockout'}
+                  />
+
                   {!isStoreOnly && (
-                    <SubMenuItem label="Auditoria Lojas" view="auditoria_lojas" active={currentView === 'auditoria_lojas'} />
+                    <SubMenuItem
+                      label="Auditoria Lojas"
+                      view="auditoria_lojas"
+                      active={currentView === 'auditoria_lojas'}
+                    />
                   )}
                 </div>
               )}
@@ -618,10 +717,21 @@ function App() {
         <div className="flex-1 overflow-hidden relative flex flex-col">
           {currentView === 'home' ? (
             <Home currentUser={user} />
+          ) : currentView === 'executive_dashboard' && canViewExecutiveDashboard ? (
+            <ExecutiveDashboard currentUser={user} />
+          ) : currentView === 'alertas_inteligentes' ? (
+            <IntelligentAlerts
+              currentUser={user}
+              onNavigateStock={() => handleNavigate('estoque_detalhado')}
+            />
+          ) : currentView === 'remanejamento_aprovacao' ? (
+            <RemanejamentoAprovacao currentUser={user} />
           ) : currentView === 'finance' ? (
             <FinanceModule />
           ) : currentView === 'controle_stone' ? (
             <ControleStone />
+          ) : currentView === 'recebimento_cartao' ? (
+            <RecebimentoCartao currentUser={user} />
           ) : currentView === 'comparativos_pdf' ? (
             <ComparativosModule />
           ) : currentView === 'comparativos_fluxo' ? (
@@ -662,7 +772,7 @@ function App() {
             <ComprasVendas />
           ) : currentView === 'rh' ? (
             <RhModule currentUser={user} />
-          ): currentView === 'team' ? (
+          ) : currentView === 'team' ? (
             <div className="flex-1 p-4 md:p-8 overflow-y-auto">
               <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
                 <div>
@@ -698,7 +808,6 @@ function App() {
           )}
         </div>
       </main>
-
 
       <NewUserModal
         isOpen={isUserModalOpen}
