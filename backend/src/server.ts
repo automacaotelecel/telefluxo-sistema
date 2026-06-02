@@ -5494,71 +5494,87 @@ app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // ============================================================
-// ⚠️ ROTA DO HISTÓRICO ANUAL OTIMIZADA (CORRIGIDA)
+// ⚠️ ROTA DO HISTÓRICO ANUAL OTIMIZADA - COM FILTRO DE PERÍODO
 // ============================================================
 app.get('/sales_anuais', async (req, res) => {
+  let db: any;
+
   try {
     const userId = String(req.query.userId || '');
+    const startDateRaw = String(req.query.startDate || '').trim();
+    const endDateRaw = String(req.query.endDate || '').trim();
+
     const securityFilter = await getSalesFilter(userId, 'vendas');
+
+    const isValidIsoDate = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value);
+
+    const startDate = isValidIsoDate(startDateRaw) ? startDateRaw : '';
+    const endDate = isValidIsoDate(endDateRaw) ? endDateRaw : '';
+
+    let dateFilter = '';
+
+    if (startDate && endDate) {
+      dateFilter = ` AND data_emissao >= '${startDate}' AND data_emissao <= '${endDate}' `;
+    } else if (startDate) {
+      dateFilter = ` AND data_emissao >= '${startDate}' `;
+    } else if (endDate) {
+      dateFilter = ` AND data_emissao <= '${endDate}' `;
+    }
 
     if (!fs.existsSync(ANUAL_DB_PATH)) {
       return res.json({ sales: [] });
     }
 
-    const db = await open({ filename: ANUAL_DB_PATH, driver: sqlite3.Database });
+    db = await open({
+      filename: ANUAL_DB_PATH,
+      driver: sqlite3.Database,
+    });
 
     const query = `
       SELECT
-        substr(data_emissao, 1, 7) || '-01' as data_emissao,
+        MIN(data_emissao) as data_emissao,
         cnpj_empresa,
+        loja,
         descricao,
         COALESCE(familia, 'OUTROS') as familia,
+        COALESCE(regiao, '') as regiao,
         SUM(COALESCE(total_liquido, 0)) as total_liquido,
         SUM(COALESCE(quantidade, 0)) as quantidade
       FROM vendas_anuais
       WHERE ${securityFilter}
         AND data_emissao IS NOT NULL
-      GROUP BY substr(data_emissao, 1, 7), cnpj_empresa, descricao, COALESCE(familia, 'OUTROS')
+        ${dateFilter}
+      GROUP BY
+        cnpj_empresa,
+        loja,
+        descricao,
+        COALESCE(familia, 'OUTROS'),
+        COALESCE(regiao, '')
+      HAVING ABS(SUM(COALESCE(total_liquido, 0))) > 0.01
+          OR ABS(SUM(COALESCE(quantidade, 0))) > 0.001
       ORDER BY data_emissao ASC
     `;
 
+    console.log('🔍 Executando Query de Vendas Anuais:', {
+      startDate,
+      endDate,
+    });
+
     const salesRaw = await db.all(query);
-    await db.close();
 
-    res.json({ sales: normalizeKeys(salesRaw) });
-  } catch (e: any) {
-    console.error("Erro /sales_anuais:", e);
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// --- ROTA DE RAIO-X (DEBUG MELHORADO) ---
-app.get('/api/debug', async (req, res) => {
-  try {
-    const db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
-    const dbAnual = await open({ filename: ANUAL_DB_PATH, driver: sqlite3.Database });
-
-    const totalVendas = await db.get("SELECT count(*) as total FROM vendas");
-    const totalKPI = await db.get("SELECT count(*) as total FROM vendedores_kpi");
-
-    let totalAnual: any = { total: 0 };
-    try {
-      totalAnual = (await dbAnual.get("SELECT count(*) as total FROM vendas_anuais")) || { total: 0 };
-    } catch (e) {}
-
-    await db.close();
-    await dbAnual.close();
-
-    res.json({
-      status: "Online",
-      banco_vendas_existe: fs.existsSync(GLOBAL_DB_PATH),
-      banco_anual_existe: fs.existsSync(ANUAL_DB_PATH),
-      total_linhas_vendas: totalVendas?.total || 0,
-      total_linhas_kpi: totalKPI?.total || 0,
-      total_linhas_anuais: totalAnual?.total || 0
+    return res.json({
+      sales: normalizeKeys(salesRaw),
     });
   } catch (e: any) {
-    res.json({ erro: e.message });
+    console.error('Erro /sales_anuais:', e);
+
+    return res.status(500).json({
+      error: e.message || 'Erro ao buscar vendas anuais.',
+    });
+  } finally {
+    if (db) {
+      await db.close().catch(() => undefined);
+    }
   }
 });
 
