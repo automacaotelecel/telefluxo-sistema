@@ -1,9 +1,9 @@
-from pathlib import Path
-import sys
 import json
+import sys
 import traceback
 import unicodedata
 from datetime import date, datetime, timedelta
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -25,9 +25,25 @@ HOLIDAY_CACHE_FILENAME = "feriados_cache_br.json"
 ADDITIONAL_MANUAL_HOLIDAYS = []
 EXTRATO_ONLY_POSITIVE_VALUES = True
 
+# =============================================================================
+# PERFORMANCE / EXCEL
+# =============================================================================
+# A base enviada gera mais de 350 mil previsões após abrir o parcelamento.
+# Gravar e FORMATAR todas essas linhas em abas detalhadas deixa o Excel/openpyxl
+# extremamente lento e parece que o programa travou.
+#
+# Por padrão, o arquivo final sai com PAINEL, CONSOLIDADO, RESUMOS,
+# CONCILIAÇÃO, EXTRATO e PREVISTO CONCATENADO completos.
+# As abas muito pesadas ficam como AMOSTRA das primeiras linhas.
+# Se quiser exportar tudo mesmo assim, troque para True, mas pode demorar muitos minutos.
+EXPORTAR_ABAS_DETALHADAS_COMPLETAS = False
+LIMITE_LINHAS_ABAS_DETALHADAS = 5000
+
+
 BASE_COL_ALIASES = {
     "data_venda": ["data de venda", "data da venda", "data_venda", "data venda"],
-    "valor_liquido": ["valor liquido", "valor líquido", "valor_liq", "vlr liquido", "vlr líquido"],
+    "valor_liquido": ["valor liquido", "valor líquido", "valor_liq", "vlr liquido", "vlr líquido", "vlr liq"],
+    "valor_parcela": ["vlr parcela", "valor parcela", "valor da parcela", "vlr_parcela", "parcela liquida", "parcela líquida"],
     "produto": ["produto", "tipo", "modalidade"],
     "parcelas": ["n de parcelas", "n parcelas", "parcelas", "numero de parcelas", "nro parcelas", "qtde parcelas"],
     "documento": ["documento", "doc", "numero documento", "n documento"],
@@ -264,23 +280,68 @@ def parse_date_series(series: pd.Series) -> pd.Series:
     return series.apply(_parse_single_date)
 
 
-def calculate_rule_schedule(produto, parcelas):
+def parse_int_safe(valor, default=1):
+    if pd.isna(valor):
+        return default
+
+    s = str(valor).strip()
+    if not s:
+        return default
+
+    # Quando vier algo como "2/12", usa o número antes da barra.
+    if "/" in s:
+        s = s.split("/")[0]
+
+    s = s.replace(",", ".")
+    try:
+        out = int(float(s))
+        return out if out > 0 else default
+    except Exception:
+        return default
+
+
+def is_credito(produto) -> bool:
+    return "CREDITO" in normalize_text(produto)
+
+
+def is_debito(produto) -> bool:
+    return "DEBITO" in normalize_text(produto)
+
+
+def is_pix(produto) -> bool:
+    return "PIX" in normalize_text(produto)
+
+
+def calculate_rule_schedule(produto, parcela_atual, total_parcelas):
     prod = normalize_text(produto)
-    parcelas = 0 if pd.isna(parcelas) else int(float(parcelas))
+    parcela_atual = parse_int_safe(parcela_atual, 1)
+    total_parcelas = parse_int_safe(total_parcelas, 1)
+
+    # REGRA CORRETA DO FLUXO STONE USADA NESTE ARQUIVO:
+    # - DÉBITO: D+1 + 30 dias corridos, depois joga para o próximo dia útil.
+    # - PIX: D+1 corrido, depois joga para o próximo dia útil.
+    # - CRÉDITO 1X: D+30 + 30 dias corridos, depois joga para o próximo dia útil.
+    # - CRÉDITO PARCELADO: gera uma linha para CADA parcela.
+    #   Parcela 1: D+(1x30)+30
+    #   Parcela 2: D+(2x30)+30
+    #   Parcela 3: D+(3x30)+30 ...
+    #
+    # O erro anterior era jogar o VALOR LÍQUIDO inteiro em uma única data,
+    # usando N DE PARCELAS como se fosse a parcela atual. Agora o código
+    # expande a venda em várias linhas e usa VLR PARCELA quando existir.
 
     if "DEBITO" in prod:
-        return 1, 30, "DÉBITO = D+1 corrido → liquidação no próximo útil se necessário → +30 corridos → recebimento no próximo útil"
+        return 1, 30, "DÉBITO = D+1 + 30 corridos → recebimento no próximo útil"
 
     if "PIX" in prod:
-        return 1, 30, "PIX = D+1 corrido → liquidação no próximo útil se necessário → +30 corridos → recebimento no próximo útil"
+        return 1, 0, "PIX = D+1 corrido → recebimento no próximo útil"
 
     if "CREDITO" in prod:
-        if parcelas <= 1:
-            return 30, 30, "CRÉDITO 1X = D+30 corridos → liquidação no próximo útil se necessário → +30 corridos → recebimento no próximo útil"
-        return parcelas * 30, 30, f"CRÉDITO PARCELADO = D+({parcelas}x30 corridos) → liquidação no próximo útil se necessário → +30 corridos → recebimento no próximo útil"
+        if total_parcelas <= 1:
+            return 30, 30, "CRÉDITO 1X = D+30 + 30 corridos → recebimento no próximo útil"
+        return parcela_atual * 30, 30, f"CRÉDITO PARCELADO {parcela_atual}/{total_parcelas} = D+({parcela_atual}x30) + 30 corridos → recebimento no próximo útil"
 
     raise ValueError(f"Produto não suportado para regra de recebimento: {produto}")
-
 
 def is_business_day(d: date, holidays: set) -> bool:
     return d.weekday() < 5 and d not in holidays
@@ -354,11 +415,15 @@ def load_holidays(years, base_dir: Path) -> set:
 
         if year_key not in cache:
             try:
-                print(f"Consultando feriados do ano {year} na API...", file=sys.stderr)
+                print(f"Consultando feriados do ano {year} na API...")
                 cache[year_key] = fetch_holidays_for_year(year)
-            except Exception:
+            except Exception as exc:
+                # Se a API de feriados estiver fora/sem internet, o processamento continua
+                # usando apenas sábados e domingos como dias não úteis.
+                # Caso já exista cache do ano, usa o cache normalmente.
                 if year_key not in cache:
-                    raise
+                    print(f"AVISO: não foi possível consultar feriados de {year}: {exc}")
+                    cache[year_key] = []
 
         for iso_date in cache.get(year_key, []):
             holidays.add(pd.to_datetime(iso_date).date())
@@ -386,100 +451,206 @@ def format_brl(value):
     return f"R$ {s}"
 
 
+def calcular_fluxo_recebimento_vetorizado(data_venda, prazo_base, prazo_delay, holidays: set):
+    """Calcula início, liquidação e recebimento em lote.
+
+    Essa função substitui o loop linha a linha. Na planilha enviada, depois de abrir
+    crédito parcelado, existem centenas de milhares de previsões; loop Python fica
+    muito lento. O numpy faz o mesmo cálculo de dia útil de forma vetorizada.
+    """
+    datas = pd.to_datetime(data_venda, errors="coerce").values.astype("datetime64[D]")
+    base = np.asarray(prazo_base, dtype="timedelta64[D]")
+    delay = np.asarray(prazo_delay, dtype="timedelta64[D]")
+
+    holiday_values = []
+    for h in sorted(holidays):
+        try:
+            holiday_values.append(np.datetime64(pd.Timestamp(h).date(), "D"))
+        except Exception:
+            pass
+    holidays_np = np.array(holiday_values, dtype="datetime64[D]")
+
+    # 1) Se a venda caiu em sábado/domingo/feriado, começa a contar no próximo útil.
+    inicio = np.busday_offset(datas, 0, roll="forward", holidays=holidays_np)
+
+    # 2) Soma prazo em dias corridos e empurra a liquidação para o próximo útil.
+    liquidacao_candidata = inicio + base
+    liquidacao = np.busday_offset(liquidacao_candidata, 0, roll="forward", holidays=holidays_np)
+
+    # 3) Soma delay em dias corridos e empurra o recebimento para o próximo útil.
+    recebimento_candidato = liquidacao + delay
+    recebimento = np.busday_offset(recebimento_candidato, 0, roll="forward", holidays=holidays_np)
+
+    inicio_ts = pd.to_datetime(inicio)
+    liquidacao_ts = pd.to_datetime(liquidacao)
+    recebimento_ts = pd.to_datetime(recebimento)
+
+    return inicio_ts, liquidacao_ts, recebimento_ts
+
+
 def prepare_base(df_base: pd.DataFrame, holidays: set):
     base = df_base.copy()
     base = base.dropna(how="all").reset_index(drop=True)
 
     col_data_venda = find_column(base, BASE_COL_ALIASES["data_venda"])
     col_valor_liquido = find_column(base, BASE_COL_ALIASES["valor_liquido"])
+    col_valor_parcela = find_column(base, BASE_COL_ALIASES["valor_parcela"], required=False)
     col_produto = find_column(base, BASE_COL_ALIASES["produto"])
     col_parcelas = find_column(base, BASE_COL_ALIASES["parcelas"])
     col_documento = find_column(base, BASE_COL_ALIASES["documento"], required=False)
     col_bandeira = find_column(base, BASE_COL_ALIASES["bandeira"], required=False)
 
+    base["LINHA_ORIGEM"] = np.arange(len(base)) + 2
     base["DATA_VENDA"] = parse_date_series(get_series(base, col_data_venda))
-    base["VALOR_LIQUIDO"] = parse_money_series(get_series(base, col_valor_liquido))
+    base["VALOR_VENDA_LIQUIDO"] = parse_money_series(get_series(base, col_valor_liquido))
+    base["VALOR_PARCELA_ORIGINAL"] = parse_money_series(get_series(base, col_valor_parcela)) if col_valor_parcela else np.nan
     base["PRODUTO"] = get_series(base, col_produto).astype(str).str.strip()
-    base["PARCELAS"] = pd.to_numeric(get_series(base, col_parcelas), errors="coerce").fillna(0).astype(int)
+    base["PRODUTO_NORM"] = base["PRODUTO"].apply(normalize_text)
+    base["TOTAL_PARCELAS"] = get_series(base, col_parcelas).apply(lambda x: parse_int_safe(x, 1))
     base["DOCUMENTO"] = get_series(base, col_documento).fillna("").astype(str).str.strip()
     base["BANDEIRA"] = get_series(base, col_bandeira).fillna("").astype(str).str.strip()
 
-    n = len(base)
+    invalid_mask = base["DATA_VENDA"].isna() | base["VALOR_VENDA_LIQUIDO"].isna() | (base["TOTAL_PARCELAS"] <= 0)
+    descartadas = base[invalid_mask].copy()
+    if not descartadas.empty:
+        descartadas["MOTIVO_DESCARTE"] = np.select(
+            [
+                descartadas["DATA_VENDA"].isna(),
+                descartadas["VALOR_VENDA_LIQUIDO"].isna(),
+                descartadas["TOTAL_PARCELAS"] <= 0,
+            ],
+            ["DATA_VENDA_INVALIDA", "VALOR_LIQUIDO_INVALIDO", "N_DE_PARCELAS_INVALIDO"],
+            default="LINHA_INVALIDA",
+        )
+    else:
+        descartadas = pd.DataFrame(columns=list(base.columns) + ["MOTIVO_DESCARTE"])
 
-    data_inicio_contagem = [pd.NaT] * n
-    data_liquidacao = [pd.NaT] * n
-    projected_dates = [pd.NaT] * n
-    base_days = [np.nan] * n
-    delay_days = [np.nan] * n
-    rules_text = [""] * n
-    detail_texts = [""] * n
-    discard_reasons = [""] * n
+    base_valid = base[~invalid_mask].copy()
+    if base_valid.empty:
+        validas = pd.DataFrame(columns=[
+            "LINHA_ORIGEM", "DOCUMENTO", "BANDEIRA", "PRODUTO", "DATA_VENDA",
+            "VALOR_VENDA_LIQUIDO", "TOTAL_PARCELAS", "PARCELA_ATUAL", "VALOR_PARCELA_ORIGINAL",
+            "VALOR_LIQUIDO", "DATA_INICIO_CONTAGEM", "DATA_LIQUIDACAO",
+            "PRAZO_BASE_DIAS_CORRIDOS", "PRAZO_DELAY_DIAS_CORRIDOS", "REGRA_APLICADA",
+            "DATA_PREVISTA_RECEBIMENTO", "MES_PREVISTO", "DIA_SEMANA_PREVISTO",
+            "DETALHE_CONCAT", "MOTIVO_DESCARTE"
+        ])
+        return validas, descartadas.reset_index(drop=True)
 
-    memo = {}
+    base_valid["EH_CREDITO"] = base_valid["PRODUTO_NORM"].str.contains("CREDITO", na=False)
+    base_valid["EH_DEBITO"] = base_valid["PRODUTO_NORM"].str.contains("DEBITO", na=False)
+    base_valid["EH_PIX"] = base_valid["PRODUTO_NORM"].str.contains("PIX", na=False)
+    base_valid["QTD_LINHAS_PREVISTAS"] = np.where(
+        base_valid["EH_CREDITO"] & (base_valid["TOTAL_PARCELAS"] > 1),
+        base_valid["TOTAL_PARCELAS"],
+        1,
+    ).astype(int)
 
-    for i in range(n):
-        venda = base.at[i, "DATA_VENDA"]
-        valor = base.at[i, "VALOR_LIQUIDO"]
-        produto = base.at[i, "PRODUTO"]
-        parcelas = base.at[i, "PARCELAS"]
-        documento = base.at[i, "DOCUMENTO"]
-        bandeira = base.at[i, "BANDEIRA"]
+    cols_expandir = [
+        "LINHA_ORIGEM", "DOCUMENTO", "BANDEIRA", "PRODUTO", "PRODUTO_NORM",
+        "DATA_VENDA", "VALOR_VENDA_LIQUIDO", "VALOR_PARCELA_ORIGINAL",
+        "TOTAL_PARCELAS", "EH_CREDITO", "EH_DEBITO", "EH_PIX", "QTD_LINHAS_PREVISTAS"
+    ]
+    base_expandir = base_valid[cols_expandir].copy()
+    expanded = base_expandir.loc[base_expandir.index.repeat(base_expandir["QTD_LINHAS_PREVISTAS"])].copy()
+    expanded["PARCELA_ATUAL"] = expanded.groupby(level=0).cumcount() + 1
+    expanded = expanded.reset_index(drop=True)
 
-        if pd.isna(venda):
-            discard_reasons[i] = "DATA_VENDA_INVALIDA"
-            continue
+    expanded["VALOR_PARCELA_BASE"] = expanded["VALOR_PARCELA_ORIGINAL"]
+    mask_sem_parcela = expanded["VALOR_PARCELA_BASE"].isna() | (expanded["VALOR_PARCELA_BASE"].astype(float) == 0)
+    expanded.loc[mask_sem_parcela, "VALOR_PARCELA_BASE"] = (
+        expanded.loc[mask_sem_parcela, "VALOR_VENDA_LIQUIDO"].astype(float)
+        / expanded.loc[mask_sem_parcela, "TOTAL_PARCELAS"].astype(float)
+    )
 
-        if pd.isna(valor):
-            discard_reasons[i] = "VALOR_LIQUIDO_INVALIDO"
-            continue
+    parcelado_mask = expanded["EH_CREDITO"] & (expanded["TOTAL_PARCELAS"] > 1)
+    expanded["VALOR_LIQUIDO"] = expanded["VALOR_VENDA_LIQUIDO"].astype(float).round(2)
+    expanded.loc[parcelado_mask, "VALOR_LIQUIDO"] = expanded.loc[parcelado_mask, "VALOR_PARCELA_BASE"].astype(float).round(2)
 
-        try:
-            prazo_base_corrido, prazo_delay_corrido, regra = calculate_rule_schedule(produto, parcelas)
-            fluxo = calculate_receipt_flow(
-                sale_date=venda.date(),
-                base_calendar_days=prazo_base_corrido,
-                delay_calendar_days=prazo_delay_corrido,
-                holidays=holidays,
-                memo=memo,
-            )
+    last_parcela_mask = parcelado_mask & (expanded["PARCELA_ATUAL"] == expanded["TOTAL_PARCELAS"])
+    expanded.loc[last_parcela_mask, "VALOR_LIQUIDO"] = (
+        expanded.loc[last_parcela_mask, "VALOR_VENDA_LIQUIDO"].astype(float)
+        - (expanded.loc[last_parcela_mask, "VALOR_PARCELA_BASE"].astype(float).round(2)
+           * (expanded.loc[last_parcela_mask, "TOTAL_PARCELAS"].astype(int) - 1))
+    ).round(2)
 
-            parts = []
-            if documento:
-                parts.append(f"Doc {documento}")
-            if bandeira:
-                parts.append(bandeira)
-            if produto:
-                parts.append(produto)
-            if parcelas > 0:
-                parts.append(f"{parcelas}x")
-            parts.append(format_brl(valor))
+    expanded["PRAZO_BASE_DIAS_CORRIDOS"] = np.nan
+    expanded["PRAZO_DELAY_DIAS_CORRIDOS"] = np.nan
+    expanded["REGRA_APLICADA"] = ""
+    expanded["MOTIVO_DESCARTE"] = ""
 
-            data_inicio_contagem[i] = pd.Timestamp(fluxo["data_inicio_contagem"])
-            data_liquidacao[i] = pd.Timestamp(fluxo["data_liquidacao"])
-            projected_dates[i] = pd.Timestamp(fluxo["data_recebimento"])
-            base_days[i] = prazo_base_corrido
-            delay_days[i] = prazo_delay_corrido
-            rules_text[i] = regra
-            detail_texts[i] = " - ".join(parts)
-        except Exception as exc:
-            discard_reasons[i] = str(exc)
+    mask_debito = expanded["EH_DEBITO"]
+    mask_pix = expanded["EH_PIX"]
+    mask_credito = expanded["EH_CREDITO"]
+    mask_credito_1x = mask_credito & (expanded["TOTAL_PARCELAS"] <= 1)
+    mask_credito_parc = mask_credito & (expanded["TOTAL_PARCELAS"] > 1)
+    mask_prod_invalido = ~(mask_debito | mask_pix | mask_credito)
 
-    base["DATA_INICIO_CONTAGEM"] = data_inicio_contagem
-    base["DATA_LIQUIDACAO"] = data_liquidacao
-    base["PRAZO_BASE_DIAS_CORRIDOS"] = base_days
-    base["PRAZO_DELAY_DIAS_CORRIDOS"] = delay_days
-    base["REGRA_APLICADA"] = rules_text
-    base["DATA_PREVISTA_RECEBIMENTO"] = projected_dates
-    base["MES_PREVISTO"] = pd.Series(projected_dates).dt.strftime("%m/%Y")
-    base["DIA_SEMANA_PREVISTO"] = pd.Series(projected_dates).dt.dayofweek.map(WEEKDAY_PT)
-    base["DETALHE_CONCAT"] = detail_texts
-    base["MOTIVO_DESCARTE"] = discard_reasons
+    expanded.loc[mask_debito, "PRAZO_BASE_DIAS_CORRIDOS"] = 1
+    expanded.loc[mask_debito, "PRAZO_DELAY_DIAS_CORRIDOS"] = 30
+    expanded.loc[mask_debito, "REGRA_APLICADA"] = "DÉBITO = D+1 + 30 corridos → recebimento no próximo útil"
 
-    descartadas = base[base["MOTIVO_DESCARTE"] != ""].copy().reset_index(drop=True)
-    validas = base[base["MOTIVO_DESCARTE"] == ""].copy().reset_index(drop=True)
+    expanded.loc[mask_pix, "PRAZO_BASE_DIAS_CORRIDOS"] = 1
+    expanded.loc[mask_pix, "PRAZO_DELAY_DIAS_CORRIDOS"] = 0
+    expanded.loc[mask_pix, "REGRA_APLICADA"] = "PIX = D+1 corrido → recebimento no próximo útil"
 
-    return validas, descartadas
+    expanded.loc[mask_credito_1x, "PRAZO_BASE_DIAS_CORRIDOS"] = 30
+    expanded.loc[mask_credito_1x, "PRAZO_DELAY_DIAS_CORRIDOS"] = 30
+    expanded.loc[mask_credito_1x, "REGRA_APLICADA"] = "CRÉDITO 1X = D+30 + 30 corridos → recebimento no próximo útil"
 
+    expanded.loc[mask_credito_parc, "PRAZO_BASE_DIAS_CORRIDOS"] = expanded.loc[mask_credito_parc, "PARCELA_ATUAL"].astype(int) * 30
+    expanded.loc[mask_credito_parc, "PRAZO_DELAY_DIAS_CORRIDOS"] = 30
+    expanded.loc[mask_credito_parc, "REGRA_APLICADA"] = (
+        "CRÉDITO PARCELADO "
+        + expanded.loc[mask_credito_parc, "PARCELA_ATUAL"].astype(str)
+        + "/"
+        + expanded.loc[mask_credito_parc, "TOTAL_PARCELAS"].astype(str)
+        + " = D+(parcela x 30) + 30 corridos → recebimento no próximo útil"
+    )
+
+    expanded.loc[mask_prod_invalido, "MOTIVO_DESCARTE"] = "Produto não suportado para regra de recebimento: " + expanded.loc[mask_prod_invalido, "PRODUTO"].astype(str)
+
+    invalid_expanded = expanded[expanded["MOTIVO_DESCARTE"] != ""].copy()
+    if not invalid_expanded.empty:
+        descartadas = pd.concat([descartadas, invalid_expanded], ignore_index=True)
+
+    validas = expanded[expanded["MOTIVO_DESCARTE"] == ""].copy()
+    validas["PRAZO_BASE_DIAS_CORRIDOS"] = validas["PRAZO_BASE_DIAS_CORRIDOS"].astype(int)
+    validas["PRAZO_DELAY_DIAS_CORRIDOS"] = validas["PRAZO_DELAY_DIAS_CORRIDOS"].astype(int)
+
+    print("Calculando datas previstas de recebimento em modo rápido...")
+    datas_inicio_validas, datas_liquidacao_validas, datas_recebimento_validas = calcular_fluxo_recebimento_vetorizado(
+        validas["DATA_VENDA"],
+        validas["PRAZO_BASE_DIAS_CORRIDOS"].astype(int).to_numpy(),
+        validas["PRAZO_DELAY_DIAS_CORRIDOS"].astype(int).to_numpy(),
+        holidays,
+    )
+
+    # Mantemos essas datas como texto ISO dentro da base expandida.
+    # Isso reduz consumo de memória ao trabalhar com centenas de milhares de linhas.
+    validas["DATA_INICIO_CONTAGEM"] = datas_inicio_validas.strftime("%Y-%m-%d")
+    validas["DATA_LIQUIDACAO"] = datas_liquidacao_validas.strftime("%Y-%m-%d")
+    validas["DATA_PREVISTA_RECEBIMENTO"] = datas_recebimento_validas.strftime("%Y-%m-%d")
+    validas["MES_PREVISTO"] = datas_recebimento_validas.strftime("%m/%Y")
+    validas["DIA_SEMANA_PREVISTO"] = datas_recebimento_validas.dayofweek.map(WEEKDAY_PT)
+
+
+    validas["DETALHE_CONCAT"] = (
+        "Doc " + validas["DOCUMENTO"].astype(str)
+        + " - " + validas["PRODUTO"].astype(str)
+        + " - Parcela " + validas["PARCELA_ATUAL"].astype(str)
+        + "/" + validas["TOTAL_PARCELAS"].astype(str)
+    )
+
+    keep_cols = [
+        "LINHA_ORIGEM", "DOCUMENTO", "BANDEIRA", "PRODUTO", "DATA_VENDA",
+        "VALOR_VENDA_LIQUIDO", "TOTAL_PARCELAS", "PARCELA_ATUAL", "VALOR_PARCELA_ORIGINAL",
+        "VALOR_LIQUIDO", "DATA_INICIO_CONTAGEM", "DATA_LIQUIDACAO",
+        "PRAZO_BASE_DIAS_CORRIDOS", "PRAZO_DELAY_DIAS_CORRIDOS", "REGRA_APLICADA",
+        "DATA_PREVISTA_RECEBIMENTO", "MES_PREVISTO", "DIA_SEMANA_PREVISTO",
+        "DETALHE_CONCAT", "MOTIVO_DESCARTE"
+    ]
+    return validas[keep_cols].reset_index(drop=True), descartadas.reset_index(drop=True)
 
 def prepare_extrato(df_extrato: pd.DataFrame):
     extr = df_extrato.copy()
@@ -520,6 +691,12 @@ def prepare_extrato(df_extrato: pd.DataFrame):
 
 
 def build_previsto_concatenado(validas: pd.DataFrame):
+    def detalhes_resumidos(s):
+        itens = [str(x) for x in s if str(x).strip()]
+        if len(itens) > 30:
+            return " | ".join(itens[:30]) + f" | ... +{len(itens) - 30} lançamentos"
+        return " | ".join(itens)
+
     agrupado = (
         validas.groupby("DATA_PREVISTA_RECEBIMENTO", as_index=False)
         .agg(
@@ -527,11 +704,12 @@ def build_previsto_concatenado(validas: pd.DataFrame):
             DIA_DA_SEMANA=("DIA_SEMANA_PREVISTO", "first"),
             TOTAL_PREVISTO=("VALOR_LIQUIDO", "sum"),
             QTD_LANCAMENTOS=("VALOR_LIQUIDO", "size"),
-            DETALHES=("DETALHE_CONCAT", lambda s: " | ".join([x for x in s if str(x).strip()]))
+            DETALHES=("DETALHE_CONCAT", detalhes_resumidos)
         )
         .sort_values("DATA_PREVISTA_RECEBIMENTO")
         .reset_index(drop=True)
     )
+    agrupado["DATA_PREVISTA_RECEBIMENTO"] = pd.to_datetime(agrupado["DATA_PREVISTA_RECEBIMENTO"], errors="coerce")
     return agrupado
 
 
@@ -543,7 +721,7 @@ def build_extrato_concatenado(extr: pd.DataFrame):
             DIA_DA_SEMANA=("DIA_SEMANA_EXTRATO", "first"),
             TOTAL_EXTRATO=("VALOR_EXTRATO", "sum"),
             QTD_LANCAMENTOS=("VALOR_EXTRATO", "size"),
-            DETALHES_EXTRATO=("DESCRICAO", lambda s: " | ".join([x for x in s if str(x).strip()]))
+            DETALHES_EXTRATO=("DESCRICAO", lambda s: " | ".join([str(x) for x in list(s)[:30] if str(x).strip()]))
         )
         .sort_values("DATA_EXTRATO")
         .reset_index(drop=True)
@@ -596,8 +774,15 @@ def build_calendar_daily(conciliacao: pd.DataFrame):
     out["DIA_DA_SEMANA"] = out["DATA"].dt.dayofweek.map(WEEKDAY_PT)
     out["PROJETADO"] = out["PROJETADO"].fillna(0.0)
     out["VLR_EXTRATO"] = out["VLR_EXTRATO"].fillna(0.0)
+    
     out["DIFERENCA"] = out["VLR_EXTRATO"] - out["PROJETADO"]
-    out["STATUS"] = out["DIFERENCA"].apply(status_from_diff)
+    
+    hoje = pd.Timestamp("today").normalize()
+    out["STATUS"] = out.apply(
+        lambda row: "A RECEBER" if row["DATA"] > hoje else status_from_diff(row["DIFERENCA"]),
+        axis=1
+    )
+    
     out["QTD_PREVISTA"] = out["QTD_PREVISTA"].fillna(0).astype(int)
     out["QTD_EXTRATO"] = out["QTD_EXTRATO"].fillna(0).astype(int)
     out["DETALHES_PREVISTO"] = out["DETALHES_PREVISTO"].fillna("")
@@ -606,21 +791,43 @@ def build_calendar_daily(conciliacao: pd.DataFrame):
     return out
 
 
-def build_monthly(calendar_daily: pd.DataFrame):
-    base = calendar_daily.copy()
-    base["MES_REF"] = base["DATA"].dt.to_period("M")
-    mensal = (
-        base.groupby("MES_REF", as_index=False)
-        .agg(
-            PROJETADO=("PROJETADO", "sum"),
-            VLR_EXTRATO=("VLR_EXTRATO", "sum"),
-        )
-    )
-    mensal["DIFERENCA"] = mensal["VLR_EXTRATO"] - mensal["PROJETADO"]
-    mensal["STATUS"] = mensal["DIFERENCA"].apply(status_from_diff)
-    mensal["MES"] = mensal["MES_REF"].dt.strftime("%m/%Y")
-    mensal = mensal[["MES_REF", "MES", "PROJETADO", "VLR_EXTRATO", "DIFERENCA", "STATUS"]]
-    return mensal
+def build_monthly(calendar_daily: pd.DataFrame, extr: pd.DataFrame | None = None):
+    # Para o último mês existente no extrato, compara somente até a última data real
+    # do extrato. Isso evita comparar junho inteiro contra extrato lançado só até 01/06, por exemplo.
+    max_extrato_date = None
+    if extr is not None and not extr.empty and "DATA_EXTRATO" in extr.columns:
+        max_extrato_date = extr["DATA_EXTRATO"].max()
+
+    rows = []
+    for period, block in calendar_daily.groupby(calendar_daily["DATA"].dt.to_period("M")):
+        block_calc = block.copy()
+        status_forcado = None
+
+        if max_extrato_date is not None:
+            max_period = max_extrato_date.to_period("M")
+            if period == max_period:
+                block_calc = block_calc[block_calc["DATA"] <= max_extrato_date]
+            elif period > max_period:
+                status_forcado = "A RECEBER"
+
+        projetado = float(block_calc["PROJETADO"].sum())
+        vlr_extrato = float(block_calc["VLR_EXTRATO"].sum())
+        diferenca = vlr_extrato - projetado
+        status = status_forcado if status_forcado else status_from_diff(diferenca)
+
+        rows.append({
+            "MES_REF": period,
+            "MES": period.strftime("%m/%Y"),
+            "PROJETADO": projetado,
+            "VLR_EXTRATO": vlr_extrato,
+            "DIFERENCA": diferenca,
+            "STATUS": status,
+        })
+
+    mensal = pd.DataFrame(rows)
+    if mensal.empty:
+        return pd.DataFrame(columns=["MES_REF", "MES", "PROJETADO", "VLR_EXTRATO", "DIFERENCA", "STATUS"])
+    return mensal[["MES_REF", "MES", "PROJETADO", "VLR_EXTRATO", "DIFERENCA", "STATUS"]]
 
 def build_resumo_final(calendar_daily: pd.DataFrame):
     resumo = calendar_daily[["DATA", "PROJETADO", "VLR_EXTRATO", "DIFERENCA", "STATUS"]].copy()
@@ -787,6 +994,8 @@ def write_panel(ws, daily_calendar: pd.DataFrame, mensal: pd.DataFrame):
                     cell.font = Font(color="008000", bold=True)
                 elif value == "PGT MENOR":
                     cell.font = Font(color="C00000", bold=True)
+                elif value == "A RECEBER":
+                    cell.font = Font(color="808080", bold=True)
         row += 1
 
     total_values = [
@@ -883,6 +1092,22 @@ def write_panel(ws, daily_calendar: pd.DataFrame, mensal: pd.DataFrame):
     ws.column_dimensions["E"].width = 14
 
 
+def limitar_abas_detalhadas(df: pd.DataFrame, nome: str) -> pd.DataFrame:
+    if EXPORTAR_ABAS_DETALHADAS_COMPLETAS:
+        return df.copy()
+
+    total = len(df)
+    if total <= LIMITE_LINHAS_ABAS_DETALHADAS:
+        return df.copy()
+
+    print(
+        f"AVISO: aba {nome} possui {total:,} linhas. "
+        f"Exportando amostra de {LIMITE_LINHAS_ABAS_DETALHADAS:,} linhas para não travar o Excel."
+        .replace(",", ".")
+    )
+    return df.head(LIMITE_LINHAS_ABAS_DETALHADAS).copy()
+
+
 def write_output(
     output_path: Path,
     input_path: Path,
@@ -897,17 +1122,27 @@ def write_output(
     daily_calendar: pd.DataFrame,
     mensal: pd.DataFrame,
 ):
-    detalhado_previsto = validas[[
-        "DOCUMENTO", "BANDEIRA", "DATA_VENDA", "DATA_INICIO_CONTAGEM", "DATA_LIQUIDACAO",
-        "PRODUTO", "PARCELAS", "VALOR_LIQUIDO", "PRAZO_BASE_DIAS_CORRIDOS",
-        "PRAZO_DELAY_DIAS_CORRIDOS", "REGRA_APLICADA", "DATA_PREVISTA_RECEBIMENTO",
-        "MES_PREVISTO", "DIA_SEMANA_PREVISTO", "DETALHE_CONCAT"
+    print("Preparando abas do Excel...")
+
+    validas_detalhe = limitar_abas_detalhadas(validas, "PREVISTO_DETALHADO")
+    validas_auditoria = limitar_abas_detalhadas(validas, "AUDITORIA_REGRAS")
+
+    detalhado_previsto = validas_detalhe[[
+        "LINHA_ORIGEM", "DOCUMENTO", "BANDEIRA", "DATA_VENDA", "DATA_INICIO_CONTAGEM", "DATA_LIQUIDACAO",
+        "PRODUTO", "TOTAL_PARCELAS", "PARCELA_ATUAL", "VALOR_VENDA_LIQUIDO", "VALOR_PARCELA_ORIGINAL",
+        "VALOR_LIQUIDO", "PRAZO_BASE_DIAS_CORRIDOS", "PRAZO_DELAY_DIAS_CORRIDOS",
+        "REGRA_APLICADA", "DATA_PREVISTA_RECEBIMENTO", "MES_PREVISTO",
+        "DIA_SEMANA_PREVISTO", "DETALHE_CONCAT"
     ]].copy().rename(columns={
+        "LINHA_ORIGEM": "LINHA ORIGEM",
         "DATA_VENDA": "DATA DA VENDA",
         "DATA_INICIO_CONTAGEM": "DATA INÍCIO CONTAGEM",
         "DATA_LIQUIDACAO": "DATA LIQUIDAÇÃO",
-        "PARCELAS": "N DE PARCELAS",
-        "VALOR_LIQUIDO": "VALOR LÍQUIDO",
+        "TOTAL_PARCELAS": "TOTAL DE PARCELAS",
+        "PARCELA_ATUAL": "PARCELA ATUAL",
+        "VALOR_VENDA_LIQUIDO": "VALOR LÍQUIDO DA VENDA",
+        "VALOR_PARCELA_ORIGINAL": "VLR PARCELA ORIGINAL",
+        "VALOR_LIQUIDO": "VALOR PREVISTO DA PARCELA",
         "PRAZO_BASE_DIAS_CORRIDOS": "PRAZO BASE DIAS CORRIDOS",
         "PRAZO_DELAY_DIAS_CORRIDOS": "PRAZO DELAY DIAS CORRIDOS",
         "REGRA_APLICADA": "REGRA APLICADA",
@@ -960,16 +1195,19 @@ def write_output(
     resumo_final = build_resumo_final(daily_calendar)
     resumo_executivo = build_resumo_executivo(daily_calendar, validas, extr)
 
-    auditoria = validas[[
-        "DOCUMENTO", "BANDEIRA", "DATA_VENDA", "DATA_INICIO_CONTAGEM", "DATA_LIQUIDACAO",
-        "PRODUTO", "PARCELAS", "VALOR_LIQUIDO", "PRAZO_BASE_DIAS_CORRIDOS",
-        "PRAZO_DELAY_DIAS_CORRIDOS", "REGRA_APLICADA", "DATA_PREVISTA_RECEBIMENTO"
+    auditoria = validas_auditoria[[
+        "LINHA_ORIGEM", "DOCUMENTO", "BANDEIRA", "DATA_VENDA", "DATA_INICIO_CONTAGEM", "DATA_LIQUIDACAO",
+        "PRODUTO", "TOTAL_PARCELAS", "PARCELA_ATUAL", "VALOR_VENDA_LIQUIDO", "VALOR_LIQUIDO",
+        "PRAZO_BASE_DIAS_CORRIDOS", "PRAZO_DELAY_DIAS_CORRIDOS", "REGRA_APLICADA", "DATA_PREVISTA_RECEBIMENTO"
     ]].copy().rename(columns={
+        "LINHA_ORIGEM": "LINHA ORIGEM",
         "DATA_VENDA": "DATA DA VENDA",
         "DATA_INICIO_CONTAGEM": "DATA INÍCIO CONTAGEM",
         "DATA_LIQUIDACAO": "DATA LIQUIDAÇÃO",
-        "PARCELAS": "N DE PARCELAS",
-        "VALOR_LIQUIDO": "VALOR LÍQUIDO",
+        "TOTAL_PARCELAS": "TOTAL DE PARCELAS",
+        "PARCELA_ATUAL": "PARCELA ATUAL",
+        "VALOR_VENDA_LIQUIDO": "VALOR LÍQUIDO DA VENDA",
+        "VALOR_LIQUIDO": "VALOR PREVISTO DA PARCELA",
         "PRAZO_BASE_DIAS_CORRIDOS": "PRAZO BASE DIAS CORRIDOS",
         "PRAZO_DELAY_DIAS_CORRIDOS": "PRAZO DELAY DIAS CORRIDOS",
         "REGRA_APLICADA": "REGRA APLICADA",
@@ -984,6 +1222,11 @@ def write_output(
         "STATUS": "STATUS",
     })
 
+    modo_detalhe = (
+        "COMPLETO" if EXPORTAR_ABAS_DETALHADAS_COMPLETAS
+        else f"AMOSTRA DE {LIMITE_LINHAS_ABAS_DETALHADAS} LINHAS"
+    )
+
     parametros = pd.DataFrame({
         "PARÂMETRO": [
             "ARQUIVO DE ENTRADA",
@@ -997,6 +1240,8 @@ def write_output(
             "REGRA PIX",
             "REGRA CRÉDITO 1X",
             "REGRA CRÉDITO PARCELADO",
+            "LINHAS PREVISTAS GERADAS",
+            "MODO DAS ABAS DETALHADAS",
             "OBSERVAÇÃO GERAL",
         ],
         "VALOR": [
@@ -1007,111 +1252,58 @@ def write_output(
             input_path.suffix.lower(),
             str(EXTRATO_ONLY_POSITIVE_VALUES),
             ", ".join(ADDITIONAL_MANUAL_HOLIDAYS) if ADDITIONAL_MANUAL_HOLIDAYS else "",
-            "Venda em dia não útil começa no próximo útil; D+1 corrido; liquidação cai no próximo útil se necessário; delay de 30 corridos; recebimento cai no próximo útil se necessário",
-            "Venda em dia não útil começa no próximo útil; D+1 corrido; liquidação cai no próximo útil se necessário; delay de 30 corridos; recebimento cai no próximo útil se necessário",
-            "Venda em dia não útil começa no próximo útil; D+30 corridos; liquidação cai no próximo útil se necessário; delay de 30 corridos; recebimento cai no próximo útil se necessário",
-            "Venda em dia não útil começa no próximo útil; D+(parcelas x 30 corridos); liquidação cai no próximo útil se necessário; delay de 30 corridos; recebimento cai no próximo útil se necessário",
-            "Toda venda em dia não útil começa a contar no próximo dia útil",
+            "Venda em dia não útil começa no próximo útil; D+1 + 30 corridos; recebimento no próximo útil",
+            "Venda em dia não útil começa no próximo útil; D+1 corrido; recebimento no próximo útil",
+            "Venda em dia não útil começa no próximo útil; D+30 + 30 corridos; recebimento no próximo útil",
+            "A venda é aberta em parcelas; cada parcela usa VLR PARCELA; parcela N recebe em D+(N x 30) + 30 corridos; recebimento no próximo útil",
+            len(validas),
+            modo_detalhe,
+            "Crédito parcelado agora é expandido em uma linha por parcela. O último mês do extrato é comparado somente até a última data real do extrato. Para evitar travamento, as abas PREVISTO_DETALHADO e AUDITORIA_REGRAS saem como amostra por padrão.",
         ],
     })
 
+    print("Gravando arquivo Excel em modo rápido...")
+    painel_export = mensal_export.copy()
+
+    # IMPORTANTE:
+    # Não usamos load_workbook/style em cima do arquivo inteiro neste modo,
+    # porque o openpyxl pode demorar muitos minutos e parecer travado.
+    # O arquivo sai leve, abre no Excel e traz todos os consolidados principais.
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+        painel_export.to_excel(writer, sheet_name="PAINEL", index=False)
         resumo_executivo.to_excel(writer, sheet_name="RESUMO_EXECUTIVO", index=False)
         resumo_final.to_excel(writer, sheet_name="RESUMO_FINAL", index=False)
-        detalhado_previsto.to_excel(writer, sheet_name="PREVISTO_DETALHADO", index=False)
+        mensal_export.to_excel(writer, sheet_name="CONSOLIDADO_MES", index=False)
+        conciliacao_export.to_excel(writer, sheet_name="CONCILIACAO_DIA", index=False)
         previsto_concat.to_excel(writer, sheet_name="PREVISTO_CONCATENADO", index=False)
         extrato_tratado.to_excel(writer, sheet_name="EXTRATO_TRATADO", index=False)
         extrato_concat_export.to_excel(writer, sheet_name="EXTRATO_CONCATENADO", index=False)
-        conciliacao_export.to_excel(writer, sheet_name="CONCILIACAO_DIA", index=False)
+        detalhado_previsto.to_excel(writer, sheet_name="PREVISTO_DETALHADO", index=False)
         auditoria.to_excel(writer, sheet_name="AUDITORIA_REGRAS", index=False)
-        mensal_export.to_excel(writer, sheet_name="CONSOLIDADO_MES", index=False)
         descartadas.to_excel(writer, sheet_name="LINHAS_DESCARTADAS", index=False)
         parametros.to_excel(writer, sheet_name="PARAMETROS", index=False)
 
-    wb = load_workbook(output_path)
-    painel = wb.create_sheet("PAINEL", 0)
-    write_panel(painel, daily_calendar, mensal)
+    print("Arquivo Excel gravado.")
 
-    style_resumo_executivo(wb["RESUMO_EXECUTIVO"])
-    style_basic_sheet(
-        wb["RESUMO_FINAL"],
-        currency_headers=["VALOR PREVISÃO", "VALOR ENTRADA", "DIFERENÇA"],
-        date_headers=["DATA"],
-    )
-    style_basic_sheet(
-        wb["PREVISTO_DETALHADO"],
-        currency_headers=["VALOR LÍQUIDO"],
-        date_headers=["DATA DA VENDA", "DATA INÍCIO CONTAGEM", "DATA LIQUIDAÇÃO", "DATA PREVISTA RECEBIMENTO"],
-        wrap_headers=["DETALHE CONCATENADO", "REGRA APLICADA"],
-    )
-    style_basic_sheet(
-        wb["PREVISTO_CONCATENADO"],
-        currency_headers=["TOTAL PREVISTO"],
-        date_headers=["DATA PREVISTA"],
-        wrap_headers=["DETALHES"],
-    )
-    style_basic_sheet(
-        wb["EXTRATO_TRATADO"],
-        currency_headers=["VALOR EXTRATO"],
-        date_headers=["DATA EXTRATO"],
-        wrap_headers=["DESCRIÇÃO"],
-    )
-    style_basic_sheet(
-        wb["EXTRATO_CONCATENADO"],
-        currency_headers=["TOTAL EXTRATO"],
-        date_headers=["DATA EXTRATO"],
-        wrap_headers=["DETALHES EXTRATO"],
-    )
-    style_basic_sheet(
-        wb["CONCILIACAO_DIA"],
-        currency_headers=["PROJETADO", "VLR EXTRATO", "DIFERENÇA"],
-        date_headers=["DATA"],
-        wrap_headers=["DETALHES PREVISTO", "DETALHES EXTRATO"],
-    )
-    style_basic_sheet(
-        wb["AUDITORIA_REGRAS"],
-        currency_headers=["VALOR LÍQUIDO"],
-        date_headers=["DATA DA VENDA", "DATA INÍCIO CONTAGEM", "DATA LIQUIDAÇÃO", "DATA PREVISTA"],
-        wrap_headers=["REGRA APLICADA"],
-    )
-    style_basic_sheet(
-        wb["CONSOLIDADO_MES"],
-        currency_headers=["PROJETADO", "VLR EXTRATO", "DIFERENÇA"],
-    )
-    style_basic_sheet(wb["LINHAS_DESCARTADAS"])
-    style_basic_sheet(wb["PARAMETROS"])
+def main():
+    base_dir = get_app_dir()
+    output_path = base_dir / OUTPUT_FILENAME
 
-    wb.save(output_path)
+    print("=" * 80)
+    print("INICIANDO PROCESSAMENTO DE RECEBIMENTOS STONE")
+    print(f"Pasta de trabalho: {base_dir}")
 
-
-
-def _to_iso(value):
-    if pd.isna(value):
-        return None
-    try:
-        return pd.to_datetime(value).date().isoformat()
-    except Exception:
-        return None
-
-
-def _clean_float(value):
-    if pd.isna(value):
-        return 0.0
-    return float(value)
-
-
-def process_file(input_path_raw):
-    input_path = Path(input_path_raw).resolve()
-    base_dir = input_path.parent
-
-    if not input_path.exists():
-        raise FileNotFoundError(f"Arquivo não encontrado: {input_path}")
+    input_path = detect_input_file(base_dir)
+    print(f"Arquivo encontrado: {input_path.name}")
 
     engine = get_engine(input_path)
     xls = pd.ExcelFile(input_path, engine=engine)
 
     sheet_base = resolve_sheet_name(xls, SHEET_BASE_CANDIDATES)
     sheet_extrato = resolve_sheet_name(xls, SHEET_EXTRATO_CANDIDATES)
+
+    print(f"Aba base localizada: {sheet_base}")
+    print(f"Aba extrato localizada: {sheet_extrato}")
 
     df_base = pd.read_excel(input_path, sheet_name=sheet_base, engine=engine, dtype=object)
     df_extrato = pd.read_excel(input_path, sheet_name=sheet_extrato, engine=engine, dtype=object)
@@ -1127,105 +1319,52 @@ def process_file(input_path_raw):
     anos_feriados.update(y + 2 for y in anos_base)
 
     holidays = load_holidays(anos_feriados, base_dir)
+    print(f"Total de feriados carregados: {len(holidays)}")
 
     validas, descartadas = prepare_base(df_base, holidays)
+    print(f"Linhas válidas na base: {len(validas)}")
+    print(f"Linhas descartadas na base: {len(descartadas)}")
+
     extr = prepare_extrato(df_extrato)
+    print(f"Linhas válidas no extrato: {len(extr)}")
+
     previsto_conc = build_previsto_concatenado(validas)
     extrato_conc = build_extrato_concatenado(extr)
     conciliacao = build_conciliacao(previsto_conc, extrato_conc)
     daily_calendar = build_calendar_daily(conciliacao)
-    mensal = build_monthly(daily_calendar)
+    mensal = build_monthly(daily_calendar, extr)
 
-    total_projetado = float(daily_calendar["PROJETADO"].sum())
-    total_extrato = float(daily_calendar["VLR_EXTRATO"].sum())
-    diferenca_total = float(daily_calendar["DIFERENCA"].sum())
+    print(f"Período consolidado: {daily_calendar['DATA'].min().date()} até {daily_calendar['DATA'].max().date()}")
 
-    mensal_rows = []
-    for _, row in mensal.iterrows():
-        mensal_rows.append({
-            "mes": str(row["MES"]),
-            "projetado": _clean_float(row["PROJETADO"]),
-            "vlrExtrato": _clean_float(row["VLR_EXTRATO"]),
-            "diferenca": _clean_float(row["DIFERENCA"]),
-            "status": str(row["STATUS"] or ""),
-        })
+    write_output(
+        output_path=output_path,
+        input_path=input_path,
+        base_sheet_name=sheet_base,
+        extrato_sheet_name=sheet_extrato,
+        validas=validas,
+        descartadas=descartadas,
+        extr=extr,
+        previsto_conc=previsto_conc,
+        extrato_conc=extrato_conc,
+        conciliacao=conciliacao,
+        daily_calendar=daily_calendar,
+        mensal=mensal,
+    )
 
-    diario_rows = []
-    for _, row in daily_calendar.iterrows():
-        diario_rows.append({
-            "data": _to_iso(row["DATA"]),
-            "mes": str(row["MES"] or ""),
-            "diaSemana": str(row["DIA_DA_SEMANA"] or ""),
-            "projetado": _clean_float(row["PROJETADO"]),
-            "vlrExtrato": _clean_float(row["VLR_EXTRATO"]),
-            "diferenca": _clean_float(row["DIFERENCA"]),
-            "status": str(row["STATUS"] or ""),
-            "qtdPrevista": int(row["QTD_PREVISTA"] or 0),
-            "qtdExtrato": int(row["QTD_EXTRATO"] or 0),
-            "detalhesPrevisto": str(row["DETALHES_PREVISTO"] or ""),
-            "detalhesExtrato": str(row["DETALHES_EXTRATO"] or ""),
-        })
-
-    descartadas_rows = []
-    if len(descartadas) > 0:
-        cols = [c for c in ["DATA_VENDA", "VALOR_LIQUIDO", "PRODUTO", "PARCELAS", "DOCUMENTO", "BANDEIRA", "MOTIVO_DESCARTE"] if c in descartadas.columns]
-        for _, row in descartadas[cols].head(500).iterrows():
-            item = {}
-            for col in cols:
-                val = row[col]
-                if isinstance(val, (pd.Timestamp, datetime, date)):
-                    item[col] = _to_iso(val)
-                elif pd.isna(val):
-                    item[col] = None
-                else:
-                    item[col] = str(val)
-            descartadas_rows.append(item)
-
-    return {
-        "ok": True,
-        "generatedAt": datetime.now().isoformat(),
-        "fileName": input_path.name,
-        "resumo": {
-            "totalProjetado": total_projetado,
-            "totalExtrato": total_extrato,
-            "diferencaTotal": diferenca_total,
-            "qtdVendasProcessadas": int(len(validas)),
-            "qtdLancamentosExtrato": int(len(extr)),
-            "diasOk": int((daily_calendar["STATUS"] == "OK").sum()),
-            "diasPgtMaior": int((daily_calendar["STATUS"] == "PGT MAIOR").sum()),
-            "diasPgtMenor": int((daily_calendar["STATUS"] == "PGT MENOR").sum()),
-            "periodoInicio": _to_iso(daily_calendar["DATA"].min()),
-            "periodoFim": _to_iso(daily_calendar["DATA"].max()),
-        },
-        "mensal": mensal_rows,
-        "diario": diario_rows,
-        "descartadas": descartadas_rows,
-        "meta": {
-            "baseSheetName": sheet_base,
-            "extratoSheetName": sheet_extrato,
-            "linhasValidasBase": int(len(validas)),
-            "linhasValidasExtrato": int(len(extr)),
-            "linhasDescartadas": int(len(descartadas)),
-        },
-    }
-
-
-def main():
-    if len(sys.argv) < 2:
-        raise ValueError("Informe o caminho da planilha como primeiro argumento.")
-
-    result = process_file(sys.argv[1])
-    print(json.dumps(result, ensure_ascii=False, default=str))
+    print(f"Arquivo final gerado com sucesso: {output_path}")
+    print("=" * 80)
 
 
 if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        error_payload = {
-            "ok": False,
-            "error": str(e),
-            "trace": traceback.format_exc(),
-        }
-        print(json.dumps(error_payload, ensure_ascii=False), file=sys.stderr)
-        sys.exit(1)
+        print("\nERRO DURANTE O PROCESSAMENTO:")
+        print(str(e))
+        print("\nDETALHES:")
+        print(traceback.format_exc())
+        try:
+            input("\nPressione ENTER para sair...")
+        except Exception:
+            pass
+        raise
