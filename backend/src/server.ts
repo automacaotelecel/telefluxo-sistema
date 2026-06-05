@@ -407,10 +407,50 @@ anualInit.serialize(() => {
 const app = express();
 const prisma = new PrismaClient();
 
+const allowedOrigins = [
+  'https://telefluxo.telecelcelular.com.br',
+  'https://www.telefluxo.telecelcelular.com.br',
+  'http://localhost:5173',
+  'http://localhost:5174',
+  'http://localhost:3000',
+];
+
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+
+  if (origin && allowedOrigins.includes(origin)) {
+    res.header('Access-Control-Allow-Origin', origin);
+  } else {
+    res.header('Access-Control-Allow-Origin', '*');
+  }
+
+  res.header('Vary', 'Origin');
+  res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+  res.header(
+    'Access-Control-Allow-Headers',
+    'Origin, X-Requested-With, Content-Type, Accept, Authorization, X-User-Id'
+  );
+  res.header('Access-Control-Allow-Credentials', 'false');
+
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(204);
+  }
+
+  next();
+});
+
 app.use(cors({
-  origin: '*',
+  origin: allowedOrigins,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-User-Id'],
+  allowedHeaders: [
+    'Origin',
+    'X-Requested-With',
+    'Content-Type',
+    'Accept',
+    'Authorization',
+    'X-User-Id',
+  ],
+  credentials: false,
 }));
 
 app.use(express.json({ limit: '100mb' }));
