@@ -466,9 +466,24 @@ if (process.env.RENDER) {
 // RECEBIMENTO CARTÃO / MOTOR STONE EM PYTHON
 // ============================================================================
 
+const recebimentoCartaoTempDir = path.join(os.tmpdir(), 'telefluxo-recebimento-cartao');
+
+if (!fs.existsSync(recebimentoCartaoTempDir)) {
+  fs.mkdirSync(recebimentoCartaoTempDir, { recursive: true });
+}
+
 const uploadRecebimentoCartao = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 80 * 1024 * 1024 }, // 80 MB
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => {
+      cb(null, recebimentoCartaoTempDir);
+    },
+    filename: (_req, file, cb) => {
+      const originalName = file.originalname || 'base-stone.xlsx';
+      const safeName = originalName.replace(/[^\w.\-]+/g, '_');
+      cb(null, `${Date.now()}-${crypto.randomUUID()}-${safeName}`);
+    },
+  }),
+  limits: { fileSize: 80 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     const ext = path.extname(file.originalname || '').toLowerCase();
 
@@ -708,15 +723,8 @@ app.post(
         });
 }
 
-      const tempDir = path.join(os.tmpdir(), 'telefluxo-recebimento-cartao');
-      fs.mkdirSync(tempDir, { recursive: true });
-
       const originalName = req.file.originalname || 'base-stone.xlsx';
-      const safeName = originalName.replace(/[^\w.\-]+/g, '_');
-
-      tempPath = path.join(tempDir, `${Date.now()}-${crypto.randomUUID()}-${safeName}`);
-
-      fs.writeFileSync(tempPath, req.file.buffer);
+      tempPath = req.file.path;
 
       console.log('📥 Recebimento Cartão - arquivo chegou no backend:', {
         originalName,
