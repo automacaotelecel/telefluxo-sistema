@@ -152,6 +152,8 @@ export default function StockModule() {
   const [expandedStore, setExpandedStore] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
   const [storeViewMode, setStoreViewMode] = useState<'grid' | 'list'>('grid'); // Novo: toggle de lojas
+  const [storeDetailSearch, setStoreDetailSearch] = useState('');
+  const [storeDetailSort, setStoreDetailSort] = useState<'ESTOQUE' | 'GIRO' | 'VALOR' | 'NOME'>('ESTOQUE');
 
   const [maloteSearch, setMaloteSearch] = useState('');
   const [analysisData, setAnalysisData] = useState<any[]>([]);
@@ -271,6 +273,8 @@ export default function StockModule() {
   useEffect(() => {
     if (expandedStore) {
       setShowInsightsPanel(false);
+      setStoreDetailSearch('');
+      setStoreDetailSort('ESTOQUE');
     }
   }, [expandedStore]);
 
@@ -327,95 +331,144 @@ export default function StockModule() {
   // --- ALGORITMOS ---
 
   const redistributionSuggestions = useMemo(() => {
-    if (stockData.length === 0) return { moves: [], buys: [] };
+    if (stockData.length === 0) return { moves: [] };
 
     const suggestions: any[] = [];
-    const purchasesSug: any[] = [];
     const productGroups: Record<string, any> = {};
 
     stockData.forEach(item => {
       const region = STORE_REGIONS[item.storeName] || "OUTROS";
       if (regionFilter.length > 0 && !regionFilter.includes(region)) return;
 
-      const key = `${region}|${item.description}|${item.productCode}`;
+      const category = item.category || 'GERAL';
+      if (categoryFilter.length > 0 && !categoryFilter.includes(category)) return;
+
+      const line = getLineValue(item);
+      if (lineFilter.length > 0 && !lineFilter.includes(line)) return;
+
+      const cluster = getClusterValue(item);
+      if (clusterFilter.length > 0 && !clusterFilter.includes(cluster)) return;
+
+      const description = item.description || 'SEM DESCRIÇÃO';
+      const productCode = item.productCode || '';
+      const key = `${region}|${normalizeStr(description)}|${productCode}`;
+
       if (!productGroups[key]) {
         productGroups[key] = {
-          description: item.description,
-          productCode: item.productCode,
-          region: region,
-          category: item.category,
+          description,
+          productCode,
+          region,
+          category,
           totalStock: 0,
           totalSales: 0,
           stores: []
         };
       }
 
-      const sales = getProductSales(item.storeName, item.description);
-      productGroups[key].totalStock += Number(item.quantity);
+      const sales = getProductSales(item.storeName, description);
+      const stock = Number(item.quantity) || 0;
+      const dailySales = sales / Math.max(periodDays, 1);
+      const coverageDays = dailySales > 0 ? stock / dailySales : (stock > 0 ? 999 : 0);
+
+      productGroups[key].totalStock += stock;
       productGroups[key].totalSales += sales;
-      productGroups[key].stores.push({
-        storeName: item.storeName,
-        qty: Number(item.quantity),
-        sales: sales
-      });
+      productGroups[key].stores.push({ storeName: item.storeName, qty: stock, sales, dailySales, coverageDays, cluster });
     });
 
     Object.values(productGroups).forEach((prod: any) => {
-      const donors = prod.stores
-        .filter((s: any) => s.qty > 3 && s.sales < s.qty)
-        .sort((a: any, b: any) => b.qty - a.qty);
+      const stores = prod.stores.filter((store: any) => store.storeName !== "CD TAGUATINGA");
+      if (stores.length < 2) return;
 
-      const receivers = prod.stores
-        .filter((s: any) => s.qty < 2 && s.sales > 2)
-        .sort((a: any, b: any) => b.sales - a.sales);
+      const donors = stores
+        .map((store: any) => {
+          const minSafetyStock = Math.max(2, Math.ceil(store.dailySales * 15));
+          const hasNoRotationSurplus = store.sales === 0 && store.qty > 2;
+          const hasHighCoverageSurplus = store.dailySales > 0 && store.coverageDays > 45 && store.qty > minSafetyStock;
+          const surplus = hasNoRotationSurplus ? store.qty - 2 : hasHighCoverageSurplus ? store.qty - minSafetyStock : 0;
+          return { ...store, surplus: Math.max(0, Math.floor(surplus)), minSafetyStock };
+        })
+        .filter((store: any) => store.surplus > 0)
+        .sort((a: any, b: any) => b.surplus - a.surplus || b.coverageDays - a.coverageDays);
 
-      const incoming = getIncomingStock(prod.region, prod.description);
-      const incomingQty = incoming ? incoming.total : 0;
+      const receivers = stores
+        .map((store: any) => {
+          const targetStock = Math.max(2, Math.ceil(store.dailySales * 15));
+          const criticalByStock = store.qty <= 1 && store.sales > 0;
+          const criticalByCoverage = store.dailySales > 0 && store.coverageDays < 10;
+          const need = (criticalByStock || criticalByCoverage) ? Math.max(0, targetStock - store.qty) : 0;
+          return { ...store, need: Math.max(0, Math.ceil(need)), targetStock };
+        })
+        .filter((store: any) => store.need > 0)
+        .sort((a: any, b: any) => b.sales - a.sales || a.coverageDays - b.coverageDays);
 
-      const gap = prod.totalSales - prod.totalStock;
+      let donorIndex = 0;
+      let receiverIndex = 0;
 
-      if (gap > 5 && incomingQty < gap) {
-        purchasesSug.push({
-          type: 'purchase',
-          product: prod.description,
-          region: prod.region,
-          category: prod.category,
-          gap: gap - incomingQty,
-          insight: `Vendas no período: ${prod.totalSales} | Estoque: ${prod.totalStock} | Chegando: ${incomingQty}`
-        });
-      }
+      while (donorIndex < donors.length && receiverIndex < receivers.length) {
+        const donor = donors[donorIndex];
+        const receiver = receivers[receiverIndex];
+        if (!donor || !receiver) break;
 
-      if (donors.length > 0 && receivers.length > 0) {
-        let dIdx = 0;
-        let rIdx = 0;
-
-        while (dIdx < donors.length && rIdx < receivers.length) {
-          const donor = donors[dIdx];
-          const receiver = receivers[rIdx];
-          const moveQty = Math.min(donor.qty - 2, 3 - receiver.qty);
-
-          if (moveQty > 0) {
-            suggestions.push({
-              type: 'move',
-              product: prod.description,
-              from: donor.storeName,
-              to: receiver.storeName,
-              qty: moveQty,
-              region: prod.region,
-              reason: `Loja ${donor.storeName} tem sobra (${donor.qty}) e ${receiver.storeName} tem giro no período (${receiver.sales}).`
-            });
-            donor.qty -= moveQty;
-            receiver.qty += moveQty;
-          }
-
-          if (donor.qty <= 3) dIdx++;
-          if (receiver.qty >= 3) rIdx++;
+        if (donor.storeName === receiver.storeName) {
+          receiverIndex += 1;
+          continue;
         }
+
+        const moveQty = Math.min(donor.surplus, receiver.need, 5);
+
+        if (moveQty > 0) {
+          const donorCoverage = donor.coverageDays >= 999 ? 'sem giro' : `${Math.round(donor.coverageDays)} dias`;
+          const receiverCoverage = receiver.coverageDays > 0 ? `${Math.round(receiver.coverageDays)} dias` : 'sem cobertura';
+
+          suggestions.push({
+            type: 'move',
+            product: prod.description,
+            productCode: prod.productCode,
+            category: prod.category,
+            from: donor.storeName,
+            to: receiver.storeName,
+            qty: moveQty,
+            region: prod.region,
+            donorStock: donor.qty,
+            donorSales: donor.sales,
+            receiverStock: receiver.qty,
+            receiverSales: receiver.sales,
+            priority: receiver.qty === 0 ? 'CRÍTICA' : receiver.coverageDays < 7 ? 'ALTA' : 'MÉDIA',
+            reason: `Origem com cobertura ${donorCoverage} e destino com ${receiverCoverage}.`,
+          });
+
+          donor.surplus -= moveQty;
+          receiver.need -= moveQty;
+        }
+
+        if (donor.surplus <= 0) donorIndex += 1;
+        if (receiver.need <= 0) receiverIndex += 1;
       }
     });
 
-    return { moves: suggestions, buys: purchasesSug };
-  }, [stockData, salesData, regionFilter, purchaseData]);
+    return {
+      moves: suggestions.sort((a, b) => {
+        const priorityScore: Record<string, number> = { 'CRÍTICA': 3, 'ALTA': 2, 'MÉDIA': 1 };
+        return (priorityScore[b.priority] || 0) - (priorityScore[a.priority] || 0) || b.qty - a.qty;
+      }),
+    };
+  }, [stockData, salesData, regionFilter, categoryFilter, lineFilter, clusterFilter, periodDays]);
+
+  const redistributionMetrics = useMemo(() => {
+    const moves = redistributionSuggestions.moves || [];
+    const totalUnits = moves.reduce((acc: number, move: any) => acc + (Number(move.qty) || 0), 0);
+    const criticalMoves = moves.filter((move: any) => move.priority === 'CRÍTICA').length;
+    const originStores = new Set(moves.map((move: any) => move.from));
+    const destinationStores = new Set(moves.map((move: any) => move.to));
+
+    return {
+      totalMoves: moves.length,
+      totalUnits,
+      criticalMoves,
+      originStores: originStores.size,
+      destinationStores: destinationStores.size,
+    };
+  }, [redistributionSuggestions]);
 
   // --- ALGORITMO MALOTE (FRONT-END) ---
   const calculatedMalote = useMemo(() => {
@@ -551,6 +604,28 @@ export default function StockModule() {
     if (!expandedStore) return [];
     return filteredData.filter(i => i.storeName === expandedStore);
   }, [filteredData, expandedStore]);
+
+  const storeDetailProducts = useMemo(() => {
+    const search = storeDetailSearch.trim().toLowerCase();
+
+    return currentStoreProducts
+      .filter(item => {
+        if (!search) return true;
+        return (
+          String(item.description || '').toLowerCase().includes(search) ||
+          String(item.productCode || '').toLowerCase().includes(search) ||
+          String(item.category || '').toLowerCase().includes(search) ||
+          getLineValue(item).toLowerCase().includes(search) ||
+          getClusterValue(item).toLowerCase().includes(search)
+        );
+      })
+      .sort((a, b) => {
+        if (storeDetailSort === 'GIRO') return getProductSales(b.storeName, b.description) - getProductSales(a.storeName, a.description);
+        if (storeDetailSort === 'VALOR') return ((Number(b.costPrice) || 0) * (Number(b.quantity) || 0)) - ((Number(a.costPrice) || 0) * (Number(a.quantity) || 0));
+        if (storeDetailSort === 'NOME') return String(a.description || '').localeCompare(String(b.description || ''));
+        return (Number(b.quantity) || 0) - (Number(a.quantity) || 0);
+      });
+  }, [currentStoreProducts, storeDetailSearch, storeDetailSort, salesMap]);
 
   const stockSummary = useMemo(() => {
     const base = expandedStore ? currentStoreProducts : filteredData;
@@ -749,14 +824,24 @@ export default function StockModule() {
     }
 
     else if (moduleMode === 'redistribution') {
-      headers = ["Tipo da Sugestão", "Produto", "Região", "Origem (Tirar de)", "Destino (Mandar para)", "Quantidade", "Motivo / Insight"];
+      headers = ["Prioridade", "Produto", "Categoria", "Região", "Origem", "Estoque Origem", "Vendas Origem", "Destino", "Estoque Destino", "Vendas Destino", "Quantidade", "Motivo"];
       redistributionSuggestions.moves.forEach((move: any) => {
-        csvRows.push([`"Transferência"`, `"${move.product}"`, `"${move.region}"`, `"${move.from}"`, `"${move.to}"`, move.qty, `"${move.reason}"`].join(';'));
+        csvRows.push([
+          `"${move.priority}"`,
+          `"${move.product}"`,
+          `"${move.category || ''}"`,
+          `"${move.region}"`,
+          `"${move.from}"`,
+          move.donorStock,
+          move.donorSales,
+          `"${move.to}"`,
+          move.receiverStock,
+          move.receiverSales,
+          move.qty,
+          `"${move.reason}"`
+        ].join(';'));
       });
-      redistributionSuggestions.buys.forEach((buy: any) => {
-        csvRows.push([`"Sugestão Compra"`, `"${buy.product}"`, `"${buy.region}"`, `"-"`, `"-"`, buy.gap, `"${buy.insight}"`].join(';'));
-      });
-      fileName = `Remanejamento_Oportunidades.csv`;
+      fileName = `Remanejamento_Inteligente.csv`;
     }
 
     else if (moduleMode === 'purchases') {
@@ -1096,54 +1181,147 @@ export default function StockModule() {
 
         {/* ================= MÓDULO REMANEJAMENTO ================= */}
         {moduleMode === 'redistribution' && (
-          <div className="space-y-8 animate-fadeIn">
-            <div className="bg-gradient-to-r from-indigo-900 to-indigo-800 p-6 rounded-2xl text-white shadow-lg flex justify-between items-center">
-              <div>
-                <h2 className="text-lg font-black uppercase mb-1">Painel de Oportunidades</h2>
-                <p className="text-xs opacity-70">Otimização baseada em Estoque Local vs Vendas no período vs Compras Futuras.</p>
-              </div>
-              <div className="flex gap-4 text-center">
+          <div className="space-y-5 animate-fadeIn">
+            <div className="bg-gradient-to-r from-slate-950 via-indigo-950 to-slate-900 p-5 md:p-6 rounded-2xl text-white shadow-lg overflow-hidden relative">
+              <div className="absolute -right-12 -top-12 w-40 h-40 bg-indigo-500/20 rounded-full blur-2xl"></div>
+              <div className="relative z-10 flex flex-col xl:flex-row xl:items-center justify-between gap-5">
                 <div>
-                  <span className="block text-2xl font-bold">{redistributionSuggestions.moves.length}</span>
-                  <span className="text-[9px] uppercase opacity-70">Moves</span>
+                  <div className="inline-flex items-center gap-2 bg-white/10 border border-white/10 rounded-full px-3 py-1 mb-3">
+                    <Truck size={13} />
+                    <span className="text-[10px] font-black uppercase tracking-widest">Remanejamento Inteligente</span>
+                  </div>
+                  <h2 className="text-2xl font-black uppercase tracking-tight">Central de Transferências</h2>
+                  <p className="text-xs text-white/60 mt-1 max-w-2xl">
+                    Sugestões baseadas em sobra real de estoque, venda no período e cobertura por loja. A sugestão de compra foi removida desta tela.
+                  </p>
                 </div>
-                <div>
-                  <span className="block text-2xl font-bold">{redistributionSuggestions.buys.length}</span>
-                  <span className="text-[9px] uppercase opacity-70">Buys</span>
+
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                  <div className="bg-white/10 border border-white/10 rounded-2xl p-3 min-w-[120px]">
+                    <p className="text-[9px] font-black uppercase text-white/50">Transferências</p>
+                    <p className="text-2xl font-black">{redistributionMetrics.totalMoves}</p>
+                  </div>
+                  <div className="bg-white/10 border border-white/10 rounded-2xl p-3 min-w-[120px]">
+                    <p className="text-[9px] font-black uppercase text-white/50">Peças</p>
+                    <p className="text-2xl font-black text-indigo-200">{redistributionMetrics.totalUnits}</p>
+                  </div>
+                  <div className="bg-white/10 border border-white/10 rounded-2xl p-3 min-w-[120px]">
+                    <p className="text-[9px] font-black uppercase text-white/50">Críticas</p>
+                    <p className="text-2xl font-black text-red-200">{redistributionMetrics.criticalMoves}</p>
+                  </div>
+                  <div className="bg-white/10 border border-white/10 rounded-2xl p-3 min-w-[120px]">
+                    <p className="text-[9px] font-black uppercase text-white/50">Destinos</p>
+                    <p className="text-2xl font-black text-emerald-200">{redistributionMetrics.destinationStores}</p>
+                  </div>
                 </div>
               </div>
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-              <div className="space-y-4">
-                <h3 className="flex items-center gap-2 text-indigo-700 font-black uppercase text-sm border-b border-indigo-100 pb-2"><Truck size={18} /> Transferências</h3>
-                {redistributionSuggestions.moves.map((move: any, idx: number) => (
-                  <div key={idx} className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col gap-3 relative group">
-                    <div className="absolute top-0 right-0 bg-indigo-50 text-indigo-600 text-[9px] font-bold px-2 py-1 rounded-bl-lg uppercase">{move.region}</div>
-                    <h4 className="text-xs font-black text-slate-800 uppercase pr-8">{move.product}</h4>
-                    <div className="flex items-center justify-between bg-slate-50 p-3 rounded-lg border border-slate-100">
-                      <div className="text-center"><p className="text-[9px] font-bold text-red-400 uppercase">Origem</p><p className="text-xs font-black text-slate-700">{move.from}</p></div>
-                      <div className="flex flex-col items-center"><span className="text-xs font-black text-indigo-600 bg-indigo-100 px-2 py-1 rounded-full">{move.qty} un</span><ArrowRight size={14} className="text-indigo-300 mt-1" /></div>
-                      <div className="text-center"><p className="text-[9px] font-bold text-green-500 uppercase">Destino</p><p className="text-xs font-black text-slate-700">{move.to}</p></div>
-                    </div>
-                  </div>
-                ))}
-              </div>
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4">
+              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-black text-slate-800 uppercase flex items-center gap-2">
+                    <ArrowLeftRight size={16} className="text-indigo-600" />
+                    Lista de remanejamentos recomendados
+                  </h3>
+                  <p className="text-[10px] font-bold text-slate-400 uppercase mt-1">
+                    Mantém estoque de segurança na origem e prioriza lojas zeradas ou com baixa cobertura.
+                  </p>
+                </div>
 
-              <div className="space-y-4">
-                <h3 className="flex items-center gap-2 text-green-700 font-black uppercase text-sm border-b border-green-100 pb-2"><ShoppingBag size={18} /> Sugestões de Compra</h3>
-                {redistributionSuggestions.buys.map((buy: any, idx: number) => (
-                  <div key={idx} className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex justify-between items-center gap-4">
-                    <div>
-                      <div className="flex gap-2 mb-1"><span className="text-[9px] font-bold bg-green-50 text-green-600 px-1.5 py-0.5 rounded uppercase">{buy.region}</span></div>
-                      <h4 className="text-xs font-black text-slate-800 uppercase">{buy.product}</h4>
-                      <p className="text-[10px] text-slate-400 mt-1">{buy.insight}</p>
-                    </div>
-                    <div className="text-center"><p className="text-[9px] font-bold text-slate-400 uppercase">Comprar</p><p className="text-xl font-black text-green-600">+{buy.gap}</p></div>
-                  </div>
-                ))}
+                <div className="flex flex-wrap gap-2 text-[10px] font-black uppercase">
+                  <span className="bg-red-50 text-red-600 border border-red-100 px-3 py-1 rounded-full">Crítica: loja zerada</span>
+                  <span className="bg-amber-50 text-amber-600 border border-amber-100 px-3 py-1 rounded-full">Alta: baixa cobertura</span>
+                  <span className="bg-indigo-50 text-indigo-600 border border-indigo-100 px-3 py-1 rounded-full">Máx. 5 un por sugestão</span>
+                </div>
               </div>
             </div>
+
+            {redistributionSuggestions.moves.length > 0 ? (
+              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                <div className="overflow-auto max-h-[calc(100vh-310px)] min-h-[380px]">
+                  <table className="w-full text-left border-collapse">
+                    <thead className="sticky top-0 z-20 bg-slate-50 border-b border-slate-200 shadow-sm">
+                      <tr className="text-[10px] font-black uppercase text-slate-400">
+                        <th className="px-4 py-3 whitespace-nowrap">Prioridade</th>
+                        <th className="px-4 py-3 min-w-[320px]">Produto</th>
+                        <th className="px-4 py-3 whitespace-nowrap">Origem</th>
+                        <th className="px-4 py-3 text-center whitespace-nowrap">Origem</th>
+                        <th className="px-4 py-3 whitespace-nowrap">Destino</th>
+                        <th className="px-4 py-3 text-center whitespace-nowrap">Destino</th>
+                        <th className="px-4 py-3 text-center whitespace-nowrap">Enviar</th>
+                        <th className="px-4 py-3 min-w-[240px]">Motivo</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {redistributionSuggestions.moves.map((move: any, idx: number) => {
+                        const priorityClass =
+                          move.priority === 'CRÍTICA'
+                            ? 'bg-red-50 text-red-600 border-red-100'
+                            : move.priority === 'ALTA'
+                              ? 'bg-amber-50 text-amber-600 border-amber-100'
+                              : 'bg-indigo-50 text-indigo-600 border-indigo-100';
+
+                        return (
+                          <tr key={`${move.product}-${move.from}-${move.to}-${idx}`} className="hover:bg-indigo-50/30 transition-colors">
+                            <td className="px-4 py-3">
+                              <span className={`inline-flex px-2.5 py-1 rounded-full border text-[9px] font-black uppercase ${priorityClass}`}>
+                                {move.priority}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3">
+                              <p className="text-xs font-black text-slate-800 uppercase leading-tight">{move.product}</p>
+                              <div className="flex flex-wrap gap-1.5 mt-1.5">
+                                <span className="text-[9px] font-black bg-slate-100 text-slate-500 px-2 py-0.5 rounded uppercase">
+                                  {move.category || 'GERAL'}
+                                </span>
+                                <span className="text-[9px] font-black bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded uppercase border border-indigo-100">
+                                  {move.region}
+                                </span>
+                              </div>
+                            </td>
+                            <td className="px-4 py-3">
+                              <p className="text-xs font-black text-slate-700 uppercase">{move.from}</p>
+                              <p className="text-[9px] font-bold text-slate-400 uppercase mt-1">Loja com sobra</p>
+                            </td>
+                            <td className="px-4 py-3 text-center">
+                              <p className="text-sm font-black text-slate-800">{move.donorStock} est.</p>
+                              <p className="text-[9px] font-bold text-slate-400">{move.donorSales} vend.</p>
+                            </td>
+                            <td className="px-4 py-3">
+                              <p className="text-xs font-black text-slate-700 uppercase">{move.to}</p>
+                              <p className="text-[9px] font-bold text-emerald-500 uppercase mt-1">Loja com necessidade</p>
+                            </td>
+                            <td className="px-4 py-3 text-center">
+                              <p className="text-sm font-black text-red-600">{move.receiverStock} est.</p>
+                              <p className="text-[9px] font-bold text-slate-400">{move.receiverSales} vend.</p>
+                            </td>
+                            <td className="px-4 py-3 text-center">
+                              <span className="inline-flex items-center justify-center min-w-12 rounded-xl bg-indigo-600 text-white px-3 py-2 text-sm font-black shadow-sm">
+                                {move.qty}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3">
+                              <p className="text-[11px] font-bold text-slate-500 leading-relaxed">{move.reason}</p>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            ) : (
+              <div className="bg-white rounded-2xl border border-dashed border-slate-300 p-12 text-center">
+                <div className="w-14 h-14 rounded-2xl bg-slate-100 text-slate-400 flex items-center justify-center mx-auto mb-4">
+                  <Truck size={26} />
+                </div>
+                <h3 className="text-sm font-black text-slate-700 uppercase">Nenhum remanejamento necessário</h3>
+                <p className="text-xs text-slate-400 mt-2 max-w-md mx-auto">
+                  Com os filtros e período atuais, não encontrei uma combinação segura de loja com sobra e loja com necessidade.
+                </p>
+              </div>
+            )}
           </div>
         )}
 
@@ -1571,105 +1749,154 @@ export default function StockModule() {
             )}
 
             {expandedStore ? (
-              <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 animate-fadeIn">
-                <div className="lg:col-span-3 space-y-3">
-                  <div className="flex justify-between items-center mb-2">
-                    <div className="flex gap-2">
-                      <button onClick={() => setViewMode('list')} className={`p-1.5 rounded-lg ${viewMode === 'list' ? 'bg-indigo-100 text-indigo-700' : 'text-slate-400'}`}><ListIcon size={16} /></button>
-                      <button onClick={() => setViewMode('grid')} className={`p-1.5 rounded-lg ${viewMode === 'grid' ? 'bg-indigo-100 text-indigo-700' : 'text-slate-400'}`}><LayoutGrid size={16} /></button>
-                    </div>
-                    <span className="text-[10px] font-bold text-slate-400 uppercase">{currentStoreProducts.length} ITENS ENCONTRADOS</span>
-                  </div>
-
-                  <div className={viewMode === 'grid' ? "grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4" : "flex flex-col gap-2"}>
-                    {currentStoreProducts.slice(0, 100).map((item, idx) => {
-                      const stockQty = Number(item.quantity);
-                      const isLowStock = stockQty < 3;
-                      const soldQty = getProductSales(item.storeName, item.description);
-
-                      return (
-                        <div key={idx} className={`bg-white rounded-xl border p-4 hover:shadow-md transition-all group relative overflow-hidden ${isLowStock ? 'border-red-300 bg-red-50/20' : 'border-slate-100'} ${viewMode === 'list' ? 'flex justify-between items-center' : 'flex flex-col justify-between h-full'}`}>
-                          {isLowStock && (
-                            <div className="absolute top-0 right-0 p-2">
-                              <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse shadow-[0_0_8px_rgba(239,68,68,0.6)]"></div>
-                            </div>
-                          )}
-
-                          <div className="flex gap-4 items-start">
-                            <div className={`w-12 h-12 rounded-xl flex flex-col items-center justify-center font-black text-xs shrink-0 ${isLowStock ? 'bg-red-100 text-red-600' : 'bg-slate-100 text-slate-600'}`}>
-                              <span className="text-[14px]">{stockQty}</span>
-                              <span className="text-[8px] uppercase opacity-70">Est</span>
-                            </div>
-                            <div>
-                              <h4 className="text-xs font-bold text-slate-800 uppercase line-clamp-2 leading-tight">{item.description}</h4>
-                              <div className="flex flex-wrap items-center gap-2 mt-1">
-                                <span className="text-[9px] font-bold bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded uppercase">{item.category}</span>
-                                <span className="text-[9px] font-bold bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded uppercase border border-blue-100">
-                                  {getLineValue(item)}
-                                </span>
-                                <span className="text-[9px] font-bold bg-purple-50 text-purple-700 px-1.5 py-0.5 rounded uppercase border border-purple-100">
-                                  {getClusterValue(item)}
-                                </span>
-                                {soldQty > 0 ? (
-                                  <span className="text-[9px] font-bold bg-green-100 text-green-700 px-1.5 py-0.5 rounded uppercase flex items-center gap-1 border border-green-200">
-                                    <ShoppingBag size={10} /> {soldQty} vend
-                                  </span>
-                                ) : (
-                                  <span className="text-[8px] text-slate-300 uppercase">Sem giro</span>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-
-                          <div className={`text-right ${viewMode === 'grid' ? 'mt-4 border-t border-slate-100 pt-3 w-full flex justify-between items-end' : 'flex items-center gap-6'}`}>
-                            <div className="flex gap-4">
-                              <div className={viewMode === 'grid' ? 'text-left' : 'text-right'}>
-                                <p className="text-[9px] font-bold text-slate-400 uppercase">Custo Unit.</p>
-                                <p className="text-xs font-black text-slate-700">R$ {Number(item.costPrice || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
-                              </div>
-                              <div className={viewMode === 'grid' ? 'text-left border-l border-slate-100 pl-4' : 'text-right border-l border-slate-100 pl-4'}>
-                                <p className="text-[9px] font-bold text-emerald-500 uppercase">Preço Venda</p>
-                                <p className="text-xs font-black text-emerald-600">R$ {Number(item.salePrice || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
-                              </div>
-                            </div>
-                            <div className={viewMode === 'grid' ? 'text-right' : 'min-w-[100px] text-right'}>
-                              <p className="text-[9px] font-bold text-slate-400 uppercase">Total Custo</p>
-                              <p className={`text-sm font-black ${isLowStock ? 'text-red-600' : 'text-indigo-700'}`}>
-                                R$ {(Number(item.costPrice || 0) * stockQty).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
-                              </p>
-                            </div>
-                          </div>
+              <div className="space-y-4 animate-fadeIn">
+                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                  <div className="bg-gradient-to-r from-slate-900 to-indigo-900 p-5 text-white">
+                    <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2 mb-2">
+                          <span className="bg-white/10 border border-white/10 px-2.5 py-1 rounded-full text-[9px] font-black uppercase tracking-widest">Detalhe da Loja</span>
+                          <span className="bg-indigo-400/20 border border-indigo-300/20 px-2.5 py-1 rounded-full text-[9px] font-black uppercase tracking-widest">{STORE_REGIONS[expandedStore] || 'OUTROS'}</span>
+                          <span className="bg-purple-400/20 border border-purple-300/20 px-2.5 py-1 rounded-full text-[9px] font-black uppercase tracking-widest">Cluster: {currentStoreProducts[0] ? getClusterValue(currentStoreProducts[0]) : 'SEM CLUSTER'}</span>
                         </div>
-                      )
-                    })}
-                  </div>
-                </div>
+                        <h2 className="text-2xl md:text-3xl font-black uppercase tracking-tight truncate">{expandedStore}</h2>
+                        <p className="text-[11px] text-white/60 font-bold uppercase mt-1">Produtos, estoque, giro e valor financeiro no período selecionado.</p>
+                      </div>
 
-                <div className="space-y-4">
-                  <div className="bg-indigo-900 rounded-[32px] p-6 text-white shadow-xl relative overflow-hidden">
-                    <div className="absolute top-0 right-0 p-4 opacity-10"><Store size={80} /></div>
-                    <p className="text-[10px] font-bold opacity-70 uppercase tracking-widest mb-1">Resumo da Loja</p>
-                    <h2 className="text-xl font-black uppercase leading-tight mb-6">{expandedStore}</h2>
-                    <p className="text-[10px] font-bold text-indigo-200 uppercase -mt-4 mb-4">
-                      Cluster: {currentStoreProducts[0] ? getClusterValue(currentStoreProducts[0]) : 'SEM CLUSTER'}
-                    </p>
-                    <div className="space-y-4">
-                      <div>
-                        <p className="text-[10px] opacity-70 uppercase">Valor em Estoque</p>
-                        <p className="text-2xl font-bold">R$ {currentStoreProducts.reduce((acc, i) => acc + (i.costPrice * i.quantity), 0).toLocaleString('pt-BR', { maximumFractionDigits: 0 })}</p>
-                      </div>
-                      <div>
-                        <p className="text-[10px] opacity-70 uppercase">Total de Peças</p>
-                        <p className="text-2xl font-bold">{currentStoreProducts.reduce((acc, i) => acc + Number(i.quantity), 0).toLocaleString('pt-BR')}</p>
-                      </div>
-                      <div>
-                        <p className="text-[10px] opacity-70 uppercase">Giro Total (Período Selecionado)</p>
-                        <p className="text-xl font-bold text-green-300">
-                          {getStoreTotalSales(expandedStore || "")} peças
-                        </p>
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 w-full xl:w-auto">
+                        <div className="bg-white/10 border border-white/10 rounded-2xl p-3 min-w-[120px]"><p className="text-[9px] font-black uppercase text-white/50">Itens</p><p className="text-xl font-black">{storeDetailProducts.length}</p></div>
+                        <div className="bg-white/10 border border-white/10 rounded-2xl p-3 min-w-[120px]"><p className="text-[9px] font-black uppercase text-white/50">Peças</p><p className="text-xl font-black">{storeDetailProducts.reduce((acc, i) => acc + (Number(i.quantity) || 0), 0).toLocaleString('pt-BR')}</p></div>
+                        <div className="bg-white/10 border border-white/10 rounded-2xl p-3 min-w-[120px]"><p className="text-[9px] font-black uppercase text-white/50">Vendas</p><p className="text-xl font-black text-emerald-300">{storeDetailProducts.reduce((acc, i) => acc + getProductSales(i.storeName, i.description), 0).toLocaleString('pt-BR')}</p></div>
+                        <div className="bg-white/10 border border-white/10 rounded-2xl p-3 min-w-[120px]"><p className="text-[9px] font-black uppercase text-white/50">Custo</p><p className="text-xl font-black">R$ {storeDetailProducts.reduce((acc, i) => acc + ((Number(i.costPrice) || 0) * (Number(i.quantity) || 0)), 0).toLocaleString('pt-BR', { notation: "compact", maximumFractionDigits: 1 })}</p></div>
                       </div>
                     </div>
                   </div>
+
+                  <div className="p-4 border-b border-slate-100 bg-slate-50/80">
+                    <div className="flex flex-col lg:flex-row gap-3 lg:items-center justify-between">
+                      <div className="relative flex-1">
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                        <input
+                          type="text"
+                          placeholder="BUSCAR MODELO, CÓDIGO, CATEGORIA, LINHA OU CLUSTER..."
+                          value={storeDetailSearch}
+                          onChange={(e) => setStoreDetailSearch(e.target.value)}
+                          className="w-full pl-10 pr-4 py-3 bg-white border border-slate-200 text-slate-700 text-xs font-bold uppercase rounded-xl outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-50 transition-all"
+                        />
+                      </div>
+                      <div className="flex flex-col sm:flex-row gap-2">
+                        <select value={storeDetailSort} onChange={e => setStoreDetailSort(e.target.value as any)} className="bg-white border border-slate-200 text-slate-600 text-xs font-black uppercase px-4 py-3 rounded-xl outline-none cursor-pointer">
+                          <option value="ESTOQUE">Ordenar: Maior Estoque</option>
+                          <option value="GIRO">Ordenar: Maior Giro</option>
+                          <option value="VALOR">Ordenar: Maior Valor</option>
+                          <option value="NOME">Ordenar: Nome</option>
+                        </select>
+                        <div className="flex bg-white border border-slate-200 p-1 rounded-xl shrink-0">
+                          <button onClick={() => setViewMode('list')} className={`p-2 rounded-lg transition-all ${viewMode === 'list' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-indigo-600'}`} title="Lista"><ListIcon size={16} /></button>
+                          <button onClick={() => setViewMode('grid')} className={`p-2 rounded-lg transition-all ${viewMode === 'grid' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-indigo-600'}`} title="Cards"><LayoutGrid size={16} /></button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {viewMode === 'list' ? (
+                    <div className="overflow-auto max-h-[calc(100vh-360px)] min-h-[360px]">
+                      <table className="w-full text-left border-collapse">
+                        <thead className="sticky top-0 z-20 bg-white border-b border-slate-200 shadow-sm">
+                          <tr className="text-[10px] font-black uppercase text-slate-400">
+                            <th className="px-4 py-3 min-w-[340px]">Produto</th>
+                            <th className="px-4 py-3 whitespace-nowrap">Linha / Cluster</th>
+                            <th className="px-4 py-3 text-right whitespace-nowrap">Estoque</th>
+                            <th className="px-4 py-3 text-right whitespace-nowrap">Vendas</th>
+                            <th className="px-4 py-3 text-right whitespace-nowrap">Custo Unit.</th>
+                            <th className="px-4 py-3 text-right whitespace-nowrap">Preço Venda</th>
+                            <th className="px-4 py-3 text-right whitespace-nowrap">Custo Total</th>
+                            <th className="px-4 py-3 text-center whitespace-nowrap">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {storeDetailProducts.map((item, idx) => {
+                            const stockQty = Number(item.quantity) || 0;
+                            const soldQty = getProductSales(item.storeName, item.description);
+                            const totalCost = (Number(item.costPrice) || 0) * stockQty;
+                            const isLowStock = stockQty > 0 && stockQty < 3;
+                            const isNoStock = stockQty === 0;
+
+                            return (
+                              <tr key={`${item.productCode}-${item.description}-${idx}`} className="hover:bg-indigo-50/30 transition-colors">
+                                <td className="px-4 py-3">
+                                  <p className="text-xs font-black text-slate-800 uppercase leading-tight">{item.description}</p>
+                                  <div className="flex flex-wrap gap-1.5 mt-1.5">
+                                    <span className="text-[9px] font-black bg-slate-100 text-slate-500 px-2 py-0.5 rounded uppercase">{item.category || 'GERAL'}</span>
+                                    {item.productCode && <span className="text-[9px] font-black bg-blue-50 text-blue-700 px-2 py-0.5 rounded uppercase border border-blue-100">{item.productCode}</span>}
+                                  </div>
+                                </td>
+                                <td className="px-4 py-3">
+                                  <div className="flex flex-col gap-1">
+                                    <span className="text-[9px] font-black bg-blue-50 text-blue-700 px-2 py-1 rounded uppercase border border-blue-100 w-fit">{getLineValue(item)}</span>
+                                    <span className="text-[9px] font-black bg-purple-50 text-purple-700 px-2 py-1 rounded uppercase border border-purple-100 w-fit">{getClusterValue(item)}</span>
+                                  </div>
+                                </td>
+                                <td className={`px-4 py-3 text-right text-base font-black ${isNoStock ? 'text-red-500' : isLowStock ? 'text-amber-600' : 'text-slate-800'}`}>{stockQty.toLocaleString('pt-BR')}</td>
+                                <td className="px-4 py-3 text-right"><span className={`text-sm font-black ${soldQty > 0 ? 'text-emerald-600' : 'text-slate-300'}`}>{soldQty.toLocaleString('pt-BR')}</span></td>
+                                <td className="px-4 py-3 text-right text-xs font-bold text-slate-600 whitespace-nowrap">R$ {Number(item.costPrice || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</td>
+                                <td className="px-4 py-3 text-right text-xs font-black text-emerald-600 whitespace-nowrap">R$ {Number(item.salePrice || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</td>
+                                <td className="px-4 py-3 text-right text-xs font-black text-indigo-700 whitespace-nowrap">R$ {totalCost.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</td>
+                                <td className="px-4 py-3 text-center">
+                                  {isNoStock ? <span className="inline-flex rounded-full bg-red-50 text-red-600 border border-red-100 px-2 py-1 text-[9px] font-black uppercase">Zerado</span> :
+                                    isLowStock ? <span className="inline-flex rounded-full bg-amber-50 text-amber-600 border border-amber-100 px-2 py-1 text-[9px] font-black uppercase">Baixo</span> :
+                                      soldQty > 0 ? <span className="inline-flex rounded-full bg-emerald-50 text-emerald-600 border border-emerald-100 px-2 py-1 text-[9px] font-black uppercase">Com Giro</span> :
+                                        <span className="inline-flex rounded-full bg-slate-100 text-slate-500 border border-slate-200 px-2 py-1 text-[9px] font-black uppercase">Sem Giro</span>}
+                                </td>
+                              </tr>
+                            );
+                          })}
+
+                          {storeDetailProducts.length === 0 && (
+                            <tr>
+                              <td colSpan={8} className="px-4 py-16 text-center">
+                                <p className="text-sm font-black text-slate-400 uppercase">Nenhum produto encontrado nesta loja.</p>
+                                <p className="text-xs text-slate-400 mt-1">Ajuste a busca ou volte para a visão geral.</p>
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (
+                    <div className="p-4 overflow-auto max-h-[calc(100vh-360px)] min-h-[360px]">
+                      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                        {storeDetailProducts.map((item, idx) => {
+                          const stockQty = Number(item.quantity) || 0;
+                          const soldQty = getProductSales(item.storeName, item.description);
+                          const isLowStock = stockQty > 0 && stockQty < 3;
+                          const isNoStock = stockQty === 0;
+                          return (
+                            <div key={`${item.productCode}-${item.description}-${idx}`} className={`bg-white rounded-2xl border p-4 shadow-sm hover:shadow-md transition-all ${isNoStock ? 'border-red-200 bg-red-50/30' : isLowStock ? 'border-amber-200 bg-amber-50/30' : 'border-slate-200'}`}>
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0">
+                                  <h4 className="text-xs font-black text-slate-800 uppercase line-clamp-2 leading-tight">{item.description}</h4>
+                                  <div className="flex flex-wrap items-center gap-1.5 mt-2">
+                                    <span className="text-[9px] font-black bg-slate-100 text-slate-500 px-2 py-0.5 rounded uppercase">{item.category || 'GERAL'}</span>
+                                    <span className="text-[9px] font-black bg-blue-50 text-blue-700 px-2 py-0.5 rounded uppercase border border-blue-100">{getLineValue(item)}</span>
+                                  </div>
+                                </div>
+                                <div className={`w-14 h-14 rounded-2xl flex flex-col items-center justify-center shrink-0 ${isNoStock ? 'bg-red-100 text-red-600' : isLowStock ? 'bg-amber-100 text-amber-700' : 'bg-indigo-50 text-indigo-700'}`}>
+                                  <span className="text-lg font-black">{stockQty}</span>
+                                  <span className="text-[8px] font-black uppercase">Est.</span>
+                                </div>
+                              </div>
+                              <div className="grid grid-cols-3 gap-2 mt-4">
+                                <div className="bg-slate-50 rounded-xl p-2"><p className="text-[8px] font-black text-slate-400 uppercase">Vendas</p><p className={`text-sm font-black ${soldQty > 0 ? 'text-emerald-600' : 'text-slate-300'}`}>{soldQty}</p></div>
+                                <div className="bg-slate-50 rounded-xl p-2"><p className="text-[8px] font-black text-slate-400 uppercase">Custo</p><p className="text-xs font-black text-slate-700">R$ {Number(item.costPrice || 0).toLocaleString('pt-BR', { notation: "compact", maximumFractionDigits: 1 })}</p></div>
+                                <div className="bg-slate-50 rounded-xl p-2"><p className="text-[8px] font-black text-slate-400 uppercase">Total</p><p className="text-xs font-black text-indigo-700">R$ {((Number(item.costPrice) || 0) * stockQty).toLocaleString('pt-BR', { notation: "compact", maximumFractionDigits: 1 })}</p></div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             ) : (

@@ -12,6 +12,7 @@ import NotificationBell from "./components/NotificationBell";
 import IntelligentAlerts from './components/IntelligentAlerts';
 import RemanejamentoAprovacao from './components/RemanejamentoAprovacao';
 import ExecutiveDashboard from './components/ExecutiveDashboard';
+import AvaliacoesLojas from './components/AvaliacoesLojas';
 import Home from "./components/home";
 import DeptBulletin from "./components/DeptBulletin";
 import FinanceModule from "./components/FinanceModule";
@@ -64,6 +65,7 @@ const DEFAULT_EXPANDED = {
   sales: false,
   finance: false,
   comparativos: false,
+  executive: false,
 };
 
 const STORE_HOME_VIEW = 'home';
@@ -208,6 +210,7 @@ function App() {
     compras_vendas: 'COMPRAS X VENDAS',
     rh: 'RH',
     executive_dashboard: 'PAINEL DIRETORIA / RESUMO EXECUTIVO',
+    avaliacoes_lojas: 'PAINEL DIRETORIA / AVALIAÇÕES DAS LOJAS',
     stock: 'CONTROLE DE ESTOQUE',
     alertas_inteligentes: 'CENTRAL DE ALERTAS INTELIGENTES',
     remanejamento_aprovacao: 'REMANEJAMENTO COM APROVAÇÃO',
@@ -349,13 +352,33 @@ function App() {
           />
 
           {canViewExecutiveDashboard && (
-            <NavButton
-              icon={ShieldCheck}
-              label="Painel Diretoria"
-              active={currentView === 'executive_dashboard'}
-              onClick={() => handleNavigate('executive_dashboard')}
-              customClass="bg-slate-800 text-white shadow-lg ring-1 ring-orange-500/30"
-            />
+            <div>
+              <NavButton
+                icon={ShieldCheck}
+                label="Painel Diretoria"
+                active={['executive_dashboard', 'avaliacoes_lojas'].includes(currentView)}
+                onClick={() => handleSectionToggle('executive')}
+                hasChevron
+                chevronOpen={expanded.executive}
+                customClass="bg-slate-800 text-white shadow-lg ring-1 ring-orange-500/30"
+              />
+
+              {expanded.executive && !isSidebarCollapsed && (
+                <div className="mt-1 space-y-1">
+                  <SubMenuItem
+                    label="Resumo Executivo"
+                    view="executive_dashboard"
+                    active={currentView === 'executive_dashboard'}
+                  />
+
+                  <SubMenuItem
+                    label="Avaliações das Lojas"
+                    view="avaliacoes_lojas"
+                    active={currentView === 'avaliacoes_lojas'}
+                  />
+                </div>
+              )}
+            </div>
           )}
 
           {(isAdmin || isManager) && !isStoreOnly && (
@@ -719,6 +742,8 @@ function App() {
             <Home currentUser={user} />
           ) : currentView === 'executive_dashboard' && canViewExecutiveDashboard ? (
             <ExecutiveDashboard currentUser={user} />
+          ) : currentView === 'avaliacoes_lojas' && canViewExecutiveDashboard ? (
+            <AvaliacoesLojas />
           ) : currentView === 'alertas_inteligentes' ? (
             <IntelligentAlerts
               currentUser={user}
@@ -733,7 +758,7 @@ function App() {
           ) : currentView === 'recebimento_cartao' ? (
             <RecebimentoCartao currentUser={user} />
           ) : currentView === 'comparativos_pdf' ? (
-            <ComparativosModule />
+            <ComparativosModule currentUser={user} />
           ) : currentView === 'comparativos_fluxo' ? (
             <FluxoComparativoModule currentUser={user} />
           ) : currentView === 'stock' ? (

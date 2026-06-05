@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Send,
   Loader2,
@@ -15,6 +15,9 @@ import {
   Maximize2,
   Package,
   Download,
+  Brain,
+  Trash2,
+  FileSpreadsheet,
 } from "lucide-react";
 
 type ClarkMessage = {
@@ -34,6 +37,22 @@ type ClarkProps = {
   currentUser: any;
   placement?: "floating" | "header";
 };
+
+type ClarkMemoryState = {
+  userId: string;
+  lastProduct: string | null;
+  lastStore: string | null;
+  lastPeriodStart: string | null;
+  lastPeriodEnd: string | null;
+  lastPeriodLabel: string | null;
+  lastIntent: string | null;
+  lastTool: string | null;
+  lastQuestion: string | null;
+  lastAnswerSummary: string | null;
+  interactionCount: number;
+  updatedAt: string | null;
+};
+
 
 type QuickAction =
   | "buscar_produto"
@@ -115,7 +134,77 @@ export default function Clark({ currentUser, placement = "floating" }: ClarkProp
   const [loading, setLoading] = useState(false);
   const [pendingAction, setPendingAction] = useState<QuickAction | null>(null);
   const [excelDownloadingId, setExcelDownloadingId] = useState<string | null>(null);
+  const [memory, setMemory] = useState<ClarkMemoryState | null>(null);
+  const [memoryLoading, setMemoryLoading] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
+
+  const carregarMemoriaClark = async () => {
+    const userId = String(currentUser?.id || "").trim();
+    if (!userId) return;
+
+    try {
+      setMemoryLoading(true);
+      const response = await fetch(
+        `${API_URL}/api/clark/memory?userId=${encodeURIComponent(userId)}`,
+      );
+
+      const data = await response.json();
+
+      if (response.ok) {
+        setMemory(data?.memory || null);
+      }
+    } catch (error) {
+      console.warn("Não foi possível carregar a memória da Clark:", error);
+    } finally {
+      setMemoryLoading(false);
+    }
+  };
+
+  const limparMemoriaClark = async () => {
+    const userId = String(currentUser?.id || "").trim();
+    if (!userId || loading) return;
+
+    try {
+      setMemoryLoading(true);
+      const response = await fetch(
+        `${API_URL}/api/clark/memory?userId=${encodeURIComponent(userId)}`,
+        { method: "DELETE" },
+      );
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => null);
+        throw new Error(data?.error || "Erro ao limpar memória.");
+      }
+
+      setMemory(null);
+      addMessage(
+        "assistant",
+        "Memória de contexto limpa. A partir de agora, não vou usar o produto, loja ou período anterior para completar perguntas curtas.",
+      );
+    } catch (error: any) {
+      addMessage(
+        "assistant",
+        `Não consegui limpar a memória agora. Motivo: ${
+          error?.message || "erro desconhecido"
+        }`,
+      );
+    } finally {
+      setMemoryLoading(false);
+    }
+  };
+
+  const gerarRelatorioExecutivoRapido = async () => {
+    if (loading) return;
+    await sendQuestion(
+      "Modo diretoria: gere um relatório executivo da operação este mês, com vendas, estoque, seguros, alertas, riscos e ações recomendadas. Ao final, disponibilize Excel.",
+    );
+  };
+
+  useEffect(() => {
+    if (isOpen) {
+      carregarMemoriaClark();
+    }
+  }, [isOpen, currentUser?.id]);
 
   const suggestions = useMemo<QuickSuggestion[]>(
     () => [
@@ -255,7 +344,7 @@ export default function Clark({ currentUser, placement = "floating" }: ClarkProp
     }
   };
 
-  const sendQuestion = async (question?: string) => {
+  async function sendQuestion(question?: string) {
     const perguntaDigitada = String(question || input).trim();
 
     if (!perguntaDigitada || loading) return;
@@ -300,6 +389,13 @@ export default function Clark({ currentUser, placement = "floating" }: ClarkProp
         perguntaOriginal: pergunta,
         actions: data?.actions,
       });
+
+      const memoryAfter = data?.dados?.brain?.memoryAfter;
+      if (memoryAfter) {
+        setMemory(memoryAfter);
+      } else {
+        carregarMemoriaClark();
+      }
     } catch (error: any) {
       addMessage(
         "assistant",
@@ -311,7 +407,7 @@ export default function Clark({ currentUser, placement = "floating" }: ClarkProp
       setLoading(false);
       setTimeout(() => inputRef.current?.focus(), 100);
     }
-  };
+  }
 
   const closeChat = () => {
     setIsOpen(false);
@@ -381,6 +477,7 @@ export default function Clark({ currentUser, placement = "floating" }: ClarkProp
         <button
           onClick={() => {
             setIsOpen(true);
+            carregarMemoriaClark();
             setTimeout(() => inputRef.current?.focus(), 150);
           }}
           className={
@@ -471,6 +568,60 @@ export default function Clark({ currentUser, placement = "floating" }: ClarkProp
                   {currentUser?.name || "Usuário"}
                 </p>
               </div>
+            </div>
+          </div>
+
+          <div className="px-4 py-3 bg-white border-b border-slate-200">
+            <div className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className="w-8 h-8 rounded-xl bg-slate-900 text-white flex items-center justify-center shrink-0">
+                    <Brain size={15} />
+                  </div>
+
+                  <div className="min-w-0">
+                    <p className="text-[9px] text-slate-400 font-black uppercase tracking-widest">
+                      Memória executiva
+                    </p>
+                    <p className="text-xs font-black text-slate-800 truncate">
+                      {memory?.lastProduct || memory?.lastStore || memory?.lastPeriodLabel
+                        ? [memory?.lastProduct, memory?.lastStore, memory?.lastPeriodLabel]
+                            .filter(Boolean)
+                            .join(" • ")
+                        : memoryLoading
+                          ? "Carregando contexto..."
+                          : "Sem contexto salvo ainda"}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    onClick={gerarRelatorioExecutivoRapido}
+                    disabled={loading}
+                    className="hidden md:inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-orange-600 hover:bg-orange-700 disabled:bg-orange-300 text-white text-[10px] font-black uppercase transition-colors"
+                    title="Gerar relatório executivo este mês"
+                  >
+                    <FileSpreadsheet size={13} />
+                    Relatório
+                  </button>
+
+                  <button
+                    onClick={limparMemoriaClark}
+                    disabled={loading || memoryLoading || !memory}
+                    className="inline-flex items-center justify-center w-9 h-9 rounded-xl bg-white hover:bg-red-50 disabled:opacity-40 disabled:cursor-not-allowed text-slate-500 hover:text-red-600 border border-slate-200 transition-colors"
+                    title="Limpar memória da Clark"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              </div>
+
+              {memory?.lastAnswerSummary && (
+                <p className="text-[10px] leading-relaxed text-slate-500 font-semibold line-clamp-2">
+                  Última resposta: {memory.lastAnswerSummary}
+                </p>
+              )}
             </div>
           </div>
 
@@ -611,7 +762,7 @@ export default function Clark({ currentUser, placement = "floating" }: ClarkProp
             </div>
 
             <p className="text-[9px] text-slate-400 font-bold uppercase tracking-widest mt-2 text-center">
-              Clark responde usando os dados permitidos para seu usuário.
+              Clark usa dados reais, respeita permissões e lembra o último contexto para perguntas curtas.
             </p>
           </div>
         </div>
