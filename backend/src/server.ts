@@ -2101,11 +2101,742 @@ app.get('/api/estoque-visao-detalhada', async (req, res) => {
   }
 });
 
+// =======================================================
+// ⚡ PAINEL DIRETORIA / ACESSO RÁPIDO DE APARELHOS
+// Rota usada pelo submenu "Painel Diretoria > Acesso Rápido"
+// Consolida: estoque atual + vendas do mês + vendas do ano
+// Agrupa aparelhos por modelo base e deixa cores/variações no detalhe
+// =======================================================
+
+type AcessoRapidoVariacaoAgg = {
+  id: string;
+  modeloCompleto: string;
+  referencia: string;
+  categoria: string;
+  cor: string;
+  quantidade: number;
+  vendasMes: number;
+  vendasAno: number;
+};
+
+type AcessoRapidoStoreAgg = {
+  loja: string;
+  regiao: string;
+  quantidade: number;
+  vendasMes: number;
+  vendasAno: number;
+  variacoes: AcessoRapidoVariacaoAgg[];
+};
+
+type AcessoRapidoProductAgg = {
+  id: string;
+  modelo: string;
+  referencia: string;
+  categoria: string;
+  quantidade: number;
+  vendasMes: number;
+  vendasAno: number;
+  lojasComEstoque: number;
+  status: 'COM_ESTOQUE' | 'SEM_ESTOQUE' | 'SEM_GIRO_MES' | 'ALTO_GIRO';
+  lojas: AcessoRapidoStoreAgg[];
+  variacoes: AcessoRapidoVariacaoAgg[];
+};
+
+function acessoRapidoSearchKey(value: any): string {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^A-Z0-9]/gi, '')
+    .toUpperCase()
+    .trim();
+}
+
+function acessoRapidoCleanName(value: any): string {
+  return String(value || '')
+    .replace(/\u00A0/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function acessoRapidoDetectColor(description: any): string {
+  const text = estoqueDetalhadoNormalizeText(description);
+
+  const colorMap: Record<string, string> = {
+    JETBLACK: 'JetBlack',
+    'JET BLACK': 'JetBlack',
+    PRETO: 'Preto',
+    BLACK: 'Preto',
+    BRANCO: 'Branco',
+    WHITE: 'Branco',
+    ROSA: 'Rosa',
+    PINK: 'Rosa',
+    AZUL: 'Azul',
+    BLUE: 'Azul',
+    VERDE: 'Verde',
+    GREEN: 'Verde',
+    CINZA: 'Cinza',
+    GRAY: 'Cinza',
+    GREY: 'Cinza',
+    GRAFITE: 'Grafite',
+    GRAPHITE: 'Grafite',
+    VIOLETA: 'Violeta',
+    VIOLET: 'Violeta',
+    LAVANDA: 'Lavanda',
+    LAVENDER: 'Lavanda',
+    AMARELO: 'Amarelo',
+    YELLOW: 'Amarelo',
+    VERMELHO: 'Vermelho',
+    RED: 'Vermelho',
+    BEGE: 'Bege',
+    BEIGE: 'Bege',
+    PRATA: 'Prata',
+    SILVER: 'Prata',
+    DOURADO: 'Dourado',
+    GOLD: 'Dourado',
+    CREME: 'Creme',
+    CREAM: 'Creme',
+    TITANIUM: 'Titânio',
+    TITANIO: 'Titânio',
+    TITÂNIO: 'Titânio',
+  };
+
+  const keys = Object.keys(colorMap).sort((a, b) => b.length - a.length);
+
+  for (const key of keys) {
+    const keyNormalized = estoqueDetalhadoNormalizeText(key);
+    const pattern = new RegExp(`(^|\\s|-)${keyNormalized.replace(/\s+/g, '\\s+')}(\\s|-|$)`, 'i');
+
+    if (pattern.test(text)) {
+      return colorMap[key] || 'Cor não identificada';
+    }
+  }
+
+  return 'Cor não identificada';
+}
+
+function acessoRapidoBaseModel(description: any, reference?: any): string {
+  let text = acessoRapidoCleanName(description);
+
+  if (!text && reference) {
+    text = acessoRapidoCleanName(reference);
+  }
+
+  if (!text) {
+    return 'PRODUTO NÃO INFORMADO';
+  }
+
+  const colorWords = [
+    'JET BLACK',
+    'JETBLACK',
+    'PRETO',
+    'BLACK',
+    'BRANCO',
+    'WHITE',
+    'ROSA',
+    'PINK',
+    'AZUL',
+    'BLUE',
+    'VERDE',
+    'GREEN',
+    'CINZA',
+    'GRAY',
+    'GREY',
+    'GRAFITE',
+    'GRAPHITE',
+    'VIOLETA',
+    'VIOLET',
+    'LAVANDA',
+    'LAVENDER',
+    'AMARELO',
+    'YELLOW',
+    'VERMELHO',
+    'RED',
+    'BEGE',
+    'BEIGE',
+    'PRATA',
+    'SILVER',
+    'DOURADO',
+    'GOLD',
+    'CREME',
+    'CREAM',
+    'TITANIUM',
+    'TITANIO',
+    'TITÂNIO',
+  ];
+
+  let base = ` ${text} `;
+
+  for (const color of colorWords.sort((a, b) => b.length - a.length)) {
+    const escaped = color.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    base = base.replace(new RegExp(`\\s${escaped}\\s*$`, 'i'), ' ');
+    base = base.replace(new RegExp(`\\s${escaped}\\s`, 'gi'), ' ');
+  }
+
+  base = base
+    .replace(/\s+/g, ' ')
+    .replace(/\s+-\s+/g, ' ')
+    .trim();
+
+  return base || text;
+}
+
+function acessoRapidoMakeProductId(value: any): string {
+  const normalized = acessoRapidoSearchKey(value);
+  return normalized || `PRODUTO-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function acessoRapidoGetStatus(params: {
+  quantidade: number;
+  vendasMes: number;
+  vendasAno: number;
+}): 'COM_ESTOQUE' | 'SEM_ESTOQUE' | 'SEM_GIRO_MES' | 'ALTO_GIRO' {
+  if (params.quantidade <= 0) return 'SEM_ESTOQUE';
+  if (params.vendasMes <= 0 && params.vendasAno <= 0) return 'SEM_GIRO_MES';
+  if (params.vendasMes >= 10) return 'ALTO_GIRO';
+  return 'COM_ESTOQUE';
+}
+
+function acessoRapidoEnsureLoja(
+  product: AcessoRapidoProductAgg,
+  loja: string
+): AcessoRapidoStoreAgg {
+  const safeLoja = loja || 'LOJA NÃO INFORMADA';
+
+  let store = product.lojas.find((item) => item.loja === safeLoja);
+
+  if (!store) {
+    store = {
+      loja: safeLoja,
+      regiao: ESTOQUE_DETALHADO_STORE_REGIONS[safeLoja] || 'OUTROS',
+      quantidade: 0,
+      vendasMes: 0,
+      vendasAno: 0,
+      variacoes: [],
+    };
+
+    product.lojas.push(store);
+  }
+
+  return store;
+}
+
+function acessoRapidoEnsureVariacao(
+  lista: AcessoRapidoVariacaoAgg[],
+  params: {
+    modeloCompleto: string;
+    referencia: string;
+    categoria: string;
+    cor: string;
+  }
+): AcessoRapidoVariacaoAgg {
+  const id = acessoRapidoSearchKey(`${params.modeloCompleto} ${params.referencia} ${params.cor}`);
+
+  let variacao = lista.find((item) => item.id === id);
+
+  if (!variacao) {
+    variacao = {
+      id,
+      modeloCompleto: params.modeloCompleto,
+      referencia: params.referencia,
+      categoria: params.categoria,
+      cor: params.cor,
+      quantidade: 0,
+      vendasMes: 0,
+      vendasAno: 0,
+    };
+
+    lista.push(variacao);
+  }
+
+  return variacao;
+}
+
+app.get('/api/diretoria/acesso-rapido-aparelhos', async (req, res) => {
+  let globalDb: any;
+  let annualDb: any;
+
+  try {
+    const userId = String(req.query.userId || '');
+
+    if (!userId || userId === 'undefined' || userId === 'null') {
+      return res.status(400).json({
+        success: false,
+        error: 'Usuário não informado.',
+      });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+    });
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: 'Usuário não encontrado.',
+      });
+    }
+
+    const role = estoqueDetalhadoNormalizeText(user.role);
+    const superRoles = ['CEO', 'DIRETOR', 'ADM', 'ADMIN', 'GESTOR', 'SÓCIO', 'SOCIO', 'MASTER'];
+
+    const canSeeAll = Boolean(user.isAdmin || superRoles.includes(role));
+
+    if (!canSeeAll) {
+      return res.status(403).json({
+        success: false,
+        error: 'Acesso permitido apenas para diretoria/administradores.',
+      });
+    }
+
+    const now = new Date();
+    now.setHours(12, 0, 0, 0);
+
+    const startMonth = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+    const startYear = new Date(now.getFullYear(), 0, 1, 0, 0, 0, 0);
+
+    const startMonthIso = estoqueDetalhadoDateToIso(startMonth);
+    const startYearIso = estoqueDetalhadoDateToIso(startYear);
+    const todayIso = estoqueDetalhadoDateToIso(now);
+
+    const securityFilter = await getSalesFilter(userId, 'vendas');
+    const annualDbPath = estoqueDetalhadoGetAnnualDbPath();
+
+    const productMap = new Map<string, AcessoRapidoProductAgg>();
+    const byReference = new Map<string, string>();
+    const byDescription = new Map<string, string>();
+    const byBaseModel = new Map<string, string>();
+
+    const getOrCreateProduct = (params: {
+      modeloCompleto: string;
+      referencia?: string;
+      categoria?: string;
+    }): AcessoRapidoProductAgg => {
+      const modeloCompleto = acessoRapidoCleanName(params.modeloCompleto || params.referencia || 'PRODUTO NÃO INFORMADO');
+      const referencia = acessoRapidoCleanName(params.referencia || '');
+      const categoria = acessoRapidoCleanName(params.categoria || 'GERAL').toUpperCase();
+
+      const modeloBase = acessoRapidoBaseModel(modeloCompleto, referencia);
+      const baseKey = acessoRapidoSearchKey(modeloBase);
+      const referenceKey = acessoRapidoSearchKey(referencia);
+      const descriptionKey = acessoRapidoSearchKey(modeloCompleto);
+
+      const mapKey =
+        byBaseModel.get(baseKey) ||
+        byReference.get(referenceKey) ||
+        byDescription.get(descriptionKey) ||
+        baseKey ||
+        referenceKey ||
+        descriptionKey ||
+        acessoRapidoMakeProductId(modeloBase);
+
+      let product = productMap.get(mapKey);
+
+      if (!product) {
+        product = {
+          id: mapKey,
+          modelo: modeloBase,
+          referencia,
+          categoria,
+          quantidade: 0,
+          vendasMes: 0,
+          vendasAno: 0,
+          lojasComEstoque: 0,
+          status: 'SEM_ESTOQUE',
+          lojas: [],
+          variacoes: [],
+        };
+
+        productMap.set(mapKey, product);
+      }
+
+      if (!product.referencia && referencia) product.referencia = referencia;
+      if ((!product.categoria || product.categoria === 'GERAL') && categoria) product.categoria = categoria;
+
+      if (baseKey) byBaseModel.set(baseKey, mapKey);
+      if (referenceKey) byReference.set(referenceKey, mapKey);
+      if (descriptionKey) byDescription.set(descriptionKey, mapKey);
+
+      return product;
+    };
+
+    const stockRows = await prisma.stock.findMany({
+      select: {
+        cnpj: true,
+        storeName: true,
+        productCode: true,
+        reference: true,
+        description: true,
+        category: true,
+        quantity: true,
+      },
+    });
+
+    for (const stock of stockRows) {
+      const modeloCompleto = acessoRapidoCleanName(stock.description || '');
+      if (!modeloCompleto) continue;
+
+      const loja = estoqueDetalhadoStoreName(stock);
+      const referencia = acessoRapidoCleanName(stock.reference || stock.productCode || '');
+      const categoria = acessoRapidoCleanName(stock.category || 'GERAL').toUpperCase();
+      const quantidade = estoqueDetalhadoToNumber(stock.quantity);
+      const cor = acessoRapidoDetectColor(modeloCompleto);
+
+      const product = getOrCreateProduct({
+        modeloCompleto,
+        referencia,
+        categoria,
+      });
+
+      const store = acessoRapidoEnsureLoja(product, loja);
+
+      product.quantidade += quantidade;
+      store.quantidade += quantidade;
+
+      const productVariation = acessoRapidoEnsureVariacao(product.variacoes, {
+        modeloCompleto,
+        referencia,
+        categoria,
+        cor,
+      });
+
+      const storeVariation = acessoRapidoEnsureVariacao(store.variacoes, {
+        modeloCompleto,
+        referencia,
+        categoria,
+        cor,
+      });
+
+      productVariation.quantidade += quantidade;
+      storeVariation.quantidade += quantidade;
+    }
+
+    const addSale = (row: any, origem: 'MES' | 'ANO') => {
+      const date = estoqueDetalhadoParseDate(
+        row.data_emissao || row.DATA_EMISSAO || row.data || row.DATA
+      );
+
+      if (!date) return;
+
+      const quantidade = estoqueDetalhadoToNumber(
+        row.qtd_real ??
+          row.QTD_REAL ??
+          row.quantidade ??
+          row.QUANTIDADE ??
+          row.qtd ??
+          row.QTD ??
+          0
+      );
+
+      if (!quantidade) return;
+
+      const referencia = acessoRapidoCleanName(
+        row.referencia ||
+          row.REFERENCIA ||
+          row.codigo_produto ||
+          row.CODIGO_PRODUTO ||
+          row.familia ||
+          row.FAMILIA ||
+          ''
+      );
+
+      const descricao = acessoRapidoCleanName(
+        row.descricao ||
+          row.DESCRICAO ||
+          row.produto ||
+          row.PRODUTO ||
+          referencia ||
+          ''
+      );
+
+      if (!referencia && !descricao) return;
+
+      const referenceKey = acessoRapidoSearchKey(referencia);
+      const descriptionKey = acessoRapidoSearchKey(descricao);
+      const baseKey = acessoRapidoSearchKey(acessoRapidoBaseModel(descricao, referencia));
+
+      const productKey =
+        byReference.get(referenceKey) ||
+        byDescription.get(descriptionKey) ||
+        byBaseModel.get(baseKey) ||
+        baseKey ||
+        referenceKey ||
+        descriptionKey;
+
+      const product =
+        productKey && productMap.get(productKey)
+          ? productMap.get(productKey)!
+          : getOrCreateProduct({
+              modeloCompleto: descricao || referencia,
+              referencia,
+              categoria: acessoRapidoCleanName(
+                row.categoria_real ||
+                  row.CATEGORIA_REAL ||
+                  row.categoria ||
+                  row.CATEGORIA ||
+                  row.familia ||
+                  row.FAMILIA ||
+                  'GERAL'
+              ).toUpperCase(),
+            });
+
+      const loja = estoqueDetalhadoStoreName(row);
+      const store = acessoRapidoEnsureLoja(product, loja);
+      const cor = acessoRapidoDetectColor(descricao);
+
+      const productVariation = acessoRapidoEnsureVariacao(product.variacoes, {
+        modeloCompleto: descricao || referencia,
+        referencia,
+        categoria: product.categoria,
+        cor,
+      });
+
+      const storeVariation = acessoRapidoEnsureVariacao(store.variacoes, {
+        modeloCompleto: descricao || referencia,
+        referencia,
+        categoria: product.categoria,
+        cor,
+      });
+
+      if (origem === 'MES') {
+        if (date >= startMonth && date <= now) {
+          product.vendasMes += quantidade;
+          store.vendasMes += quantidade;
+          productVariation.vendasMes += quantidade;
+          storeVariation.vendasMes += quantidade;
+        }
+
+        return;
+      }
+
+      if (origem === 'ANO') {
+        if (date >= startYear && date <= now) {
+          product.vendasAno += quantidade;
+          store.vendasAno += quantidade;
+          productVariation.vendasAno += quantidade;
+          storeVariation.vendasAno += quantidade;
+        }
+      }
+    };
+
+    if (fs.existsSync(GLOBAL_DB_PATH)) {
+      globalDb = await open({
+        filename: GLOBAL_DB_PATH,
+        driver: sqlite3.Database,
+      });
+
+      const hasDetailed = await estoqueDetalhadoTableExists(globalDb, 'vendas_detalhadas_imei');
+      const hasLegacy = await estoqueDetalhadoTableExists(globalDb, 'vendas');
+
+      if (hasDetailed) {
+        const rows = await globalDb.all(`
+          SELECT
+            data_emissao,
+            cnpj_empresa,
+            nome_fantasia AS loja,
+            referencia,
+            codigo_produto,
+            descricao,
+            categoria,
+            quantidade
+          FROM vendas_detalhadas_imei
+          WHERE ${securityFilter}
+            AND data_emissao >= ?
+            AND data_emissao <= ?
+        `, [startMonthIso, todayIso]);
+
+        rows.forEach((row: any) => addSale(row, 'MES'));
+      } else if (hasLegacy) {
+        const rows = await globalDb.all(`
+          SELECT
+            data_emissao,
+            cnpj_empresa,
+            NULL AS loja,
+            familia AS referencia,
+            descricao,
+            familia AS categoria,
+            quantidade
+          FROM vendas
+          WHERE ${securityFilter}
+            AND data_emissao >= ?
+            AND data_emissao <= ?
+        `, [startMonthIso, todayIso]);
+
+        rows.forEach((row: any) => addSale(row, 'MES'));
+      }
+
+      await globalDb.close();
+      globalDb = null;
+    }
+
+    if (fs.existsSync(annualDbPath)) {
+      annualDb = await open({
+        filename: annualDbPath,
+        driver: sqlite3.Database,
+      });
+
+      const hasRaw = await estoqueDetalhadoTableExists(annualDb, 'vendas_anuais_raw');
+      const hasAnnual = await estoqueDetalhadoTableExists(annualDb, 'vendas_anuais');
+
+      if (hasRaw) {
+        const rows = await annualDb.all(`
+          SELECT
+            data_emissao,
+            cnpj_empresa,
+            loja,
+            referencia,
+            codigo_produto,
+            descricao,
+            categoria,
+            categoria_real,
+            qtd_real,
+            quantidade
+          FROM vendas_anuais_raw
+          WHERE ${securityFilter}
+            AND data_emissao >= ?
+            AND data_emissao <= ?
+        `, [startYearIso, todayIso]);
+
+        rows.forEach((row: any) => addSale(row, 'ANO'));
+      } else if (hasAnnual) {
+        const rows = await annualDb.all(`
+          SELECT
+            data_emissao,
+            cnpj_empresa,
+            loja,
+            familia AS referencia,
+            familia AS descricao,
+            familia AS categoria,
+            quantidade
+          FROM vendas_anuais
+          WHERE ${securityFilter}
+            AND data_emissao >= ?
+            AND data_emissao <= ?
+        `, [startYearIso, todayIso]);
+
+        rows.forEach((row: any) => addSale(row, 'ANO'));
+      }
+
+      await annualDb.close();
+      annualDb = null;
+    }
+
+    let produtos = Array.from(productMap.values()).map((product) => {
+      product.variacoes = product.variacoes
+        .map((variacao) => ({
+          ...variacao,
+          quantidade: Number(variacao.quantidade.toFixed(2)),
+          vendasMes: Number(variacao.vendasMes.toFixed(2)),
+          vendasAno: Number(variacao.vendasAno.toFixed(2)),
+        }))
+        .filter((variacao) => variacao.quantidade > 0 || variacao.vendasMes > 0 || variacao.vendasAno > 0)
+        .sort((a, b) => b.quantidade - a.quantidade || a.cor.localeCompare(b.cor));
+
+      product.lojas = product.lojas
+        .map((loja) => ({
+          ...loja,
+          quantidade: Number(loja.quantidade.toFixed(2)),
+          vendasMes: Number(loja.vendasMes.toFixed(2)),
+          vendasAno: Number(loja.vendasAno.toFixed(2)),
+          variacoes: loja.variacoes
+            .map((variacao) => ({
+              ...variacao,
+              quantidade: Number(variacao.quantidade.toFixed(2)),
+              vendasMes: Number(variacao.vendasMes.toFixed(2)),
+              vendasAno: Number(variacao.vendasAno.toFixed(2)),
+            }))
+            .filter((variacao) => variacao.quantidade > 0 || variacao.vendasMes > 0 || variacao.vendasAno > 0)
+            .sort((a, b) => b.quantidade - a.quantidade || a.cor.localeCompare(b.cor)),
+        }))
+        .filter((loja) => loja.quantidade > 0 || loja.vendasMes > 0 || loja.vendasAno > 0)
+        .sort((a, b) => b.quantidade - a.quantidade || b.vendasMes - a.vendasMes || a.loja.localeCompare(b.loja));
+
+      product.quantidade = Number(product.quantidade.toFixed(2));
+      product.vendasMes = Number(product.vendasMes.toFixed(2));
+      product.vendasAno = Number(product.vendasAno.toFixed(2));
+      product.lojasComEstoque = product.lojas.filter((loja) => loja.quantidade > 0).length;
+
+      product.status = acessoRapidoGetStatus({
+        quantidade: product.quantidade,
+        vendasMes: product.vendasMes,
+        vendasAno: product.vendasAno,
+      });
+
+      return product;
+    });
+
+    produtos.sort((a, b) =>
+      b.quantidade - a.quantidade ||
+      b.vendasMes - a.vendasMes ||
+      b.vendasAno - a.vendasAno ||
+      a.modelo.localeCompare(b.modelo)
+    );
+
+    const resumo = {
+      modelos: produtos.length,
+      modelosComEstoque: produtos.filter((item) => item.quantidade > 0).length,
+      modelosVendidosMes: produtos.filter((item) => item.vendasMes > 0).length,
+      quantidade: Number(produtos.reduce((acc, item) => acc + item.quantidade, 0).toFixed(2)),
+      vendasMes: Number(produtos.reduce((acc, item) => acc + item.vendasMes, 0).toFixed(2)),
+      vendasAno: Number(produtos.reduce((acc, item) => acc + item.vendasAno, 0).toFixed(2)),
+      lojas: Array.from(
+        new Set(
+          produtos.flatMap((item) =>
+            item.lojas
+              .filter((loja) => loja.quantidade > 0)
+              .map((loja) => loja.loja)
+          )
+        )
+      ).length,
+    };
+
+    const filtros = {
+      categorias: Array.from(new Set(produtos.map((item) => item.categoria).filter(Boolean))).sort(),
+      lojas: Array.from(new Set(produtos.flatMap((item) => item.lojas.map((loja) => loja.loja)).filter(Boolean))).sort(),
+      status: ['COM_ESTOQUE', 'SEM_ESTOQUE', 'SEM_GIRO_MES', 'ALTO_GIRO'],
+    };
+
+    return res.json({
+      success: true,
+      generatedAt: new Date().toISOString(),
+      periodo: {
+        mesInicio: startMonthIso,
+        anoInicio: startYearIso,
+        hoje: todayIso,
+      },
+      sources: {
+        estoque: 'Prisma Stock / dev.db',
+        vendasMes: GLOBAL_DB_PATH,
+        vendasAno: annualDbPath,
+      },
+
+      // Contrato usado pelo frontend atual
+      resumo,
+      filtros,
+      produtos,
+
+      // Compatibilidade com versões anteriores
+      cards: resumo,
+      filters: filtros,
+      products: produtos,
+      total: produtos.length,
+    });
+  } catch (error: any) {
+    console.error('Erro /api/diretoria/acesso-rapido-aparelhos:', error);
+
+    try {
+      if (globalDb) await globalDb.close();
+      if (annualDb) await annualDb.close();
+    } catch {}
+
+    return res.status(500).json({
+      success: false,
+      error: error?.message || 'Erro ao montar acesso rápido de aparelhos.',
+    });
+  }
+});
 
 // =======================================================
 // 🚨 CENTRAL DE ALERTAS INTELIGENTES - TELEFLUXO
-// Cole este bloco depois da rota /api/estoque-visao-detalhada
-// e antes da rota /sales.
 // =======================================================
 
 type SmartAlertSeverity = 'critica' | 'alta' | 'media' | 'baixa';

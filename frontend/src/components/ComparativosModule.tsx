@@ -4,9 +4,13 @@ import { AlertCircle, FileSpreadsheet, Search, UploadCloud } from 'lucide-react'
 import * as pdfjsLib from 'pdfjs-dist';
 import * as XLSX from 'xlsx';
 
+// Vite + pdfjs-dist v5: usar workerPort evita o erro:
+// "Setting up fake worker failed: Failed to fetch dynamically imported module..."
 // @ts-ignore
-import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.mjs?url';
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+import PdfJsWorker from 'pdfjs-dist/build/pdf.worker.mjs?worker';
+
+const pdfWorker = new PdfJsWorker();
+pdfjsLib.GlobalWorkerOptions.workerPort = pdfWorker;
 
 /**
  * Objetivo:
@@ -245,7 +249,7 @@ const getCurrentMonthRange = () => {
   };
 };
 
-const API_BASE_URL = 'https://telefluxo-aplicacao.onrender.com';
+const API_BASE_URL = (import.meta.env.VITE_API_URL || 'https://telefluxo-aplicacao.onrender.com').replace(/\/$/, '');
 
 const isLocalFrontend = () => {
   if (typeof window === 'undefined') return false;
@@ -881,6 +885,67 @@ const floorMoney = (value: number) => {
 
 const PRICE_TO_DISCOUNT_FACTOR = 1.9;
 
+const MIN_COLUMN_WIDTH = 54;
+const MAX_COLUMN_WIDTH = 640;
+
+const DEFAULT_COLUMN_WIDTHS: Record<string, number> = {
+  descricao: 360,
+  precoSamsung: 112,
+  precoTelecel: 112,
+  totalDescontoTelecel: 136,
+  descontoRebate: 124,
+  descontoTradeIn: 136,
+  descontoBogo: 118,
+  descontoSip: 104,
+  descontoCollapsed: 64,
+  totalDesconto: 134,
+  precoPromocional: 142,
+  qtdEstoque: 86,
+  custoMedioEstoque: 132,
+  margemEstoque: 116,
+  novoCustoMedio: 148,
+  margemPrice: 120,
+  qtdVendida: 96,
+  priceRebate: 116,
+  priceTradeIn: 130,
+  priceBogo: 112,
+  priceSip: 100,
+  priceCollapsed: 64,
+  ofertaAtual: 124,
+  status: 104,
+  ofertaCollapsed: 64,
+};
+
+const clampColumnWidth = (value: number) =>
+  Math.min(MAX_COLUMN_WIDTH, Math.max(MIN_COLUMN_WIDTH, Math.round(value || MIN_COLUMN_WIDTH)));
+
+const getVisibleColumnKeys = (
+  showDiscountDetails: boolean,
+  showPriceDetails: boolean,
+  showOfferDetails: boolean
+) => [
+  'descricao',
+  'precoSamsung',
+  'precoTelecel',
+  'totalDescontoTelecel',
+  ...(showDiscountDetails
+    ? ['descontoRebate', 'descontoTradeIn', 'descontoBogo', 'descontoSip']
+    : ['descontoCollapsed']),
+  'totalDesconto',
+  'precoPromocional',
+  'qtdEstoque',
+  'custoMedioEstoque',
+  'margemEstoque',
+  'novoCustoMedio',
+  'margemPrice',
+  'qtdVendida',
+  ...(showPriceDetails
+    ? ['priceRebate', 'priceTradeIn', 'priceBogo', 'priceSip']
+    : ['priceCollapsed']),
+  ...(showOfferDetails ? ['ofertaAtual', 'status'] : ['ofertaCollapsed']),
+];
+
+
 const roundToStep = (value: number, step: number) => {
   if (!Number.isFinite(value) || value <= 0) return 0;
   return Math.round(value / step) * step;
@@ -926,7 +991,7 @@ const recalculateRow = (row: LinhaTabela): LinhaTabela => {
     row.priceSip;
 
   const novoCustoMedio = Number.isFinite(novoCustoMedioBruto) ? novoCustoMedioBruto : null;
-  const margemEstoque = row.precoTelecel > 0 ? 1 - row.custoMedioEstoque / row.precoTelecel : null;
+  const margemEstoque = precoPromocional > 0 ? 1 - row.custoMedioEstoque / precoPromocional : null;
 
   // Fórmula fiel ao Excel: =100%-(NOVO CUSTO MÉDIO ESTOQUE / PREÇO PROMOCIONAL)
   const margemPrice =
@@ -1049,14 +1114,34 @@ const TruncateText = ({ value, className = '' }: { value: string; className?: st
   </div>
 );
 
-const TableHeader = ({ children, className = '' }: { children: React.ReactNode; className?: string }) => (
-  <th className={`px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-slate-500 text-left border-b border-slate-200 whitespace-nowrap ${className}`}>
-    {children}
+type TableHeaderProps = {
+  children: React.ReactNode;
+  className?: string;
+  style?: React.CSSProperties;
+  onResizeStart?: (event: React.MouseEvent<HTMLDivElement>) => void;
+};
+
+const TableHeader = ({ children, className = '', style, onResizeStart }: TableHeaderProps) => (
+  <th
+    style={style}
+    className={`relative px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-slate-500 text-left border-b border-slate-200 whitespace-nowrap select-none ${className}`}
+  >
+    <div className="min-w-0 truncate pr-2" title={typeof children === 'string' ? children : undefined}>{children}</div>
+    {onResizeStart && (
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        title="Arraste para aumentar ou diminuir a coluna"
+        onMouseDown={onResizeStart}
+        onClick={(event) => event.stopPropagation()}
+        className="absolute right-0 top-0 z-50 h-full w-2 cursor-col-resize touch-none bg-transparent hover:bg-slate-400/30"
+      />
+    )}
   </th>
 );
 
-const TableCell = ({ children, className = '' }: { children: React.ReactNode; className?: string }) => (
-  <td className={`px-2.5 py-2 text-[12px] leading-5 text-slate-700 border-b border-slate-100 align-middle ${className}`}>{children}</td>
+const TableCell = ({ children, className = '', style }: { children: React.ReactNode; className?: string; style?: React.CSSProperties }) => (
+  <td style={style} className={`px-2.5 py-2 text-[12px] leading-5 text-slate-700 border-b border-slate-100 align-middle ${className}`}>{children}</td>
 );
 
 const GroupHeader = ({ children, className = '', colSpan }: { children: React.ReactNode; className?: string; colSpan: number }) => (
@@ -1081,7 +1166,7 @@ const ToggleGroupButton = ({ open, label, onClick }: { open: boolean; label: str
 );
 
 
-export default function ComparativosModule() {
+export default function ComparativosModule({ currentUser }: { currentUser?: any }) {
   const [rows, setRows] = useState<LinhaTabela[]>([]);
   const [errorMsg, setErrorMsg] = useState('');
   const [apiInfo, setApiInfo] = useState('');
@@ -1090,6 +1175,67 @@ export default function ComparativosModule() {
   const [showDiscountDetails, setShowDiscountDetails] = useState(false);
   const [showPriceDetails, setShowPriceDetails] = useState(false);
   const [showOfferDetails, setShowOfferDetails] = useState(false);
+  const [columnWidths, setColumnWidths] = useState<Record<string, number>>(() => DEFAULT_COLUMN_WIDTHS);
+
+  const visibleColumnKeys = useMemo(
+    () => getVisibleColumnKeys(showDiscountDetails, showPriceDetails, showOfferDetails),
+    [showDiscountDetails, showPriceDetails, showOfferDetails]
+  );
+
+  const getColumnWidth = (columnKey: string) =>
+    clampColumnWidth(columnWidths[columnKey] || DEFAULT_COLUMN_WIDTHS[columnKey] || 96);
+
+  const totalTableWidth = useMemo(
+    () => visibleColumnKeys.reduce((total, key) => total + getColumnWidth(key), 0),
+    [visibleColumnKeys, columnWidths]
+  );
+
+  const getColumnStyle = (columnKey: string): React.CSSProperties => {
+    const width = getColumnWidth(columnKey);
+    return {
+      width,
+      minWidth: width,
+      maxWidth: width,
+    };
+  };
+
+  const startColumnResize = (columnKey: string, event: React.MouseEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const startX = event.clientX;
+    const startWidth = getColumnWidth(columnKey);
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      const nextWidth = clampColumnWidth(startWidth + moveEvent.clientX - startX);
+      setColumnWidths((current) => ({
+        ...current,
+        [columnKey]: nextWidth,
+      }));
+    };
+
+    const handleMouseUp = () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+  };
+
+  const renderResizableHeader = (columnKey: string, children: React.ReactNode, className = '') => (
+    <TableHeader
+      className={className}
+      style={getColumnStyle(columnKey)}
+      onResizeStart={(event) => startColumnResize(columnKey, event)}
+    >
+      {children}
+    </TableHeader>
+  );
 
   const topScrollRef = useRef<HTMLDivElement>(null);
   const tableScrollRef = useRef<HTMLDivElement>(null);
@@ -1357,7 +1503,7 @@ export default function ComparativosModule() {
       const pdfItems = (await Promise.all(files.map((file) => parseCampaignFromPdf(file)))).flat();
 
       const { startDate, endDate } = getCurrentMonthRange();
-      const userId = getCurrentUserId();
+      const userId = String(currentUser?.id || getCurrentUserId() || '');
 
       const [baseResp, stockResp, priceResp, priceGuideResp, salesResp] = await Promise.all([
         fetchJsonFromCandidates('/api/comparativos/mkt-base'),
@@ -1365,7 +1511,7 @@ export default function ComparativosModule() {
         fetchJsonFromCandidates('/price-table?category=Aparelhos'),
         fetchPriceGuideSheet(),
         userId && startDate && endDate
-          ? fetchJsonFromCandidates(`/sales?userId=${encodeURIComponent(userId)}&startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}`)
+          ? fetchJsonFromCandidates(`/api/comparativos/vendas-modelos?userId=${encodeURIComponent(userId)}&startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}`)
           : Promise.resolve({ url: '', data: { sales: [] } }),
       ]);
 
@@ -1512,7 +1658,7 @@ export default function ComparativosModule() {
     const selectedRows = rows.filter((row) => row.isSelected);
     const comOfertas = selectedRows.filter((row) => row.hasOferta);
     const semOfertas = selectedRows.filter((row) => !row.hasOferta);
-    const currentUser = getCurrentUserInfo();
+    const activeUser = currentUser || getCurrentUserInfo();
 
     if (!selectedRows.length) {
       setFlowSendMsg('Selecione pelo menos um produto para enviar.');
@@ -1526,8 +1672,8 @@ export default function ComparativosModule() {
       await postJsonToCandidates('/api/comparativos/fluxo', {
         titulo: flowTitleDraft || `${getComparativoKindLabel(selectedComparativoKind)} - ${new Date().toLocaleDateString('pt-BR')}`,
         tipoComparativo: selectedComparativoKind,
-        criadoPorId: String(currentUser?.id || getCurrentUserId() || ''),
-        criadoPorNome: String(currentUser?.name || currentUser?.nome || 'Usuário'),
+        criadoPorId: String(activeUser?.id || getCurrentUserId() || ''),
+        criadoPorNome: String(activeUser?.name || activeUser?.nome || 'Usuário'),
         comOfertas,
         semOfertas,
         resumo: {
@@ -1550,10 +1696,7 @@ export default function ComparativosModule() {
   const priceColSpan = showPriceDetails ? 4 : 1;
   const offerColSpan = showOfferDetails ? 2 : 1;
   const totalTableCols = 15 + (showDiscountDetails ? 3 : 0) + (showPriceDetails ? 3 : 0) + (showOfferDetails ? 1 : 0);
-  const tableMinWidth =
-    showDiscountDetails || showPriceDetails || showOfferDetails
-      ? 'min-w-[2850px]'
-      : 'min-w-[2350px]';
+  const tableWidthStyle = { width: totalTableWidth, minWidth: totalTableWidth };
 
   return (
     <>
@@ -1691,7 +1834,7 @@ export default function ComparativosModule() {
               onScroll={() => syncHorizontalScroll('top')}
               className="comparativo-scroll h-5 w-full overflow-x-scroll overflow-y-hidden border-b border-slate-200 bg-slate-100"
             >
-              <div className={`${tableMinWidth} h-1`} />
+              <div style={{ width: totalTableWidth, minWidth: totalTableWidth }} className="h-1" />
             </div>
 
             <div
@@ -1700,7 +1843,12 @@ export default function ComparativosModule() {
               className="comparativo-scroll max-h-[calc(100vh-225px)] min-h-[560px] w-full overflow-x-scroll overflow-y-auto overscroll-contain rounded-xl pb-4"
               style={{ scrollbarGutter: 'stable both-edges' }}
             >
-              <table className={`w-max ${tableMinWidth} table-auto border-separate border-spacing-0 bg-white`}>
+              <table style={tableWidthStyle} className="table-fixed border-separate border-spacing-0 bg-white">
+                <colgroup>
+                  {visibleColumnKeys.map((columnKey) => (
+                    <col key={columnKey} style={getColumnStyle(columnKey)} />
+                  ))}
+                </colgroup>
                 <thead className="sticky top-0 z-30 shadow-[0_1px_0_0_rgba(226,232,240,1)]">
                   <tr>
                     <GroupHeader colSpan={1} className="sticky left-0 top-0 z-40 bg-[#d9d9d9] text-[#003366] shadow-[1px_0_0_0_rgba(148,163,184,0.55)]">
@@ -1732,52 +1880,50 @@ export default function ComparativosModule() {
                     </GroupHeader>
                   </tr>
                   <tr className="sticky top-[29px] z-30 bg-white">
-                    <TableHeader className="sticky left-0 z-40 w-[320px] min-w-[320px] bg-[#d9d9d9] text-[#003366] shadow-[1px_0_0_0_rgba(148,163,184,0.55)]">Descrição</TableHeader>
+                    {renderResizableHeader('descricao', 'Descrição', 'sticky left-0 z-40 bg-[#d9d9d9] text-[#003366] shadow-[1px_0_0_0_rgba(148,163,184,0.55)]')}
 
-                    <TableHeader className="w-[96px] bg-[#d9ffd9]">Preço Samsung</TableHeader>
-                    <TableHeader className="w-[92px] bg-[#d9ffd9]">Preço Telecel</TableHeader>
+                    {renderResizableHeader('precoSamsung', 'Preço Samsung', 'bg-[#d9ffd9]')}
+                    {renderResizableHeader('precoTelecel', 'Preço Telecel', 'bg-[#d9ffd9]')}
 
-                    <TableHeader className="w-[112px] bg-[#9dccf6]">Total Desc. Telecel</TableHeader>
+                    {renderResizableHeader('totalDescontoTelecel', 'Total Desc. Telecel', 'bg-[#9dccf6]')}
                     {showDiscountDetails && (
                       <>
-                        <TableHeader className="w-[104px] bg-[#9dccf6]">Desc. Rebate</TableHeader>
-                        <TableHeader className="w-[108px] bg-[#9dccf6]">Desc. Trade In</TableHeader>
-                        <TableHeader className="w-[96px] bg-[#9dccf6]">Desc. Bogo</TableHeader>
-                        <TableHeader className="w-[86px] bg-[#9dccf6]">Desc. SIP</TableHeader>
+                        {renderResizableHeader('descontoRebate', 'Desc. Rebate', 'bg-[#9dccf6]')}
+                        {renderResizableHeader('descontoTradeIn', 'Desc. Trade In', 'bg-[#9dccf6]')}
+                        {renderResizableHeader('descontoBogo', 'Desc. Bogo', 'bg-[#9dccf6]')}
+                        {renderResizableHeader('descontoSip', 'Desc. SIP', 'bg-[#9dccf6]')}
                       </>
                     )}
-                    {!showDiscountDetails && (
-                      <TableHeader className="w-[58px] bg-[#9dccf6] text-center">+</TableHeader>
-                    )}
-                    <TableHeader className="w-[118px] bg-[#fff2cc] text-[#7f6000]">Total Desconto</TableHeader>
+                    {!showDiscountDetails && renderResizableHeader('descontoCollapsed', '+', 'bg-[#9dccf6] text-center')}
+                    {renderResizableHeader('totalDesconto', 'Total Desconto', 'bg-[#fff2cc] text-[#7f6000]')}
 
-                    <TableHeader className="w-[122px] bg-[#fff2cc]">Preço Promocional</TableHeader>
+                    {renderResizableHeader('precoPromocional', 'Preço Promocional', 'bg-[#fff2cc]')}
 
-                    <TableHeader className="w-[70px] bg-[#eaf2f8] text-right">Qtd Est.</TableHeader>
-                    <TableHeader className="w-[116px] bg-[#eaf2f8] text-right">Custo Médio</TableHeader>
-                    <TableHeader className="w-[92px] bg-[#eaf2f8] text-right">Margem Est.</TableHeader>
-                    <TableHeader className="w-[118px] bg-[#eaf2f8] text-right">Novo Custo Médio</TableHeader>
-                    <TableHeader className="w-[100px] bg-[#eaf2f8] text-right">Margem Price</TableHeader>
-                    <TableHeader className="w-[78px] bg-[#eaf2f8] text-right">Qtd Vend.</TableHeader>
+                    {renderResizableHeader('qtdEstoque', 'Qtd Est.', 'bg-[#eaf2f8] text-right')}
+                    {renderResizableHeader('custoMedioEstoque', 'Custo Médio', 'bg-[#eaf2f8] text-right')}
+                    {renderResizableHeader('margemEstoque', 'Margem Est.', 'bg-[#eaf2f8] text-right')}
+                    {renderResizableHeader('novoCustoMedio', 'Novo Custo Médio', 'bg-[#eaf2f8] text-right')}
+                    {renderResizableHeader('margemPrice', 'Margem Price', 'bg-[#eaf2f8] text-right')}
+                    {renderResizableHeader('qtdVendida', 'Qtd Vend.', 'bg-[#eaf2f8] text-right')}
 
                     {showPriceDetails ? (
                       <>
-                        <TableHeader className="w-[98px] bg-[#e2f0d9]">Price Rebate</TableHeader>
-                        <TableHeader className="w-[104px] bg-[#e2f0d9]">Price Trade In</TableHeader>
-                        <TableHeader className="w-[94px] bg-[#e2f0d9]">Price Bogo</TableHeader>
-                        <TableHeader className="w-[86px] bg-[#e2f0d9]">Price SIP</TableHeader>
+                        {renderResizableHeader('priceRebate', 'Price Rebate', 'bg-[#e2f0d9]')}
+                        {renderResizableHeader('priceTradeIn', 'Price Trade In', 'bg-[#e2f0d9]')}
+                        {renderResizableHeader('priceBogo', 'Price Bogo', 'bg-[#e2f0d9]')}
+                        {renderResizableHeader('priceSip', 'Price SIP', 'bg-[#e2f0d9]')}
                       </>
                     ) : (
-                      <TableHeader className="w-[58px] bg-[#e2f0d9] text-center">+</TableHeader>
+                      renderResizableHeader('priceCollapsed', '+', 'bg-[#e2f0d9] text-center')
                     )}
 
                     {showOfferDetails ? (
                       <>
-                        <TableHeader className="w-[112px] bg-[#92d050] text-[#003b8f]">Oferta Atual</TableHeader>
-                        <TableHeader className="w-[96px] bg-[#92d050] text-[#003b8f]">Status</TableHeader>
+                        {renderResizableHeader('ofertaAtual', 'Oferta Atual', 'bg-[#92d050] text-[#003b8f]')}
+                        {renderResizableHeader('status', 'Status', 'bg-[#92d050] text-[#003b8f]')}
                       </>
                     ) : (
-                      <TableHeader className="w-[58px] bg-[#92d050] text-center text-[#003b8f]">+</TableHeader>
+                      renderResizableHeader('ofertaCollapsed', '+', 'bg-[#92d050] text-center text-[#003b8f]')
                     )}
                   </tr>
                 </thead>
@@ -1790,8 +1936,8 @@ export default function ComparativosModule() {
 
                     return (
                       <tr key={row.rowKey || `${row.refCampanha}-${row.basicModel}-${idx}`} className={`${baseRow} ${rowMuted}`}>
-                        <TableCell className={`sticky left-0 z-20 w-[320px] min-w-[320px] whitespace-nowrap font-black text-slate-900 shadow-[1px_0_0_0_rgba(148,163,184,0.35)] ${descBg}`}>
-                          <div className="flex min-w-[300px] items-center gap-2">
+                        <TableCell style={getColumnStyle('descricao')} className={`sticky left-0 z-20 whitespace-nowrap font-black text-slate-900 shadow-[1px_0_0_0_rgba(148,163,184,0.35)] ${descBg}`}>
+                          <div className="flex min-w-0 items-center gap-2">
                             <input
                               type="checkbox"
                               checked={row.isSelected}
@@ -1799,7 +1945,7 @@ export default function ComparativosModule() {
                               className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
                               title="Marcar/desmarcar produto para exportação"
                             />
-                            <span>{row.descricao || '-'}</span>
+                            <span className="truncate" title={row.descricao || '-'}>{row.descricao || '-'}</span>
                           </div>
                         </TableCell>
 

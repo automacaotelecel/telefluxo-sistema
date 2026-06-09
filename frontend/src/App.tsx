@@ -13,6 +13,7 @@ import IntelligentAlerts from './components/IntelligentAlerts';
 import RemanejamentoAprovacao from './components/RemanejamentoAprovacao';
 import ExecutiveDashboard from './components/ExecutiveDashboard';
 import AvaliacoesLojas from './components/AvaliacoesLojas';
+import AcessoRapidoAparelhos from './components/AcessoRapidoAparelhos';
 import Home from "./components/home";
 import DeptBulletin from "./components/DeptBulletin";
 import FinanceModule from "./components/FinanceModule";
@@ -211,6 +212,7 @@ function App() {
     rh: 'RH',
     executive_dashboard: 'PAINEL DIRETORIA / RESUMO EXECUTIVO',
     avaliacoes_lojas: 'PAINEL DIRETORIA / AVALIAÇÕES DAS LOJAS',
+    acesso_rapido_aparelhos: 'PAINEL DIRETORIA / ACESSO RÁPIDO',
     stock: 'CONTROLE DE ESTOQUE',
     alertas_inteligentes: 'CENTRAL DE ALERTAS INTELIGENTES',
     remanejamento_aprovacao: 'REMANEJAMENTO COM APROVAÇÃO',
@@ -356,7 +358,7 @@ function App() {
               <NavButton
                 icon={ShieldCheck}
                 label="Painel Diretoria"
-                active={['executive_dashboard', 'avaliacoes_lojas'].includes(currentView)}
+                active={['executive_dashboard', 'avaliacoes_lojas', 'acesso_rapido_aparelhos'].includes(currentView)}
                 onClick={() => handleSectionToggle('executive')}
                 hasChevron
                 chevronOpen={expanded.executive}
@@ -375,6 +377,12 @@ function App() {
                     label="Avaliações das Lojas"
                     view="avaliacoes_lojas"
                     active={currentView === 'avaliacoes_lojas'}
+                  />
+
+                  <SubMenuItem
+                    label="Acesso Rápido"
+                    view="acesso_rapido_aparelhos"
+                    active={currentView === 'acesso_rapido_aparelhos'}
                   />
                 </div>
               )}
@@ -744,6 +752,8 @@ function App() {
             <ExecutiveDashboard currentUser={user} />
           ) : currentView === 'avaliacoes_lojas' && canViewExecutiveDashboard ? (
             <AvaliacoesLojas />
+          ) : currentView === 'acesso_rapido_aparelhos' && canViewExecutiveDashboard ? (
+            <AcessoRapidoAparelhos currentUser={user} />
           ) : currentView === 'alertas_inteligentes' ? (
             <IntelligentAlerts
               currentUser={user}
