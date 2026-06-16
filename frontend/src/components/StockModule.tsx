@@ -137,7 +137,7 @@ export default function StockModule() {
   const [stockData, setStockData] = useState<any[]>([]);
   const [salesData, setSalesData] = useState<any[]>([]);
   const [purchaseData, setPurchaseData] = useState<any[]>([]);
-  const [moduleMode, setModuleMode] = useState<'stock' | 'malote' | 'redistribution' | 'purchases' | 'analysis'>('stock');
+  const [moduleMode, setModuleMode] = useState<'stock' | 'malote' | 'redistribution' | 'purchases' | 'analysis' | 'predictive'>('stock');
   const [loading, setLoading] = useState(false);
   const [showDebug, setShowDebug] = useState(false);
   const [filter, setFilter] = useState('');
@@ -329,14 +329,29 @@ export default function StockModule() {
   }, [startDate, endDate]);
 
   // --- ALGORITMOS ---
-
+  
   const redistributionSuggestions = useMemo(() => {
     if (stockData.length === 0) return { moves: [] };
 
     const suggestions: any[] = [];
     const productGroups: Record<string, any> = {};
 
+    // 🚨 REGRA DE NEGÓCIO: Lojas fora do raio logístico isoladas do remanejamento
+    const lojasExcluidas = [
+      "IGUATEMI FORTALEZA",
+      "MANAIRA SHOPPING",
+      "SHOPPING RECIFE",
+      "UBERABA SHOPPING",
+      "UBERLÂNDIA SHOPPING",
+      "BURITI RIO VERDE"
+    ];
+
     stockData.forEach(item => {
+      const storeNameUpper = item.storeName.toUpperCase();
+
+      // Ignora as lojas excluídas para que não sejam doadoras nem recebedoras
+      if (lojasExcluidas.includes(storeNameUpper)) return;
+
       const region = STORE_REGIONS[item.storeName] || "OUTROS";
       if (regionFilter.length > 0 && !regionFilter.includes(region)) return;
 
@@ -470,18 +485,92 @@ export default function StockModule() {
     };
   }, [redistributionSuggestions]);
 
-  // --- ALGORITMO MALOTE (FRONT-END) ---
+  // --- ALGORITMO: PREVISÃO DE RUPTURA (PREDICTIVE STOCKOUT) ---
+  
+  // --- TIPAGEM DO ALGORITMO ---
+  type PredictiveRisk = {
+    store: string;
+    product: string;
+    category: string;
+    cluster: string;
+    stock: number;
+    sales: number;
+    dailySales: number;
+    coverageDays: number;
+    financialRisk: number;
+  };
+
+  // --- ALGORITMO: PREVISÃO DE RUPTURA (PREDICTIVE STOCKOUT) ---
+  // Note o <PredictiveRisk[]> forçando a tipagem do retorno
+  const predictiveStockout = useMemo<PredictiveRisk[]>(() => {
+    if (stockData.length === 0) return [];
+
+    const risks: PredictiveRisk[] = [];
+
+    stockData.forEach(item => {
+      const region = STORE_REGIONS[item.storeName] || "OUTROS";
+      if (regionFilter.length > 0 && !regionFilter.includes(region)) return;
+      if (categoryFilter.length > 0 && !categoryFilter.includes(item.category || 'GERAL')) return;
+
+      const sales = getProductSales(item.storeName, item.description);
+      const stock = Number(item.quantity) || 0;
+      
+      if (sales === 0 && stock === 0) return;
+
+      const dailySales = sales / Math.max(periodDays, 1);
+      
+      let coverageDays = 0;
+      if (stock === 0 && sales > 0) {
+        coverageDays = 0; 
+      } else if (dailySales > 0) {
+        coverageDays = stock / dailySales;
+      } else {
+        coverageDays = 999;
+      }
+
+      if (coverageDays <= 15) {
+        risks.push({
+          store: item.storeName,
+          product: item.description,
+          category: item.category || 'GERAL',
+          cluster: getClusterValue(item),
+          stock: stock,
+          sales: sales,
+          dailySales: dailySales,
+          coverageDays: coverageDays,
+          financialRisk: dailySales * 15 * (Number(item.salePrice) || 0)
+        });
+      }
+    });
+
+    return risks.sort((a, b) => a.coverageDays - b.coverageDays || b.financialRisk - a.financialRisk);
+  }, [stockData, salesData, regionFilter, categoryFilter, periodDays]);
+
+   // --- ALGORITMO MALOTE (FRONT-END) ---
   const calculatedMalote = useMemo(() => {
     if (stockData.length === 0) return [];
 
     const suggestions: any[] = [];
     const cdName = "CD TAGUATINGA";
 
+    // 🚨 NOVA REGRA DE NEGÓCIO: Lojas fora do raio de distribuição do CD
+    const lojasExcluidas = [
+      "IGUATEMI FORTALEZA",
+      "MANAIRA SHOPPING",
+      "SHOPPING RECIFE", // Adicionado junto com o Nordeste
+      "UBERABA SHOPPING",
+      "UBERLÂNDIA SHOPPING",
+      "BURITI RIO VERDE"
+    ];
+
     const cdStock = stockData.filter(i => i.storeName === cdName);
     const productGroups: Record<string, any> = {};
 
     stockData.forEach(item => {
-      if (item.storeName === cdName) return;
+      const storeNameUpper = item.storeName.toUpperCase();
+
+      // Se for o próprio CD ou uma das lojas excluídas da logística, o algoritmo ignora e não calcula envio
+      if (storeNameUpper === cdName || lojasExcluidas.includes(storeNameUpper)) return;
 
       const productKey = item.description;
 
@@ -544,7 +633,10 @@ export default function StockModule() {
     });
 
     return suggestions;
-  }, [stockData, salesData, periodDays]);
+  }, [stockData, salesData, periodDays]); 
+
+    
+  
 
   // --- AGRUPAMENTO DE COMPRAS ---
   const groupedPurchases = useMemo(() => {
@@ -923,6 +1015,8 @@ export default function StockModule() {
                 <button onClick={() => setModuleMode('malote')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all ${moduleMode === 'malote' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-indigo-500'}`}>Malote</button>
                 <button onClick={() => setModuleMode('redistribution')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all ${moduleMode === 'redistribution' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-indigo-500'}`}>Remanejamento</button>
                 <button onClick={() => setModuleMode('purchases')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all ${moduleMode === 'purchases' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-indigo-500'}`}>Compras</button>
+                {/* 👇 BOTÃO NOVO AQUI 👇 */}
+                <button onClick={() => setModuleMode('predictive')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all ${moduleMode === 'predictive' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-indigo-500'}`}>Ruptura</button>
               </div>
 
               <button
@@ -1464,6 +1558,88 @@ export default function StockModule() {
                   }
                 </div>
               )}
+            </div>
+          </div>
+        )}
+
+        
+        {/* ================= MÓDULO PREVISÃO DE RUPTURA ================= */}
+        {moduleMode === 'predictive' && (
+          <div className="space-y-6 animate-fadeIn">
+            <div className="bg-gradient-to-r from-red-900 to-rose-900 p-6 rounded-2xl text-white shadow-lg flex flex-col md:flex-row justify-between items-start md:items-center relative overflow-hidden gap-4">
+              <div className="relative z-10">
+                <h2 className="text-xl font-black uppercase mb-1 flex items-center gap-2"><AlertCircle size={24} /> Radar de Ruptura (Stockout)</h2>
+                <p className="text-xs text-red-100 opacity-90">
+                  Projeção matemática baseada no ritmo de vendas dos últimos {periodDays} dias. Mostrando itens que vão zerar em até 15 dias.
+                </p>
+              </div>
+              <div className="relative z-10 flex gap-4">
+                <div className="bg-white/10 p-3 rounded-xl border border-white/10 text-center">
+                  <p className="text-2xl font-black text-red-300">{predictiveStockout.filter(i => i.coverageDays === 0).length}</p>
+                  <p className="text-[9px] uppercase font-bold text-white/70 tracking-widest mt-1">Já Zerados</p>
+                </div>
+                <div className="bg-white/10 p-3 rounded-xl border border-white/10 text-center">
+                  <p className="text-2xl font-black text-amber-300">{predictiveStockout.filter(i => i.coverageDays > 0 && i.coverageDays <= 7).length}</p>
+                  <p className="text-[9px] uppercase font-bold text-white/70 tracking-widest mt-1">Zeram na Semana</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+              <div className="overflow-x-auto max-h-[600px]">
+                <table className="w-full text-left border-collapse">
+                  <thead className="bg-slate-50 text-[10px] font-black uppercase text-slate-500 sticky top-0 shadow-sm">
+                    <tr>
+                      <th className="p-4">Prioridade</th>
+                      <th className="p-4">Loja</th>
+                      <th className="p-4 min-w-[250px]">Produto</th>
+                      <th className="p-4 text-center">Estoque Atual</th>
+                      <th className="p-4 text-center">Média/Dia</th>
+                      <th className="p-4 text-center">Dias Restantes</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 text-sm">
+                    {predictiveStockout.map((item, idx) => {
+                      const isZero = item.coverageDays === 0;
+                      const isCritical = item.coverageDays > 0 && item.coverageDays <= 7;
+                      
+                      return (
+                        <tr key={idx} className="hover:bg-red-50/20 transition-colors">
+                          <td className="p-4">
+                            {isZero ? (
+                              <span className="bg-red-50 text-red-600 border border-red-100 px-2.5 py-1 rounded text-[10px] font-black uppercase tracking-wider">Ruptura Ativa</span>
+                            ) : isCritical ? (
+                              <span className="bg-amber-50 text-amber-600 border border-amber-100 px-2.5 py-1 rounded text-[10px] font-black uppercase tracking-wider">Zera na Semana</span>
+                            ) : (
+                              <span className="bg-indigo-50 text-indigo-600 border border-indigo-100 px-2.5 py-1 rounded text-[10px] font-black uppercase tracking-wider">Atenção</span>
+                            )}
+                          </td>
+                          <td className="p-4 font-bold text-slate-700 text-xs uppercase">{item.store}</td>
+                          <td className="p-4">
+                            <p className="font-black text-slate-800 text-xs uppercase">{item.product}</p>
+                            <span className="text-[9px] bg-slate-100 text-slate-400 px-1.5 py-0.5 rounded uppercase mt-1 inline-block">{item.category}</span>
+                          </td>
+                          <td className="p-4 text-center font-black text-slate-700">{item.stock} un</td>
+                          <td className="p-4 text-center font-bold text-slate-500">{item.dailySales.toFixed(1)}/dia</td>
+                          <td className="p-4 text-center">
+                            <span className={`text-xl font-black ${isZero ? 'text-red-600' : isCritical ? 'text-amber-500' : 'text-slate-600'}`}>
+                              {isZero ? '-' : Math.ceil(item.coverageDays)}
+                            </span>
+                            {!isZero && <span className="text-[10px] text-slate-400 font-bold ml-1 uppercase">dias</span>}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {predictiveStockout.length === 0 && (
+                      <tr>
+                        <td colSpan={6} className="p-12 text-center text-slate-400 text-xs uppercase font-bold bg-slate-50/50">
+                          Nenhum risco de ruptura encontrado nos próximos 15 dias.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
         )}

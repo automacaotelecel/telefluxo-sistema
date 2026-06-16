@@ -1,5 +1,6 @@
 # ===========================================
 # 📦 SINCRONIZADOR DE ESTOQUE v8.1 (COM EXTRAÇÃO DE IMEI/SERIAL)
+# Esta retornando valores de Nan no estoque- versão para tentar corrigir
 # ===========================================
 
 import requests
@@ -471,87 +472,16 @@ def extrair_seriais_loja(cnpj):
 # ===========================================
 # 4. SALVAR NA NUVEM VIA API (EM LOTES)
 # ===========================================
-def limpar_valor_json(valor):
-    """
-    Garante que nenhum valor inválido vá para o JSON.
-    Converte:
-    - NaN -> None
-    - NaT -> None
-    - Infinity -> None
-    - -Infinity -> None
-    - Timestamp/datetime -> string ISO
-    """
-    if valor is None:
-        return None
-
-    try:
-        if pd.isna(valor):
-            return None
-    except Exception:
-        pass
-
-    if isinstance(valor, float):
-        if valor != valor or valor == float("inf") or valor == float("-inf"):
-            return None
-        return valor
-
-    if isinstance(valor, (pd.Timestamp, datetime)):
-        return valor.isoformat()
-
-    return valor
-
-
-def limpar_registro_json(registro):
-    """
-    Limpa um dicionário inteiro antes de enviar para a API.
-    """
-    return {
-        chave: limpar_valor_json(valor)
-        for chave, valor in registro.items()
-    }
-
-
-def encontrar_valores_invalidos(lote):
-    """
-    Ajuda a descobrir exatamente qual campo ainda está com NaN/Infinity.
-
-    Importante:
-    - None é permitido, porque em JSON vira null.
-    - O problema real é NaN/Infinity/-Infinity, que quebram o requests.post(json=...).
-    """
-    problemas = []
-
-    for indice, registro in enumerate(lote):
-        for campo, valor in registro.items():
-            # None é válido em JSON: vira null.
-            if valor is None:
-                continue
-
-            # Float inválido: NaN, Infinity ou -Infinity.
-            if isinstance(valor, float):
-                if valor != valor or valor == float("inf") or valor == float("-inf"):
-                    problemas.append(f"linha_lote={indice} | campo={campo} | valor={valor}")
-
-    return problemas
-
-
 def enviar_para_api(dataframe):
     base_url = "https://telefluxo-aplicacao.onrender.com/stock/sync"
 
-    if dataframe is None or dataframe.empty:
-        log("⚠️ Nenhum dado para enviar para a API.")
-        return False
-
-    # ✅ Correção principal:
-    # dataframe.where(pd.notnull(...), None) nem sempre remove NaN de colunas numéricas.
-    # Por isso limpamos registro por registro depois do to_dict.
+    # Previne erros de JSON
+    dataframe = dataframe.where(pd.notnull(dataframe), None)
     dados_completos = dataframe.to_dict(orient="records")
-    dados_completos = [limpar_registro_json(registro) for registro in dados_completos]
 
-    # Divide os itens em pacotes de 100 para não pesar no Render
+    # Divide os 18.000 itens em pacotes de 500 (Tamanho perfeito pro Render)
     BATCH_SIZE = 100
-    total_lotes = (len(dados_completos) + BATCH_SIZE - 1) // BATCH_SIZE
-
+    total_lotes = (len(dados_completos) // BATCH_SIZE) + 1
     log(f"📡 Preparando envio de {len(dados_completos)} registros em {total_lotes} lotes...")
 
     headers = {"Content-Type": "application/json"}
@@ -560,46 +490,24 @@ def enviar_para_api(dataframe):
         lote = dados_completos[i: i + BATCH_SIZE]
         lote_num = (i // BATCH_SIZE) + 1
 
-        # ✅ Segurança extra:
-        # Se ainda existir valor inválido, mostra exatamente onde está antes de tentar enviar.
-        problemas = encontrar_valores_invalidos(lote)
-        if problemas:
-            log(f"❌ Valores inválidos encontrados no Lote {lote_num}:")
-            for problema in problemas[:30]:
-                log(f"   - {problema}")
-
-            if len(problemas) > 30:
-                log(f"   ... e mais {len(problemas) - 30} problemas.")
-
-            return False
-
         # O primeiro lote apaga o banco, os outros apenas empilham os dados
         param_reset = "true" if i == 0 else "false"
         url_lote = f"{base_url}?reset={param_reset}"
 
         log(f"   📦 Enviando Lote {lote_num}/{total_lotes}...")
 
-        for attempt in range(1, 6):
+        for attempt in range(1, 6):  # Tenta até 5 vezes se o servidor piscar
             try:
                 response = requests.post(url_lote, json=lote, headers=headers, timeout=120)
-
                 if 200 <= response.status_code < 300:
-                    time.sleep(0.5)
+                    time.sleep(0.5)  # Dá um respiro de meio segundo para a memória do Render
                     break
-
-                log(f"      ⚠️ Erro no Lote {lote_num} (Tentativa {attempt}): {response.status_code}")
-
-                try:
-                    log(f"      Resposta API: {response.text[:500]}")
-                except Exception:
-                    pass
-
-                time.sleep(5)
-
+                else:
+                    log(f"      ⚠️ Erro no Lote {lote_num} (Tentativa {attempt}): {response.status_code}")
+                    time.sleep(5)
             except Exception as e:
-                log(f"      ⚠️ Falha ao enviar Lote {lote_num} (Tentativa {attempt}): {e}")
+                log(f"      ⚠️ Falha de Conexão no Lote {lote_num} (Tentativa {attempt}): {e}")
                 time.sleep(5)
-
         else:
             log(f"❌ Desistindo do Lote {lote_num} após várias tentativas.")
             return False

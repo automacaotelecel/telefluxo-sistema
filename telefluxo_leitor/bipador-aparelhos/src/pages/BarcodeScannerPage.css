@@ -825,3 +825,33 @@ select {
     font-size: 24px;
   }
 }
+.tf-alert.warning {
+  background: #fffbeb;
+  color: #92400e;
+  border: 1px solid #fde68a;
+  font-weight: 700;
+}
+
+.tf-raw-code {
+  margin-top: 10px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.tf-raw-code span {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.tf-raw-code strong {
+  color: #334155;
+  font-size: 15px;
+  word-break: break-all;
+}

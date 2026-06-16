@@ -3,10 +3,22 @@ import { BrowserMultiFormatReader } from "@zxing/browser";
 import { BarcodeFormat, DecodeHintType } from "@zxing/library";
 import "./BarcodeScannerPage.css";
 
+type CodeType = "IMEI" | "EAN_13" | "EAN_8" | "NUMERICO" | "QRCODE_TEXTO" | "DESCONHECIDO";
+
 type ScanItem = {
   id: string;
   code: string;
+  rawCode: string;
+  codeType: CodeType;
   createdAt: string;
+};
+
+type ImeiValidationResult = {
+  accepted: boolean;
+  imei: string;
+  rawCode: string;
+  codeType: CodeType;
+  reason?: string;
 };
 
 type CameraMode = "normal" | "small-code";
@@ -15,6 +27,165 @@ type PageMode = "single" | "batch";
 const STORAGE_SINGLE_KEY = "telefluxo_scanner_single";
 const STORAGE_BATCH_DRAFT_KEY = "telefluxo_scanner_batch_draft";
 const DUPLICATE_BLOCK_TIME_MS = 1400;
+
+function onlyDigits(value: string) {
+  return value.replace(/\D/g, "");
+}
+
+function normalizeRawCode(value: string) {
+  return value.trim().replace(/\s+/g, " ");
+}
+
+function classifyRawCode(rawCode: string): CodeType {
+  const clean = normalizeRawCode(rawCode);
+  const digits = onlyDigits(clean);
+
+  if (/^\d{15}$/.test(digits)) return "IMEI";
+  if (/^\d{13}$/.test(digits)) return "EAN_13";
+  if (/^\d{8}$/.test(digits)) return "EAN_8";
+  if (/^\d+$/.test(digits) && digits.length > 0) return "NUMERICO";
+  if (clean.includes(";") || clean.includes(":") || clean.includes("=") || clean.includes("\n")) {
+    return "QRCODE_TEXTO";
+  }
+
+  return "DESCONHECIDO";
+}
+
+function isValidImeiLuhn(imei: string) {
+  if (!/^\d{15}$/.test(imei)) return false;
+
+  let sum = 0;
+
+  for (let index = 0; index < imei.length; index += 1) {
+    let digit = Number(imei[index]);
+
+    if (index % 2 === 1) {
+      digit *= 2;
+      if (digit > 9) digit -= 9;
+    }
+
+    sum += digit;
+  }
+
+  return sum % 10 === 0;
+}
+
+function extractValidImei(rawCode: string) {
+  const clean = normalizeRawCode(rawCode);
+  const candidates = clean.match(/\d{15}/g) || [];
+
+  for (const candidate of candidates) {
+    if (isValidImeiLuhn(candidate)) return candidate;
+  }
+
+  const digits = onlyDigits(clean);
+
+  if (/^\d{15}$/.test(digits) && isValidImeiLuhn(digits)) {
+    return digits;
+  }
+
+  return "";
+}
+
+function validateImeiReading(rawCode: string): ImeiValidationResult {
+  const normalizedRawCode = normalizeRawCode(rawCode);
+  const codeType = classifyRawCode(normalizedRawCode);
+  const digits = onlyDigits(normalizedRawCode);
+  const imei = extractValidImei(normalizedRawCode);
+
+  if (imei) {
+    return {
+      accepted: true,
+      imei,
+      rawCode: normalizedRawCode,
+      codeType: "IMEI",
+    };
+  }
+
+  if (digits.length === 15) {
+    return {
+      accepted: false,
+      imei: "",
+      rawCode: normalizedRawCode,
+      codeType: "IMEI",
+      reason: `Código ignorado: ${digits} tem 15 dígitos, mas não passou na validação de IMEI.`,
+    };
+  }
+
+  if (digits.length === 13) {
+    return {
+      accepted: false,
+      imei: "",
+      rawCode: normalizedRawCode,
+      codeType: "EAN_13",
+      reason: `Código ignorado: ${digits} parece ser EAN/código de produto, não IMEI.`,
+    };
+  }
+
+  if (digits.length === 8) {
+    return {
+      accepted: false,
+      imei: "",
+      rawCode: normalizedRawCode,
+      codeType: "EAN_8",
+      reason: `Código ignorado: ${digits} parece ser EAN curto, não IMEI.`,
+    };
+  }
+
+  if (digits.length > 15) {
+    return {
+      accepted: false,
+      imei: "",
+      rawCode: normalizedRawCode,
+      codeType,
+      reason: "Código ignorado: encontrei muitos números juntos, mas nenhum IMEI válido de 15 dígitos dentro da leitura.",
+    };
+  }
+
+  if (digits.length > 0 && digits.length < 15) {
+    return {
+      accepted: false,
+      imei: "",
+      rawCode: normalizedRawCode,
+      codeType,
+      reason: `Código ignorado: foram encontrados apenas ${digits.length} dígitos. IMEI precisa ter 15 dígitos.`,
+    };
+  }
+
+  return {
+    accepted: false,
+    imei: "",
+    rawCode: normalizedRawCode,
+    codeType,
+    reason: "Código ignorado: a leitura não contém um IMEI válido.",
+  };
+}
+
+function getFriendlyCameraError(err: unknown) {
+  if (err instanceof DOMException) {
+    if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
+      return "Permissão da câmera negada. Libere o acesso à câmera no navegador e tente novamente.";
+    }
+
+    if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError") {
+      return "Nenhuma câmera foi encontrada neste aparelho.";
+    }
+
+    if (err.name === "NotReadableError" || err.name === "TrackStartError") {
+      return "A câmera está em uso por outro aplicativo ou o navegador não conseguiu iniciar a câmera.";
+    }
+
+    if (err.name === "OverconstrainedError") {
+      return "A câmera não aceitou a configuração solicitada. Tente trocar a câmera ou usar o modo normal.";
+    }
+
+    if (err.name === "SecurityError") {
+      return "O navegador bloqueou a câmera. Use HTTPS ou abra pelo localhost durante o desenvolvimento.";
+    }
+  }
+
+  return "Não foi possível acessar ou focar a câmera. Tente trocar a câmera, usar boa iluminação, afastar um pouco o celular ou usar outro navegador.";
+}
 
 export default function BarcodeScannerPage() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -33,6 +204,8 @@ export default function BarcodeScannerPage() {
   const [batchTarget, setBatchTarget] = useState<number>(5);
 
   const [lastCode, setLastCode] = useState("");
+  const [lastRawCode, setLastRawCode] = useState("");
+  const [ignoredCode, setIgnoredCode] = useState("");
   const [error, setError] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
   const [manualCode, setManualCode] = useState("");
@@ -48,6 +221,10 @@ export default function BarcodeScannerPage() {
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>("");
 
   const activeScans = pageMode === "single" ? singleScans : batchScans;
+  const allSavedImeis = useMemo(() => {
+    return new Set([...singleScans, ...batchScans].map((item) => item.code));
+  }, [singleScans, batchScans]);
+
   const batchProgressPercent = useMemo(() => {
     if (batchTarget <= 0) return 0;
     return Math.min((batchScans.length / batchTarget) * 100, 100);
@@ -59,7 +236,14 @@ export default function BarcodeScannerPage() {
 
     if (savedSingle) {
       try {
-        setSingleScans(JSON.parse(savedSingle));
+        const parsed = JSON.parse(savedSingle) as ScanItem[];
+        setSingleScans(
+          parsed.map((item) => ({
+            ...item,
+            rawCode: item.rawCode || item.code,
+            codeType: item.codeType || "IMEI",
+          }))
+        );
       } catch {
         localStorage.removeItem(STORAGE_SINGLE_KEY);
       }
@@ -67,7 +251,14 @@ export default function BarcodeScannerPage() {
 
     if (savedBatch) {
       try {
-        setBatchScans(JSON.parse(savedBatch));
+        const parsed = JSON.parse(savedBatch) as ScanItem[];
+        setBatchScans(
+          parsed.map((item) => ({
+            ...item,
+            rawCode: item.rawCode || item.code,
+            codeType: item.codeType || "IMEI",
+          }))
+        );
       } catch {
         localStorage.removeItem(STORAGE_BATCH_DRAFT_KEY);
       }
@@ -100,15 +291,9 @@ export default function BarcodeScannerPage() {
 
       if (!selectedDeviceId && cameras.length > 0) {
         const backCamera =
-          cameras.find((camera) =>
-            camera.label.toLowerCase().includes("back")
-          ) ||
-          cameras.find((camera) =>
-            camera.label.toLowerCase().includes("traseira")
-          ) ||
-          cameras.find((camera) =>
-            camera.label.toLowerCase().includes("environment")
-          ) ||
+          cameras.find((camera) => camera.label.toLowerCase().includes("back")) ||
+          cameras.find((camera) => camera.label.toLowerCase().includes("traseira")) ||
+          cameras.find((camera) => camera.label.toLowerCase().includes("environment")) ||
           cameras[cameras.length - 1];
 
         setSelectedDeviceId(backCamera.deviceId);
@@ -120,8 +305,7 @@ export default function BarcodeScannerPage() {
 
   function createBeep() {
     try {
-      const AudioContextClass =
-        window.AudioContext || (window as any).webkitAudioContext;
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
 
       if (!AudioContextClass) return;
 
@@ -133,14 +317,8 @@ export default function BarcodeScannerPage() {
       oscillator.frequency.value = 880;
 
       gainNode.gain.setValueAtTime(0.0001, audioContext.currentTime);
-      gainNode.gain.exponentialRampToValueAtTime(
-        0.22,
-        audioContext.currentTime + 0.02
-      );
-      gainNode.gain.exponentialRampToValueAtTime(
-        0.0001,
-        audioContext.currentTime + 0.18
-      );
+      gainNode.gain.exponentialRampToValueAtTime(0.22, audioContext.currentTime + 0.02);
+      gainNode.gain.exponentialRampToValueAtTime(0.0001, audioContext.currentTime + 0.18);
 
       oscillator.connect(gainNode);
       gainNode.connect(audioContext.destination);
@@ -149,6 +327,33 @@ export default function BarcodeScannerPage() {
       oscillator.stop(audioContext.currentTime + 0.2);
     } catch (err) {
       console.warn("Não foi possível tocar beep:", err);
+    }
+  }
+
+  function createErrorBeep() {
+    try {
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+
+      if (!AudioContextClass) return;
+
+      const audioContext = new AudioContextClass();
+      const oscillator = audioContext.createOscillator();
+      const gainNode = audioContext.createGain();
+
+      oscillator.type = "square";
+      oscillator.frequency.value = 220;
+
+      gainNode.gain.setValueAtTime(0.0001, audioContext.currentTime);
+      gainNode.gain.exponentialRampToValueAtTime(0.16, audioContext.currentTime + 0.02);
+      gainNode.gain.exponentialRampToValueAtTime(0.0001, audioContext.currentTime + 0.24);
+
+      oscillator.connect(gainNode);
+      gainNode.connect(audioContext.destination);
+
+      oscillator.start();
+      oscillator.stop(audioContext.currentTime + 0.25);
+    } catch (err) {
+      console.warn("Não foi possível tocar beep de erro:", err);
     }
   }
 
@@ -162,8 +367,20 @@ export default function BarcodeScannerPage() {
     }
   }
 
+  function vibrateError() {
+    try {
+      if ("vibrate" in navigator) {
+        navigator.vibrate([260]);
+      }
+    } catch (err) {
+      console.warn("Não foi possível vibrar erro:", err);
+    }
+  }
+
   function showReadFeedback(code: string) {
-    setSuccessMessage(`✅ Bipado com sucesso: ${code}`);
+    setError("");
+    setIgnoredCode("");
+    setSuccessMessage(`✅ IMEI bipado com sucesso: ${code}`);
     setScanFlash(true);
 
     createBeep();
@@ -178,19 +395,44 @@ export default function BarcodeScannerPage() {
     }, 2600);
   }
 
-  function addScanToCurrentMode(cleanCode: string) {
-    const newItem: ScanItem = {
+  function showIgnoredFeedback(message: string, rawCode: string) {
+    setIgnoredCode(rawCode);
+    setError(message);
+    setSuccessMessage("");
+    createErrorBeep();
+    vibrateError();
+
+    setTimeout(() => {
+      setError("");
+    }, 4200);
+  }
+
+  function buildScanItem(validation: ImeiValidationResult): ScanItem {
+    return {
       id: crypto.randomUUID(),
-      code: cleanCode,
+      code: validation.imei,
+      rawCode: validation.rawCode,
+      codeType: validation.codeType,
       createdAt: new Date().toISOString(),
     };
+  }
+
+  function addScanToCurrentMode(validation: ImeiValidationResult) {
+    const newItem = buildScanItem(validation);
+    const cleanCode = validation.imei;
 
     if (pageMode === "single") {
       setSingleScans((current) => {
-        const alreadyExists = current.some((item) => item.code === cleanCode);
+        const alreadyExistsInCurrentList = current.some((item) => item.code === cleanCode);
+        const alreadyExistsInBatch = batchScans.some((item) => item.code === cleanCode);
 
-        if (alreadyExists) {
-          showReadFeedback(`${cleanCode} — já estava na lista`);
+        if (alreadyExistsInCurrentList) {
+          setSuccessMessage(`⚠️ IMEI ${cleanCode} já estava nas leituras individuais.`);
+          return current;
+        }
+
+        if (alreadyExistsInBatch) {
+          setSuccessMessage(`⚠️ IMEI ${cleanCode} já existe no lote atual.`);
           return current;
         }
 
@@ -202,10 +444,16 @@ export default function BarcodeScannerPage() {
     }
 
     setBatchScans((current) => {
-      const alreadyExists = current.some((item) => item.code === cleanCode);
+      const alreadyExistsInCurrentLot = current.some((item) => item.code === cleanCode);
+      const alreadyExistsInSingle = singleScans.some((item) => item.code === cleanCode);
 
-      if (alreadyExists) {
-        showReadFeedback(`${cleanCode} — já estava no lote`);
+      if (alreadyExistsInCurrentLot) {
+        setSuccessMessage(`⚠️ IMEI ${cleanCode} já estava no lote.`);
+        return current;
+      }
+
+      if (alreadyExistsInSingle) {
+        setSuccessMessage(`⚠️ IMEI ${cleanCode} já existe nas leituras individuais.`);
         return current;
       }
 
@@ -218,29 +466,36 @@ export default function BarcodeScannerPage() {
   function handleDetectedCode(code: string) {
     if (!code) return;
 
-    const cleanCode = code.trim();
-    if (!cleanCode) return;
-
+    const validation = validateImeiReading(code);
+    const readKey = validation.accepted ? validation.imei : validation.rawCode;
     const now = Date.now();
 
-    if (
-      cleanCode === lastCodeRef.current &&
-      now - lastReadAtRef.current < DUPLICATE_BLOCK_TIME_MS
-    ) {
+    if (readKey === lastCodeRef.current && now - lastReadAtRef.current < DUPLICATE_BLOCK_TIME_MS) {
       return;
     }
 
-    lastCodeRef.current = cleanCode;
+    lastCodeRef.current = readKey;
     lastReadAtRef.current = now;
 
-    setLastCode(cleanCode);
-    addScanToCurrentMode(cleanCode);
+    setLastRawCode(validation.rawCode);
+
+    if (!validation.accepted) {
+      showIgnoredFeedback(validation.reason || "Código ignorado: não parece ser IMEI válido.", validation.rawCode);
+      return;
+    }
+
+    if (allSavedImeis.has(validation.imei)) {
+      setLastCode(validation.imei);
+      setIgnoredCode(validation.rawCode);
+      setSuccessMessage(`⚠️ IMEI ${validation.imei} já foi bipado anteriormente.`);
+      return;
+    }
+
+    setLastCode(validation.imei);
+    addScanToCurrentMode(validation);
   }
 
-  async function applyCameraEnhancements(
-    videoTrack: MediaStreamTrack,
-    mode: CameraMode
-  ) {
+  async function applyCameraEnhancements(videoTrack: MediaStreamTrack, mode: CameraMode) {
     try {
       const capabilities = (videoTrack as any).getCapabilities?.();
       const advancedConstraints: any[] = [];
@@ -279,20 +534,15 @@ export default function BarcodeScannerPage() {
         } as any);
       }
     } catch (cameraConfigError) {
-      console.warn(
-        "Não foi possível aplicar foco/zoom avançado:",
-        cameraConfigError
-      );
+      console.warn("Não foi possível aplicar foco/zoom avançado:", cameraConfigError);
     }
   }
 
-  async function startScanner(
-    mode: CameraMode = cameraMode,
-    deviceIdOverride?: string
-  ) {
+  async function startScanner(mode: CameraMode = cameraMode, deviceIdOverride?: string) {
     try {
       setError("");
       setSuccessMessage("");
+      setIgnoredCode("");
       setTorchEnabled(false);
       setTorchAvailable(false);
       setZoomAvailable(false);
@@ -314,11 +564,6 @@ export default function BarcodeScannerPage() {
         BarcodeFormat.CODE_128,
         BarcodeFormat.CODE_39,
         BarcodeFormat.CODE_93,
-        BarcodeFormat.EAN_13,
-        BarcodeFormat.EAN_8,
-        BarcodeFormat.UPC_A,
-        BarcodeFormat.UPC_E,
-        BarcodeFormat.ITF,
         BarcodeFormat.QR_CODE,
       ]);
 
@@ -357,25 +602,17 @@ export default function BarcodeScannerPage() {
         delayBetweenScanAttempts: mode === "small-code" ? 160 : 230,
       });
 
-      const controls = await reader.decodeFromStream(
-        stream,
-        videoRef.current,
-        (result) => {
-          if (result) {
-            const code = result.getText();
-            handleDetectedCode(code);
-          }
+      const controls = await reader.decodeFromStream(stream, videoRef.current, (result) => {
+        if (result) {
+          const code = result.getText();
+          handleDetectedCode(code);
         }
-      );
+      });
 
       controlsRef.current = controls;
     } catch (err) {
       console.error(err);
-
-      setError(
-        "Não foi possível acessar ou focar a câmera. Tente trocar a câmera, usar boa iluminação, afastar um pouco o celular ou usar outro navegador."
-      );
-
+      setError(getFriendlyCameraError(err));
       stopScanner();
     }
   }
@@ -406,14 +643,9 @@ export default function BarcodeScannerPage() {
         return;
       }
 
-      const currentIndex = videoDevices.findIndex(
-        (device) => device.deviceId === selectedDeviceId
-      );
+      const currentIndex = videoDevices.findIndex((device) => device.deviceId === selectedDeviceId);
 
-      const nextIndex =
-        currentIndex >= 0 && currentIndex < videoDevices.length - 1
-          ? currentIndex + 1
-          : 0;
+      const nextIndex = currentIndex >= 0 && currentIndex < videoDevices.length - 1 ? currentIndex + 1 : 0;
 
       const nextDevice = videoDevices[nextIndex];
       if (!nextDevice) return;
@@ -471,10 +703,7 @@ export default function BarcodeScannerPage() {
       const maxZoom = capabilities.zoom.max ?? 1;
       const step = capabilities.zoom.step ?? 0.2;
 
-      const nextZoom =
-        direction === "in"
-          ? Math.min(currentZoom + step, maxZoom)
-          : Math.max(currentZoom - step, minZoom);
+      const nextZoom = direction === "in" ? Math.min(currentZoom + step, maxZoom) : Math.max(currentZoom - step, minZoom);
 
       await track.applyConstraints({
         advanced: [{ zoom: nextZoom }],
@@ -489,9 +718,7 @@ export default function BarcodeScannerPage() {
 
   function clearCurrentList() {
     const confirmClear = window.confirm(
-      pageMode === "single"
-        ? "Tem certeza que deseja apagar as leituras individuais?"
-        : "Tem certeza que deseja apagar o lote atual?"
+      pageMode === "single" ? "Tem certeza que deseja apagar as leituras individuais?" : "Tem certeza que deseja apagar o lote atual?"
     );
 
     if (!confirmClear) return;
@@ -505,6 +732,8 @@ export default function BarcodeScannerPage() {
     }
 
     setLastCode("");
+    setLastRawCode("");
+    setIgnoredCode("");
     setSuccessMessage("");
     lastCodeRef.current = "";
     lastReadAtRef.current = 0;
@@ -522,7 +751,7 @@ export default function BarcodeScannerPage() {
   function copyCode(code: string) {
     navigator.clipboard.writeText(code);
 
-    setSuccessMessage(`Código copiado: ${code}`);
+    setSuccessMessage(`IMEI copiado: ${code}`);
 
     setTimeout(() => {
       setSuccessMessage("");
@@ -535,19 +764,20 @@ export default function BarcodeScannerPage() {
       .reverse()
       .map((item, index) => {
         const date = new Date(item.createdAt).toLocaleString("pt-BR");
-        return `${index + 1}. ${item.code} - ${date}`;
+        const raw = item.rawCode && item.rawCode !== item.code ? ` | leitura_original: ${item.rawCode}` : "";
+        return `${index + 1}. IMEI: ${item.code} - ${date}${raw}`;
       })
       .join("\n");
   }
 
   function getExportContentCsv(scans: ScanItem[]) {
-    const header = "ordem;codigo;data_hora";
+    const header = "ordem;imei;tipo;data_hora;leitura_original";
     const rows = scans
       .slice()
       .reverse()
       .map((item, index) => {
         const date = new Date(item.createdAt).toLocaleString("pt-BR");
-        return `${index + 1};${item.code};${date}`;
+        return `${index + 1};${item.code};${item.codeType};${date};${item.rawCode}`;
       });
 
     return [header, ...rows].join("\n");
@@ -569,14 +799,11 @@ export default function BarcodeScannerPage() {
     const scans = activeScans;
 
     if (scans.length === 0) {
-      alert("Nenhum código para compartilhar.");
+      alert("Nenhum IMEI para compartilhar.");
       return;
     }
 
-    const baseName =
-      pageMode === "single"
-        ? "telefluxo-leituras-individuais"
-        : "telefluxo-lote-bipado";
+    const baseName = pageMode === "single" ? "telefluxo-imeis-individuais" : "telefluxo-lote-imeis";
 
     const txtContent = getExportContentTxt(scans);
     const fileName = `${baseName}.txt`;
@@ -588,78 +815,61 @@ export default function BarcodeScannerPage() {
 
       if (navigator.share && navigator.canShare?.({ files: [file] })) {
         await navigator.share({
-          title: "Leituras bipadas",
-          text:
-            pageMode === "single"
-              ? "Leituras individuais bipadas no TeleFluxo."
-              : "Lote bipado no TeleFluxo.",
+          title: "IMEIs bipados",
+          text: pageMode === "single" ? "IMEIs bipados individualmente no TeleFluxo." : "Lote de IMEIs bipados no TeleFluxo.",
           files: [file],
         });
         return;
       }
 
       downloadFile(txtContent, fileName, "text/plain;charset=utf-8");
-      alert(
-        "Seu aparelho/navegador não suportou compartilhamento direto. O arquivo foi baixado."
-      );
+      alert("Seu aparelho/navegador não suportou compartilhamento direto. O arquivo foi baixado.");
     } catch (err) {
       console.warn("Não foi possível compartilhar:", err);
       downloadFile(txtContent, fileName, "text/plain;charset=utf-8");
-      alert(
-        "Não foi possível compartilhar diretamente. O arquivo foi baixado."
-      );
+      alert("Não foi possível compartilhar diretamente. O arquivo foi baixado.");
     }
   }
 
   function exportTxt() {
     if (activeScans.length === 0) {
-      alert("Nenhum código para exportar.");
+      alert("Nenhum IMEI para exportar.");
       return;
     }
 
     const content = getExportContentTxt(activeScans);
-    const baseName =
-      pageMode === "single"
-        ? "telefluxo-leituras-individuais"
-        : "telefluxo-lote-bipado";
+    const baseName = pageMode === "single" ? "telefluxo-imeis-individuais" : "telefluxo-lote-imeis";
 
     downloadFile(content, `${baseName}.txt`, "text/plain;charset=utf-8");
   }
 
   function exportCsv() {
     if (activeScans.length === 0) {
-      alert("Nenhum código para exportar.");
+      alert("Nenhum IMEI para exportar.");
       return;
     }
 
     const content = getExportContentCsv(activeScans);
-    const baseName =
-      pageMode === "single"
-        ? "telefluxo-leituras-individuais"
-        : "telefluxo-lote-bipado";
+    const baseName = pageMode === "single" ? "telefluxo-imeis-individuais" : "telefluxo-lote-imeis";
 
     downloadFile(content, `${baseName}.csv`, "text/csv;charset=utf-8");
   }
 
   function finalizeBatch() {
     if (batchScans.length === 0) {
-      alert("Nenhum código no lote para finalizar.");
+      alert("Nenhum IMEI no lote para finalizar.");
       return;
     }
 
     const reachedTarget = batchScans.length >= batchTarget;
 
     if (!reachedTarget) {
-      const continuar = window.confirm(
-        `O lote ainda não atingiu a meta de ${batchTarget} aparelhos.\n\nDeseja finalizar assim mesmo?`
-      );
+      const continuar = window.confirm(`O lote ainda não atingiu a meta de ${batchTarget} aparelhos.\n\nDeseja finalizar assim mesmo?`);
 
       if (!continuar) return;
     }
 
-    setSuccessMessage(
-      `✅ Lote finalizado com ${batchScans.length} aparelho(s). Agora você pode compartilhar ou exportar.`
-    );
+    setSuccessMessage(`✅ Lote finalizado com ${batchScans.length} IMEI(s). Agora você pode compartilhar ou exportar.`);
 
     setTimeout(() => {
       setSuccessMessage("");
@@ -667,14 +877,14 @@ export default function BarcodeScannerPage() {
   }
 
   function newBatch() {
-    const confirmar = window.confirm(
-      "Deseja iniciar um novo lote? O lote atual será apagado."
-    );
+    const confirmar = window.confirm("Deseja iniciar um novo lote? O lote atual será apagado.");
 
     if (!confirmar) return;
 
     setBatchScans([]);
     setLastCode("");
+    setLastRawCode("");
+    setIgnoredCode("");
     setSuccessMessage("");
     lastCodeRef.current = "";
     lastReadAtRef.current = 0;
@@ -685,7 +895,7 @@ export default function BarcodeScannerPage() {
     const cleanCode = manualCode.trim();
 
     if (!cleanCode) {
-      alert("Digite um código antes de salvar.");
+      alert("Digite um IMEI antes de salvar.");
       return;
     }
 
@@ -696,6 +906,14 @@ export default function BarcodeScannerPage() {
   function handleManualSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     saveManualCode();
+  }
+
+  function handleDevTestValidImei() {
+    handleDetectedCode("490154203237518");
+  }
+
+  function handleDevTestInvalidCode() {
+    handleDetectedCode("7892509123456");
   }
 
   return (
@@ -710,26 +928,23 @@ export default function BarcodeScannerPage() {
         </div>
 
         <nav className="tf-menu">
-          <button
-            className={pageMode === "single" ? "tf-menu-item active" : "tf-menu-item"}
-            onClick={() => setPageMode("single")}
-          >
+          <button className={pageMode === "single" ? "tf-menu-item active" : "tf-menu-item"} onClick={() => setPageMode("single")}>
             Leitura Individual
           </button>
 
-          <button
-            className={pageMode === "batch" ? "tf-menu-item active" : "tf-menu-item"}
-            onClick={() => setPageMode("batch")}
-          >
+          <button className={pageMode === "batch" ? "tf-menu-item active" : "tf-menu-item"} onClick={() => setPageMode("batch")}>
             Bipar por Lote
           </button>
         </nav>
 
         <div className="tf-sidebar-box">
           <span>Modo atual</span>
-          <strong>
-            {pageMode === "single" ? "Leitura Individual" : "Bipar por Lote"}
-          </strong>
+          <strong>{pageMode === "single" ? "Leitura Individual" : "Bipar por Lote"}</strong>
+        </div>
+
+        <div className="tf-sidebar-box">
+          <span>Filtro ativo</span>
+          <strong>Somente IMEI válido</strong>
         </div>
       </aside>
 
@@ -737,15 +952,11 @@ export default function BarcodeScannerPage() {
         <header className="tf-topbar">
           <div>
             <div className="tf-breadcrumb">GRUPO TELECEL • SCANNER DASH</div>
-            <h1>
-              {pageMode === "single"
-                ? "Controle de Leitura"
-                : "Controle de Bipagem por Lote"}
-            </h1>
+            <h1>{pageMode === "single" ? "Controle de Leitura" : "Controle de Bipagem por Lote"}</h1>
             <p>
               {pageMode === "single"
-                ? "Bipe aparelhos individualmente e acompanhe as leituras em tempo real."
-                : "Monte lotes de aparelhos, acompanhe o progresso e compartilhe o arquivo final."}
+                ? "Bipe aparelhos individualmente. Agora o aplicativo aceita somente IMEIs válidos de 15 dígitos."
+                : "Monte lotes de aparelhos. Leituras que não forem IMEI válido são ignoradas automaticamente."}
             </p>
           </div>
 
@@ -753,13 +964,7 @@ export default function BarcodeScannerPage() {
             {pageMode === "batch" && (
               <div className="tf-target-box">
                 <label>Meta do lote</label>
-                <input
-                  type="number"
-                  min={1}
-                  max={100}
-                  value={batchTarget}
-                  onChange={(e) => setBatchTarget(Number(e.target.value) || 1)}
-                />
+                <input type="number" min={1} max={100} value={batchTarget} onChange={(e) => setBatchTarget(Number(e.target.value) || 1)} />
               </div>
             )}
 
@@ -770,17 +975,11 @@ export default function BarcodeScannerPage() {
         </header>
 
         <div className="tf-tabs">
-          <button
-            className={pageMode === "single" ? "tf-tab active" : "tf-tab"}
-            onClick={() => setPageMode("single")}
-          >
+          <button className={pageMode === "single" ? "tf-tab active" : "tf-tab"} onClick={() => setPageMode("single")}>
             Leitura Individual
           </button>
 
-          <button
-            className={pageMode === "batch" ? "tf-tab active" : "tf-tab"}
-            onClick={() => setPageMode("batch")}
-          >
+          <button className={pageMode === "batch" ? "tf-tab active" : "tf-tab"} onClick={() => setPageMode("batch")}>
             Bipar por Lote
           </button>
         </div>
@@ -789,18 +988,12 @@ export default function BarcodeScannerPage() {
           <article className="tf-kpi-card blue">
             <span>Total atual</span>
             <strong>{activeScans.length}</strong>
-            <small>
-              {pageMode === "single"
-                ? "leituras individuais"
-                : "itens no lote"}
-            </small>
+            <small>{pageMode === "single" ? "IMEIs individuais" : "IMEIs no lote"}</small>
           </article>
 
           <article className="tf-kpi-card purple">
             <span>Modo da câmera</span>
-            <strong>
-              {cameraMode === "small-code" ? "Código pequeno" : "Normal"}
-            </strong>
+            <strong>{cameraMode === "small-code" ? "Código pequeno" : "Normal"}</strong>
             <small>ajuste para leitura</small>
           </article>
 
@@ -811,9 +1004,9 @@ export default function BarcodeScannerPage() {
           </article>
 
           <article className="tf-kpi-card green">
-            <span>Status</span>
-            <strong>{isScanning ? "Câmera ativa" : "Câmera parada"}</strong>
-            <small>scanner em operação</small>
+            <span>Filtro</span>
+            <strong>IMEI</strong>
+            <small>15 dígitos + Luhn</small>
           </article>
         </section>
 
@@ -823,8 +1016,7 @@ export default function BarcodeScannerPage() {
               <div>
                 <h3>Andamento do lote</h3>
                 <p>
-                  O modo lote funciona como um agrupador de bipagens. Você pode
-                  colocar a meta em 5 e ir bipando os 5 aparelhos no mesmo lote.
+                  O modo lote funciona como um agrupador de IMEIs. Defina a meta e bipe apenas as etiquetas de IMEI dos aparelhos.
                 </p>
               </div>
 
@@ -845,10 +1037,7 @@ export default function BarcodeScannerPage() {
             </div>
 
             <div className="tf-progress-bar">
-              <div
-                className="tf-progress-fill"
-                style={{ width: `${batchProgressPercent}%` }}
-              />
+              <div className="tf-progress-fill" style={{ width: `${batchProgressPercent}%` }} />
             </div>
           </section>
         )}
@@ -856,33 +1045,28 @@ export default function BarcodeScannerPage() {
         <section className={scanFlash ? "tf-scanner-card success" : "tf-scanner-card"}>
           <div className="tf-section-header">
             <div>
-              <h2>
-                {pageMode === "single"
-                  ? "Leitor de código de barras"
-                  : "Leitor do lote atual"}
-              </h2>
+              <h2>{pageMode === "single" ? "Leitor de IMEI" : "Leitor do lote atual"}</h2>
               <p>
-                Se a câmera abrir embaçada, use “Trocar câmera” até encontrar a
-                lente mais nítida.
+                O scanner lê o código, extrai um possível IMEI e salva somente se for um IMEI válido. EAN, QR aleatório e códigos incompletos são bloqueados.
               </p>
             </div>
 
-            <div className={isScanning ? "tf-status online" : "tf-status offline"}>
-              {isScanning ? "Câmera ativa" : "Câmera parada"}
-            </div>
+            <div className={isScanning ? "tf-status online" : "tf-status offline"}>{isScanning ? "Câmera ativa" : "Câmera parada"}</div>
           </div>
 
           {error && <div className="tf-alert error">{error}</div>}
           {successMessage && <div className="tf-alert success">{successMessage}</div>}
 
+          {ignoredCode && (
+            <div className="tf-alert warning">
+              <strong>Última leitura ignorada:</strong> {ignoredCode}
+            </div>
+          )}
+
           {scanFlash && (
             <div className="tf-big-success">
-              <strong>✅ BIPADO</strong>
-              <span>
-                {pageMode === "single"
-                  ? "Pode passar para o próximo aparelho"
-                  : "Item adicionado ao lote"}
-              </span>
+              <strong>✅ IMEI BIPADO</strong>
+              <span>{pageMode === "single" ? "Pode passar para o próximo aparelho" : "IMEI adicionado ao lote"}</span>
             </div>
           )}
 
@@ -894,17 +1078,12 @@ export default function BarcodeScannerPage() {
           </div>
 
           <div className="tf-scanner-tip">
-            Dica: para código pequeno, use “Modo código pequeno”, boa
-            iluminação e mantenha o aparelho estável por 1 a 2 segundos.
+            Dica: mire especificamente no código de barras do IMEI. Se a câmera pegar EAN da caixa ou outro código, o app vai ignorar automaticamente.
           </div>
 
           <div className="tf-controls-grid">
             {videoDevices.length > 0 && (
-              <select
-                className="tf-select"
-                value={selectedDeviceId}
-                onChange={(event) => handleCameraSelect(event.target.value)}
-              >
+              <select className="tf-select" value={selectedDeviceId} onChange={(event) => handleCameraSelect(event.target.value)}>
                 {videoDevices.map((device, index) => (
                   <option key={device.deviceId} value={device.deviceId}>
                     {device.label || `Câmera ${index + 1}`}
@@ -919,17 +1098,11 @@ export default function BarcodeScannerPage() {
 
             {!isScanning ? (
               <>
-                <button
-                  className="tf-btn primary"
-                  onClick={() => startScanner("normal")}
-                >
+                <button className="tf-btn primary" onClick={() => startScanner("normal")}>
                   Iniciar câmera
                 </button>
 
-                <button
-                  className="tf-btn secondary"
-                  onClick={() => startScanner("small-code")}
-                >
+                <button className="tf-btn secondary" onClick={() => startScanner("small-code")}>
                   Modo código pequeno
                 </button>
               </>
@@ -957,12 +1130,17 @@ export default function BarcodeScannerPage() {
               </button>
             )}
 
-            <button
-              className="tf-btn secondary"
-              onClick={() => handleDetectedCode("TESTE-123456789")}
-            >
-              Testar bip
-            </button>
+            {import.meta.env.DEV && (
+              <>
+                <button className="tf-btn secondary" onClick={handleDevTestValidImei}>
+                  Testar IMEI válido
+                </button>
+
+                <button className="tf-btn ghost" onClick={handleDevTestInvalidCode}>
+                  Testar código inválido
+                </button>
+              </>
+            )}
 
             <button className="tf-btn ghost" onClick={clearCurrentList}>
               Limpar
@@ -971,13 +1149,16 @@ export default function BarcodeScannerPage() {
 
           {lastCode && (
             <div className="tf-last-code">
-              <span>Último código lido</span>
+              <span>Último IMEI aceito</span>
               <strong>{lastCode}</strong>
-              <small>
-                {pageMode === "single"
-                  ? "Passe para o próximo aparelho."
-                  : "Se quiser, continue adicionando ao lote."}
-              </small>
+              <small>{pageMode === "single" ? "Passe para o próximo aparelho." : "Se quiser, continue adicionando ao lote."}</small>
+            </div>
+          )}
+
+          {lastRawCode && lastRawCode !== lastCode && (
+            <div className="tf-raw-code">
+              <span>Última leitura bruta</span>
+              <strong>{lastRawCode}</strong>
             </div>
           )}
         </section>
@@ -987,20 +1168,21 @@ export default function BarcodeScannerPage() {
             <div className="tf-section-header">
               <div>
                 <h2>Digitação manual</h2>
-                <p>Use quando a câmera não conseguir ler algum código.</p>
+                <p>Use quando a câmera não conseguir ler algum IMEI.</p>
               </div>
             </div>
 
             <form className="tf-manual-form" onSubmit={handleManualSubmit}>
               <input
                 type="text"
+                inputMode="numeric"
                 value={manualCode}
                 onChange={(event) => setManualCode(event.target.value)}
-                placeholder="Digite ou cole o código aqui"
+                placeholder="Digite ou cole o IMEI de 15 dígitos"
               />
 
               <button type="submit" className="tf-btn primary">
-                Salvar código
+                Salvar IMEI
               </button>
             </form>
           </section>
@@ -1008,12 +1190,8 @@ export default function BarcodeScannerPage() {
           <section className="tf-panel">
             <div className="tf-section-header">
               <div>
-                <h2>
-                  {pageMode === "single"
-                    ? "Ações das leituras"
-                    : "Ações do lote"}
-                </h2>
-                <p>Exporte ou compartilhe os códigos bipados.</p>
+                <h2>{pageMode === "single" ? "Ações das leituras" : "Ações do lote"}</h2>
+                <p>Exporte ou compartilhe os IMEIs bipados.</p>
               </div>
             </div>
 
@@ -1053,11 +1231,7 @@ export default function BarcodeScannerPage() {
         <section className="tf-panel">
           <div className="tf-section-header">
             <div>
-              <h2>
-                {pageMode === "single"
-                  ? "Códigos lidos"
-                  : "Códigos do lote atual"}
-              </h2>
+              <h2>{pageMode === "single" ? "IMEIs lidos" : "IMEIs do lote atual"}</h2>
               <p>Total: {activeScans.length}</p>
             </div>
           </div>
@@ -1065,8 +1239,8 @@ export default function BarcodeScannerPage() {
           {activeScans.length === 0 ? (
             <div className="tf-empty-state">
               {pageMode === "single"
-                ? "Nenhum código salvo ainda. Inicie a câmera e faça a primeira bipagem."
-                : "Nenhum item no lote atual. Defina a meta e comece a bipar os aparelhos."}
+                ? "Nenhum IMEI salvo ainda. Inicie a câmera e faça a primeira bipagem."
+                : "Nenhum IMEI no lote atual. Defina a meta e comece a bipar os aparelhos."}
             </div>
           ) : (
             <div className="tf-scan-list">
@@ -1077,9 +1251,8 @@ export default function BarcodeScannerPage() {
 
                     <div>
                       <strong>{item.code}</strong>
-                      <span>
-                        {new Date(item.createdAt).toLocaleString("pt-BR")}
-                      </span>
+                      <span>{new Date(item.createdAt).toLocaleString("pt-BR")}</span>
+                      {item.rawCode !== item.code && <span>Leitura original: {item.rawCode}</span>}
                     </div>
                   </div>
 

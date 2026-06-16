@@ -287,6 +287,43 @@ export function planejarLocalClark(ctx: ClarkBrainContext): ClarkAgentPlan {
     };
   }
 
+  const falaVendasProduto =
+    falaProduto &&
+    (
+      texto.includes('VENDA') ||
+      texto.includes('VENDAS') ||
+      texto.includes('FATURAMENTO') ||
+      texto.includes('GIRO') ||
+      texto.includes('COBERTURA') ||
+      texto.includes('SAIDA') ||
+      texto.includes('SAÍDA')
+    );
+
+  if (falaVendasProduto) {
+    return {
+      understoodQuestion: pergunta,
+      taskType: 'stock_sales_cross',
+      mode: 'analitico',
+      confidence: 0.94,
+      entities: { category: categoria, limit: 100, period: { inicio: ctx.periodo.inicio, fim: ctx.periodo.fim, descricao: ctx.periodo.descricao } },
+      toolCalls: [
+        call(
+          'consultar_vendas_vs_estoque',
+          { query: pergunta, originalQuestion: ctx.perguntaOriginal, category: categoria, categoria, limit: 100 },
+          'Pergunta de continuação ou direta sobre vendas de produto. Cruzar vendas com estoque usando a memória/contexto da Clark quando existir.',
+          ctx.periodo,
+          pergunta,
+        ),
+      ],
+      validationRules: [
+        'Responder sobre o produto em contexto, não sobre vendas gerais.',
+        'Cruzar estoque atual com vendas reais do período.',
+        'Não inventar lojas, quantidade, giro ou cobertura.',
+      ],
+      answerStyle: { shouldExplainUncertainty: true, shouldIncludeTables: true, shouldIncludeInsights: true, shouldIncludeSuggestions: true },
+    };
+  }
+
   if (falaProduto && (falaEstoque || perguntaAtualProduto)) {
     return {
       understoodQuestion: pergunta,

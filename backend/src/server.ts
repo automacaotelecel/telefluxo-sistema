@@ -2226,6 +2226,20 @@ function acessoRapidoBaseModel(description: any, reference?: any): string {
   }
 
   const colorWords = [
+    // CORES COMPOSTAS PRIMEIRO
+    'AZUL CLARO',
+    'AZUL MARINHO',
+    'LIGHT BLUE',
+    'ICE BLUE',
+    'NATURAL TITANIUM',
+    'DESERT TITANIUM',
+    'WHITE TITANIUM',
+    'BLACK TITANIUM',
+    'TITANIUM GRAY',
+
+    // CORES SIMPLES
+    'MARINHO',
+    'NAVY',
     'JET BLACK',
     'JETBLACK',
     'PRETO',
@@ -2262,14 +2276,25 @@ function acessoRapidoBaseModel(description: any, reference?: any): string {
     'TITANIUM',
     'TITANIO',
     'TITÂNIO',
+    'NATURAL',
+    'DESERT',
+    'ULTRAMARINO'
   ];
 
   let base = ` ${text} `;
 
   for (const color of colorWords.sort((a, b) => b.length - a.length)) {
     const escaped = color.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    base = base.replace(new RegExp(`\\s${escaped}\\s*$`, 'i'), ' ');
-    base = base.replace(new RegExp(`\\s${escaped}\\s`, 'gi'), ' ');
+
+    base = base.replace(
+      new RegExp(`\\s${escaped}\\s*$`, 'i'),
+      ' '
+    );
+
+    base = base.replace(
+      new RegExp(`\\s${escaped}\\s`, 'gi'),
+      ' '
+    );
   }
 
   base = base

@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { processarPerguntaClark } from './clark.service';
+import { limparMemoriaExecutivaClark, obterMemoriaExecutivaClark } from './brain/clarkExecutiveMemory.service';
 import { ClarkHistoricoMensagem } from './clark.types';
 import { gerarExcelUniversalClark } from './reports/excelUniversal.service';
 
@@ -87,6 +88,68 @@ export async function exportarRelatorioExcelClark(req: Request, res: Response) {
       ok: false,
       error: 'Erro ao gerar Excel da Clark.',
       details: error?.message,
+    });
+  }
+}
+
+
+export async function obterMemoriaClarkController(req: Request, res: Response) {
+  try {
+    const userId = String(req.query.userId || req.body?.userId || '').trim();
+
+    if (!userId) {
+      return res.status(400).json({ ok: false, error: 'Usuário não informado.' });
+    }
+
+    const memory = await obterMemoriaExecutivaClark(userId);
+    return res.json({ ok: true, memory });
+  } catch (error: any) {
+    console.error('Erro ao consultar memória da Clark:', error);
+    return res.status(500).json({ ok: false, error: error?.message || 'Erro ao consultar memória da Clark.' });
+  }
+}
+
+export async function limparMemoriaClarkController(req: Request, res: Response) {
+  try {
+    const userId = String(req.query.userId || req.body?.userId || '').trim();
+
+    if (!userId) {
+      return res.status(400).json({ ok: false, error: 'Usuário não informado.' });
+    }
+
+    await limparMemoriaExecutivaClark(userId);
+    return res.json({ ok: true, memory: null });
+  } catch (error: any) {
+    console.error('Erro ao limpar memória da Clark:', error);
+    return res.status(500).json({ ok: false, error: error?.message || 'Erro ao limpar memória da Clark.' });
+  }
+}
+
+export async function gerarRelatorioExecutivoClarkController(req: Request, res: Response) {
+  try {
+    const { userId, periodo, pergunta } = req.body || {};
+
+    if (!userId) {
+      return res.status(400).json({ ok: false, error: 'Usuário não informado.' });
+    }
+
+    const periodoTexto = String(periodo || '').trim() || 'este mês';
+    const perguntaFinal = String(pergunta || '').trim() ||
+      `Modo diretoria: gere um relatório executivo da operação no período ${periodoTexto}, com vendas, estoque, seguros, alertas, riscos e ações recomendadas. Ao final, disponibilize Excel.`;
+
+    const resultado = await processarPerguntaClark({
+      userId: String(userId),
+      pergunta: perguntaFinal,
+      historico: normalizarHistorico(req.body?.historico),
+    });
+
+    return res.json(resultado);
+  } catch (error: any) {
+    console.error('Erro ao gerar relatório executivo da Clark:', error);
+    return res.status(500).json({
+      ok: false,
+      clark: 'Não consegui gerar o relatório executivo agora. Nenhum dado foi inventado.',
+      error: error?.message || 'Erro ao gerar relatório executivo.',
     });
   }
 }

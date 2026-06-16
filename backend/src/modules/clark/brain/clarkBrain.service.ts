@@ -3,6 +3,12 @@ import { extrairFiltrosClark } from '../../intent/extractFilters';
 import { extrairPeriodoClark } from '../../intent/extractPeriod';
 import { obterEscopoUsuarioClark } from '../../security/clarkScope';
 import { limparHistoricoClark, expandirPerguntaComHistorico } from './clarkMemory.service';
+import {
+  aplicarMemoriaNaPerguntaClark,
+  atualizarMemoriaExecutivaClark,
+  montarHistoricoComMemoriaClark,
+  obterMemoriaExecutivaClark,
+} from './clarkExecutiveMemory.service';
 import { CLARK_SCHEMA_CONTEXT } from './clarkSchemaContext';
 import { ClarkBrainContext } from './clarkBrain.types';
 import { planejarClark } from './clarkPlanner.service';
@@ -85,8 +91,11 @@ export async function processarComClarkBrain(input: ClarkPerguntaInput): Promise
     };
   }
 
-  const historico = limparHistoricoClark(input.historico);
-  const perguntaExpandida = expandirPerguntaComHistorico(perguntaOriginal, historico);
+  const historicoLimpo = limparHistoricoClark(input.historico);
+  const memoriaExecutiva = await obterMemoriaExecutivaClark(userId);
+  const perguntaComMemoria = aplicarMemoriaNaPerguntaClark(perguntaOriginal, memoriaExecutiva);
+  const historico = montarHistoricoComMemoriaClark(memoriaExecutiva, historicoLimpo);
+  const perguntaExpandida = expandirPerguntaComHistorico(perguntaComMemoria, historico);
   const periodo = extrairPeriodoClark(perguntaExpandida);
   const filtros = extrairFiltrosClark(perguntaExpandida);
   const scope = await obterEscopoUsuarioClark(userId);
@@ -107,7 +116,7 @@ export async function processarComClarkBrain(input: ClarkPerguntaInput): Promise
   const verifier = validarResultadoClark(plan, results);
   const { text, usedGemini: usedGeminiResponder } = await responderFinalClark({ pergunta: perguntaOriginal, plan, results, verifier, periodo });
 
-  return {
+  const respostaFinal: ClarkResposta = {
     ok: verifier.ok,
     clark: sanitizeFinalText(text),
     intencao: intentFromPlan(plan),
@@ -119,9 +128,10 @@ export async function processarComClarkBrain(input: ClarkPerguntaInput): Promise
       toolResults: results,
       verifier,
       brain: {
-        version: 'v8',
+        version: 'v9-memory-executive',
         usedGeminiPlanner,
         usedGeminiResponder,
+        memoryBefore: memoriaExecutiva,
       },
     },
     resposta_origem: usedGeminiPlanner || usedGeminiResponder ? 'gemini_analitico' : 'local_precisa',
@@ -131,4 +141,20 @@ export async function processarComClarkBrain(input: ClarkPerguntaInput): Promise
       'Filtrar por loja ou vendedor',
     ],
   };
+
+  const memoriaAtualizada = await atualizarMemoriaExecutivaClark({
+    userId,
+    perguntaOriginal,
+    resposta: respostaFinal,
+  });
+
+  respostaFinal.dados = {
+    ...respostaFinal.dados,
+    brain: {
+      ...(respostaFinal.dados?.brain || {}),
+      memoryAfter: memoriaAtualizada,
+    },
+  };
+
+  return respostaFinal;
 }
