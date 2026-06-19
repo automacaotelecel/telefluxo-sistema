@@ -98,11 +98,14 @@ export default function ContractAnalyzer({ currentUser }: ContractAnalyzerProps)
       formData.append('pdf', file);
       formData.append('question', currentQuestion);
 
-      // Chamada para a rota que criamos no backend
-      const response = await fetch(`http://localhost:3000/api/contracts/analyze`, {
-        method: 'POST',
-        body: formData,
-      });
+      //Chamada para a Rota no render
+      const response = await fetch(
+        'https://telefluxo-aplicacao.onrender.com/api/contracts/analyze',
+        {
+          method: 'POST',
+          body: formData,
+        }
+      );
 
       const data = await response.json();
 
