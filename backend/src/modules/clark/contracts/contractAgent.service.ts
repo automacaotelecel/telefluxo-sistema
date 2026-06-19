@@ -27,8 +27,12 @@ REGRAS OBRIGATÓRIAS:
     `.trim();
 
     try {
+
+      console.log('MODEL:', process.env.CLAUDE_MODEL);
+      console.log('KEY EXISTS:', !!process.env.ANTHROPIC_API_KEY);
+
       const response = await anthropic.messages.create({
-        model: process.env.CLAUDE_MODEL || 'claude-3-7-sonnet-20250219',
+        model: process.env.CLAUDE_MODEL || 'claude-sonnet-4-6',
         max_tokens: 2048,
         temperature: 0.1, // Temperatura quase zerada: máxima precisão analítica e mínima criatividade
         system: systemPrompt,
@@ -36,12 +40,12 @@ REGRAS OBRIGATÓRIAS:
           {
             role: 'user',
             content: `
---- INÍCIO DO TEXTO DO CONTRATO ---
-${contractText}
---- FIM DO TEXTO DO CONTRATO ---
+          --- INÍCIO DO TEXTO DO CONTRATO ---
+          ${contractText}
+          --- FIM DO TEXTO DO CONTRATO ---
 
-PERGUNTA DA DIRETORIA:
-${userQuestion}
+          PERGUNTA DA DIRETORIA:
+          ${userQuestion}
             `.trim(),
           },
         ],
