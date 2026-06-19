@@ -28,7 +28,7 @@ REGRAS OBRIGATÓRIAS:
 
     try {
       const response = await anthropic.messages.create({
-        model: process.env.CLAUDE_MODEL || 'claude-3-5-sonnet-20240620',
+        model: process.env.CLAUDE_MODEL || 'claude-3-7-sonnet-20250219',
         max_tokens: 2048,
         temperature: 0.1, // Temperatura quase zerada: máxima precisão analítica e mínima criatividade
         system: systemPrompt,
