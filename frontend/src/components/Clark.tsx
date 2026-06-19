@@ -18,6 +18,7 @@ import {
   Brain,
   Trash2,
   FileSpreadsheet,
+  FileText, // Importado para o ícone de contratos
 } from "lucide-react";
 
 type ClarkMessage = {
@@ -36,6 +37,7 @@ type ClarkMessage = {
 type ClarkProps = {
   currentUser: any;
   placement?: "floating" | "header";
+  onNavigateContracts?: () => void; // Adicionada a propriedade que passamos no App.tsx
 };
 
 type ClarkMemoryState = {
@@ -52,7 +54,6 @@ type ClarkMemoryState = {
   interactionCount: number;
   updatedAt: string | null;
 };
-
 
 type QuickAction =
   | "buscar_produto"
@@ -114,7 +115,7 @@ function ClarkAvatar({ small = false }: { small?: boolean }) {
   );
 }
 
-export default function Clark({ currentUser, placement = "floating" }: ClarkProps) {
+export default function Clark({ currentUser, placement = "floating", onNavigateContracts }: ClarkProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
 
@@ -414,6 +415,13 @@ export default function Clark({ currentUser, placement = "floating" }: ClarkProp
     setIsExpanded(false);
   };
 
+  const handleOpenContracts = () => {
+    closeChat(); // Fecha o modal da Clark atual
+    if (onNavigateContracts) {
+      onNavigateContracts(); // Navega para a tela de contratos
+    }
+  };
+
   const baixarExcelRelatorio = async (msg: ClarkMessage) => {
     if (!msg.dados || excelDownloadingId) return;
 
@@ -536,6 +544,19 @@ export default function Clark({ currentUser, placement = "floating" }: ClarkProp
             </div>
 
             <div className="flex items-center gap-2">
+              
+              {/* NOVO BOTÃO DE LER CONTRATOS INJETADO AQUI */}
+              {onNavigateContracts && (
+                <button
+                  onClick={handleOpenContracts}
+                  className="hidden md:flex items-center gap-1.5 px-3 h-9 rounded-xl bg-slate-800 hover:bg-emerald-600 text-[10px] font-black tracking-widest uppercase transition-colors"
+                  title="Abrir Leitor de Contratos"
+                >
+                  <FileText size={13} />
+                  Ler Contratos
+                </button>
+              )}
+
               <button
                 onClick={() => setIsExpanded((prev) => !prev)}
                 className="w-9 h-9 rounded-xl bg-slate-800 hover:bg-orange-600 flex items-center justify-center transition-colors"

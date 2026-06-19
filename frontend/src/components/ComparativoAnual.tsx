@@ -98,16 +98,31 @@ const pick = (obj: AnyRow, keys: string[], fallback: any = undefined) => {
   return fallback;
 };
 
+ // Cálculo de vendas anuais
 const toNumberSafe = (v: any) => {
   if (v === null || v === undefined) return 0;
   if (typeof v === 'number') return Number.isFinite(v) ? v : 0;
-  const s = String(v)
+  
+  let s = String(v)
     .trim()
     .replace(/\s/g, '')
-    .replace(/[R$\u00A0]/g, '')
-    .replace(/\./g, '')
-    .replace(',', '.')
-    .replace(/[^0-9.\-]/g, '');
+    .replace(/[R$\u00A0]/g, '');
+
+  // Se a string tem vírgula, assumimos o padrão BR clássico (ex: 1.234,56 ou 10,50)
+  if (s.includes(',')) {
+    s = s.replace(/\./g, ''); // Tira o ponto de milhar
+    s = s.replace(',', '.');  // Transforma a vírgula decimal em ponto
+  } else {
+    // Se NÃO tem vírgula, mas tem mais de um ponto (ex: 1.234.567), removemos todos (é milhar)
+    if ((s.match(/\./g) || []).length > 1) {
+      s = s.replace(/\./g, '');
+    }
+    // Se tem só UM ponto, o código ignora o replace, pois o JS já entende 
+    // que isso é a casa decimal do formato americano/SQL (ex: 1465.50)
+  }
+
+  // Limpa qualquer outra sujeira e converte
+  s = s.replace(/[^0-9.\-]/g, '');
   const n = parseFloat(s);
   return Number.isFinite(n) ? n : 0;
 };

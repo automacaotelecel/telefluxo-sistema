@@ -6,11 +6,15 @@ import {
 } from '../agent/clarkAgent.types';
 import { ClarkPeriodo } from '../clark.types';
 import { formatBRL } from '../../intent/extractFilters';
+import { gerarRespostaAnaliticaClaudeClark } from '../../ai/claudeClark';
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 
 const genAI = GEMINI_API_KEY ? new GoogleGenAI({ apiKey: GEMINI_API_KEY }) : null;
+
+// Roteador de IA via Variável de Ambiente
+const PROVIDER = process.env.CLARK_PROVIDER?.toLowerCase() || 'gemini';
 
 function toNumber(v: any, fallback = 0) {
   const n = Number(v);
@@ -234,7 +238,6 @@ function formatarListaProdutosEstoque(params: {
     .filter((linha) => linha !== '')
     .join('\n');
 }
-
 
 function formatarCobertura(value: any) {
   const n = Number(value);
@@ -657,6 +660,32 @@ export async function responderFinalClark(params: {
     periodo: params.periodo,
   });
 
+  const conteudoPrompt = promptFinal({
+    pergunta: params.pergunta,
+    plan: params.plan,
+    results: params.results,
+    verifier: params.verifier,
+    fallback,
+  });
+
+  // 1. Fluxo de Execução com Anthropic Claude
+  if (PROVIDER === 'claude') {
+    try {
+      const text = await gerarRespostaAnaliticaClaudeClark(conteudoPrompt);
+
+      if (isBadAnswer(text)) {
+        return { text: fallback, usedGemini: false };
+      }
+
+      // Mantemos 'usedGemini' como true para preservar a integração no frontend/controller
+      return { text, usedGemini: true }; 
+    } catch (error) {
+      console.warn('⚠️ Responder Claude falhou. Usando fallback local:', error);
+      return { text: fallback, usedGemini: false };
+    }
+  }
+
+  // 2. Fluxo de Execução Original com Google Gemini
   if (!genAI) {
     return {
       text: fallback,
@@ -667,13 +696,7 @@ export async function responderFinalClark(params: {
   try {
     const response = await genAI.models.generateContent({
       model: GEMINI_MODEL,
-      contents: promptFinal({
-        pergunta: params.pergunta,
-        plan: params.plan,
-        results: params.results,
-        verifier: params.verifier,
-        fallback,
-      }),
+      contents: conteudoPrompt,
       config: {
         temperature: 0.25,
       } as any,

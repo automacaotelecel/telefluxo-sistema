@@ -243,6 +243,9 @@ export default function AcessoRapidoAparelhos({ currentUser }: Props) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [expandedStoreKey, setExpandedStoreKey] = useState<string | null>(null);
 
+  // 🔥 OTIMIZAÇÃO MAXIMA: Renderiza apenas 15 itens por vez
+  const [visibleCount, setVisibleCount] = useState(15);
+
   const fetchData = async () => {
     try {
       setLoading(true);
@@ -274,7 +277,11 @@ export default function AcessoRapidoAparelhos({ currentUser }: Props) {
 
 
   // MOTOR DE BUSCA INTELIGENTE //
-  // Criação do cache de pesquisa otimizado (Economiza CPU/RAM do Browser)
+  // Sempre que mudar um filtro ou digitar algo, reseta a lista para 15 (Mais leveza)
+  useEffect(() => {
+    setVisibleCount(10);
+    setExpandedId(null);
+  }, [search, category, store, status, sortBy, tipoItem]);
 
 
   const produtosOtimizados = useMemo(() => {
@@ -330,6 +337,9 @@ export default function AcessoRapidoAparelhos({ currentUser }: Props) {
       return b.vendasMes - a.vendasMes;
     });
   }, [produtosOtimizados, search, category, store, status, sortBy, tipoItem]);
+
+  // 🔥 FATIAMENTO DO ARRAY: Pega apenas os 15 primeiros
+  const displayedProducts = filteredProducts.slice(0, visibleCount);
 
   const filteredSummary = useMemo(() => {
     const storesSet = new Set<string>();
@@ -442,7 +452,6 @@ export default function AcessoRapidoAparelhos({ currentUser }: Props) {
               <Filter size={18} className="text-orange-600" /> Filtros
             </div>
             
-            {/* Toggle Inteligente: Aparelhos x Acessórios */}
             <div className="flex bg-slate-100 p-1 rounded-xl">
               <button 
                 onClick={() => setTipoItem('APARELHOS')} 
@@ -504,7 +513,7 @@ export default function AcessoRapidoAparelhos({ currentUser }: Props) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {filteredProducts.map((item) => {
+                {displayedProducts.map((item) => {
                   const isOpen = expandedId === item.id;
                   const quantidade = getQuantidadeProduto(item);
 
@@ -593,6 +602,23 @@ export default function AcessoRapidoAparelhos({ currentUser }: Props) {
                     </React.Fragment>
                   );
                 })}
+
+                {/* 🔥 BOTÃO DE CARREGAR MAIS AJUSTADO PARA 15 🔥 */}
+                {visibleCount < filteredProducts.length && (
+                  <tr>
+                    <td colSpan={4} className="p-4 text-center bg-slate-50">
+                      <button
+                        onClick={() => setVisibleCount((v) => v + 10)}
+                        className="bg-white border border-slate-300 text-slate-700 hover:bg-slate-100 px-6 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest shadow-sm transition-all"
+                      >
+                        Carregar mais aparelhos...
+                      </button>
+                      <p className="text-[9px] text-slate-400 mt-2 font-bold uppercase">
+                        Exibindo {visibleCount} de {filteredProducts.length}
+                      </p>
+                    </td>
+                  </tr>
+                )}
 
                 {filteredProducts.length === 0 && (
                   <tr>

@@ -33,6 +33,8 @@ import FluxoComparativoModule from './components/FluxoComparativoModule';
 import ComprasVendas from './components/ComprasVendas';
 import Clark from './components/Clark';
 import RhModule from './components/RhModule';
+// NOVA IMPORTAÇÃO: Módulo de Contratos
+import ContractAnalyzer from './components/ContractAnalyzer';
 
 import {
   FileText,
@@ -221,6 +223,7 @@ function App() {
     estoque_inteligente: 'ESTOQUE INTELIGENTE',
     stockout: 'STOCKOUT',
     auditoria_lojas: 'AUDITORIA DE LOJAS',
+    contract_analyzer: 'LEITOR DE CONTRATOS (CLARK JURÍDICA)', // Título da Nova Tela
   };
 
   const currentViewLabel =
@@ -740,7 +743,12 @@ function App() {
           </div>
 
           <div className="flex items-center gap-3">
-            <Clark currentUser={user} placement="header" />
+            {/* O PROP PARA A CLARK ABRIR A NOVA TELA FOI ADICIONADO AQUI */}
+            <Clark 
+              currentUser={user} 
+              placement="header" 
+              onNavigateContracts={() => handleNavigate('contract_analyzer')} 
+            />
             <NotificationBell currentUser={user} />
           </div>
         </header>
@@ -807,6 +815,8 @@ function App() {
             <ComprasVendas />
           ) : currentView === 'rh' ? (
             <RhModule currentUser={user} />
+          ) : currentView === 'contract_analyzer' ? (
+            <ContractAnalyzer currentUser={user} />
           ) : currentView === 'team' ? (
             <div className="flex-1 p-4 md:p-8 overflow-y-auto">
               <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">

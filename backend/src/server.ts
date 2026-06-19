@@ -18,6 +18,8 @@ import rhRoutes from './modules/rh/rh.routes';
 import { google } from 'googleapis';
 import { spawn } from 'child_process';
 import os from 'os';
+import { contractRoutes } from './modules/clark/contracts/contract.routes'; // A rota da nova IA de contrato - claude
+
 
 
 dotenv.config();
@@ -763,7 +765,10 @@ app.post(
   }
 );
 
+// --- REGISTRO DE ROTAS DOS MÓDULOS ---
 app.use('/api/clark', clarkRoutes);
+app.use('/api/contracts', contractRoutes); // Injeção do módulo de análise de contratos
+app.use('/api/rh', rhRoutes); // Aproveitei para garantir que a rota RH (importada na linha 19) também esteja registrada
 
 // Garante que a pasta existe
 if (!fs.existsSync(DATABASE_DIR)) {
