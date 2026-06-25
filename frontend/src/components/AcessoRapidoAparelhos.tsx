@@ -227,6 +227,11 @@ function KpiCard({ icon: Icon, label, value, helper }: any) {
   );
 }
 
+// --- SISTEMA DE CACHE EM MEMÓRIA ---
+let cacheGlobalData: AcessoRapidoResponse | null = null;
+let cacheGlobalTime: number = 0;
+const CACHE_DURATION_MS = 5 * 60 * 1000; // 5 minutos de cache (ajuste como quiser)
+
 export default function AcessoRapidoAparelhos({ currentUser }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -246,11 +251,19 @@ export default function AcessoRapidoAparelhos({ currentUser }: Props) {
   // 🔥 OTIMIZAÇÃO MAXIMA: Renderiza apenas 15 itens por vez
   const [visibleCount, setVisibleCount] = useState(15);
 
-  const fetchData = async () => {
+  const fetchData = async (forceRefresh = false) => {
     try {
       setLoading(true);
       setError('');
 
+      // 1. VERIFICA O CACHE: Tem dado salvo e ainda está no prazo de validade?
+      if (!forceRefresh && cacheGlobalData && (Date.now() - cacheGlobalTime < CACHE_DURATION_MS)) {
+        setData(cacheGlobalData);
+        setLoading(false);
+        return;
+      }
+
+      // 2. SE NÃO TEM CACHE OU PASSOU O TEMPO, BUSCA NO BACKEND
       const apiUrl = getApiUrl();
       const params = new URLSearchParams();
       if (currentUser?.id) params.set('userId', String(currentUser.id));
@@ -261,6 +274,10 @@ export default function AcessoRapidoAparelhos({ currentUser }: Props) {
       if (!response.ok || !json.success) {
         throw new Error(json.error || 'Erro ao carregar acesso rápido.');
       }
+
+      // 3. SALVA O RESULTADO NO CACHE PARA A PRÓXIMA VEZ
+      cacheGlobalData = json;
+      cacheGlobalTime = Date.now();
 
       setData(json);
     } catch (err: any) {
@@ -275,14 +292,12 @@ export default function AcessoRapidoAparelhos({ currentUser }: Props) {
     fetchData();
   }, [currentUser?.id]);
 
-
   // MOTOR DE BUSCA INTELIGENTE //
-  // Sempre que mudar um filtro ou digitar algo, reseta a lista para 15 (Mais leveza)
+  // Sempre que mudar um filtro ou digitar algo, reseta a lista para 10 (Mais leveza)
   useEffect(() => {
     setVisibleCount(10);
     setExpandedId(null);
   }, [search, category, store, status, sortBy, tipoItem]);
-
 
   const produtosOtimizados = useMemo(() => {
     const raw = data?.produtos || data?.products || [];
@@ -338,7 +353,7 @@ export default function AcessoRapidoAparelhos({ currentUser }: Props) {
     });
   }, [produtosOtimizados, search, category, store, status, sortBy, tipoItem]);
 
-  // 🔥 FATIAMENTO DO ARRAY: Pega apenas os 15 primeiros
+  // 🔥 FATIAMENTO DO ARRAY: Pega os primeiros com base no visibleCount
   const displayedProducts = filteredProducts.slice(0, visibleCount);
 
   const filteredSummary = useMemo(() => {
@@ -402,7 +417,7 @@ export default function AcessoRapidoAparelhos({ currentUser }: Props) {
           <AlertCircle className="mx-auto text-red-500" size={44} />
           <h2 className="mt-4 text-xl font-black text-slate-900 uppercase">Erro de Leitura</h2>
           <p className="mt-2 text-sm font-semibold text-slate-500">{error}</p>
-          <button onClick={fetchData} className="mt-6 inline-flex items-center gap-2 px-5 py-3 rounded-2xl bg-orange-600 text-white text-xs font-black uppercase hover:bg-orange-700 transition-colors">
+          <button onClick={() => fetchData(true)} className="mt-6 inline-flex items-center gap-2 px-5 py-3 rounded-2xl bg-orange-600 text-white text-xs font-black uppercase hover:bg-orange-700 transition-colors">
             <RefreshCw size={16} /> Tentar novamente
           </button>
         </div>
@@ -427,7 +442,8 @@ export default function AcessoRapidoAparelhos({ currentUser }: Props) {
             </div>
           </div>
           <div className="relative z-10 flex gap-2 w-full md:w-auto">
-            <button onClick={fetchData} className="flex-1 md:flex-none flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-black uppercase transition-colors">
+            {/* 🔥 Passando 'true' para o fetchData() forçar ignorar o cache quando o usuário clica */}
+            <button onClick={() => fetchData(true)} className="flex-1 md:flex-none flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-black uppercase transition-colors">
               <RefreshCw size={16} /> Atualizar
             </button>
             <button onClick={handleDownload} className="flex-1 md:flex-none flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-orange-600 hover:bg-orange-700 text-white text-xs font-black uppercase transition-colors">
@@ -603,7 +619,7 @@ export default function AcessoRapidoAparelhos({ currentUser }: Props) {
                   );
                 })}
 
-                {/* 🔥 BOTÃO DE CARREGAR MAIS AJUSTADO PARA 15 🔥 */}
+                {/* 🔥 BOTÃO DE CARREGAR MAIS AJUSTADO PARA 10 🔥 */}
                 {visibleCount < filteredProducts.length && (
                   <tr>
                     <td colSpan={4} className="p-4 text-center bg-slate-50">
