@@ -10,7 +10,6 @@ import ManagerDashboard from "./components/ManagerDashboard";
 import SalesDashboard from "./components/SalesDashboard";
 import NotificationBell from "./components/NotificationBell";
 import IntelligentAlerts from './components/IntelligentAlerts';
-import RemanejamentoAprovacao from './components/RemanejamentoAprovacao';
 import ExecutiveDashboard from './components/ExecutiveDashboard';
 import AvaliacoesLojas from './components/AvaliacoesLojas';
 import AcessoRapidoAparelhos from './components/AcessoRapidoAparelhos';
@@ -35,6 +34,7 @@ import Clark from './components/Clark';
 import RhModule from './components/RhModule';
 // NOVA IMPORTAÇÃO: Módulo de Contratos
 import ContractAnalyzer from './components/ContractAnalyzer';
+import OnlinePricesAgent from './components/OnlinePricesAgent';
 
 import {
   FileText,
@@ -78,7 +78,6 @@ const STORE_ALLOWED_VIEWS = new Set([
   'rh',
   'stock',
   'alertas_inteligentes',
-  'remanejamento_aprovacao',
   'estoque_detalhado',
   'estoque_vendas',
   'estoque_inteligente',
@@ -168,6 +167,7 @@ function App() {
   const canViewTeam = ['CEO', 'DIRETOR', 'ADM'].includes(userRole) || isAdmin;
   const canViewComparativos = ['ADM', 'CEO'].includes(userRole) || isAdmin || isSamsungUser;
   const canViewExecutiveDashboard = userRole === 'ADM' || isAdmin;
+  const canUseClarkAdm = userRole === 'ADM' || userRole === 'ADMIN' || isAdmin;
 
   const isStoreOnly = userRole === 'LOJA';
 
@@ -217,13 +217,13 @@ function App() {
     acesso_rapido_aparelhos: 'PAINEL DIRETORIA / ACESSO RÁPIDO',
     stock: 'CONTROLE DE ESTOQUE',
     alertas_inteligentes: 'CENTRAL DE ALERTAS INTELIGENTES',
-    remanejamento_aprovacao: 'REMANEJAMENTO COM APROVAÇÃO',
     estoque_detalhado: 'VISÃO DETALHADA DE ESTOQUE',
     estoque_vendas: 'ESTOQUE X VENDAS',
     estoque_inteligente: 'ESTOQUE INTELIGENTE',
     stockout: 'STOCKOUT',
     auditoria_lojas: 'AUDITORIA DE LOJAS',
     contract_analyzer: 'LEITOR DE CONTRATOS (CLARK JURÍDICA)', // Título da Nova Tela
+    online_prices: 'CLARK IA / PREÇOS ONLINE',
   };
 
   const currentViewLabel =
@@ -532,7 +532,6 @@ function App() {
                 active={[
                   'stock',
                   'alertas_inteligentes',
-                  'remanejamento_aprovacao',
                   'estoque_vendas',
                   'estoque_inteligente',
                   'auditoria_lojas',
@@ -554,12 +553,6 @@ function App() {
                     label="Alertas Inteligentes"
                     view="alertas_inteligentes"
                     active={currentView === 'alertas_inteligentes'}
-                  />
-
-                  <SubMenuItem
-                    label="Remanejamento"
-                    view="remanejamento_aprovacao"
-                    active={currentView === 'remanejamento_aprovacao'}
                   />
 
                   <SubMenuItem
@@ -743,12 +736,14 @@ function App() {
           </div>
 
           <div className="flex items-center gap-3">
-            {/* O PROP PARA A CLARK ABRIR A NOVA TELA FOI ADICIONADO AQUI */}
-            <Clark 
-              currentUser={user} 
-              placement="header" 
-              onNavigateContracts={() => handleNavigate('contract_analyzer')} 
-            />
+            {canUseClarkAdm && (
+              <Clark
+                currentUser={user}
+                placement="header"
+                onNavigateContracts={() => handleNavigate('contract_analyzer')}
+                onNavigateOnlinePrices={() => handleNavigate('online_prices')}
+              />
+            )}
             <NotificationBell currentUser={user} />
           </div>
         </header>
@@ -767,8 +762,6 @@ function App() {
               currentUser={user}
               onNavigateStock={() => handleNavigate('estoque_detalhado')}
             />
-          ) : currentView === 'remanejamento_aprovacao' ? (
-            <RemanejamentoAprovacao currentUser={user} />
           ) : currentView === 'finance' ? (
             <FinanceModule />
           ) : currentView === 'controle_stone' ? (
@@ -815,8 +808,12 @@ function App() {
             <ComprasVendas />
           ) : currentView === 'rh' ? (
             <RhModule currentUser={user} />
-          ) : currentView === 'contract_analyzer' ? (
+          ) : currentView === 'contract_analyzer' && canUseClarkAdm ? (
             <ContractAnalyzer currentUser={user} />
+          ) : currentView === 'online_prices' && canUseClarkAdm ? (
+            <OnlinePricesAgent currentUser={user} />
+          ) : ['contract_analyzer', 'online_prices'].includes(currentView) && !canUseClarkAdm ? (
+            <Home currentUser={user} />
           ) : currentView === 'team' ? (
             <div className="flex-1 p-4 md:p-8 overflow-y-auto">
               <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">

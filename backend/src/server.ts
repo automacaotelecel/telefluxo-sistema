@@ -1,7 +1,6 @@
 import express, { Request, Response } from 'express';
 import cors from 'cors';
 import { PrismaClient } from '@prisma/client';
-import multer from 'multer';
 import fs from 'fs';
 import crypto from 'crypto';
 import csv from 'csv-parser';
@@ -19,6 +18,11 @@ import { google } from 'googleapis';
 import { spawn } from 'child_process';
 import os from 'os';
 import { contractRoutes } from './modules/clark/contracts/contract.routes'; // A rota da nova IA de contrato - claude
+import multer from 'multer';
+import {
+  analisarPrecosOnlineController,
+  baixarRelatorioPrecosOnlineController,
+} from './modules/clark/onlinePrices/onlinePrices.controller';
 
 
 
@@ -161,6 +165,17 @@ async function getOrCreateRhDrivePath(params: {
 }
 
 //////////////////////////// FIM DO BLOCO DO ENVIO DAS DOCUMENTAÇÕES AO RH   //////////////
+
+//// BLOCO CLARK ANALITICA DE PREÇOS ////
+
+const uploadOnlinePrices = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 15 * 1024 * 1024,
+  },
+});
+
+/// BLOCO CLARK ANALITICA DE PREÇOS ////
 
 const uploadSolicitacao = multer({
   storage: multer.memoryStorage(),
@@ -770,6 +785,406 @@ app.use('/api/clark', clarkRoutes);
 app.use('/api/contracts', contractRoutes); // Injeção do módulo de análise de contratos
 app.use('/api/rh', rhRoutes); // Aproveitei para garantir que a rota RH (importada na linha 19) também esteja registrada
 
+// ============================================================
+// ✅ ROTAS DO HISTÓRICO ANUAL - CORRIGIDAS PARA FILTROS REAIS
+// ============================================================
+
+type AnnualStoreCompareRow = {
+  ano: number;
+  mes: number;
+  loja: string;
+  cnpj_empresa: string;
+  regiao: string;
+  venda_total: number;
+  venda_qtd: number;
+  seguro_total: number;
+  seguro_qtd: number;
+};
+
+function annualIsoDate(value: any): string {
+  const raw = String(value || '').trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : '';
+}
+
+function annualSqlText(value: any): string {
+  return String(value ?? '').replace(/'/g, "''");
+}
+
+function annualNumber(value: any): number {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function annualNorm(value: any): string {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toUpperCase();
+}
+
+function annualStoreNameFromRow(row: any): string {
+  const cnpj = String(row?.cnpj_empresa || row?.CNPJ_EMPRESA || '').replace(/\D/g, '');
+  if (cnpj && LOJAS_MAP_GLOBAL[cnpj]) return LOJAS_MAP_GLOBAL[cnpj];
+
+  const loja = String(row?.loja || row?.LOJA || '').trim();
+  const lojaNorm = annualNorm(loja);
+  return CORRECAO_NOMES_SERVER[lojaNorm] || loja || 'LOJA NÃO INFORMADA';
+}
+
+function annualRegionFromStore(loja: string, fallback = ''): string {
+  const normalized = annualNorm(loja);
+
+  const regionByStore: Record<string, string> = {
+    'ARAGUAIA SHOPPING': 'GOIÁS',
+    'BOULEVARD SHOPPING': 'DF',
+    'BRASILIA SHOPPING': 'DF',
+    'CONJUNTO NACIONAL': 'DF',
+    'CONJUNTO NACIONAL QUIOSQUE': 'DF',
+    'GOIANIA SHOPPING': 'GOIÁS',
+    'IGUATEMI SHOPPING': 'DF',
+    'JK SHOPPING': 'DF',
+    'PARK SHOPPING': 'DF',
+    'PATIO BRASIL': 'DF',
+    'TAGUATINGA SHOPPING': 'DF',
+    'TERRAÇO SHOPPING': 'DF',
+    'TERRACO SHOPPING': 'DF',
+    'TAGUATINGA SHOPPING QQ': 'DF',
+    'UBERLÂNDIA SHOPPING': 'MINAS GERAIS',
+    'UBERLANDIA SHOPPING': 'MINAS GERAIS',
+    'UBERABA SHOPPING': 'MINAS GERAIS',
+    'FLAMBOYANT SHOPPING': 'GOIÁS',
+    'BURITI SHOPPING': 'GOIÁS',
+    'PASSEIO DAS AGUAS': 'GOIÁS',
+    'PORTAL SHOPPING': 'GOIÁS',
+    'SHOPPING SUL': 'GOIÁS',
+    'BURITI RIO VERDE': 'GOIÁS',
+    'PARK ANAPOLIS': 'GOIÁS',
+    'SHOPPING RECIFE': 'NORDESTE',
+    'MANAIRA SHOPPING': 'NORDESTE',
+    'IGUATEMI FORTALEZA': 'NORDESTE',
+    'CD TAGUATINGA': 'CD',
+  };
+
+  return annualNorm(fallback) || regionByStore[normalized] || 'SEM REGIÃO';
+}
+
+async function annualTableExists(db: any, tableName: string): Promise<boolean> {
+  const row = await db.get(
+    `SELECT name FROM sqlite_master WHERE type='table' AND name = ?`,
+    [tableName]
+  );
+
+  return Boolean(row?.name);
+}
+
+function annualLowerRows(rows: any[]) {
+  return (rows || []).map((row: any) => {
+    const out: any = {};
+    Object.keys(row || {}).forEach((key) => {
+      out[key.toLowerCase()] = row[key];
+    });
+    return out;
+  });
+}
+
+async function buildAnnualStoreCompareRows(params: {
+  userId: string;
+  yearA: number;
+  yearB: number;
+  month: number;
+}): Promise<AnnualStoreCompareRow[]> {
+  if (!fs.existsSync(ANUAL_DB_PATH)) return [];
+
+  const securityFilter = await getSalesFilter(params.userId, 'vendas');
+  const yearFilter = ` AND ano IN (${Number(params.yearA)}, ${Number(params.yearB)}) `;
+  const monthFilter = params.month >= 1 && params.month <= 12 ? ` AND mes = ${Number(params.month)} ` : '';
+
+  const db = await open({ filename: ANUAL_DB_PATH, driver: sqlite3.Database });
+
+  try {
+    const hasRaw = await annualTableExists(db, 'vendas_anuais_raw');
+    const hasAnnual = await annualTableExists(db, 'vendas_anuais');
+    const hasInsurance = await annualTableExists(db, 'seguros_anuais');
+
+    let salesRows: any[] = [];
+
+    if (hasRaw) {
+      salesRows = await db.all(`
+        SELECT
+          ano,
+          mes,
+          COALESCE(NULLIF(loja, ''), cnpj_empresa, 'LOJA NÃO INFORMADA') AS loja,
+          COALESCE(cnpj_empresa, '') AS cnpj_empresa,
+          COALESCE(NULLIF(regiao, ''), '') AS regiao,
+          SUM(COALESCE(total_real, total_liquido, 0)) AS venda_total,
+          SUM(COALESCE(qtd_real, quantidade, 0)) AS venda_qtd
+        FROM vendas_anuais_raw
+        WHERE ${securityFilter}
+          ${yearFilter}
+          ${monthFilter}
+          AND ano > 0
+          AND mes BETWEEN 1 AND 12
+          AND (
+            cancelado IS NULL OR
+            UPPER(TRIM(CAST(cancelado AS TEXT))) NOT IN ('S', 'SIM', 'TRUE', '1', 'CANCELADO', 'CANCELADA')
+          )
+        GROUP BY ano, mes, COALESCE(NULLIF(loja, ''), cnpj_empresa, 'LOJA NÃO INFORMADA'), COALESCE(cnpj_empresa, ''), COALESCE(NULLIF(regiao, ''), '')
+      `);
+    } else if (hasAnnual) {
+      salesRows = await db.all(`
+        SELECT
+          CAST(substr(data_emissao, 1, 4) AS INTEGER) AS ano,
+          CAST(substr(data_emissao, 6, 2) AS INTEGER) AS mes,
+          COALESCE(NULLIF(loja, ''), cnpj_empresa, 'LOJA NÃO INFORMADA') AS loja,
+          COALESCE(cnpj_empresa, '') AS cnpj_empresa,
+          COALESCE(NULLIF(regiao, ''), '') AS regiao,
+          SUM(COALESCE(total_liquido, 0)) AS venda_total,
+          SUM(COALESCE(quantidade, 0)) AS venda_qtd
+        FROM vendas_anuais
+        WHERE ${securityFilter}
+          AND CAST(substr(data_emissao, 1, 4) AS INTEGER) IN (${Number(params.yearA)}, ${Number(params.yearB)})
+          ${params.month >= 1 && params.month <= 12 ? ` AND CAST(substr(data_emissao, 6, 2) AS INTEGER) = ${Number(params.month)} ` : ''}
+        GROUP BY CAST(substr(data_emissao, 1, 4) AS INTEGER), CAST(substr(data_emissao, 6, 2) AS INTEGER), COALESCE(NULLIF(loja, ''), cnpj_empresa, 'LOJA NÃO INFORMADA'), COALESCE(cnpj_empresa, ''), COALESCE(NULLIF(regiao, ''), '')
+      `);
+    }
+
+    let insuranceRows: any[] = [];
+
+    if (hasInsurance) {
+      insuranceRows = await db.all(`
+        SELECT
+          ano,
+          mes,
+          COALESCE(NULLIF(loja, ''), cnpj_empresa, 'LOJA NÃO INFORMADA') AS loja,
+          COALESCE(cnpj_empresa, '') AS cnpj_empresa,
+          COALESCE(NULLIF(regiao, ''), '') AS regiao,
+          SUM(COALESCE(premio, 0)) AS seguro_total,
+          SUM(COALESCE(qtd, 0)) AS seguro_qtd
+        FROM seguros_anuais
+        WHERE ${securityFilter}
+          ${yearFilter}
+          ${monthFilter}
+          AND ano > 0
+          AND mes BETWEEN 1 AND 12
+        GROUP BY ano, mes, COALESCE(NULLIF(loja, ''), cnpj_empresa, 'LOJA NÃO INFORMADA'), COALESCE(cnpj_empresa, ''), COALESCE(NULLIF(regiao, ''), '')
+      `);
+    }
+
+    const insuranceHasValue = (insuranceRows || []).some((row: any) => annualNumber(row.seguro_total) !== 0 || annualNumber(row.seguro_qtd) !== 0);
+
+    if (!insuranceHasValue && hasRaw) {
+      insuranceRows = await db.all(`
+        SELECT
+          ano,
+          mes,
+          COALESCE(NULLIF(loja, ''), cnpj_empresa, 'LOJA NÃO INFORMADA') AS loja,
+          COALESCE(cnpj_empresa, '') AS cnpj_empresa,
+          COALESCE(NULLIF(regiao, ''), '') AS regiao,
+          SUM(COALESCE(total_real, total_liquido, 0)) AS seguro_total,
+          SUM(COALESCE(qtd_real, quantidade, 0)) AS seguro_qtd
+        FROM vendas_anuais_raw
+        WHERE ${securityFilter}
+          ${yearFilter}
+          ${monthFilter}
+          AND ano > 0
+          AND mes BETWEEN 1 AND 12
+          AND (
+            UPPER(COALESCE(categoria_real, categoria, descricao, '')) LIKE '%SEGURO%'
+            OR UPPER(COALESCE(descricao, '')) LIKE '%SEGURO%'
+            OR UPPER(COALESCE(descricao, '')) LIKE '%PROTECAO%'
+            OR UPPER(COALESCE(descricao, '')) LIKE '%PROTEÇÃO%'
+            OR UPPER(COALESCE(descricao, '')) LIKE '%GARANTIA%'
+          )
+        GROUP BY ano, mes, COALESCE(NULLIF(loja, ''), cnpj_empresa, 'LOJA NÃO INFORMADA'), COALESCE(cnpj_empresa, ''), COALESCE(NULLIF(regiao, ''), '')
+      `);
+    }
+
+    const map = new Map<string, AnnualStoreCompareRow>();
+
+    const getKey = (row: any) => {
+      const ano = Number(row.ano || 0);
+      const mes = Number(row.mes || 0);
+      const loja = annualStoreNameFromRow(row);
+      const cnpj = String(row.cnpj_empresa || '').replace(/\D/g, '');
+      return `${ano}|${mes}|${cnpj || annualNorm(loja)}`;
+    };
+
+    const ensure = (row: any): AnnualStoreCompareRow => {
+      const key = getKey(row);
+
+      if (!map.has(key)) {
+        const loja = annualStoreNameFromRow(row);
+
+        map.set(key, {
+          ano: Number(row.ano || 0),
+          mes: Number(row.mes || 0),
+          loja,
+          cnpj_empresa: String(row.cnpj_empresa || '').replace(/\D/g, ''),
+          regiao: annualRegionFromStore(loja, row.regiao),
+          venda_total: 0,
+          venda_qtd: 0,
+          seguro_total: 0,
+          seguro_qtd: 0,
+        });
+      }
+
+      return map.get(key)!;
+    };
+
+    for (const row of salesRows || []) {
+      const item = ensure(row);
+      item.venda_total += annualNumber(row.venda_total);
+      item.venda_qtd += annualNumber(row.venda_qtd);
+    }
+
+    for (const row of insuranceRows || []) {
+      const item = ensure(row);
+      item.seguro_total += annualNumber(row.seguro_total);
+      item.seguro_qtd += annualNumber(row.seguro_qtd);
+    }
+
+    return Array.from(map.values())
+      .filter((row) => row.ano && row.mes)
+      .sort((a, b) => a.loja.localeCompare(b.loja) || a.ano - b.ano || a.mes - b.mes);
+  } finally {
+    await db.close().catch(() => undefined);
+  }
+}
+
+app.get('/sales_anuais', async (req, res) => {
+  let db: any;
+
+  try {
+    const userId = String(req.query.userId || '');
+    const startDate = annualIsoDate(req.query.startDate);
+    const endDate = annualIsoDate(req.query.endDate);
+    const securityFilter = await getSalesFilter(userId, 'vendas');
+
+    if (!fs.existsSync(ANUAL_DB_PATH)) {
+      return res.json({ sales: [] });
+    }
+
+    db = await open({ filename: ANUAL_DB_PATH, driver: sqlite3.Database });
+
+    const hasRaw = await annualTableExists(db, 'vendas_anuais_raw');
+    const hasAnnual = await annualTableExists(db, 'vendas_anuais');
+
+    let dateFilter = '';
+    if (startDate) dateFilter += ` AND data_emissao >= '${annualSqlText(startDate)}' `;
+    if (endDate) dateFilter += ` AND data_emissao <= '${annualSqlText(endDate)}' `;
+
+    let salesRaw: any[] = [];
+
+    if (hasRaw) {
+      salesRaw = await db.all(`
+        SELECT
+          printf('%04d-%02d-01', ano, mes) AS data_emissao,
+          ano,
+          printf('%02d', mes) AS mes,
+          COALESCE(cnpj_empresa, '') AS cnpj_empresa,
+          COALESCE(NULLIF(loja, ''), cnpj_empresa, 'LOJA NÃO INFORMADA') AS loja,
+          COALESCE(NULLIF(descricao, ''), NULLIF(referencia, ''), 'PRODUTO NÃO INFORMADO') AS descricao,
+          COALESCE(NULLIF(categoria_real, ''), NULLIF(categoria, ''), 'OUTROS') AS familia,
+          COALESCE(NULLIF(regiao, ''), '') AS regiao,
+          SUM(COALESCE(total_real, total_liquido, 0)) AS total_liquido,
+          SUM(COALESCE(qtd_real, quantidade, 0)) AS quantidade
+        FROM vendas_anuais_raw
+        WHERE ${securityFilter}
+          AND ano > 0
+          AND mes BETWEEN 1 AND 12
+          ${dateFilter}
+          AND (
+            cancelado IS NULL OR
+            UPPER(TRIM(CAST(cancelado AS TEXT))) NOT IN ('S', 'SIM', 'TRUE', '1', 'CANCELADO', 'CANCELADA')
+          )
+        GROUP BY
+          ano,
+          mes,
+          COALESCE(cnpj_empresa, ''),
+          COALESCE(NULLIF(loja, ''), cnpj_empresa, 'LOJA NÃO INFORMADA'),
+          COALESCE(NULLIF(descricao, ''), NULLIF(referencia, ''), 'PRODUTO NÃO INFORMADO'),
+          COALESCE(NULLIF(categoria_real, ''), NULLIF(categoria, ''), 'OUTROS'),
+          COALESCE(NULLIF(regiao, ''), '')
+        HAVING ABS(SUM(COALESCE(total_real, total_liquido, 0))) > 0.01
+            OR ABS(SUM(COALESCE(qtd_real, quantidade, 0))) > 0.001
+        ORDER BY ano ASC, mes ASC, loja ASC, descricao ASC
+      `);
+    } else if (hasAnnual) {
+      salesRaw = await db.all(`
+        SELECT
+          printf('%04d-%02d-01', CAST(substr(data_emissao, 1, 4) AS INTEGER), CAST(substr(data_emissao, 6, 2) AS INTEGER)) AS data_emissao,
+          CAST(substr(data_emissao, 1, 4) AS INTEGER) AS ano,
+          printf('%02d', CAST(substr(data_emissao, 6, 2) AS INTEGER)) AS mes,
+          COALESCE(cnpj_empresa, '') AS cnpj_empresa,
+          COALESCE(NULLIF(loja, ''), cnpj_empresa, 'LOJA NÃO INFORMADA') AS loja,
+          COALESCE(NULLIF(descricao, ''), 'PRODUTO NÃO INFORMADO') AS descricao,
+          COALESCE(NULLIF(familia, ''), 'OUTROS') AS familia,
+          COALESCE(NULLIF(regiao, ''), '') AS regiao,
+          SUM(COALESCE(total_liquido, 0)) AS total_liquido,
+          SUM(COALESCE(quantidade, 0)) AS quantidade
+        FROM vendas_anuais
+        WHERE ${securityFilter}
+          AND data_emissao IS NOT NULL
+          ${dateFilter}
+        GROUP BY
+          CAST(substr(data_emissao, 1, 4) AS INTEGER),
+          CAST(substr(data_emissao, 6, 2) AS INTEGER),
+          COALESCE(cnpj_empresa, ''),
+          COALESCE(NULLIF(loja, ''), cnpj_empresa, 'LOJA NÃO INFORMADA'),
+          COALESCE(NULLIF(descricao, ''), 'PRODUTO NÃO INFORMADO'),
+          COALESCE(NULLIF(familia, ''), 'OUTROS'),
+          COALESCE(NULLIF(regiao, ''), '')
+        HAVING ABS(SUM(COALESCE(total_liquido, 0))) > 0.01
+            OR ABS(SUM(COALESCE(quantidade, 0))) > 0.001
+        ORDER BY ano ASC, mes ASC, loja ASC, descricao ASC
+      `);
+    }
+
+    const sales = annualLowerRows(salesRaw).map((row: any) => {
+      const loja = annualStoreNameFromRow(row);
+
+      return {
+        ...row,
+        loja,
+        regiao: annualRegionFromStore(loja, row.regiao),
+      };
+    });
+
+    return res.json({ sales });
+  } catch (e: any) {
+    console.error('Erro /sales_anuais:', e);
+    return res.status(500).json({ error: e.message || 'Erro ao buscar vendas anuais.' });
+  } finally {
+    if (db) await db.close().catch(() => undefined);
+  }
+});
+
+// --- ROTAS DO AGENTE CLARK / PREÇOS ONLINE ---
+app.get('/api/online-prices/ping', async (_req: Request, res: Response) => {
+  return res.json({
+    ok: true,
+    module: 'Preços Online',
+    message: 'Rota de preços online ativa.',
+  });
+});
+
+app.post(
+  '/api/online-prices/analyze',
+  uploadOnlinePrices.single('xlsx'),
+  async (req: any, res: Response) => {
+    return analisarPrecosOnlineController(req, res);
+  }
+);
+
+app.get(
+  '/api/online-prices/report/:fileName',
+  async (req: any, res: Response) => {
+    return baixarRelatorioPrecosOnlineController(req, res);
+  }
+);
+
 // Garante que a pasta existe
 if (!fs.existsSync(DATABASE_DIR)) {
     try { fs.mkdirSync(DATABASE_DIR, { recursive: true }); } catch(e) {}
@@ -1370,6 +1785,34 @@ app.get('/manager-stats', async (req, res) => {
 });
 
 const DB_PATH = GLOBAL_DB_PATH;
+
+app.put('/notifications/:id', async (req, res) => {
+    try {
+        const id = Number(req.params.id);
+        const userId = String(req.body?.userId || req.query.userId || '');
+
+        if (!Number.isInteger(id)) {
+            return res.status(400).json({ error: 'ID de notificação inválido.' });
+        }
+
+        const result = await prisma.notification.updateMany({
+            where: {
+                id,
+                ...(userId && userId !== 'undefined' && userId !== 'null' ? { userId } : {}),
+            },
+            data: { read: true },
+        });
+
+        if (result.count === 0) {
+            return res.status(404).json({ error: 'Notificação não encontrada.' });
+        }
+
+        res.json({ success: true });
+    } catch (e) {
+        console.error('Erro ao marcar notificação como lida:', e);
+        res.status(500).json({ error: 'Erro ao marcar notificação como lida.' });
+    }
+});
 
 // =======================================================
 // 4. BI DE VENDAS (SAMSUNG) - COM FILTRO DE ACESSO 🛡️
@@ -6301,6 +6744,20 @@ app.get('/api/kpi-vendedores', handleSellersKpi);
 // Aumentamos o limite para 50mb para aguentar o Excel
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
+app.post(
+  '/api/online-prices/analyze',
+  uploadOnlinePrices.single('xlsx'),
+  async (req: any, res: Response) => {
+    return analisarPrecosOnlineController(req, res);
+  }
+);
+
+app.get(
+  '/api/online-prices/report/:fileName',
+  async (req: any, res: Response) => {
+    return baixarRelatorioPrecosOnlineController(req, res);
+  }
+);
 
 // ============================================================
 // ⚠️ ROTA DO HISTÓRICO ANUAL OTIMIZADA - COM FILTRO DE PERÍODO
@@ -7463,39 +7920,44 @@ app.get('/anuais/summary', async (req, res) => {
     const userId = String(req.query.userId || '');
     const yearA = Number(req.query.yearA || 2025);
     const yearB = Number(req.query.yearB || 2026);
-    const month = Number(req.query.month || 0); // 1..12 (0 = todos)
+    const month = Number(req.query.month || 0);
 
-    const securityFilter = await getSalesFilter(userId, 'vendas');
+    const rows = await buildAnnualStoreCompareRows({ userId, yearA, yearB, month });
 
-    const monthFilter = month >= 1 && month <= 12 ? ` AND mes = ${month} ` : '';
+    const byYear: Record<number, { venda_total: number; seguro_total: number; venda_qtd: number; seguro_qtd: number }> = {
+      [yearA]: { venda_total: 0, seguro_total: 0, venda_qtd: 0, seguro_qtd: 0 },
+      [yearB]: { venda_total: 0, seguro_total: 0, venda_qtd: 0, seguro_qtd: 0 },
+    };
 
-    const db = await open({ filename: ANUAL_DB_PATH, driver: sqlite3.Database });
+      for (const row of rows) {
+    const ano = Number(row.ano || 0);
 
-    const q = `
-        SELECT
-            ano,
-            SUM(vendas_total)  AS venda_total,
-            SUM(seguros_total) AS seguro_total
-        FROM agg_lojas_mensal
-        WHERE ${securityFilter}
-            AND ano IN (${yearA}, ${yearB})
-            ${monthFilter}
-        GROUP BY ano
-    `;
+    if (!byYear[ano]) {
+      byYear[ano] = {
+        venda_total: 0,
+        seguro_total: 0,
+        venda_qtd: 0,
+        seguro_qtd: 0,
+      };
+    }
 
-    const rows = await db.all(q);
-    await db.close();
+  const item = byYear[ano];
 
-    const byYear: any = {};
-    rows.forEach((r: any) => (byYear[r.ano] = { venda_total: r.venda_total || 0, seguro_total: r.seguro_total || 0 }));
+  item.venda_total += Number(row.venda_total || 0);
+  item.venda_qtd += Number(row.venda_qtd || 0);
+  item.seguro_total += Number(row.seguro_total || 0);
+  item.seguro_qtd += Number(row.seguro_qtd || 0);
+}
 
     res.json({
-      yearA, yearB, month,
-      a: byYear[yearA] || { venda_total: 0, seguro_total: 0 },
-      b: byYear[yearB] || { venda_total: 0, seguro_total: 0 },
+      yearA,
+      yearB,
+      month,
+      a: byYear[yearA] || { venda_total: 0, seguro_total: 0, venda_qtd: 0, seguro_qtd: 0 },
+      b: byYear[yearB] || { venda_total: 0, seguro_total: 0, venda_qtd: 0, seguro_qtd: 0 },
     });
   } catch (e: any) {
-    console.error("Erro /anuais/summary:", e);
+    console.error('Erro /anuais/summary:', e);
     res.status(500).json({ error: e.message });
   }
 });
@@ -7507,71 +7969,127 @@ app.get('/anuais/lojas_compare', async (req, res) => {
     const yearB = Number(req.query.yearB || 2026);
     const month = Number(req.query.month || 0);
 
-    const securityFilter = await getSalesFilter(userId, 'vendas');
-    const monthFilter = month >= 1 && month <= 12 ? ` AND mes = ${month} ` : '';
+    const rows = await buildAnnualStoreCompareRows({ userId, yearA, yearB, month });
 
-    const db = await open({ filename: ANUAL_DB_PATH, driver: sqlite3.Database });
-
-    const q = `
-        SELECT
-            ano, mes, loja, cnpj_empresa, regiao,
-            vendas_total  AS venda_total,
-            vendas_qtd    AS venda_qtd,
-            seguros_total AS seguro_total,
-            seguros_qtd   AS seguro_qtd
-        FROM agg_lojas_mensal
-        WHERE ${securityFilter}
-            AND ano IN (${yearA}, ${yearB})
-            ${monthFilter}
-        ORDER BY loja ASC, ano ASC, mes ASC
-    `;
-
-    const rows = await db.all(q);
-    await db.close();
-
-    res.json({ yearA, yearB, month, data: normalizeKeys(rows) });
+    res.json({
+      yearA,
+      yearB,
+      month,
+      data: annualLowerRows(rows),
+    });
   } catch (e: any) {
-    console.error("Erro /anuais/lojas_compare:", e);
+    console.error('Erro /anuais/lojas_compare:', e);
     res.status(500).json({ error: e.message });
   }
 });
 
 app.get('/anuais/vendedores_compare', async (req, res) => {
+  let db: any;
+
   try {
     const userId = String(req.query.userId || '');
     const yearA = Number(req.query.yearA || 2025);
     const yearB = Number(req.query.yearB || 2026);
     const month = Number(req.query.month || 0);
-    const store = req.query.store ? String(req.query.store).toUpperCase().trim() : '';
+    const store = req.query.store ? annualNorm(req.query.store) : '';
+
+    if (!fs.existsSync(ANUAL_DB_PATH)) {
+      return res.json({ yearA, yearB, month, store, data: [] });
+    }
 
     const securityFilter = await getSalesFilter(userId, 'vendas');
-    const monthFilter = month >= 1 && month <= 12 ? ` AND mes = ${month} ` : '';
-    const storeFilter = store ? ` AND UPPER(loja) = '${store.replace(/'/g, "''")}' ` : '';
+    const monthFilter = month >= 1 && month <= 12 ? ` AND mes = ${Number(month)} ` : '';
+    const storeFilter = store ? ` AND UPPER(loja) = '${annualSqlText(store)}' ` : '';
 
-    const db = await open({ filename: ANUAL_DB_PATH, driver: sqlite3.Database });
+    db = await open({ filename: ANUAL_DB_PATH, driver: sqlite3.Database });
 
-    const q = `
+    const hasAgg = await annualTableExists(db, 'agg_vendedores_mensal');
+    const hasRaw = await annualTableExists(db, 'vendas_anuais_raw');
+
+    let rows: any[] = [];
+
+    if (hasAgg) {
+      rows = await db.all(`
         SELECT
-            ano, mes, loja, cnpj_empresa, regiao, vendedor,
-            vendas_total  AS venda_total,
-            vendas_qtd    AS venda_qtd,
-            seguros_total AS seguro_total,
-            seguros_qtd   AS seguro_qtd
+          ano, mes, loja, cnpj_empresa, regiao, vendedor,
+          vendas_total  AS venda_total,
+          vendas_qtd    AS venda_qtd,
+          seguros_total AS seguro_total,
+          seguros_qtd   AS seguro_qtd
         FROM agg_vendedores_mensal
         WHERE ${securityFilter}
-            AND ano IN (${yearA}, ${yearB})
-            ${monthFilter}
-            ${storeFilter}
+          AND ano IN (${yearA}, ${yearB})
+          ${monthFilter}
+          ${storeFilter}
         ORDER BY vendedor ASC, loja ASC, ano ASC
-    `;
+      `);
+    }
 
-    const rows = await db.all(q);
-    await db.close();
+    const hasUsefulAgg = rows.some((row: any) => annualNumber(row.venda_total) !== 0 || annualNumber(row.seguro_total) !== 0);
 
-    res.json({ yearA, yearB, month, store, data: normalizeKeys(rows) });
+    if (!hasUsefulAgg && hasRaw) {
+      rows = await db.all(`
+        SELECT
+          ano,
+          mes,
+          COALESCE(NULLIF(loja, ''), cnpj_empresa, 'LOJA NÃO INFORMADA') AS loja,
+          COALESCE(cnpj_empresa, '') AS cnpj_empresa,
+          COALESCE(NULLIF(regiao, ''), '') AS regiao,
+          COALESCE(NULLIF(nome_vendedor, ''), 'VENDEDOR NÃO INFORMADO') AS vendedor,
+          SUM(COALESCE(total_real, total_liquido, 0)) AS venda_total,
+          SUM(COALESCE(qtd_real, quantidade, 0)) AS venda_qtd,
+          SUM(
+            CASE
+              WHEN UPPER(COALESCE(categoria_real, categoria, descricao, '')) LIKE '%SEGURO%'
+                OR UPPER(COALESCE(descricao, '')) LIKE '%SEGURO%'
+              THEN COALESCE(total_real, total_liquido, 0)
+              ELSE 0
+            END
+          ) AS seguro_total,
+          SUM(
+            CASE
+              WHEN UPPER(COALESCE(categoria_real, categoria, descricao, '')) LIKE '%SEGURO%'
+                OR UPPER(COALESCE(descricao, '')) LIKE '%SEGURO%'
+              THEN COALESCE(qtd_real, quantidade, 0)
+              ELSE 0
+            END
+          ) AS seguro_qtd
+        FROM vendas_anuais_raw
+        WHERE ${securityFilter}
+          AND ano IN (${yearA}, ${yearB})
+          ${monthFilter}
+          ${storeFilter}
+        GROUP BY
+          ano,
+          mes,
+          COALESCE(NULLIF(loja, ''), cnpj_empresa, 'LOJA NÃO INFORMADA'),
+          COALESCE(cnpj_empresa, ''),
+          COALESCE(NULLIF(regiao, ''), ''),
+          COALESCE(NULLIF(nome_vendedor, ''), 'VENDEDOR NÃO INFORMADO')
+        ORDER BY vendedor ASC, loja ASC, ano ASC
+      `);
+    }
+
+    return res.json({
+      yearA,
+      yearB,
+      month,
+      store,
+      data: annualLowerRows(rows).map((row: any) => {
+        const loja = annualStoreNameFromRow(row);
+
+        return {
+          ...row,
+          loja,
+          regiao: annualRegionFromStore(loja, row.regiao),
+        };
+      }),
+    });
   } catch (e: any) {
-    console.error("Erro /anuais/vendedores_compare:", e);
+    console.error('Erro /anuais/vendedores_compare:', e);
     res.status(500).json({ error: e.message });
+  } finally {
+    if (db) await db.close().catch(() => undefined);
   }
 });
 
@@ -10670,6 +11188,23 @@ app.delete('/api/rh/colaboradores/:collaboratorId', async (req, res) => {
     });
   }
 });
+
+// ROTA CLARK ANALISTA DE PREÇOS ONLINE ///
+
+app.post(
+  '/api/online-prices/analyze',
+  uploadOnlinePrices.single('xlsx'),
+  async (req: any, res) => {
+    return analisarPrecosOnlineController(req, res);
+  }
+);
+
+app.get(
+  '/api/online-prices/report/:fileName',
+  async (req: any, res) => {
+    return baixarRelatorioPrecosOnlineController(req, res);
+  }
+);
 
 
 // Define a porta: Usa a do Render (process.env.PORT) ou a 3000 se for local

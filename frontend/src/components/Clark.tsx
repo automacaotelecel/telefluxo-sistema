@@ -37,7 +37,8 @@ type ClarkMessage = {
 type ClarkProps = {
   currentUser: any;
   placement?: "floating" | "header";
-  onNavigateContracts?: () => void; // Adicionada a propriedade que passamos no App.tsx
+  onNavigateContracts?: () => void; // Navega para o leitor de contratos
+  onNavigateOnlinePrices?: () => void; // Navega para o agente Preços Online
 };
 
 type ClarkMemoryState = {
@@ -115,7 +116,7 @@ function ClarkAvatar({ small = false }: { small?: boolean }) {
   );
 }
 
-export default function Clark({ currentUser, placement = "floating", onNavigateContracts }: ClarkProps) {
+export default function Clark({ currentUser, placement = "floating", onNavigateContracts, onNavigateOnlinePrices }: ClarkProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
 
@@ -422,6 +423,13 @@ export default function Clark({ currentUser, placement = "floating", onNavigateC
     }
   };
 
+  const handleOpenOnlinePrices = () => {
+    closeChat();
+    if (onNavigateOnlinePrices) {
+      onNavigateOnlinePrices();
+    }
+  };
+
   const baixarExcelRelatorio = async (msg: ClarkMessage) => {
     if (!msg.dados || excelDownloadingId) return;
 
@@ -434,6 +442,7 @@ export default function Clark({ currentUser, placement = "floating", onNavigateC
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
+          userId: currentUser?.id,
           pergunta: msg.perguntaOriginal || "",
           dados: msg.dados,
         }),
@@ -545,7 +554,17 @@ export default function Clark({ currentUser, placement = "floating", onNavigateC
 
             <div className="flex items-center gap-2">
               
-              {/* NOVO BOTÃO DE LER CONTRATOS INJETADO AQUI */}
+              {onNavigateOnlinePrices && (
+                <button
+                  onClick={handleOpenOnlinePrices}
+                  className="hidden md:flex items-center gap-1.5 px-3 h-9 rounded-xl bg-slate-800 hover:bg-orange-600 text-[10px] font-black tracking-widest uppercase transition-colors"
+                  title="Abrir agente Preços Online"
+                >
+                  <FileSpreadsheet size={13} />
+                  Preços Online
+                </button>
+              )}
+
               {onNavigateContracts && (
                 <button
                   onClick={handleOpenContracts}

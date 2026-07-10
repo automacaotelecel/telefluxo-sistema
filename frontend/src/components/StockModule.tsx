@@ -133,6 +133,96 @@ const getClusterValue = (item: any) =>
     .trim()
     .toUpperCase();
 
+const CD_STORE_NAME = "CD TAGUATINGA";
+
+const LOGISTICALLY_EXCLUDED_STORES = [
+  "IGUATEMI FORTALEZA",
+  "MANAIRA SHOPPING",
+  "SHOPPING RECIFE",
+  "UBERABA SHOPPING",
+  "UBERLÂNDIA SHOPPING",
+  "BURITI RIO VERDE"
+];
+
+const LOGISTICALLY_EXCLUDED_STORE_KEYS = LOGISTICALLY_EXCLUDED_STORES.map(normalizeStr);
+const CD_STORE_KEY = normalizeStr(CD_STORE_NAME);
+
+const isCdStore = (storeName: string) => normalizeStr(storeName) === CD_STORE_KEY;
+const isLogisticallyExcludedStore = (storeName: string) =>
+  LOGISTICALLY_EXCLUDED_STORE_KEYS.includes(normalizeStr(storeName));
+
+const toNumericValue = (value: any) => {
+  if (typeof value === 'number') return value;
+
+  const raw = String(value ?? '').trim();
+  if (!raw) return 0;
+
+  if (raw.includes(',')) {
+    return Number(raw.replace(/\./g, '').replace(',', '.')) || 0;
+  }
+
+  return Number(raw) || 0;
+};
+
+const firstFilledValue = (...values: any[]) =>
+  values.find(value => value !== undefined && value !== null && String(value).trim() !== '') ?? '';
+
+const getSaleStoreName = (sale: any) => {
+  const rawStore = firstFilledValue(
+    sale.cnpj_empresa,
+    sale.CNPJ_EMPRESA,
+    sale.loja,
+    sale.LOJA,
+    sale.storeName,
+    sale.store
+  );
+
+  return getStoreNameFromCNPJ(String(rawStore)).trim().toUpperCase();
+};
+
+const getSaleDescription = (sale: any) =>
+  String(firstFilledValue(
+    sale.descricao,
+    sale.DESCRICAO,
+    sale.produto,
+    sale.PRODUTO,
+    sale.description
+  )).trim();
+
+const getSaleQuantity = (sale: any) => {
+  const rawQuantity = firstFilledValue(
+    sale.quantidade,
+    sale.QUANTIDADE,
+    sale.qtd_real,
+    sale.QTD_REAL,
+    sale.qtd,
+    sale.QTD
+  );
+
+  if (rawQuantity === '') return 1;
+  return Math.max(0, toNumericValue(rawQuantity));
+};
+
+const getSaleCategory = (sale: any) =>
+  String(firstFilledValue(
+    sale.categoria_real,
+    sale.CATEGORIA_REAL,
+    sale.categoria,
+    sale.CATEGORIA,
+    sale.familia,
+    sale.FAMILIA,
+    'GERAL'
+  )).trim().toUpperCase() || 'GERAL';
+
+const getSaleProductCode = (sale: any) =>
+  String(firstFilledValue(
+    sale.codigo_produto,
+    sale.CODIGO_PRODUTO,
+    sale.referencia,
+    sale.REFERENCIA,
+    sale.productCode
+  )).trim();
+
 export default function StockModule() {
   const [stockData, setStockData] = useState<any[]>([]);
   const [salesData, setSalesData] = useState<any[]>([]);
@@ -281,14 +371,19 @@ export default function StockModule() {
   // --- MAPAS AUXILIARES ---
   const salesMap = useMemo(() => {
     const map: Record<string, number> = {};
+
     salesData.forEach(sale => {
-      const rawStore = sale.cnpj_empresa || sale.loja || "";
-      const storeName = getStoreNameFromCNPJ(rawStore).trim().toUpperCase();
-      const desc = normalizeStr(sale.descricao || sale.produto || "");
+      const storeName = getSaleStoreName(sale);
+      const desc = normalizeStr(getSaleDescription(sale));
+      const quantity = getSaleQuantity(sale);
+
+      if (!storeName || !desc || quantity <= 0) return;
+
       const key = `${storeName}|${desc}`;
       if (!map[key]) map[key] = 0;
-      map[key] += Number(sale.quantidade || 1);
+      map[key] += quantity;
     });
+
     return map;
   }, [salesData]);
 
@@ -328,50 +423,68 @@ export default function StockModule() {
     return Math.max(1, diff);
   }, [startDate, endDate]);
 
+  const stockCatalogByDescription = useMemo(() => {
+    const catalog: Record<string, any> = {};
+
+    stockData.forEach(item => {
+      const descKey = normalizeStr(item.description);
+      if (!descKey) return;
+
+      const current = catalog[descKey];
+      const currentIsCd = current && isCdStore(current.storeName || '');
+      const itemIsCd = isCdStore(item.storeName || '');
+
+      if (!current || itemIsCd || (!currentIsCd && !current.productCode && item.productCode)) {
+        catalog[descKey] = {
+          description: item.description || 'SEM DESCRIÇÃO',
+          productCode: item.productCode || '',
+          category: item.category || 'GERAL',
+          line: getLineValue(item),
+          cluster: getClusterValue(item),
+          storeName: item.storeName || ''
+        };
+      }
+    });
+
+    return catalog;
+  }, [stockData]);
+
   // --- ALGORITMOS ---
   
   const redistributionSuggestions = useMemo(() => {
-    if (stockData.length === 0) return { moves: [] };
+    if (stockData.length === 0 && salesData.length === 0) return { moves: [] };
 
     const suggestions: any[] = [];
     const productGroups: Record<string, any> = {};
+    const groupStoreIndex: Record<string, any> = {};
 
-    // 🚨 REGRA DE NEGÓCIO: Lojas fora do raio logístico isoladas do remanejamento
-    const lojasExcluidas = [
-      "IGUATEMI FORTALEZA",
-      "MANAIRA SHOPPING",
-      "SHOPPING RECIFE",
-      "UBERABA SHOPPING",
-      "UBERLÂNDIA SHOPPING",
-      "BURITI RIO VERDE"
-    ];
+    const addStoreProduct = (params: any) => {
+      const rawDescription = String(params.description || '').trim();
+      const descKey = normalizeStr(rawDescription);
+      if (!descKey) return;
 
-    stockData.forEach(item => {
-      const storeNameUpper = item.storeName.toUpperCase();
+      const catalogItem = stockCatalogByDescription[descKey] || {};
+      const storeName = String(params.storeName || '').trim().toUpperCase();
+      if (!storeName || isCdStore(storeName) || isLogisticallyExcludedStore(storeName)) return;
 
-      // Ignora as lojas excluídas para que não sejam doadoras nem recebedoras
-      if (lojasExcluidas.includes(storeNameUpper)) return;
-
-      const region = STORE_REGIONS[item.storeName] || "OUTROS";
+      const region = (STORE_REGIONS[storeName] || params.region || 'OUTROS').toUpperCase();
       if (regionFilter.length > 0 && !regionFilter.includes(region)) return;
 
-      const category = item.category || 'GERAL';
+      const category = String(catalogItem.category || params.category || 'GERAL').trim().toUpperCase() || 'GERAL';
       if (categoryFilter.length > 0 && !categoryFilter.includes(category)) return;
 
-      const line = getLineValue(item);
+      const line = String(params.line || catalogItem.line || 'SEM LINHA').trim().toUpperCase();
       if (lineFilter.length > 0 && !lineFilter.includes(line)) return;
 
-      const cluster = getClusterValue(item);
+      const cluster = String(params.cluster || catalogItem.cluster || 'SEM CLUSTER').trim().toUpperCase();
       if (clusterFilter.length > 0 && !clusterFilter.includes(cluster)) return;
 
-      const description = item.description || 'SEM DESCRIÇÃO';
-      const productCode = item.productCode || '';
-      const key = `${region}|${normalizeStr(description)}|${productCode}`;
+      const groupKey = `${region}|${descKey}`;
 
-      if (!productGroups[key]) {
-        productGroups[key] = {
-          description,
-          productCode,
+      if (!productGroups[groupKey]) {
+        productGroups[groupKey] = {
+          description: catalogItem.description || rawDescription || 'SEM DESCRIÇÃO',
+          productCode: params.productCode || catalogItem.productCode || '',
           region,
           category,
           totalStock: 0,
@@ -380,19 +493,75 @@ export default function StockModule() {
         };
       }
 
-      const sales = getProductSales(item.storeName, description);
-      const stock = Number(item.quantity) || 0;
-      const dailySales = sales / Math.max(periodDays, 1);
-      const coverageDays = dailySales > 0 ? stock / dailySales : (stock > 0 ? 999 : 0);
+      const storeKey = `${groupKey}|${storeName}`;
 
-      productGroups[key].totalStock += stock;
-      productGroups[key].totalSales += sales;
-      productGroups[key].stores.push({ storeName: item.storeName, qty: stock, sales, dailySales, coverageDays, cluster });
+      if (!groupStoreIndex[storeKey]) {
+        groupStoreIndex[storeKey] = {
+          storeName,
+          qty: 0,
+          sales: 0,
+          dailySales: 0,
+          coverageDays: 0,
+          cluster
+        };
+        productGroups[groupKey].stores.push(groupStoreIndex[storeKey]);
+      }
+
+      const storeItem = groupStoreIndex[storeKey];
+      const stockToAdd = Math.max(0, toNumericValue(params.stock || 0));
+      const salesToAdd = Math.max(0, toNumericValue(params.sales || 0));
+
+      if (stockToAdd > 0) {
+        storeItem.qty += stockToAdd;
+        productGroups[groupKey].totalStock += stockToAdd;
+      }
+
+      if (salesToAdd > 0) {
+        storeItem.sales += salesToAdd;
+        productGroups[groupKey].totalSales += salesToAdd;
+      }
+    };
+
+    stockData.forEach(item => {
+      addStoreProduct({
+        storeName: item.storeName,
+        description: item.description || 'SEM DESCRIÇÃO',
+        productCode: item.productCode || '',
+        category: item.category || 'GERAL',
+        line: getLineValue(item),
+        cluster: getClusterValue(item),
+        region: STORE_REGIONS[item.storeName] || 'OUTROS',
+        stock: item.quantity,
+        sales: 0
+      });
+    });
+
+    salesData.forEach(sale => {
+      const sales = getSaleQuantity(sale);
+      const description = getSaleDescription(sale);
+      const storeName = getSaleStoreName(sale);
+
+      if (sales <= 0 || !description || !storeName) return;
+
+      addStoreProduct({
+        storeName,
+        description,
+        productCode: getSaleProductCode(sale),
+        category: getSaleCategory(sale),
+        region: String(sale.regiao || sale.REGIAO || 'OUTROS').toUpperCase(),
+        stock: 0,
+        sales
+      });
     });
 
     Object.values(productGroups).forEach((prod: any) => {
-      const stores = prod.stores.filter((store: any) => store.storeName !== "CD TAGUATINGA");
-      if (stores.length < 2) return;
+      const stores = prod.stores.filter((store: any) => !isCdStore(store.storeName));
+      if (stores.length < 2 || prod.totalStock <= 0 || prod.totalSales <= 0) return;
+
+      stores.forEach((store: any) => {
+        store.dailySales = store.sales / Math.max(periodDays, 1);
+        store.coverageDays = store.dailySales > 0 ? store.qty / store.dailySales : (store.qty > 0 ? 999 : 0);
+      });
 
       const donors = stores
         .map((store: any) => {
@@ -414,24 +583,29 @@ export default function StockModule() {
           return { ...store, need: Math.max(0, Math.ceil(need)), targetStock };
         })
         .filter((store: any) => store.need > 0)
-        .sort((a: any, b: any) => b.sales - a.sales || a.coverageDays - b.coverageDays);
+        .sort((a: any, b: any) => {
+          const aEmpty = a.qty <= 0 ? 1 : 0;
+          const bEmpty = b.qty <= 0 ? 1 : 0;
+          return bEmpty - aEmpty || b.sales - a.sales || a.coverageDays - b.coverageDays;
+        });
 
-      let donorIndex = 0;
-      let receiverIndex = 0;
+      if (donors.length === 0 || receivers.length === 0) return;
 
-      while (donorIndex < donors.length && receiverIndex < receivers.length) {
-        const donor = donors[donorIndex];
-        const receiver = receivers[receiverIndex];
-        if (!donor || !receiver) break;
+      let safetyCounter = 0;
 
-        if (donor.storeName === receiver.storeName) {
-          receiverIndex += 1;
-          continue;
-        }
+      while (donors.some((donor: any) => donor.surplus > 0) && receivers.some((receiver: any) => receiver.need > 0) && safetyCounter < 1000) {
+        safetyCounter += 1;
+        let movedInRound = false;
 
-        const moveQty = Math.min(donor.surplus, receiver.need, 5);
+        for (const receiver of receivers) {
+          if (receiver.need <= 0) continue;
 
-        if (moveQty > 0) {
+          const donor = donors.find((candidate: any) => candidate.surplus > 0 && candidate.storeName !== receiver.storeName);
+          if (!donor) break;
+
+          const moveQty = Math.min(donor.surplus, receiver.need, receiver.qty <= 0 ? 2 : 1);
+          if (moveQty <= 0) continue;
+
           const donorCoverage = donor.coverageDays >= 999 ? 'sem giro' : `${Math.round(donor.coverageDays)} dias`;
           const receiverCoverage = receiver.coverageDays > 0 ? `${Math.round(receiver.coverageDays)} dias` : 'sem cobertura';
 
@@ -449,25 +623,28 @@ export default function StockModule() {
             receiverStock: receiver.qty,
             receiverSales: receiver.sales,
             priority: receiver.qty === 0 ? 'CRÍTICA' : receiver.coverageDays < 7 ? 'ALTA' : 'MÉDIA',
-            reason: `Origem com cobertura ${donorCoverage} e destino com ${receiverCoverage}.`,
+            reason: receiver.qty === 0
+              ? `Destino vendeu ${receiver.sales} un. no período, mas está sem estoque. Origem com cobertura ${donorCoverage}.`
+              : `Origem com cobertura ${donorCoverage} e destino com ${receiverCoverage}.`,
           });
 
           donor.surplus -= moveQty;
           receiver.need -= moveQty;
+          receiver.qty += moveQty;
+          movedInRound = true;
         }
 
-        if (donor.surplus <= 0) donorIndex += 1;
-        if (receiver.need <= 0) receiverIndex += 1;
+        if (!movedInRound) break;
       }
     });
 
     return {
       moves: suggestions.sort((a, b) => {
         const priorityScore: Record<string, number> = { 'CRÍTICA': 3, 'ALTA': 2, 'MÉDIA': 1 };
-        return (priorityScore[b.priority] || 0) - (priorityScore[a.priority] || 0) || b.qty - a.qty;
+        return (priorityScore[b.priority] || 0) - (priorityScore[a.priority] || 0) || b.receiverSales - a.receiverSales || b.qty - a.qty;
       }),
     };
-  }, [stockData, salesData, regionFilter, categoryFilter, lineFilter, clusterFilter, periodDays]);
+  }, [stockData, salesData, regionFilter, categoryFilter, lineFilter, clusterFilter, periodDays, stockCatalogByDescription]);
 
   const redistributionMetrics = useMemo(() => {
     const moves = redistributionSuggestions.moves || [];
@@ -548,92 +725,168 @@ export default function StockModule() {
 
    // --- ALGORITMO MALOTE (FRONT-END) ---
   const calculatedMalote = useMemo(() => {
-    if (stockData.length === 0) return [];
+    if (stockData.length === 0 && salesData.length === 0) return [];
 
     const suggestions: any[] = [];
-    const cdName = "CD TAGUATINGA";
-
-    // 🚨 NOVA REGRA DE NEGÓCIO: Lojas fora do raio de distribuição do CD
-    const lojasExcluidas = [
-      "IGUATEMI FORTALEZA",
-      "MANAIRA SHOPPING",
-      "SHOPPING RECIFE", // Adicionado junto com o Nordeste
-      "UBERABA SHOPPING",
-      "UBERLÂNDIA SHOPPING",
-      "BURITI RIO VERDE"
-    ];
-
-    const cdStock = stockData.filter(i => i.storeName === cdName);
+    const cdStockByProduct: Record<string, any> = {};
     const productGroups: Record<string, any> = {};
+    const groupStoreIndex: Record<string, any> = {};
 
     stockData.forEach(item => {
-      const storeNameUpper = item.storeName.toUpperCase();
+      if (!isCdStore(item.storeName || '')) return;
 
-      // Se for o próprio CD ou uma das lojas excluídas da logística, o algoritmo ignora e não calcula envio
-      if (storeNameUpper === cdName || lojasExcluidas.includes(storeNameUpper)) return;
+      const descKey = normalizeStr(item.description);
+      if (!descKey) return;
 
-      const productKey = item.description;
+      if (!cdStockByProduct[descKey]) {
+        cdStockByProduct[descKey] = {
+          quantity: 0,
+          modelo: item.description || 'SEM DESCRIÇÃO',
+          category: item.category || 'GERAL'
+        };
+      }
 
-      if (!productGroups[productKey]) {
-        productGroups[productKey] = {
-          modelo: item.description,
-          category: item.category || 'GERAL',
+      cdStockByProduct[descKey].quantity += Math.max(0, toNumericValue(item.quantity || 0));
+    });
+
+    const addDestination = (params: any) => {
+      const rawDescription = String(params.description || '').trim();
+      const descKey = normalizeStr(rawDescription);
+      if (!descKey) return;
+
+      const storeName = String(params.storeName || '').trim().toUpperCase();
+      if (!storeName || isCdStore(storeName) || isLogisticallyExcludedStore(storeName)) return;
+
+      const catalogItem = stockCatalogByDescription[descKey] || {};
+      const cdItem = cdStockByProduct[descKey] || {};
+      const category = String(catalogItem.category || cdItem.category || params.category || 'GERAL').trim().toUpperCase() || 'GERAL';
+
+      if (!productGroups[descKey]) {
+        productGroups[descKey] = {
+          modelo: cdItem.modelo || catalogItem.description || rawDescription || 'SEM DESCRIÇÃO',
+          category,
           lojas: []
         };
       }
 
-      const sales = getProductSales(item.storeName, item.description);
-      const stock = Number(item.quantity) || 0;
+      const storeKey = `${descKey}|${storeName}`;
 
-      // cobertura baseada no período escolhido
-      const dailySales = sales / Math.max(periodDays, 1);
-      const coberturaAlvo = Math.ceil(dailySales * 15);
-      const sugestao = Math.max(0, coberturaAlvo - stock);
+      if (!groupStoreIndex[storeKey]) {
+        groupStoreIndex[storeKey] = {
+          loja: storeName,
+          estoqueAtual: 0,
+          vendaPeriodo: 0,
+          mediaDia: 0,
+          sugestaoEnvio: 0,
+          necessidade: 0
+        };
 
-      if (sugestao > 0) {
-        productGroups[productKey].lojas.push({
-          loja: item.storeName,
-          estoqueAtual: stock,
-          vendaPeriodo: sales,
-          mediaDia: dailySales,
-          sugestaoEnvio: sugestao
-        });
+        productGroups[descKey].lojas.push(groupStoreIndex[storeKey]);
       }
+
+      const storeItem = groupStoreIndex[storeKey];
+      const stockToAdd = Math.max(0, toNumericValue(params.stock || 0));
+      const salesToAdd = Math.max(0, toNumericValue(params.sales || 0));
+
+      if (stockToAdd > 0) storeItem.estoqueAtual += stockToAdd;
+      if (salesToAdd > 0) storeItem.vendaPeriodo += salesToAdd;
+    };
+
+    stockData.forEach(item => {
+      addDestination({
+        storeName: item.storeName,
+        description: item.description || 'SEM DESCRIÇÃO',
+        category: item.category || 'GERAL',
+        stock: item.quantity,
+        sales: 0
+      });
     });
 
-    Object.values(productGroups).forEach((prod: any) => {
-      const itemNoCd = cdStock.find(i => i.description === prod.modelo);
-      let saldoCd = itemNoCd ? Number(itemNoCd.quantity) : 0;
+    salesData.forEach(sale => {
+      const sales = getSaleQuantity(sale);
+      const description = getSaleDescription(sale);
+      const storeName = getSaleStoreName(sale);
 
-      if (saldoCd > 0 && prod.lojas.length > 0) {
-        const lojasComAtendimento: any[] = [];
-        const lojasOrdenadas = prod.lojas.sort((a: any, b: any) => b.vendaPeriodo - a.vendaPeriodo);
+      if (sales <= 0 || !description || !storeName) return;
 
-        lojasOrdenadas.forEach((lj: any) => {
-          if (saldoCd <= 0) return;
-          const qtdEnviar = Math.min(saldoCd, lj.sugestaoEnvio);
+      addDestination({
+        storeName,
+        description,
+        category: getSaleCategory(sale),
+        stock: 0,
+        sales
+      });
+    });
 
-          if (qtdEnviar > 0) {
-            lojasComAtendimento.push({
-              ...lj,
-              sugestaoEnvio: qtdEnviar
-            });
-            saldoCd -= qtdEnviar;
-          }
+    Object.entries(productGroups).forEach(([descKey, prod]: any) => {
+      const saldoInicialCd = Math.floor(cdStockByProduct[descKey]?.quantity || 0);
+      let saldoCd = saldoInicialCd;
+
+      if (saldoCd <= 0 || prod.lojas.length === 0) return;
+
+      const lojasComNecessidade = prod.lojas
+        .map((loja: any) => {
+          const mediaDia = loja.vendaPeriodo / Math.max(periodDays, 1);
+          const coberturaAlvo = Math.max(1, Math.ceil(mediaDia * 15));
+          const necessidade = loja.vendaPeriodo > 0 ? Math.max(0, coberturaAlvo - loja.estoqueAtual) : 0;
+
+          return {
+            ...loja,
+            mediaDia,
+            necessidade: Math.ceil(necessidade),
+            sugestaoEnvio: 0
+          };
+        })
+        .filter((loja: any) => loja.necessidade > 0)
+        .sort((a: any, b: any) => {
+          const aEmpty = a.estoqueAtual <= 0 ? 1 : 0;
+          const bEmpty = b.estoqueAtual <= 0 ? 1 : 0;
+          return bEmpty - aEmpty || b.vendaPeriodo - a.vendaPeriodo || a.estoqueAtual - b.estoqueAtual;
         });
 
-        if (lojasComAtendimento.length > 0) {
-          suggestions.push({
-            ...prod,
-            lojas: lojasComAtendimento,
-            saldoRestanteCd: saldoCd
-          });
+      if (lojasComNecessidade.length === 0) return;
+
+      let safetyCounter = 0;
+
+      while (saldoCd > 0 && lojasComNecessidade.some((loja: any) => loja.necessidade > 0) && safetyCounter < 1000) {
+        safetyCounter += 1;
+        let movedInRound = false;
+
+        for (const loja of lojasComNecessidade) {
+          if (saldoCd <= 0) break;
+          if (loja.necessidade <= 0) continue;
+
+          loja.sugestaoEnvio += 1;
+          loja.necessidade -= 1;
+          saldoCd -= 1;
+          movedInRound = true;
         }
+
+        if (!movedInRound) break;
+      }
+
+      const lojasComAtendimento = lojasComNecessidade
+        .filter((loja: any) => loja.sugestaoEnvio > 0)
+        .map((loja: any) => ({
+          loja: loja.loja,
+          estoqueAtual: loja.estoqueAtual,
+          vendaPeriodo: loja.vendaPeriodo,
+          mediaDia: loja.mediaDia,
+          sugestaoEnvio: loja.sugestaoEnvio
+        }));
+
+      if (lojasComAtendimento.length > 0) {
+        suggestions.push({
+          ...prod,
+          lojas: lojasComAtendimento,
+          saldoRestanteCd: saldoCd
+        });
       }
     });
 
     return suggestions;
-  }, [stockData, salesData, periodDays]); 
+  }, [stockData, salesData, periodDays, stockCatalogByDescription]); 
+
 
     
   

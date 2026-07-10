@@ -17,6 +17,8 @@ import { validarResultadoClark } from './clarkVerifier.service';
 import { responderFinalClark } from './clarkFinalResponder.service';
 import { ClarkAgentPlan } from '../agent/clarkAgent.types';
 
+const CLARK_PROVIDER = String(process.env.CLARK_PROVIDER || '').trim().toLowerCase();
+
 function periodoVazio(): ClarkPeriodo {
   return { inicio: '', fim: '', descricao: '' };
 }
@@ -134,7 +136,12 @@ export async function processarComClarkBrain(input: ClarkPerguntaInput): Promise
         memoryBefore: memoriaExecutiva,
       },
     },
-    resposta_origem: usedGeminiPlanner || usedGeminiResponder ? 'gemini_analitico' : 'local_precisa',
+    resposta_origem:
+      usedGeminiPlanner || usedGeminiResponder
+        ? CLARK_PROVIDER === 'claude'
+          ? 'claude_analitico'
+          : 'gemini_analitico'
+        : 'local_precisa',
     sugestoes: [
       'Gerar relatório executivo do período',
       'Comparar com outro período',

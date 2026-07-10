@@ -65,6 +65,36 @@ const STORE_MAP: Record<string, string> = {
   "12309173001066": "CD TAGUATINGA",
 };
 
+
+const STORE_REGION_MAP: Record<string, string> = {
+  'ARAGUAIA SHOPPING': 'GOIÁS',
+  'BOULEVARD SHOPPING': 'DF',
+  'BRASILIA SHOPPING': 'DF',
+  'CONJUNTO NACIONAL': 'DF',
+  'CONJUNTO NACIONAL QUIOSQUE': 'DF',
+  'GOIANIA SHOPPING': 'GOIÁS',
+  'IGUATEMI SHOPPING': 'DF',
+  'JK SHOPPING': 'DF',
+  'PARK SHOPPING': 'DF',
+  'PATIO BRASIL': 'DF',
+  'TAGUATINGA SHOPPING': 'DF',
+  'TERRAÇO SHOPPING': 'DF',
+  'TAGUATINGA SHOPPING QQ': 'DF',
+  'UBERLÂNDIA SHOPPING': 'MINAS GERAIS',
+  'UBERABA SHOPPING': 'MINAS GERAIS',
+  'FLAMBOYANT SHOPPING': 'GOIÁS',
+  'BURITI SHOPPING': 'GOIÁS',
+  'PASSEIO DAS AGUAS': 'GOIÁS',
+  'PORTAL SHOPPING': 'GOIÁS',
+  'SHOPPING SUL': 'GOIÁS',
+  'BURITI RIO VERDE': 'GOIÁS',
+  'PARK ANAPOLIS': 'GOIÁS',
+  'SHOPPING RECIFE': 'NORDESTE',
+  'MANAIRA SHOPPING': 'NORDESTE',
+  'IGUATEMI FORTALEZA': 'NORDESTE',
+  'CD TAGUATINGA': 'CD',
+};
+
 const MONTH_LABELS = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
 const MONTH_FULL: Record<number, string> = {
   1: 'Janeiro', 2: 'Fevereiro', 3: 'Março', 4: 'Abril', 5: 'Maio', 6: 'Junho',
@@ -151,8 +181,13 @@ const getCategory = (sale: AnyRow) =>
     .trim()
     .toUpperCase();
 
-const getRegion = (sale: AnyRow) =>
-  String(pick(sale, ['regiao', 'REGIAO'], 'SEM REGIÃO')).trim().toUpperCase() || 'SEM REGIÃO';
+const getRegion = (sale: AnyRow) => {
+  const rawRegion = String(pick(sale, ['regiao', 'REGIAO'], '')).trim().toUpperCase();
+  if (rawRegion && rawRegion !== 'N/D' && rawRegion !== 'NAN' && rawRegion !== 'UNDEFINED') return rawRegion;
+
+  const store = getStoreName(getStoreRaw(sale)).toUpperCase();
+  return STORE_REGION_MAP[store] || 'SEM REGIÃO';
+};
 
 const getDescription = (sale: AnyRow) =>
   String(pick(sale, ['descricao', 'DESCRICAO', 'produto', 'PRODUTO'], 'N/D')).trim().toUpperCase();
@@ -277,7 +312,7 @@ const SmallMetricCard = ({
     </div>
 
     {children ? (
-      <div className="h-[86px] w-full">{children}</div>
+      <div className="min-h-[86px] w-full">{children}</div>
     ) : (
       <>
         <h3 className={`text-2xl font-black mt-1 ${valueClass}`}>{value}</h3>
@@ -309,9 +344,25 @@ export default function ComparativoAnual() {
   const [activeTab, setActiveTab] = useState<'geral' | 'produtos'>('geral');
   const [searchProduct, setSearchProduct] = useState('');
 
-  const API_URL = window.location.hostname === 'localhost'
-    ? 'http://localhost:3000'
-    : 'https://telefluxo-aplicacao.onrender.com';
+  const API_URL = useMemo(() => {
+    const envUrl = String(
+      import.meta.env.VITE_API_URL ||
+      import.meta.env.VITE_BACKEND_URL ||
+      ''
+    ).trim();
+
+    if (envUrl) return envUrl.replace(/\/$/, '');
+
+    const hostname = window.location.hostname;
+    const isLocal =
+      hostname === 'localhost' ||
+      hostname === '127.0.0.1' ||
+      hostname.startsWith('192.168.') ||
+      hostname.startsWith('10.') ||
+      hostname.endsWith('.local');
+
+    return isLocal ? `http://${hostname}:3000` : 'https://telefluxo-aplicacao.onrender.com';
+  }, []);
 
   useEffect(() => {
     function handleClickOutside(event: any) {
@@ -574,9 +625,25 @@ export default function ComparativoAnual() {
           .reduce((sum, m) => sum + (totalsByYearMonth[yearA]?.[m] || 0), 0)
       : 0;
 
+    const hasExplicitDateFilter = Boolean(startDate || endDate);
+    const hasSingleMonthFilter = monthFilter !== '0';
+
     let localYearForecast = totalB;
-    if (yearB === currentYear) {
-      localYearForecast = daysPassedInYear > 0 ? (totalB / daysPassedInYear) * daysInYear : totalB;
+    let trendLabel = 'Ano fechado';
+
+    if (yearB === currentYear && !hasExplicitDateFilter) {
+      if (hasSingleMonthFilter && Number(monthFilter) === currentMonth) {
+        localYearForecast = totalB - currentMonthRealYearB + (currentDay > 0 ? (currentMonthRealYearB / currentDay) * daysInCurrentMonth : currentMonthRealYearB);
+        trendLabel = 'Projeção do mês atual no recorte';
+      } else if (!hasSingleMonthFilter) {
+        localYearForecast = daysPassedInYear > 0 ? (totalB / daysPassedInYear) * daysInYear : totalB;
+        trendLabel = 'Projeção anual pelo ritmo atual';
+      } else {
+        localYearForecast = totalB;
+        trendLabel = 'Filtro de mês fechado';
+      }
+    } else if (hasExplicitDateFilter) {
+      trendLabel = 'Filtro de datas aplicado';
     }
 
     const bestStoreByYear = (year: string) => {
@@ -602,6 +669,7 @@ export default function ComparativoAnual() {
           ? Math.max(currentMonthRealYearB, (currentMonthRealYearB / currentDay) * daysInCurrentMonth)
           : currentMonthRealYearB,
       localYearForecast: Math.max(localYearForecast, totalB),
+      trendLabel,
       growthVsYearA,
       cutoffLabel:
         monthFilter !== '0'
@@ -610,7 +678,7 @@ export default function ComparativoAnual() {
             ? 'Até mês atual'
             : 'Ano completo',
     };
-  }, [filteredRawData, yearA, yearB, monthFilter]);
+  }, [filteredRawData, yearA, yearB, monthFilter, startDate, endDate]);
 
   const segurosComputed = useMemo(() => {
     const byYear: Record<string, { total: number; qtd: number }> = {
@@ -627,11 +695,27 @@ export default function ComparativoAnual() {
       };
     }
 
+    const hasInsurance = Object.values(byYear).some((item) => item.total !== 0 || item.qtd !== 0);
+
+    if (!hasInsurance) {
+      for (const row of filteredRawData) {
+        const ym = extractYearMonth(getDateValue(row));
+        if (!ym || (ym.year !== yearA && ym.year !== yearB)) continue;
+
+        const text = `${getCategory(row)} ${getDescription(row)}`;
+        const looksLikeInsurance = /SEGURO|PROTECAO|PROTEÇÃO|GARANTIA/.test(text);
+        if (!looksLikeInsurance) continue;
+
+        byYear[ym.year].total += getTotal(row);
+        byYear[ym.year].qtd += getQuantity(row) || 1;
+      }
+    }
+
     return {
       yearA: byYear[yearA] || { total: 0, qtd: 0 },
       yearB: byYear[yearB] || { total: 0, qtd: 0 },
     };
-  }, [filteredAnnualStoreCompare, yearA, yearB]);
+  }, [filteredAnnualStoreCompare, filteredRawData, yearA, yearB]);
 
   const categoryMiniData = useMemo(() => {
     const map = new Map<string, number>();
@@ -910,7 +994,9 @@ export default function ComparativoAnual() {
               icon={<TrendingUp size={16} className="text-emerald-600" />}
               value={formatMoney(computed.localYearForecast)}
               valueClass="text-emerald-700"
-              subtitle={`Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.toFixed(2)}%`}
+              subtitle={`${computed.trendLabel}
+Total real ${yearB}: ${formatMoney(computed.totalB)}
+Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.toFixed(2)}%`}
             />
 
             <SmallMetricCard
@@ -925,37 +1011,62 @@ export default function ComparativoAnual() {
               title="Card 5 · Categorias"
               icon={<BarChart3 size={16} className="text-slate-400" />}
             >
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={categoryMiniData} margin={{ top: 10, right: 0, left: 0, bottom: 10 }}>
-                  <Bar dataKey="value" fill="#2563EB" radius={[6, 6, 0, 0]} />
-                  <Tooltip formatter={(value: any) => [formatMoney(Number(value) || 0), 'Faturamento']} />
-                </BarChart>
-              </ResponsiveContainer>
-              <div className="text-[10px] font-bold text-slate-500 uppercase mt-2">Top categorias de {yearB}</div>
+              <div className="h-[54px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={categoryMiniData} margin={{ top: 8, right: 0, left: 0, bottom: 0 }}>
+                    <Bar dataKey="value" fill="#2563EB" radius={[6, 6, 0, 0]} />
+                    <Tooltip formatter={(value: any) => [formatMoney(Number(value) || 0), 'Faturamento']} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+              <div className="mt-2 space-y-1">
+                {categoryMiniData.length ? categoryMiniData.slice(0, 3).map((item) => (
+                  <div key={item.name} className="flex justify-between gap-2 text-[9px] font-black uppercase text-slate-500">
+                    <span className="truncate">{item.name}</span>
+                    <span className="text-slate-700">{formatMoneyShort(item.value)}</span>
+                  </div>
+                )) : (
+                  <div className="text-[10px] font-bold text-slate-400 uppercase">Sem categoria no filtro</div>
+                )}
+              </div>
             </SmallMetricCard>
 
             <SmallMetricCard
               title="Card 6 · Regiões"
               icon={<PieChart size={16} className="text-slate-400" />}
             >
-              <ResponsiveContainer width="100%" height="100%">
-                <RechartsPieChart>
-                  <Pie
-                    data={regionPieData}
-                    dataKey="value"
-                    nameKey="name"
-                    innerRadius={28}
-                    outerRadius={42}
-                    paddingAngle={2}
-                  >
-                    {regionPieData.map((entry, index) => (
-                      <Cell key={`cell-${entry.name}`} fill={PIE_COLORS[index % PIE_COLORS.length]} />
-                    ))}
-                  </Pie>
-                  <Tooltip formatter={(value: any, _name: any, props: any) => [formatMoney(Number(value) || 0), props?.payload?.name || 'Região']} />
-                </RechartsPieChart>
-              </ResponsiveContainer>
-              <div className="text-[10px] font-bold text-slate-500 uppercase mt-2">Distribuição de {yearB}</div>
+              <div className="grid grid-cols-[90px_1fr] gap-3 items-center h-[86px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <RechartsPieChart>
+                    <Pie
+                      data={regionPieData}
+                      dataKey="value"
+                      nameKey="name"
+                      innerRadius={24}
+                      outerRadius={38}
+                      paddingAngle={2}
+                    >
+                      {regionPieData.map((entry, index) => (
+                        <Cell key={`cell-${entry.name}`} fill={PIE_COLORS[index % PIE_COLORS.length]} />
+                      ))}
+                    </Pie>
+                    <Tooltip formatter={(value: any, _name: any, props: any) => [formatMoney(Number(value) || 0), props?.payload?.name || 'Região']} />
+                  </RechartsPieChart>
+                </ResponsiveContainer>
+                <div className="space-y-1 min-w-0">
+                  {regionPieData.length ? regionPieData.slice(0, 4).map((item, index) => (
+                    <div key={item.name} className="flex items-center justify-between gap-2 text-[9px] font-black uppercase text-slate-500">
+                      <span className="flex items-center gap-1 min-w-0">
+                        <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: PIE_COLORS[index % PIE_COLORS.length] }} />
+                        <span className="truncate">{item.name}</span>
+                      </span>
+                      <span className="text-slate-700">{formatMoneyShort(item.value)}</span>
+                    </div>
+                  )) : (
+                    <div className="text-[10px] font-bold text-slate-400 uppercase">Sem região no filtro</div>
+                  )}
+                </div>
+              </div>
             </SmallMetricCard>
           </div>
 

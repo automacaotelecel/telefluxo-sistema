@@ -1,10 +1,21 @@
 import { Request, Response } from 'express';
 import { pdfExtractorService } from './pdfExtractor.service';
 import { contractAgentService } from './contractAgent.service';
+import { validarAcessoAdmRequest } from '../../security/adminAccess';
 
 export class ContractController {
   public async analyze(req: Request, res: Response): Promise<void> {
     try {
+      const acesso = await validarAcessoAdmRequest(req);
+
+      if (!acesso.allowed) {
+        res.status(acesso.status).json({
+          success: false,
+          error: acesso.error,
+        });
+        return;
+      }
+
       const file = req.file;
       const question = req.body.question;
 

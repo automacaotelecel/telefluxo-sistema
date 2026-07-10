@@ -81,6 +81,7 @@ export type ClarkAction = {
 export type ClarkRespostaOrigem =
   | 'local_precisa'
   | 'gemini_analitico'
+  | 'claude_analitico'
   | 'fallback';
 
 export type ClarkResposta = {
@@ -91,7 +92,7 @@ export type ClarkResposta = {
   periodo: ClarkPeriodo;
   filtros: ClarkFiltros;
   dados: any;
-  resposta_origem: ClarkRespostaOrigem;
+  resposta_origem: ClarkRespostaOrigem; 
   sugestoes?: string[];
   debug?: any;
   actions?: ClarkAction[];
