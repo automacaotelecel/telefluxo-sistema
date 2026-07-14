@@ -557,3 +557,4 @@ export async function planejarClark(ctx: ClarkBrainContext): Promise<{ plan: Cla
     return { plan: local, usedGemini: false };
   }
 }
+//ajsutes para commitar//
