@@ -139,11 +139,11 @@ function normalizeDomain(domain: string): string | null {
     .trim()
     .toLowerCase()
     .replace(/^https?:\/\//, '')
-    .replace(/^www\./, '')
-    .split('/')[0]
-    .trim();
+    .replace(/^www\./, '');
 
-  return clean && clean.includes('.') ? clean : null;
+  const host = (clean.split('/')[0] || '').trim();
+
+  return host && host.includes('.') ? host : null;
 }
 
 function getAnthropicMessage(error: any): string {
