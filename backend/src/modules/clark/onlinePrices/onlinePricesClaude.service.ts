@@ -52,15 +52,20 @@ function getAnthropicClient(): Anthropic {
 }
 
 function toNumber(value: unknown): number | null {
-  if (typeof value === 'number' && Number.isFinite(value)) return value;
-  const text = String(value ?? '')
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value;
+
+  const text = String(value)
     .replace(/R\$/gi, '')
     .replace(/[^0-9,.-]/g, '')
     .replace(/\.(?=\d{3}(\D|$))/g, '')
     .replace(',', '.')
     .trim();
+
+  if (!text) return null;
+
   const parsed = Number(text);
-  return Number.isFinite(parsed) ? parsed : null;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
 function sanitizeText(value: unknown, max = 1000): string | null {
@@ -127,23 +132,24 @@ function calcularDiferenca(online: number | null, planilha: number | null): {
 
 function normalizarDisponibilidade(value: unknown): OnlinePriceResult['disponibilidade'] {
   const text = String(value || '').toLowerCase();
-  if (text.includes('indis')) return 'indisponivel';
   if (text.includes('erro')) return 'erro';
-  if (text.includes('nao') || text.includes('não')) return 'nao_encontrado';
-  if (text.includes('encontr')) return 'encontrado';
-  return 'nao_encontrado';
+  if (text.includes('encontr') && !text.includes('nao') && !text.includes('não')) return 'encontrado';
+
+  // Regra de produto: quando não encontrar preço real, tratar como indisponível.
+  // Isso evita preencher a tela/Excel com JSON bruto, fonte longa ou R$ 0,00.
+  return 'indisponivel';
 }
 
 function normalizeDomain(domain: string): string | null {
-  const clean = String(domain || '')
+  const normalized = String(domain || '')
     .trim()
     .toLowerCase()
     .replace(/^https?:\/\//, '')
     .replace(/^www\./, '');
 
-  const host = (clean.split('/')[0] || '').trim();
+  const clean = (normalized.split('/')[0] || '').trim();
 
-  return host && host.includes('.') ? host : null;
+  return clean && clean.includes('.') ? clean : null;
 }
 
 function getAnthropicMessage(error: any): string {
@@ -215,25 +221,21 @@ ${lojasComDominio.map((loja) => `- ${loja.nome}: ${loja.dominios.join(', ') || '
 Regras críticas:
 - Pesquise somente resultados das lojas listadas/domínios permitidos.
 - Para cada loja, encontre preço à vista e preço a prazo/parcelado, principalmente 12x quando existir.
-- Se não encontrar o produto, responda como "nao_encontrado".
+- Se não encontrar preço real e visível para a loja, responda como "indisponivel".
 - Se a página indicar indisponibilidade, responda como "indisponivel".
-- Não invente preço. Se não houver preço visível, deixe null.
+- Não invente preço. Se não houver preço visível, use null. Nunca use 0 como preço.
+- Não retorne URL, fonte, links, título longo, texto de busca ou justificativas.
 - Retorne somente JSON válido, sem markdown, no formato de array.
 - Não use texto fora do JSON.
 
-Formato obrigatório:
+Formato obrigatório e enxuto:
 [
   {
     "loja": "MAGALU",
-    "disponibilidade": "encontrado | indisponivel | nao_encontrado",
+    "disponibilidade": "encontrado | indisponivel",
     "preco_avista": 1234.56,
     "preco_prazo_12x": 1399.90,
-    "parcelas_texto": "12x de R$ 116,66",
-    "titulo": "Título do produto encontrado",
-    "url": "https://...",
-    "fonte": "nome do site/domínio",
-    "confianca": 0,
-    "observacao": "resumo curto do que foi encontrado"
+    "parcelas_texto": "12x de R$ 116,66"
   }
 ]
 
@@ -263,9 +265,9 @@ Responda um item para CADA loja listada, mesmo quando não encontrar.
     // de amostragem não padrão, e preço online não precisa desse controle para funcionar.
     response = await anthropic.messages.create({
       model: claudeModel,
-      max_tokens: 3500,
+      max_tokens: 1800,
       system:
-        'Você é um agente de pesquisa de preços online. Pesquise preços atuais, use fontes reais e retorne somente JSON válido. Nunca invente valores.',
+        'Você é um agente de pesquisa de preços online. Retorne somente JSON válido e enxuto. Nunca invente valores, nunca use 0 como preço e não inclua fonte, URL ou texto bruto.',
       messages: [{ role: 'user', content: prompt }],
       tools: [tool],
     } as any);
@@ -297,27 +299,32 @@ Responda um item para CADA loja listada, mesmo quando não encontrar.
     const diffAvista = calcularDiferenca(precoAvistaOnline, precoAvistaPlanilha);
     const diffPrazo = calcularDiferenca(precoPrazo12xOnline, precoPrazo12xPlanilha);
 
+    const disponibilidadeBase = normalizarDisponibilidade(found?.disponibilidade);
+    const disponibilidade = disponibilidadeBase === 'encontrado' && (precoAvistaOnline || precoPrazo12xOnline)
+      ? 'encontrado'
+      : disponibilidadeBase === 'erro'
+        ? 'erro'
+        : 'indisponivel';
+
     return {
       modelo: params.modelo,
       loja: loja.nome,
       dominios: loja.dominios,
-      disponibilidade: normalizarDisponibilidade(found?.disponibilidade),
-      precoAvistaOnline,
-      precoPrazo12xOnline,
-      parcelasTexto: sanitizeText(found?.parcelas_texto ?? found?.parcelasTexto, 300),
+      disponibilidade,
+      precoAvistaOnline: disponibilidade === 'encontrado' ? precoAvistaOnline : null,
+      precoPrazo12xOnline: disponibilidade === 'encontrado' ? precoPrazo12xOnline : null,
+      parcelasTexto: disponibilidade === 'encontrado' ? sanitizeText(found?.parcelas_texto ?? found?.parcelasTexto, 120) : null,
       precoAvistaPlanilha,
       precoPrazo12xPlanilha,
-      diferencaAvista: diffAvista.diff,
-      diferencaAvistaPercentual: diffAvista.diffPct,
-      diferencaPrazo12x: diffPrazo.diff,
-      diferencaPrazo12xPercentual: diffPrazo.diffPct,
-      titulo: sanitizeText(found?.titulo ?? found?.title, 500),
-      url: sanitizeText(found?.url, 1500),
-      fonte: sanitizeText(found?.fonte ?? found?.source, 300),
-      confianca: Math.max(0, Math.min(100, Number(found?.confianca || 0))),
-      observacao: found
-        ? sanitizeText(found?.observacao ?? found?.notes, 1000)
-        : sanitizeText(rawText || 'A IA não retornou item estruturado para esta loja.', 1000),
+      diferencaAvista: disponibilidade === 'encontrado' ? diffAvista.diff : null,
+      diferencaAvistaPercentual: disponibilidade === 'encontrado' ? diffAvista.diffPct : null,
+      diferencaPrazo12x: disponibilidade === 'encontrado' ? diffPrazo.diff : null,
+      diferencaPrazo12xPercentual: disponibilidade === 'encontrado' ? diffPrazo.diffPct : null,
+      titulo: null,
+      url: null,
+      fonte: null,
+      confianca: disponibilidade === 'encontrado' ? Math.max(0, Math.min(100, Number(found?.confianca || 0))) : 0,
+      observacao: disponibilidade === 'encontrado' ? null : 'INDISPONÍVEL',
       pesquisadoEm,
     };
   });

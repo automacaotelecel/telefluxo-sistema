@@ -181,8 +181,17 @@ export function parseOnlinePricesWorkbook(params: {
 }
 
 function formatMoney(value: number | null): number | null {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null;
   return Math.round(value * 100) / 100;
+}
+
+function formatOnlinePriceCell(result: OnlinePriceResult | undefined, field: 'avista' | 'prazo'): string | number {
+  if (!result || result.disponibilidade !== 'encontrado') return 'INDISPONÍVEL';
+
+  const value = field === 'avista' ? result.precoAvistaOnline : result.precoPrazo12xOnline;
+  const formatted = formatMoney(value);
+
+  return formatted === null ? 'INDISPONÍVEL' : formatted;
 }
 
 function safePercent(value: number | null): number | null {
@@ -251,13 +260,13 @@ export async function gerarRelatorioOnlinePricesExcel(params: {
   });
 
   params.input.produtos.forEach((produto) => {
-    const rowValues: Array<string | number | null> = [produto.modelo];
+    const rowValues: Array<string | number> = [produto.modelo];
 
     params.input.lojas.forEach((loja) => {
       const result = byModelStore.get(`${produto.modelo}::${loja.nome}`);
       rowValues.push(
-        formatMoney(result?.precoAvistaOnline ?? null),
-        formatMoney(result?.precoPrazo12xOnline ?? null),
+        formatOnlinePriceCell(result, 'avista'),
+        formatOnlinePriceCell(result, 'prazo'),
       );
     });
 
