@@ -4,12 +4,10 @@ import { ClarkFiltros, ClarkPeriodo } from '../clark.types';
 import { normalizarTextoClark } from '../../intent/extractFilters';
 import { CLARK_SCHEMA_CONTEXT } from './clarkSchemaContext';
 import { ClarkBrainContext } from './clarkBrain.types';
-import { gerarTextoClaudeClark } from '../../ai/claudeClark';
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 const genAI = GEMINI_API_KEY ? new GoogleGenAI({ apiKey: GEMINI_API_KEY }) : null;
-const PROVIDER = String(process.env.CLARK_PROVIDER || '').trim().toLowerCase();
 
 function safeJsonParse(text: string) {
   const raw = String(text || '').trim();
@@ -501,7 +499,16 @@ export async function planejarClark(ctx: ClarkBrainContext): Promise<{ plan: Cla
     return { plan: local, usedGemini: false };
   }
 
-  const normalizarPlano = (parsed: any): ClarkAgentPlan => {
+  if (!genAI) return { plan: local, usedGemini: false };
+
+  try {
+    const response = await genAI.models.generateContent({
+      model: GEMINI_MODEL,
+      contents: promptPlanner(ctx, local),
+      config: { temperature: 0.15, responseMimeType: 'application/json' } as any,
+    });
+
+    const parsed = safeJsonParse(String(response.text || ''));
     const toolCalls = Array.isArray(parsed.toolCalls) ? parsed.toolCalls : [];
     const normalizedCalls: ClarkToolCall[] = toolCalls
       .filter((c: any) => c && c.tool)
@@ -516,42 +523,15 @@ export async function planejarClark(ctx: ClarkBrainContext): Promise<{ plan: Cla
         },
       }));
 
-    return {
+    const plan: ClarkAgentPlan = {
       ...local,
       ...parsed,
       toolCalls: normalizedCalls.length ? normalizedCalls : local.toolCalls,
       validationRules: Array.isArray(parsed.validationRules) ? parsed.validationRules : local.validationRules,
       answerStyle: { ...local.answerStyle, ...(parsed.answerStyle || {}) },
     };
-  };
 
-  if (PROVIDER === 'claude') {
-    try {
-      const text = await gerarTextoClaudeClark({
-        prompt: promptPlanner(ctx, local),
-        maxTokens: 2048,
-        temperature: 0,
-        system:
-          'Você é o planner da Clark, um agente analítico do TeleFluxo. Retorne somente JSON válido, sem markdown e sem explicações.',
-      });
-
-      return { plan: normalizarPlano(safeJsonParse(text)), usedGemini: true };
-    } catch (error) {
-      console.warn('⚠️ Planner Claude falhou. Usando planner local:', error);
-      return { plan: local, usedGemini: false };
-    }
-  }
-
-  if (!genAI) return { plan: local, usedGemini: false };
-
-  try {
-    const response = await genAI.models.generateContent({
-      model: GEMINI_MODEL,
-      contents: promptPlanner(ctx, local),
-      config: { temperature: 0.15, responseMimeType: 'application/json' } as any,
-    });
-
-    return { plan: normalizarPlano(safeJsonParse(String(response.text || ''))), usedGemini: true };
+    return { plan, usedGemini: true };
   } catch (error) {
     console.warn('⚠️ Planner Gemini falhou. Usando planner local:', error);
     return { plan: local, usedGemini: false };
