@@ -2,7 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { OnlinePriceClaudeUsage, OnlinePriceResult, OnlineStoreTarget } from './onlinePrices.types';
 
 const DEFAULT_CLAUDE_ONLINE_PRICES_MODEL = 'claude-sonnet-5';
-const WEB_SEARCH_TOOL_VERSION = process.env.CLAUDE_WEB_SEARCH_TOOL || 'web_search_20250305';
+const DEFAULT_WEB_SEARCH_TOOL_VERSION = 'web_search_20260318';
 const DEFAULT_LOCATION_COUNTRY = process.env.CLAUDE_SEARCH_COUNTRY || 'BR';
 
 let anthropicClient: Anthropic | null = null;
@@ -22,6 +22,18 @@ function normalizeClaudeModel(rawModel: string | undefined | null): string {
 
 function getClaudeModel(): string {
   return normalizeClaudeModel(process.env.CLAUDE_ONLINE_PRICES_MODEL || process.env.CLAUDE_MODEL);
+}
+
+function getWebSearchToolVersion(): string {
+  const toolVersion = String(process.env.CLAUDE_WEB_SEARCH_TOOL || DEFAULT_WEB_SEARCH_TOOL_VERSION).trim();
+
+  // Em modelos Claude mais novos, a versão antiga web_search_20250305 pode retornar 400
+  // com mensagem de ferramenta depreciada. Usamos a versão atual por padrão.
+  if (!toolVersion || toolVersion === 'web_search_20250305') {
+    return DEFAULT_WEB_SEARCH_TOOL_VERSION;
+  }
+
+  return toolVersion;
 }
 
 function getAnthropicClient(): Anthropic {
@@ -159,7 +171,7 @@ function buildAnthropicFriendlyError(error: any, model: string): Error {
   }
 
   if (lower.includes('web search') || lower.includes('web_search')) {
-    hints.push('Verifique se o web search está habilitado na conta Anthropic e se CLAUDE_WEB_SEARCH_TOOL está compatível.');
+    hints.push('Verifique se o web search está habilitado na conta Anthropic. Para Sonnet 5, use CLAUDE_WEB_SEARCH_TOOL=web_search_20260318 ou remova essa variável para usar o padrão corrigido.');
   }
 
   if (lower.includes('country') || lower.includes('user_location')) {
@@ -229,7 +241,7 @@ Responda um item para CADA loja listada, mesmo quando não encontrar.
 `;
 
   const tool: any = {
-    type: WEB_SEARCH_TOOL_VERSION,
+    type: getWebSearchToolVersion(),
     name: 'web_search',
     max_uses: Math.max(1, Math.min(params.maxSearchUses, 20)),
     allowed_callers: ['direct'],
