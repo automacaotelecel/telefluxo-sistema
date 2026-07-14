@@ -1,13 +1,40 @@
 import Anthropic from '@anthropic-ai/sdk';
 
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
-const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-5';
+const DEFAULT_CLAUDE_MODEL = 'claude-sonnet-5';
 
-const anthropic = ANTHROPIC_API_KEY
-  ? new Anthropic({
-      apiKey: ANTHROPIC_API_KEY,
-    })
-  : null;
+let anthropicClient: Anthropic | null = null;
+let anthropicClientKey = '';
+
+function normalizeClaudeModel(rawModel: string | undefined | null): string {
+  const model = String(rawModel || '').trim();
+
+  // Claude Sonnet 5 é o substituto direto do Claude Sonnet 4.6.
+  // Esse mapeamento evita quebra quando o .env antigo ainda aponta para claude-sonnet-4-6.
+  if (!model || model === 'claude-sonnet-4-6') {
+    return DEFAULT_CLAUDE_MODEL;
+  }
+
+  return model;
+}
+
+function getClaudeModel(): string {
+  return normalizeClaudeModel(process.env.CLAUDE_MODEL);
+}
+
+function getAnthropicClient(): Anthropic {
+  const apiKey = String(process.env.ANTHROPIC_API_KEY || '').trim();
+
+  if (!apiKey) {
+    throw new Error('ANTHROPIC_API_KEY não configurada no backend.');
+  }
+
+  if (!anthropicClient || anthropicClientKey !== apiKey) {
+    anthropicClient = new Anthropic({ apiKey });
+    anthropicClientKey = apiKey;
+  }
+
+  return anthropicClient;
+}
 
 function extrairTextoClaude(response: any): string {
   const blocos = Array.isArray(response?.content) ? response.content : [];
@@ -17,6 +44,34 @@ function extrairTextoClaude(response: any): string {
     .map((bloco: any) => String(bloco.text))
     .join('\n')
     .trim();
+}
+
+function getAnthropicMessage(error: any): string {
+  return String(
+    error?.error?.message ||
+      error?.message ||
+      error?.response?.data?.error?.message ||
+      error?.response?.data?.message ||
+      'Erro desconhecido na API da Anthropic.',
+  );
+}
+
+function buildFriendlyClaudeError(error: any, model: string): Error {
+  const status = error?.status || error?.response?.status || error?.statusCode || '';
+  const message = getAnthropicMessage(error);
+  const lower = message.toLowerCase();
+  const hints: string[] = [];
+
+  if (lower.includes('deprecated') || lower.includes('retired') || lower.includes('model')) {
+    hints.push(`Modelo configurado: ${model}. Use CLAUDE_MODEL=claude-sonnet-5 no backend.`);
+  }
+
+  if (lower.includes('temperature') || lower.includes('top_p') || lower.includes('top_k') || lower.includes('sampling')) {
+    hints.push('A chamada da Clark foi corrigida para não enviar parâmetros de amostragem para modelos Claude recentes. Reinicie o backend.');
+  }
+
+  const prefix = status ? `Claude API ${status}: ` : 'Claude API: ';
+  return new Error(`${prefix}${message}${hints.length ? ` | ${hints.join(' ')}` : ''}`);
 }
 
 /**
@@ -29,15 +84,15 @@ export async function gerarTextoClaudeClark(params: {
   maxTokens?: number;
   temperature?: number;
 }): Promise<string> {
-  if (!anthropic) {
-    throw new Error('ANTHROPIC_API_KEY não configurada no backend.');
-  }
+  const anthropic = getAnthropicClient();
+  const claudeModel = getClaudeModel();
 
   try {
+    // Não enviar temperature/top_p/top_k. Modelos Claude recentes podem retornar 400
+    // quando recebem parâmetros de amostragem não padrão.
     const response = await anthropic.messages.create({
-      model: CLAUDE_MODEL,
+      model: claudeModel,
       max_tokens: params.maxTokens || 4096,
-      temperature: params.temperature ?? 0.2,
       system:
         params.system ||
         'Você é a Clark, IA analítica executiva do TeleFluxo. Responda com precisão, sem inventar dados.',
@@ -57,8 +112,9 @@ export async function gerarTextoClaudeClark(params: {
 
     return text;
   } catch (error) {
-    console.error('[Claude API Error] Falha ao processar solicitação da Clark:', error);
-    throw error;
+    const friendly = buildFriendlyClaudeError(error, claudeModel);
+    console.error('[Claude API Error] Falha ao processar solicitação da Clark:', friendly);
+    throw friendly;
   }
 }
 
@@ -72,7 +128,6 @@ export const gerarRespostaAnaliticaClaudeClark = async (
   return gerarTextoClaudeClark({
     prompt: promptCompleto,
     maxTokens: 4096,
-    temperature: 0.2,
     system:
       'Você é a Clark, IA analítica executiva do TeleFluxo. Siga estritamente as instruções fornecidas. Use apenas os dados reais recebidos e nunca invente números.',
   });

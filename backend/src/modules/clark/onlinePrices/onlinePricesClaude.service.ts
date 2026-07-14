@@ -1,12 +1,43 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { OnlinePriceClaudeUsage, OnlinePriceResult, OnlineStoreTarget } from './onlinePrices.types';
 
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
-const CLAUDE_MODEL = process.env.CLAUDE_ONLINE_PRICES_MODEL || process.env.CLAUDE_MODEL || 'claude-sonnet-5';
+const DEFAULT_CLAUDE_ONLINE_PRICES_MODEL = 'claude-sonnet-5';
 const WEB_SEARCH_TOOL_VERSION = process.env.CLAUDE_WEB_SEARCH_TOOL || 'web_search_20250305';
 const DEFAULT_LOCATION_COUNTRY = process.env.CLAUDE_SEARCH_COUNTRY || 'BR';
 
-const anthropic = ANTHROPIC_API_KEY ? new Anthropic({ apiKey: ANTHROPIC_API_KEY }) : null;
+let anthropicClient: Anthropic | null = null;
+let anthropicClientKey = '';
+
+function normalizeClaudeModel(rawModel: string | undefined | null): string {
+  const model = String(rawModel || '').trim();
+
+  // Claude Sonnet 5 é o substituto direto do Sonnet 4.6.
+  // Mantemos esse mapeamento para não quebrar quando o .env antigo ainda tiver claude-sonnet-4-6.
+  if (!model || model === 'claude-sonnet-4-6') {
+    return DEFAULT_CLAUDE_ONLINE_PRICES_MODEL;
+  }
+
+  return model;
+}
+
+function getClaudeModel(): string {
+  return normalizeClaudeModel(process.env.CLAUDE_ONLINE_PRICES_MODEL || process.env.CLAUDE_MODEL);
+}
+
+function getAnthropicClient(): Anthropic {
+  const apiKey = String(process.env.ANTHROPIC_API_KEY || '').trim();
+
+  if (!apiKey) {
+    throw new Error('ANTHROPIC_API_KEY não configurada no backend. Configure a chave no ambiente do backend e reinicie o servidor.');
+  }
+
+  if (!anthropicClient || anthropicClientKey !== apiKey) {
+    anthropicClient = new Anthropic({ apiKey });
+    anthropicClientKey = apiKey;
+  }
+
+  return anthropicClient;
+}
 
 function toNumber(value: unknown): number | null {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -45,6 +76,7 @@ function extractJsonArray(text: string): any[] {
     const parsed = JSON.parse(clean);
     if (Array.isArray(parsed)) return parsed;
     if (Array.isArray(parsed?.resultados)) return parsed.resultados;
+    if (Array.isArray(parsed?.results)) return parsed.results;
   } catch (_) {
     // fallback abaixo
   }
@@ -90,15 +122,62 @@ function normalizarDisponibilidade(value: unknown): OnlinePriceResult['disponibi
   return 'nao_encontrado';
 }
 
+function normalizeDomain(domain: string): string | null {
+  const clean = String(domain || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, '')
+    .replace(/^www\./, '')
+    .split('/')[0]
+    .trim();
+
+  return clean && clean.includes('.') ? clean : null;
+}
+
+function getAnthropicMessage(error: any): string {
+  return String(
+    error?.error?.message ||
+      error?.message ||
+      error?.response?.data?.error?.message ||
+      error?.response?.data?.message ||
+      'Erro desconhecido na API da Anthropic.',
+  );
+}
+
+function buildAnthropicFriendlyError(error: any, model: string): Error {
+  const status = error?.status || error?.response?.status || error?.statusCode || '';
+  const message = getAnthropicMessage(error);
+  const lower = message.toLowerCase();
+  const hints: string[] = [];
+
+  if (lower.includes('deprecated') || lower.includes('retired') || lower.includes('model')) {
+    hints.push(`Modelo configurado: ${model}. Use CLAUDE_ONLINE_PRICES_MODEL=claude-sonnet-5 no backend.`);
+  }
+
+  if (lower.includes('temperature') || lower.includes('top_p') || lower.includes('top_k') || lower.includes('sampling')) {
+    hints.push('Removi parâmetros de amostragem da chamada de Preços Online; reinicie o backend para aplicar o arquivo corrigido.');
+  }
+
+  if (lower.includes('web search') || lower.includes('web_search')) {
+    hints.push('Verifique se o web search está habilitado na conta Anthropic e se CLAUDE_WEB_SEARCH_TOOL está compatível.');
+  }
+
+  if (lower.includes('country') || lower.includes('user_location')) {
+    hints.push('Use CLAUDE_SEARCH_COUNTRY=BR, com código ISO de 2 letras.');
+  }
+
+  const prefix = status ? `Claude API ${status}: ` : 'Claude API: ';
+  return new Error(`${prefix}${message}${hints.length ? ` | ${hints.join(' ')}` : ''}`);
+}
+
 export async function pesquisarModeloEmLojasClaude(params: {
   modelo: string;
   lojas: OnlineStoreTarget[];
   valoresPlanilhaPorLoja: Record<string, { planilhaAvista?: number | null; planilhaPrazo12x?: number | null }>;
   maxSearchUses: number;
 }): Promise<{ results: OnlinePriceResult[]; usage: OnlinePriceClaudeUsage; rawText: string }> {
-  if (!anthropic) {
-    throw new Error('ANTHROPIC_API_KEY não configurada no backend. Configure no backend/.env para usar o agente Preços Online.');
-  }
+  const anthropic = getAnthropicClient();
+  const claudeModel = getClaudeModel();
 
   const lojasComDominio = params.lojas.map((loja) => ({
     nome: loja.nome,
@@ -106,7 +185,12 @@ export async function pesquisarModeloEmLojasClaude(params: {
   }));
 
   const allowedDomains = Array.from(
-    new Set(params.lojas.flatMap((loja) => loja.dominios).filter((domain) => !!domain)),
+    new Set(
+      params.lojas
+        .flatMap((loja) => loja.dominios)
+        .map((domain) => normalizeDomain(domain))
+        .filter((domain): domain is string => !!domain),
+    ),
   );
 
   const prompt = `
@@ -123,6 +207,7 @@ Regras críticas:
 - Se a página indicar indisponibilidade, responda como "indisponivel".
 - Não invente preço. Se não houver preço visível, deixe null.
 - Retorne somente JSON válido, sem markdown, no formato de array.
+- Não use texto fora do JSON.
 
 Formato obrigatório:
 [
@@ -147,6 +232,7 @@ Responda um item para CADA loja listada, mesmo quando não encontrar.
     type: WEB_SEARCH_TOOL_VERSION,
     name: 'web_search',
     max_uses: Math.max(1, Math.min(params.maxSearchUses, 20)),
+    allowed_callers: ['direct'],
     user_location: {
       type: 'approximate',
       country: DEFAULT_LOCATION_COUNTRY,
@@ -158,15 +244,22 @@ Responda um item para CADA loja listada, mesmo quando não encontrar.
     tool.allowed_domains = allowedDomains;
   }
 
-  const response = await anthropic.messages.create({
-    model: CLAUDE_MODEL,
-    max_tokens: 3500,
-    temperature: 0,
-    system:
-      'Você é um agente de pesquisa de preços online. Sua tarefa é pesquisar preços atuais, citar URLs dentro do JSON e nunca inventar valores. Retorne apenas JSON válido.',
-    messages: [{ role: 'user', content: prompt }],
-    tools: [tool],
-  } as any);
+  let response: any;
+
+  try {
+    // Não enviar temperature/top_p/top_k aqui. Modelos Claude recentes retornam 400 com parâmetros
+    // de amostragem não padrão, e preço online não precisa desse controle para funcionar.
+    response = await anthropic.messages.create({
+      model: claudeModel,
+      max_tokens: 3500,
+      system:
+        'Você é um agente de pesquisa de preços online. Pesquise preços atuais, use fontes reais e retorne somente JSON válido. Nunca invente valores.',
+      messages: [{ role: 'user', content: prompt }],
+      tools: [tool],
+    } as any);
+  } catch (error: any) {
+    throw buildAnthropicFriendlyError(error, claudeModel);
+  }
 
   const rawText = extractText(response);
   const parsed = extractJsonArray(rawText);
@@ -210,7 +303,9 @@ Responda um item para CADA loja listada, mesmo quando não encontrar.
       url: sanitizeText(found?.url, 1500),
       fonte: sanitizeText(found?.fonte ?? found?.source, 300),
       confianca: Math.max(0, Math.min(100, Number(found?.confianca || 0))),
-      observacao: sanitizeText(found?.observacao ?? found?.notes, 1000),
+      observacao: found
+        ? sanitizeText(found?.observacao ?? found?.notes, 1000)
+        : sanitizeText(rawText || 'A IA não retornou item estruturado para esta loja.', 1000),
       pesquisadoEm,
     };
   });

@@ -9,12 +9,32 @@ import {
   OnlinePriceResult,
 } from './onlinePrices.types';
 
-const DEFAULT_MAX_MODELS = Number(process.env.ONLINE_PRICES_DEFAULT_MAX_MODELS || 0); // 0 = todos
-const DEFAULT_MAX_STORES = Number(process.env.ONLINE_PRICES_DEFAULT_MAX_STORES || 0); // 0 = todas
-const DEFAULT_MAX_SEARCH_USES_PER_MODEL = Number(process.env.ONLINE_PRICES_MAX_WEB_SEARCH_PER_MODEL || 8);
-const WEB_SEARCH_UNIT_PRICE_USD = Number(process.env.CLAUDE_WEB_SEARCH_UNIT_PRICE_USD || 0.01);
 const ROOT_DIR = process.cwd();
-const REPORT_DIR = process.env.ONLINE_PRICES_REPORT_DIR || path.join(ROOT_DIR, 'uploads', 'online-prices');
+
+function envNumber(name: string, fallback: number): number {
+  const parsed = Number(process.env[name]);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function getDefaultMaxModels(): number {
+  return envNumber('ONLINE_PRICES_DEFAULT_MAX_MODELS', 0); // 0 = todos
+}
+
+function getDefaultMaxStores(): number {
+  return envNumber('ONLINE_PRICES_DEFAULT_MAX_STORES', 0); // 0 = todas
+}
+
+function getDefaultMaxSearchUsesPerModel(): number {
+  return envNumber('ONLINE_PRICES_MAX_WEB_SEARCH_PER_MODEL', 8);
+}
+
+function getWebSearchUnitPriceUsd(): number {
+  return envNumber('CLAUDE_WEB_SEARCH_UNIT_PRICE_USD', 0.01);
+}
+
+function getReportDir(): string {
+  return process.env.ONLINE_PRICES_REPORT_DIR || path.join(ROOT_DIR, 'uploads', 'online-prices');
+}
 
 function clampPositive(value: number | null | undefined): number | null {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null;
@@ -56,8 +76,26 @@ function montarResumo(params: {
     inputTokens: params.usage.inputTokens,
     outputTokens: params.usage.outputTokens,
     webSearchRequests: params.usage.webSearchRequests,
-    custoEstimadoWebSearchUsd: Number((params.usage.webSearchRequests * WEB_SEARCH_UNIT_PRICE_USD).toFixed(4)),
+    custoEstimadoWebSearchUsd: Number((params.usage.webSearchRequests * getWebSearchUnitPriceUsd()).toFixed(4)),
   };
+}
+
+function isProviderFatalError(message: string): boolean {
+  const lower = String(message || '').toLowerCase();
+  return (
+    lower.includes('anthropic_api_key') ||
+    lower.includes('claude api') ||
+    lower.includes('modelo configurado') ||
+    lower.includes('web search') ||
+    lower.includes('web_search') ||
+    lower.includes('deprecated') ||
+    lower.includes('retired') ||
+    lower.includes('rate limit') ||
+    lower.includes('too_many_requests') ||
+    lower.includes('unauthorized') ||
+    lower.includes('authentication') ||
+    lower.includes('api key')
+  );
 }
 
 function criarResultadoErro(params: {
@@ -97,8 +135,10 @@ export async function analisarPrecosOnline(params: OnlinePriceAnalyzeOptions): P
 
   const requestedMaxModels = clampPositive(params.maxModels);
   const requestedMaxStores = clampPositive(params.maxStores);
-  const maxModels = requestedMaxModels ?? (DEFAULT_MAX_MODELS > 0 ? DEFAULT_MAX_MODELS : input.produtos.length);
-  const maxStores = requestedMaxStores ?? (DEFAULT_MAX_STORES > 0 ? DEFAULT_MAX_STORES : input.lojas.length);
+  const defaultMaxModels = getDefaultMaxModels();
+  const defaultMaxStores = getDefaultMaxStores();
+  const maxModels = requestedMaxModels ?? (defaultMaxModels > 0 ? defaultMaxModels : input.produtos.length);
+  const maxStores = requestedMaxStores ?? (defaultMaxStores > 0 ? defaultMaxStores : input.lojas.length);
 
   const produtos = input.produtos.slice(0, maxModels);
   const lojas = input.lojas.slice(0, maxStores);
@@ -113,13 +153,20 @@ export async function analisarPrecosOnline(params: OnlinePriceAnalyzeOptions): P
         modelo: produto.modelo,
         lojas,
         valoresPlanilhaPorLoja: produto.valoresPlanilhaPorLoja,
-        maxSearchUses: Math.max(1, Math.min(DEFAULT_MAX_SEARCH_USES_PER_MODEL, lojas.length * 2)),
+        maxSearchUses: Math.max(1, Math.min(getDefaultMaxSearchUsesPerModel(), lojas.length * 2)),
       });
 
       allResults.push(...results);
       usages.push(usage);
     } catch (error: any) {
       const mensagem = error?.message || 'Erro desconhecido ao pesquisar preços online.';
+
+      // Erros de configuração/API do provedor afetam todos os modelos e lojas.
+      // Nesse caso, parar a execução evita gerar uma planilha inteira marcada como ERRO.
+      if (isProviderFatalError(mensagem)) {
+        throw new Error(mensagem);
+      }
+
       lojas.forEach((loja) => {
         allResults.push(criarResultadoErro({
           modelo: produto.modelo,
@@ -148,7 +195,7 @@ export async function analisarPrecosOnline(params: OnlinePriceAnalyzeOptions): P
     },
     results: allResults,
     resumo,
-    outputDir: REPORT_DIR,
+    outputDir: getReportDir(),
   });
 
   return {
@@ -174,5 +221,5 @@ export async function analisarPrecosOnline(params: OnlinePriceAnalyzeOptions): P
 
 export function getOnlinePricesReportPath(fileName: string): string {
   const safeName = path.basename(String(fileName || '').trim());
-  return path.join(REPORT_DIR, safeName);
+  return path.join(getReportDir(), safeName);
 }
