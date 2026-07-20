@@ -11,8 +11,6 @@ let anthropicClientKey = '';
 function normalizeClaudeModel(rawModel: string | undefined | null): string {
   const model = String(rawModel || '').trim();
 
-  // Claude Sonnet 5 é o substituto direto do Sonnet 4.6.
-  // Mantemos esse mapeamento para não quebrar quando o .env antigo ainda tiver claude-sonnet-4-6.
   if (!model || model === 'claude-sonnet-4-6') {
     return DEFAULT_CLAUDE_ONLINE_PRICES_MODEL;
   }
@@ -27,8 +25,6 @@ function getClaudeModel(): string {
 function getWebSearchToolVersion(): string {
   const toolVersion = String(process.env.CLAUDE_WEB_SEARCH_TOOL || DEFAULT_WEB_SEARCH_TOOL_VERSION).trim();
 
-  // Em modelos Claude mais novos, a versão antiga web_search_20250305 pode retornar 400
-  // com mensagem de ferramenta depreciada. Usamos a versão atual por padrão.
   if (!toolVersion || toolVersion === 'web_search_20250305') {
     return DEFAULT_WEB_SEARCH_TOOL_VERSION;
   }
@@ -68,7 +64,7 @@ function toNumber(value: unknown): number | null {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
-function sanitizeText(value: unknown, max = 1000): string | null {
+function sanitizeText(value: unknown, max = 240): string | null {
   const text = String(value ?? '').replace(/\s+/g, ' ').trim();
   return text ? text.slice(0, max) : null;
 }
@@ -134,9 +130,6 @@ function normalizarDisponibilidade(value: unknown): OnlinePriceResult['disponibi
   const text = String(value || '').toLowerCase();
   if (text.includes('erro')) return 'erro';
   if (text.includes('encontr') && !text.includes('nao') && !text.includes('não')) return 'encontrado';
-
-  // Regra de produto: quando não encontrar preço real, tratar como indisponível.
-  // Isso evita preencher a tela/Excel com JSON bruto, fonte longa ou R$ 0,00.
   return 'indisponivel';
 }
 
@@ -148,7 +141,6 @@ function normalizeDomain(domain: string): string | null {
     .replace(/^www\./, '');
 
   const clean = (normalized.split('/')[0] || '').trim();
-
   return clean && clean.includes('.') ? clean : null;
 }
 
@@ -173,7 +165,7 @@ function buildAnthropicFriendlyError(error: any, model: string): Error {
   }
 
   if (lower.includes('temperature') || lower.includes('top_p') || lower.includes('top_k') || lower.includes('sampling')) {
-    hints.push('Removi parâmetros de amostragem da chamada de Preços Online; reinicie o backend para aplicar o arquivo corrigido.');
+    hints.push('A chamada de Preços Online não envia parâmetros de amostragem. Reinicie o backend para garantir que o arquivo novo carregou.');
   }
 
   if (lower.includes('web search') || lower.includes('web_search')) {
@@ -186,6 +178,15 @@ function buildAnthropicFriendlyError(error: any, model: string): Error {
 
   const prefix = status ? `Claude API ${status}: ` : 'Claude API: ';
   return new Error(`${prefix}${message}${hints.length ? ` | ${hints.join(' ')}` : ''}`);
+}
+
+function normalizeStoreName(value: unknown): string {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toUpperCase();
 }
 
 export async function pesquisarModeloEmLojasClaude(params: {
@@ -213,39 +214,31 @@ export async function pesquisarModeloEmLojasClaude(params: {
 
   const prompt = `
 Você é o agente "Preços Online" da Clark IA para auditoria comercial.
-Pesquise preços atuais no Brasil para o modelo: "${params.modelo}".
+Pesquise preços atuais no Brasil para UM modelo: "${params.modelo}".
 
-Lojas/domínios que devem ser pesquisados:
+Lojas obrigatórias/domínios permitidos:
 ${lojasComDominio.map((loja) => `- ${loja.nome}: ${loja.dominios.join(', ') || 'sem domínio cadastrado'}`).join('\n')}
 
-Regras críticas:
-- Pesquise somente resultados das lojas listadas/domínios permitidos.
-- Para cada loja, encontre preço à vista e preço a prazo/parcelado, principalmente 12x quando existir.
-- Se não encontrar preço real e visível para a loja, responda como "indisponivel".
-- Se a página indicar indisponibilidade, responda como "indisponivel".
-- Não invente preço. Se não houver preço visível, use null. Nunca use 0 como preço.
-- Não retorne URL, fonte, links, título longo, texto de busca ou justificativas.
-- Retorne somente JSON válido, sem markdown, no formato de array.
-- Não use texto fora do JSON.
+Regras de custo e resposta:
+- Faça a menor quantidade possível de buscas.
+- Responda TODAS as lojas listadas.
+- Não inclua fonte, URL, título, observação longa, markdown ou texto fora do JSON.
+- Se não houver preço real visível para a loja, use disponibilidade "indisponivel" e preços null.
+- Nunca invente preço. Nunca use 0 como preço.
+- Retorne JSON válido e curto, em array.
 
-Formato obrigatório e enxuto:
+Formato obrigatório:
 [
-  {
-    "loja": "MAGALU",
-    "disponibilidade": "encontrado | indisponivel",
-    "preco_avista": 1234.56,
-    "preco_prazo_12x": 1399.90,
-    "parcelas_texto": "12x de R$ 116,66"
-  }
+  {"loja":"MAGALU","disponibilidade":"encontrado","preco_avista":1234.56,"preco_prazo_12x":1399.90,"parcelas_texto":"12x de R$ 116,66"},
+  {"loja":"AMAZON","disponibilidade":"indisponivel","preco_avista":null,"preco_prazo_12x":null,"parcelas_texto":null}
 ]
-
-Responda um item para CADA loja listada, mesmo quando não encontrar.
 `;
 
+  const maxUses = Math.max(1, Math.min(Math.floor(params.maxSearchUses || 1), 20));
   const tool: any = {
     type: getWebSearchToolVersion(),
     name: 'web_search',
-    max_uses: Math.max(1, Math.min(params.maxSearchUses, 20)),
+    max_uses: maxUses,
     allowed_callers: ['direct'],
     user_location: {
       type: 'approximate',
@@ -261,13 +254,11 @@ Responda um item para CADA loja listada, mesmo quando não encontrar.
   let response: any;
 
   try {
-    // Não enviar temperature/top_p/top_k aqui. Modelos Claude recentes retornam 400 com parâmetros
-    // de amostragem não padrão, e preço online não precisa desse controle para funcionar.
     response = await anthropic.messages.create({
       model: claudeModel,
-      max_tokens: 1800,
+      max_tokens: 1000,
       system:
-        'Você é um agente de pesquisa de preços online. Retorne somente JSON válido e enxuto. Nunca invente valores, nunca use 0 como preço e não inclua fonte, URL ou texto bruto.',
+        'Você é um agente econômico de pesquisa de preços. Retorne somente JSON válido e curto. Nunca inclua fonte, URL, markdown, texto bruto ou justificativas.',
       messages: [{ role: 'user', content: prompt }],
       tools: [tool],
     } as any);
@@ -283,12 +274,16 @@ Responda um item para CADA loja listada, mesmo quando não encontrar.
   const byStore = new Map<string, any>();
   parsed.forEach((item) => {
     const loja = sanitizeText(item?.loja || item?.store || item?.site, 200);
-    if (loja) byStore.set(loja.toUpperCase(), item);
+    if (loja) byStore.set(normalizeStoreName(loja), item);
   });
 
   const results: OnlinePriceResult[] = params.lojas.map((loja) => {
-    const found = byStore.get(loja.nome.toUpperCase()) ||
-      parsed.find((item) => String(item?.loja || '').toUpperCase().includes(loja.nome.toUpperCase())) ||
+    const lojaNormalizada = normalizeStoreName(loja.nome);
+    const found = byStore.get(lojaNormalizada) ||
+      parsed.find((item) => {
+        const parsedStore = normalizeStoreName(item?.loja || item?.store || item?.site);
+        return parsedStore.includes(lojaNormalizada) || lojaNormalizada.includes(parsedStore);
+      }) ||
       null;
 
     const precoAvistaOnline = toNumber(found?.preco_avista ?? found?.precoAvista ?? null);

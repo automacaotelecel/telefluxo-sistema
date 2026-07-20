@@ -23,6 +23,8 @@ import multer from 'multer';
 import {
   analisarPrecosOnlineController,
   baixarRelatorioPrecosOnlineController,
+  listarHistoricoPrecosOnlineController,
+  obterUltimaConsultaPrecosOnlineController,
 } from './modules/clark/onlinePrices/onlinePrices.controller';
 
 
@@ -1169,6 +1171,14 @@ app.get('/api/online-prices/ping', async (_req: Request, res: Response) => {
     module: 'Preços Online',
     message: 'Rota de preços online ativa.',
   });
+});
+
+app.get('/api/online-prices/history', async (req: any, res: Response) => {
+  return listarHistoricoPrecosOnlineController(req, res);
+});
+
+app.get('/api/online-prices/latest', async (req: any, res: Response) => {
+  return obterUltimaConsultaPrecosOnlineController(req, res);
 });
 
 app.post(

@@ -1,11 +1,20 @@
 import fs from 'fs';
 import { Request, Response } from 'express';
 import { validarAcessoAdmRequest } from '../../security/adminAccess';
-import { analisarPrecosOnline, getOnlinePricesReportPath } from './onlinePricesAgent.service';
+import {
+  analisarPrecosOnline,
+  getOnlinePricesReportPath,
+  listarHistoricoPrecosOnline,
+  obterUltimaConsultaPrecosOnline,
+} from './onlinePricesAgent.service';
 
 function parseOptionalPositiveInt(value: unknown): number | null {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : null;
+}
+
+function parseBoolean(value: unknown): boolean {
+  return ['1', 'true', 'yes', 'sim', 's'].includes(String(value || '').trim().toLowerCase());
 }
 
 export async function analisarPrecosOnlineController(req: Request, res: Response) {
@@ -41,7 +50,8 @@ export async function analisarPrecosOnlineController(req: Request, res: Response
       originalName: file.originalname,
       maxModels: parseOptionalPositiveInt(req.body?.maxModels),
       maxStores: parseOptionalPositiveInt(req.body?.maxStores),
-      forceFullRun: String(req.body?.forceFullRun || '').toLowerCase() === 'true',
+      forceFullRun: parseBoolean(req.body?.forceFullRun),
+      bypassCache: parseBoolean(req.body?.bypassCache),
     });
 
     return res.json(resultado);
@@ -77,6 +87,49 @@ export async function baixarRelatorioPrecosOnlineController(req: Request, res: R
     return res.status(500).json({
       ok: false,
       error: error?.message || 'Erro ao baixar relatório de preços online.',
+    });
+  }
+}
+
+export async function listarHistoricoPrecosOnlineController(req: Request, res: Response) {
+  try {
+    const acesso = await validarAcessoAdmRequest(req);
+
+    if (!acesso.allowed) {
+      return res.status(acesso.status).json({ ok: false, error: acesso.error });
+    }
+
+    const limit = parseOptionalPositiveInt(req.query?.limit) || 20;
+    return res.json({
+      ok: true,
+      history: listarHistoricoPrecosOnline(limit),
+    });
+  } catch (error: any) {
+    console.error('[Preços Online] Erro ao listar histórico:', error);
+    return res.status(500).json({
+      ok: false,
+      error: error?.message || 'Erro ao listar histórico de preços online.',
+    });
+  }
+}
+
+export async function obterUltimaConsultaPrecosOnlineController(req: Request, res: Response) {
+  try {
+    const acesso = await validarAcessoAdmRequest(req);
+
+    if (!acesso.allowed) {
+      return res.status(acesso.status).json({ ok: false, error: acesso.error });
+    }
+
+    return res.json({
+      ok: true,
+      latest: obterUltimaConsultaPrecosOnline(),
+    });
+  } catch (error: any) {
+    console.error('[Preços Online] Erro ao buscar última consulta:', error);
+    return res.status(500).json({
+      ok: false,
+      error: error?.message || 'Erro ao buscar última consulta de preços online.',
     });
   }
 }

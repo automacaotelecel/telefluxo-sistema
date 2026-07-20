@@ -3,6 +3,8 @@ import multer from 'multer';
 import {
   analisarPrecosOnlineController,
   baixarRelatorioPrecosOnlineController,
+  listarHistoricoPrecosOnlineController,
+  obterUltimaConsultaPrecosOnlineController,
 } from './onlinePrices.controller';
 
 const onlinePricesRoutes = Router();
@@ -30,6 +32,8 @@ const upload = multer({
   },
 });
 
+onlinePricesRoutes.get('/history', listarHistoricoPrecosOnlineController);
+onlinePricesRoutes.get('/latest', obterUltimaConsultaPrecosOnlineController);
 onlinePricesRoutes.post('/analyze', upload.single('xlsx'), analisarPrecosOnlineController);
 onlinePricesRoutes.get('/report/:fileName', baixarRelatorioPrecosOnlineController);
 

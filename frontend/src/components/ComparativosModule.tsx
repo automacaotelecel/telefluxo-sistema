@@ -1,8 +1,9 @@
 
 import React, { useMemo, useRef, useState } from 'react';
-import { AlertCircle, FileSpreadsheet, Search, UploadCloud } from 'lucide-react';
+import { AlertCircle, Bot, FileSpreadsheet, Search, UploadCloud, X } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
 import * as XLSX from 'xlsx';
+import OnlinePricesAgent from './OnlinePricesAgent';
 
 // Vite + pdfjs-dist v5: usar workerPort evita o erro:
 // "Setting up fake worker failed: Failed to fetch dynamically imported module..."
@@ -84,7 +85,7 @@ type SaleAgg = {
 
 type ComparativoKind = 'REBATE_TRADEIN' | 'BOGO' | 'SIP';
 type ComparativoTab = 'com_ofertas' | 'sem_ofertas';
-type EditableDiscountField = 'descontoRebate' | 'descontoTradeIn' | 'descontoBogo' | 'descontoSip';
+type EditableDiscountField = 'totalDescontoTelecel' | 'descontoRebate' | 'descontoTradeIn' | 'descontoBogo' | 'descontoSip' | 'descontoGeral';
 
 type PendingComparativoData = {
   pdfItems: PdfItem[];
@@ -110,6 +111,7 @@ type LinhaTabela = {
   descontoTradeIn: number;
   descontoBogo: number;
   descontoSip: number;
+  descontoGeral: number;
   totalDesconto: number;
   precoPromocional: number;
   tipoPromocao: string;
@@ -889,48 +891,61 @@ const MIN_COLUMN_WIDTH = 54;
 const MAX_COLUMN_WIDTH = 640;
 
 const DEFAULT_COLUMN_WIDTHS: Record<string, number> = {
-  descricao: 360,
-  precoSamsung: 112,
-  precoTelecel: 112,
-  totalDescontoTelecel: 136,
-  descontoRebate: 124,
-  descontoTradeIn: 136,
-  descontoBogo: 118,
-  descontoSip: 104,
-  descontoCollapsed: 64,
-  totalDesconto: 134,
-  precoPromocional: 142,
-  qtdEstoque: 86,
-  custoMedioEstoque: 132,
-  margemEstoque: 116,
-  novoCustoMedio: 148,
-  margemPrice: 120,
-  qtdVendida: 96,
-  priceRebate: 116,
-  priceTradeIn: 130,
-  priceBogo: 112,
-  priceSip: 100,
+  descricao: 330,
+  precoSamsung: 106,
+  precoTelecel: 106,
+  totalDescontoTelecel: 126,
+  descontoRebate: 122,
+  descontoTradeIn: 128,
+  descontoBogo: 116,
+  descontoSip: 112,
+  descontoGeral: 132,
+  descontoCollapsed: 86,
+  totalDesconto: 122,
+  precoPromocional: 158,
+  qtdEstoque: 82,
+  custoMedioEstoque: 122,
+  margemEstoque: 104,
+  novoCustoMedio: 138,
+  margemPrice: 110,
+  qtdVendida: 88,
+  priceRebate: 108,
+  priceTradeIn: 120,
+  priceBogo: 106,
+  priceSip: 96,
   priceCollapsed: 64,
-  ofertaAtual: 124,
-  status: 104,
+  ofertaAtual: 118,
+  status: 96,
   ofertaCollapsed: 64,
 };
 
 const clampColumnWidth = (value: number) =>
   Math.min(MAX_COLUMN_WIDTH, Math.max(MIN_COLUMN_WIDTH, Math.round(value || MIN_COLUMN_WIDTH)));
 
+const DISCOUNT_COLUMN_OPTIONS: Array<{ key: EditableDiscountField; label: string }> = [
+  { key: 'totalDescontoTelecel', label: 'Desc. Telecel' },
+  { key: 'descontoRebate', label: 'Desc. Rebate' },
+  { key: 'descontoTradeIn', label: 'Desc. Trade In' },
+  { key: 'descontoBogo', label: 'Desc. Bogo' },
+  { key: 'descontoSip', label: 'Desc. SIP' },
+  { key: 'descontoGeral', label: 'Descontos Gerais' },
+];
+
+const DISCOUNT_FIELD_LABELS: Record<EditableDiscountField, string> = DISCOUNT_COLUMN_OPTIONS.reduce(
+  (acc, item) => ({ ...acc, [item.key]: item.label }),
+  {} as Record<EditableDiscountField, string>
+);
+
 const getVisibleColumnKeys = (
   showDiscountDetails: boolean,
+  visibleDiscountFields: EditableDiscountField[],
   showPriceDetails: boolean,
   showOfferDetails: boolean
 ) => [
   'descricao',
   'precoSamsung',
   'precoTelecel',
-  'totalDescontoTelecel',
-  ...(showDiscountDetails
-    ? ['descontoRebate', 'descontoTradeIn', 'descontoBogo', 'descontoSip']
-    : ['descontoCollapsed']),
+  ...(showDiscountDetails && visibleDiscountFields.length ? visibleDiscountFields : ['descontoCollapsed']),
   'totalDesconto',
   'precoPromocional',
   'qtdEstoque',
@@ -944,7 +959,6 @@ const getVisibleColumnKeys = (
     : ['priceCollapsed']),
   ...(showOfferDetails ? ['ofertaAtual', 'status'] : ['ofertaCollapsed']),
 ];
-
 
 const roundToStep = (value: number, step: number) => {
   if (!Number.isFinite(value) || value <= 0) return 0;
@@ -971,7 +985,8 @@ const recalculateRow = (row: LinhaTabela): LinhaTabela => {
     row.descontoRebate +
     row.descontoTradeIn +
     row.descontoBogo +
-    row.descontoSip;
+    row.descontoSip +
+    row.descontoGeral;
 
   // Regra operacional: o total desconto aparece sem centavos.
   // Ex.: R$ 2.218,58 vira R$ 2.218,00.
@@ -1088,6 +1103,7 @@ const mergeDuplicateRowsByModel = (inputRows: LinhaTabela[]) => {
       descontoTradeIn: current.descontoTradeIn || row.descontoTradeIn,
       descontoBogo: current.descontoBogo || row.descontoBogo,
       descontoSip: current.descontoSip || row.descontoSip,
+      descontoGeral: current.descontoGeral || row.descontoGeral,
       qtdEstoque: current.qtdEstoque || row.qtdEstoque,
       custoTotalEstoque: current.custoTotalEstoque || row.custoTotalEstoque,
       custoMedioEstoque: current.custoMedioEstoque || row.custoMedioEstoque,
@@ -1124,9 +1140,14 @@ type TableHeaderProps = {
 const TableHeader = ({ children, className = '', style, onResizeStart }: TableHeaderProps) => (
   <th
     style={style}
-    className={`relative px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-slate-500 text-left border-b border-slate-200 whitespace-nowrap select-none ${className}`}
+    className={`relative px-2 py-1.5 text-[10px] font-black uppercase tracking-[0.14em] text-slate-500 text-center border-b border-slate-200 whitespace-normal select-none ${className}`}
   >
-    <div className="min-w-0 truncate pr-2" title={typeof children === 'string' ? children : undefined}>{children}</div>
+    <div
+      className={typeof children === 'string' ? 'min-w-0 truncate pr-2' : 'min-w-0 pr-2'}
+      title={typeof children === 'string' ? children : undefined}
+    >
+      {children}
+    </div>
     {onResizeStart && (
       <div
         role="separator"
@@ -1141,13 +1162,13 @@ const TableHeader = ({ children, className = '', style, onResizeStart }: TableHe
 );
 
 const TableCell = ({ children, className = '', style }: { children: React.ReactNode; className?: string; style?: React.CSSProperties }) => (
-  <td style={style} className={`px-2.5 py-2 text-[12px] leading-5 text-slate-700 border-b border-slate-100 align-middle ${className}`}>{children}</td>
+  <td style={style} className={`overflow-hidden px-1.5 py-1.5 text-[11px] leading-5 text-slate-700 border-b border-slate-100 align-middle ${className}`}>{children}</td>
 );
 
 const GroupHeader = ({ children, className = '', colSpan }: { children: React.ReactNode; className?: string; colSpan: number }) => (
   <th
     colSpan={colSpan}
-    className={`px-3 py-2 text-[10px] font-black uppercase tracking-[0.2em] text-center border-b border-slate-200 whitespace-nowrap ${className}`}
+    className={`px-2.5 py-1.5 text-[10px] font-black uppercase tracking-[0.18em] text-center border-b border-slate-200 whitespace-nowrap ${className}`}
   >
     {children}
   </th>
@@ -1165,21 +1186,43 @@ const ToggleGroupButton = ({ open, label, onClick }: { open: boolean; label: str
   </button>
 );
 
+const HeaderStack = ({ top, bottom }: { top: string; bottom: string }) => (
+  <div className="flex min-h-[24px] flex-col items-center justify-center leading-[1.05]">
+    <span>{top}</span>
+    <span>{bottom}</span>
+  </div>
+);
+
 
 export default function ComparativosModule({ currentUser }: { currentUser?: any }) {
+  const [showOnlinePricesModal, setShowOnlinePricesModal] = useState(false);
   const [rows, setRows] = useState<LinhaTabela[]>([]);
   const [errorMsg, setErrorMsg] = useState('');
   const [apiInfo, setApiInfo] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [loading, setLoading] = useState(false);
-  const [showDiscountDetails, setShowDiscountDetails] = useState(false);
+  const [showDiscountDetails, setShowDiscountDetails] = useState(true);
+  const [visibleDiscountFields, setVisibleDiscountFields] = useState<EditableDiscountField[]>([
+    'totalDescontoTelecel',
+    'descontoRebate',
+    'descontoTradeIn',
+    'descontoBogo',
+    'descontoSip',
+    'descontoGeral',
+  ]);
   const [showPriceDetails, setShowPriceDetails] = useState(false);
   const [showOfferDetails, setShowOfferDetails] = useState(false);
+  const [draggedRowKey, setDraggedRowKey] = useState<string | null>(null);
   const [columnWidths, setColumnWidths] = useState<Record<string, number>>(() => DEFAULT_COLUMN_WIDTHS);
 
+  const activeDiscountFields = useMemo(
+    () => DISCOUNT_COLUMN_OPTIONS.map((item) => item.key).filter((key) => visibleDiscountFields.includes(key)),
+    [visibleDiscountFields]
+  );
+
   const visibleColumnKeys = useMemo(
-    () => getVisibleColumnKeys(showDiscountDetails, showPriceDetails, showOfferDetails),
-    [showDiscountDetails, showPriceDetails, showOfferDetails]
+    () => getVisibleColumnKeys(showDiscountDetails, activeDiscountFields, showPriceDetails, showOfferDetails),
+    [showDiscountDetails, activeDiscountFields, showPriceDetails, showOfferDetails]
   );
 
   const getColumnWidth = (columnKey: string) =>
@@ -1237,6 +1280,61 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
     </TableHeader>
   );
 
+
+  const renderMoneyInput = (rowKey: string, field: EditableDiscountField, value: number) => (
+    <div className="comparativo-money-input relative w-full min-w-0 overflow-hidden rounded-md border border-sky-200 bg-white/95 shadow-sm transition focus-within:border-sky-500 focus-within:bg-white">
+      <span className="pointer-events-none absolute left-1.5 top-1/2 z-10 -translate-y-1/2 text-[10px] font-black text-sky-700">R$</span>
+      <input
+        type="text"
+        inputMode="decimal"
+        value={formatEditableNumber(value)}
+        onChange={(event) => updateDiscountField(rowKey, field, event.target.value)}
+        className="block w-full min-w-0 rounded-md bg-transparent py-1 pl-6 pr-1.5 text-right text-[11px] font-black text-slate-800 outline-none"
+        placeholder="0,00"
+      />
+    </div>
+  );
+
+  const renderDiscountCell = (row: LinhaTabela, field: EditableDiscountField) => {
+    const value = Number(row[field] || 0);
+
+    return (
+      <TableCell key={field} className="bg-[#dff1ff]" style={getColumnStyle(field)}>
+        {renderMoneyInput(row.rowKey, field, value)}
+      </TableCell>
+    );
+  };
+
+  const toggleDiscountFieldVisibility = (field: EditableDiscountField) => {
+    setVisibleDiscountFields((current) => {
+      if (current.includes(field)) {
+        const next = current.filter((item) => item !== field);
+        return next.length ? next : current;
+      }
+
+      return [...current, field];
+    });
+  };
+
+  const moveRowBefore = (sourceRowKey: string, targetRowKey: string) => {
+    if (!sourceRowKey || !targetRowKey || sourceRowKey === targetRowKey) return;
+
+    setRows((currentRows) => {
+      const sourceIndex = currentRows.findIndex((row) => row.rowKey === sourceRowKey);
+      const targetIndex = currentRows.findIndex((row) => row.rowKey === targetRowKey);
+
+      if (sourceIndex < 0 || targetIndex < 0) return currentRows;
+
+      const nextRows = [...currentRows];
+      const [sourceRow] = nextRows.splice(sourceIndex, 1);
+      if (!sourceRow) return currentRows;
+
+      const nextTargetIndex = nextRows.findIndex((row) => row.rowKey === targetRowKey);
+      nextRows.splice(nextTargetIndex < 0 ? targetIndex : nextTargetIndex, 0, sourceRow);
+      return nextRows;
+    });
+  };
+
   const topScrollRef = useRef<HTMLDivElement>(null);
   const tableScrollRef = useRef<HTMLDivElement>(null);
   const syncingScrollRef = useRef(false);
@@ -1265,20 +1363,6 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
     requestAnimationFrame(() => {
       syncingScrollRef.current = false;
     });
-  };
-
-  const updateTotalDescontoTelecel = (rowKey: string, rawValue: string) => {
-    const value = toNumber(rawValue);
-
-    setRows((prevRows) =>
-      prevRows.map((row) => {
-        if (row.rowKey !== rowKey) return row;
-        return recalculateRow({
-          ...row,
-          totalDescontoTelecel: value,
-        });
-      })
-    );
   };
 
   const updateDiscountField = (rowKey: string, field: EditableDiscountField, rawValue: string) => {
@@ -1377,6 +1461,7 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
         descontoTradeIn: calculateDiscountFromPrice(effectivePriceTradeIn),
         descontoBogo: calculateDiscountFromPrice(effectivePriceBogo),
         descontoSip: calculateDiscountFromPrice(effectivePriceSip),
+        descontoGeral: 0,
         totalDesconto: 0,
         precoPromocional: 0,
         tipoPromocao: campaignItem?.tipoCampanha || getComparativoKindLabel(kind),
@@ -1542,34 +1627,46 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
     }
   };
 
-  const currentTabRows = useMemo(() => {
-    return rows.filter((row) => activeTab === 'com_ofertas' ? row.hasOferta : !row.hasOferta);
+  const currentTabAllRows = useMemo(() => {
+    return rows.filter((row) => (activeTab === 'com_ofertas' ? row.hasOferta : !row.hasOferta));
   }, [rows, activeTab]);
+
+  const currentTabRows = useMemo(() => currentTabAllRows.filter((row) => row.isSelected), [currentTabAllRows]);
+  const ignoredRows = useMemo(() => rows.filter((row) => !row.isSelected), [rows]);
+
+  const rowMatchesSearch = (row: LinhaTabela, term: string) =>
+    [
+      row.descricao,
+      row.referencia,
+      row.refCampanha,
+      row.campanha,
+      row.modeloPdf,
+      row.basicModel,
+      row.tipoPromocao,
+      row.lojas,
+      row.status,
+    ]
+      .join(' ')
+      .toLowerCase()
+      .includes(term);
 
   const filteredRows = useMemo(() => {
     const term = searchTerm.trim().toLowerCase();
     if (!term) return currentTabRows;
 
-    return currentTabRows.filter((row) =>
-      [
-        row.descricao,
-        row.referencia,
-        row.refCampanha,
-        row.campanha,
-        row.modeloPdf,
-        row.basicModel,
-        row.tipoPromocao,
-        row.lojas,
-        row.status,
-      ]
-        .join(' ')
-        .toLowerCase()
-        .includes(term)
-    );
+    return currentTabRows.filter((row) => rowMatchesSearch(row, term));
   }, [currentTabRows, searchTerm]);
 
-  const offerRowsCount = useMemo(() => rows.filter((row) => row.hasOferta).length, [rows]);
-  const noOfferRowsCount = useMemo(() => rows.filter((row) => !row.hasOferta).length, [rows]);
+  const filteredIgnoredRows = useMemo(() => {
+    const term = searchTerm.trim().toLowerCase();
+    if (!term) return ignoredRows;
+
+    return ignoredRows.filter((row) => rowMatchesSearch(row, term));
+  }, [ignoredRows, searchTerm]);
+
+  const offerRowsCount = useMemo(() => rows.filter((row) => row.hasOferta && row.isSelected).length, [rows]);
+  const noOfferRowsCount = useMemo(() => rows.filter((row) => !row.hasOferta && row.isSelected).length, [rows]);
+  const ignoredRowsCount = useMemo(() => rows.filter((row) => !row.isSelected).length, [rows]);
 
   const summary = useMemo(() => ({
     campanhas: new Set(filteredRows.map((r) => r.refCampanha).filter(Boolean)).size,
@@ -1592,6 +1689,7 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
         'DESCONTO TRADE IN': row.descontoTradeIn,
         'DESCONTO BOGO': row.descontoBogo,
         'DESCONTO SIP': row.descontoSip,
+        'DESCONTOS GERAIS': row.descontoGeral,
         'TOTAL DESCONTO (TELECEL + SAMSUNG)': row.totalDesconto,
         'PREÇO PROMOCIONAL (TELECEL + SAMSUNG)': row.precoPromocional,
         'TIPO DE PROMOÇÃO SAMSUNG E DATA': row.tipoPromocao,
@@ -1692,10 +1790,11 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
     }
   };
 
-  const discountColSpan = showDiscountDetails ? 6 : 3;
+  const visibleDiscountColumnsCount = showDiscountDetails ? Math.max(activeDiscountFields.length, 1) : 1;
+  const discountColSpan = visibleDiscountColumnsCount;
   const priceColSpan = showPriceDetails ? 4 : 1;
   const offerColSpan = showOfferDetails ? 2 : 1;
-  const totalTableCols = 15 + (showDiscountDetails ? 3 : 0) + (showPriceDetails ? 3 : 0) + (showOfferDetails ? 1 : 0);
+  const totalTableCols = visibleColumnKeys.length;
   const tableWidthStyle = { width: totalTableWidth, minWidth: totalTableWidth };
 
   return (
@@ -1721,10 +1820,22 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
           .comparativo-scroll::-webkit-scrollbar-thumb:hover {
             background: #334155;
           }
+
+          .comparativo-input-money input::placeholder {
+            color: #94a3b8;
+          }
+
+          .comparativo-money-input {
+            box-sizing: border-box;
+          }
+
+          .comparativo-money-input input {
+            box-sizing: border-box;
+          }
         `}
       </style>
 
-      <div className="min-h-screen w-full bg-slate-50">
+      <div className="min-h-screen w-full bg-slate-50 pb-24">
       <div className="w-full max-w-none space-y-3 px-1.5 py-2 md:px-2">
         <div className="rounded-[22px] border border-slate-200 bg-white px-4 py-3 shadow-sm">
           <div className="flex flex-col gap-3 2xl:flex-row 2xl:items-center 2xl:justify-between">
@@ -1758,6 +1869,14 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
                 Exportar Excel
               </button>
 
+              <button
+                type="button"
+                onClick={() => setShowOnlinePricesModal(true)}
+                className="inline-flex items-center gap-2 rounded-xl bg-orange-600 px-4 py-2.5 text-xs font-black text-white shadow-sm transition-colors hover:bg-orange-700"
+              >
+                <Bot size={15} />
+                Preços Online
+              </button>
 
               <button
                 type="button"
@@ -1824,7 +1943,7 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
             <div className="text-[11px] font-semibold text-slate-500">
               Comparativo: <span className="font-black text-slate-800">{getComparativoKindLabel(selectedComparativoKind)}</span> ·
               Produtos na tela: <span className="font-black text-slate-800">{formatNumber(summary.modelos)}</span> ·
-              Selecionados: <span className="font-black text-emerald-700">{formatNumber(filteredRows.filter((row) => row.isSelected).length)}</span>
+              Selecionados: <span className="font-black text-emerald-700">{formatNumber(filteredRows.length)}</span> · Desconsiderados: <span className="font-black text-orange-600">{formatNumber(ignoredRowsCount)}</span>
             </div>
           </div>
 
@@ -1840,7 +1959,7 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
             <div
               ref={tableScrollRef}
               onScroll={() => syncHorizontalScroll('table')}
-              className="comparativo-scroll max-h-[calc(100vh-225px)] min-h-[560px] w-full overflow-x-scroll overflow-y-auto overscroll-contain rounded-xl pb-4"
+              className="comparativo-scroll max-h-[50vh] min-h-[220px] w-full overflow-x-scroll overflow-y-auto rounded-xl pb-3"
               style={{ scrollbarGutter: 'stable both-edges' }}
             >
               <table style={tableWidthStyle} className="table-fixed border-separate border-spacing-0 bg-white">
@@ -1854,15 +1973,39 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
                     <GroupHeader colSpan={1} className="sticky left-0 top-0 z-40 bg-[#d9d9d9] text-[#003366] shadow-[1px_0_0_0_rgba(148,163,184,0.55)]">
                       Produto
                     </GroupHeader>
-                    <GroupHeader colSpan={2} className="bg-[#d9ffd9] text-[#006100]">Preços</GroupHeader>
-                    <GroupHeader colSpan={discountColSpan} className="bg-[#9dccf6] text-[#003366]">
-                      <ToggleGroupButton
-                        open={showDiscountDetails}
-                        label="Descontos"
-                        onClick={() => setShowDiscountDetails((prev) => !prev)}
-                      />
+                    <GroupHeader colSpan={2} className="bg-[#d7ffe3] text-[#006100]">Preços</GroupHeader>
+                    <GroupHeader colSpan={discountColSpan} className="bg-[#dff1ff] text-[#003366]">
+                      <div className="flex min-w-0 flex-col items-center justify-center gap-1">
+                        <ToggleGroupButton
+                          open={showDiscountDetails}
+                          label="Descontos"
+                          onClick={() => setShowDiscountDetails((prev) => !prev)}
+                        />
+                        {showDiscountDetails && (
+                          <div className="flex max-w-full flex-wrap items-center justify-center gap-1">
+                            {DISCOUNT_COLUMN_OPTIONS.map((item) => {
+                              const checked = visibleDiscountFields.includes(item.key);
+                              return (
+                                <button
+                                  key={item.key}
+                                  type="button"
+                                  onClick={() => toggleDiscountFieldVisibility(item.key)}
+                                  className={`rounded-full border px-2 py-0.5 text-[9px] font-black uppercase tracking-wide transition ${
+                                    checked
+                                      ? 'border-sky-500 bg-white text-sky-800 shadow-sm'
+                                      : 'border-slate-200 bg-slate-100 text-slate-400'
+                                  }`}
+                                  title={checked ? `Ocultar ${item.label}` : `Mostrar ${item.label}`}
+                                >
+                                  {checked ? '−' : '+'} {item.label}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
                     </GroupHeader>
-                    <GroupHeader colSpan={1} className="bg-[#fff2cc] text-[#7f6000]">Preço Promo</GroupHeader>
+                    <GroupHeader colSpan={2} className="bg-[#fff2cc] text-[#7f6000]">Preço Promo</GroupHeader>
                     <GroupHeader colSpan={6} className="bg-[#eaf2f8] text-[#1f4e79]">Operação</GroupHeader>
                     <GroupHeader colSpan={priceColSpan} className="bg-[#e2f0d9] text-[#003b8f]">
                       <ToggleGroupButton
@@ -1882,36 +2025,32 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
                   <tr className="sticky top-[29px] z-30 bg-white">
                     {renderResizableHeader('descricao', 'Descrição', 'sticky left-0 z-40 bg-[#d9d9d9] text-[#003366] shadow-[1px_0_0_0_rgba(148,163,184,0.55)]')}
 
-                    {renderResizableHeader('precoSamsung', 'Preço Samsung', 'bg-[#d9ffd9]')}
-                    {renderResizableHeader('precoTelecel', 'Preço Telecel', 'bg-[#d9ffd9]')}
+                    {renderResizableHeader('precoSamsung', <HeaderStack top="Preço" bottom="Samsung" />, 'bg-[#d9ffd9] text-[#006100]')}
+                    {renderResizableHeader('precoTelecel', <HeaderStack top="Preço" bottom="Telecel" />, 'bg-[#d9ffd9] text-[#006100]')}
 
-                    {renderResizableHeader('totalDescontoTelecel', 'Total Desc. Telecel', 'bg-[#9dccf6]')}
-                    {showDiscountDetails && (
-                      <>
-                        {renderResizableHeader('descontoRebate', 'Desc. Rebate', 'bg-[#9dccf6]')}
-                        {renderResizableHeader('descontoTradeIn', 'Desc. Trade In', 'bg-[#9dccf6]')}
-                        {renderResizableHeader('descontoBogo', 'Desc. Bogo', 'bg-[#9dccf6]')}
-                        {renderResizableHeader('descontoSip', 'Desc. SIP', 'bg-[#9dccf6]')}
-                      </>
+                    {showDiscountDetails && activeDiscountFields.length > 0 ? (
+                      activeDiscountFields.map((field) =>
+                        renderResizableHeader(field, DISCOUNT_FIELD_LABELS[field].replace('Desc. ', '').includes(' ') ? <HeaderStack top={DISCOUNT_FIELD_LABELS[field].replace('Desc. ', '').split(' ')[0]} bottom={DISCOUNT_FIELD_LABELS[field].replace('Desc. ', '').split(' ').slice(1).join(' ') || 'Desconto'} /> : DISCOUNT_FIELD_LABELS[field], 'bg-[#dff1ff] text-[#003366]')
+                      )
+                    ) : (
+                      renderResizableHeader('descontoCollapsed', '+ Descontos', 'bg-[#dff1ff] text-center text-[#003366]')
                     )}
-                    {!showDiscountDetails && renderResizableHeader('descontoCollapsed', '+', 'bg-[#9dccf6] text-center')}
-                    {renderResizableHeader('totalDesconto', 'Total Desconto', 'bg-[#fff2cc] text-[#7f6000]')}
+                    {renderResizableHeader('totalDesconto', <HeaderStack top="Total" bottom="Desconto" />, 'bg-[#fff2cc] text-[#7f6000]')}
+                    {renderResizableHeader('precoPromocional', <HeaderStack top="Preço" bottom="Promocional" />, 'bg-gradient-to-b from-amber-200 to-yellow-100 text-amber-900 border-x-2 border-amber-300 shadow-[inset_0_0_0_1px_rgba(245,158,11,0.22)]')}
 
-                    {renderResizableHeader('precoPromocional', 'Preço Promocional', 'bg-[#fff2cc]')}
-
-                    {renderResizableHeader('qtdEstoque', 'Qtd Est.', 'bg-[#eaf2f8] text-right')}
-                    {renderResizableHeader('custoMedioEstoque', 'Custo Médio', 'bg-[#eaf2f8] text-right')}
-                    {renderResizableHeader('margemEstoque', 'Margem Est.', 'bg-[#eaf2f8] text-right')}
-                    {renderResizableHeader('novoCustoMedio', 'Novo Custo Médio', 'bg-[#eaf2f8] text-right')}
-                    {renderResizableHeader('margemPrice', 'Margem Price', 'bg-[#eaf2f8] text-right')}
-                    {renderResizableHeader('qtdVendida', 'Qtd Vend.', 'bg-[#eaf2f8] text-right')}
+                    {renderResizableHeader('qtdEstoque', <HeaderStack top="Qtd" bottom="Est." />, 'bg-[#eaf2f8] text-right')}
+                    {renderResizableHeader('custoMedioEstoque', <HeaderStack top="Custo" bottom="Médio" />, 'bg-[#eaf2f8] text-right')}
+                    {renderResizableHeader('margemEstoque', <HeaderStack top="Margem" bottom="Est." />, 'bg-[#eaf2f8] text-right')}
+                    {renderResizableHeader('novoCustoMedio', <HeaderStack top="Novo Custo" bottom="Médio" />, 'bg-[#eaf2f8] text-right')}
+                    {renderResizableHeader('margemPrice', <HeaderStack top="Margem" bottom="Price" />, 'bg-[#eaf2f8] text-right')}
+                    {renderResizableHeader('qtdVendida', <HeaderStack top="Qtd" bottom="Vend." />, 'bg-[#eaf2f8] text-right')}
 
                     {showPriceDetails ? (
                       <>
-                        {renderResizableHeader('priceRebate', 'Price Rebate', 'bg-[#e2f0d9]')}
-                        {renderResizableHeader('priceTradeIn', 'Price Trade In', 'bg-[#e2f0d9]')}
-                        {renderResizableHeader('priceBogo', 'Price Bogo', 'bg-[#e2f0d9]')}
-                        {renderResizableHeader('priceSip', 'Price SIP', 'bg-[#e2f0d9]')}
+                        {renderResizableHeader('priceRebate', <HeaderStack top="Price" bottom="Rebate" />, 'bg-[#e2f0d9]')}
+                        {renderResizableHeader('priceTradeIn', <HeaderStack top="Price" bottom="Trade In" />, 'bg-[#e2f0d9]')}
+                        {renderResizableHeader('priceBogo', <HeaderStack top="Price" bottom="Bogo" />, 'bg-[#e2f0d9]')}
+                        {renderResizableHeader('priceSip', <HeaderStack top="Price" bottom="SIP" />, 'bg-[#e2f0d9]')}
                       </>
                     ) : (
                       renderResizableHeader('priceCollapsed', '+', 'bg-[#e2f0d9] text-center')
@@ -1919,7 +2058,7 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
 
                     {showOfferDetails ? (
                       <>
-                        {renderResizableHeader('ofertaAtual', 'Oferta Atual', 'bg-[#92d050] text-[#003b8f]')}
+                        {renderResizableHeader('ofertaAtual', <HeaderStack top="Oferta" bottom="Atual" />, 'bg-[#92d050] text-[#003b8f]')}
                         {renderResizableHeader('status', 'Status', 'bg-[#92d050] text-[#003b8f]')}
                       </>
                     ) : (
@@ -1932,95 +2071,61 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
                     const baseRow = idx % 2 === 0 ? 'bg-white hover:bg-slate-50' : 'bg-slate-50/40 hover:bg-slate-100/60';
                     const descBg = idx % 2 === 0 ? 'bg-white' : 'bg-slate-50/40';
                     const margemPriceProblem = row.margemPrice !== null && row.margemPrice < 0.25;
-                    const rowMuted = !row.isSelected ? 'opacity-45' : '';
+                    const isDragging = draggedRowKey === row.rowKey;
 
                     return (
-                      <tr key={row.rowKey || `${row.refCampanha}-${row.basicModel}-${idx}`} className={`${baseRow} ${rowMuted}`}>
+                      <tr
+                        key={row.rowKey || `${row.refCampanha}-${row.basicModel}-${idx}`}
+                        draggable
+                        onDragStart={(event) => {
+                          setDraggedRowKey(row.rowKey);
+                          event.dataTransfer.effectAllowed = 'move';
+                          event.dataTransfer.setData('text/plain', row.rowKey);
+                        }}
+                        onDragOver={(event) => event.preventDefault()}
+                        onDrop={(event) => {
+                          event.preventDefault();
+                          const sourceKey = event.dataTransfer.getData('text/plain') || draggedRowKey || '';
+                          moveRowBefore(sourceKey, row.rowKey);
+                          setDraggedRowKey(null);
+                        }}
+                        onDragEnd={() => setDraggedRowKey(null)}
+                        className={`${baseRow} ${isDragging ? 'opacity-50 ring-2 ring-blue-300' : ''} cursor-grab active:cursor-grabbing`}
+                      >
                         <TableCell style={getColumnStyle('descricao')} className={`sticky left-0 z-20 whitespace-nowrap font-black text-slate-900 shadow-[1px_0_0_0_rgba(148,163,184,0.35)] ${descBg}`}>
                           <div className="flex min-w-0 items-center gap-2">
+                            <span className="cursor-grab select-none text-slate-400" title="Arraste para mover a linha">⋮⋮</span>
                             <input
                               type="checkbox"
                               checked={row.isSelected}
                               onChange={() => toggleRowSelected(row.rowKey)}
                               className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
-                              title="Marcar/desmarcar produto para exportação"
+                              title="Desmarcar e mover para o campo desconsiderados"
                             />
                             <span className="truncate" title={row.descricao || '-'}>{row.descricao || '-'}</span>
                           </div>
                         </TableCell>
 
-                        <TableCell className="whitespace-nowrap bg-[#edffed]">{formatMoney(row.precoSamsung)}</TableCell>
-                        <TableCell className="whitespace-nowrap bg-[#edffed] font-semibold">{formatMoney(row.precoTelecel)}</TableCell>
+                        <TableCell className="whitespace-nowrap bg-[#edffed] text-right font-semibold">{formatMoney(row.precoSamsung)}</TableCell>
+                        <TableCell className="whitespace-nowrap bg-[#edffed] text-right font-semibold">{formatMoney(row.precoTelecel)}</TableCell>
 
-                        <TableCell className="bg-[#d9ecff]">
-                          <input
-                            type="text"
-                            inputMode="decimal"
-                            value={formatEditableNumber(row.totalDescontoTelecel)}
-                            onChange={(e) => updateTotalDescontoTelecel(row.rowKey, e.target.value)}
-                            className="w-full rounded-md border border-red-200 bg-red-50 px-1.5 py-0.5 text-right text-[11px] font-black text-red-600 outline-none focus:border-red-400 focus:bg-white"
-                            placeholder="0,00"
-                          />
-                        </TableCell>
-                        {showDiscountDetails && (
-                          <>
-                            <TableCell className="bg-[#d9ecff]">
-                              <input
-                                type="text"
-                                inputMode="decimal"
-                                value={formatEditableNumber(row.descontoRebate)}
-                                onChange={(e) => updateDiscountField(row.rowKey, 'descontoRebate', e.target.value)}
-                                className="w-full min-w-[88px] rounded-md border border-sky-200 bg-white/80 px-1.5 py-0.5 text-right text-[11px] font-semibold text-slate-700 outline-none focus:border-sky-500 focus:bg-white"
-                                placeholder="0,00"
-                              />
-                            </TableCell>
-                            <TableCell className="bg-[#d9ecff]">
-                              <input
-                                type="text"
-                                inputMode="decimal"
-                                value={formatEditableNumber(row.descontoTradeIn)}
-                                onChange={(e) => updateDiscountField(row.rowKey, 'descontoTradeIn', e.target.value)}
-                                className="w-full min-w-[88px] rounded-md border border-sky-200 bg-white/80 px-1.5 py-0.5 text-right text-[11px] font-semibold text-slate-700 outline-none focus:border-sky-500 focus:bg-white"
-                                placeholder="0,00"
-                              />
-                            </TableCell>
-                            <TableCell className="bg-[#d9ecff]">
-                              <input
-                                type="text"
-                                inputMode="decimal"
-                                value={formatEditableNumber(row.descontoBogo)}
-                                onChange={(e) => updateDiscountField(row.rowKey, 'descontoBogo', e.target.value)}
-                                className="w-full min-w-[88px] rounded-md border border-sky-200 bg-white/80 px-1.5 py-0.5 text-right text-[11px] font-semibold text-slate-700 outline-none focus:border-sky-500 focus:bg-white"
-                                placeholder="0,00"
-                              />
-                            </TableCell>
-                            <TableCell className="bg-[#d9ecff]">
-                              <input
-                                type="text"
-                                inputMode="decimal"
-                                value={formatEditableNumber(row.descontoSip)}
-                                onChange={(e) => updateDiscountField(row.rowKey, 'descontoSip', e.target.value)}
-                                className="w-full min-w-[88px] rounded-md border border-sky-200 bg-white/80 px-1.5 py-0.5 text-right text-[11px] font-semibold text-slate-700 outline-none focus:border-sky-500 focus:bg-white"
-                                placeholder="0,00"
-                              />
-                            </TableCell>
-                          </>
-                        )}
-                        {!showDiscountDetails && (
-                          <TableCell className="bg-[#d9ecff] text-center">
+                        {showDiscountDetails && activeDiscountFields.length > 0 ? (
+                          activeDiscountFields.map((field) => renderDiscountCell(row, field))
+                        ) : (
+                          <TableCell className="bg-[#dff1ff] text-center" style={getColumnStyle('descontoCollapsed')}>
                             <button
                               type="button"
                               onClick={() => setShowDiscountDetails(true)}
                               className="rounded-full border border-sky-200 bg-white px-2 py-0.5 text-xs font-black text-sky-700 shadow-sm hover:bg-sky-50"
-                              title="Abrir descontos detalhados"
+                              title="Abrir descontos"
                             >
                               +
                             </button>
                           </TableCell>
                         )}
-                        <TableCell className="whitespace-nowrap bg-[#fff2cc] font-black text-red-600">{formatMoney(row.totalDesconto)}</TableCell>
+                        <TableCell className="whitespace-nowrap bg-[#fff2cc] text-right font-black text-red-600">{formatMoney(row.totalDesconto)}</TableCell>
 
-                        <TableCell className="whitespace-nowrap bg-[#fff8d6] font-black text-orange-600">{formatMoney(row.precoPromocional)}</TableCell>
+                        <TableCell className="whitespace-nowrap border-x-2 border-amber-300 bg-gradient-to-r from-amber-100 via-yellow-50 to-amber-100 text-right text-[12px] font-black text-amber-950 shadow-[inset_0_0_0_1px_rgba(245,158,11,0.18)]">{formatMoney(row.precoPromocional)}</TableCell>
 
                         <TableCell className="bg-[#f2f7fb] text-right font-black text-emerald-600">{formatNumber(row.qtdEstoque)}</TableCell>
                         <TableCell className="whitespace-nowrap bg-[#f2f7fb] text-right">{formatMoney(row.custoMedioEstoque)}</TableCell>
@@ -2033,10 +2138,10 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
 
                         {showPriceDetails ? (
                           <>
-                            <TableCell className="whitespace-nowrap bg-[#edf7e8]">{formatMoney(row.priceRebate)}</TableCell>
-                            <TableCell className="whitespace-nowrap bg-[#edf7e8]">{formatMoney(row.priceTradeIn)}</TableCell>
-                            <TableCell className="whitespace-nowrap bg-[#edf7e8]">{formatMoney(row.priceBogo)}</TableCell>
-                            <TableCell className="whitespace-nowrap bg-[#edf7e8]">{formatMoney(row.priceSip)}</TableCell>
+                            <TableCell className="whitespace-nowrap bg-[#edf7e8] text-right font-semibold">{formatMoney(row.priceRebate)}</TableCell>
+                            <TableCell className="whitespace-nowrap bg-[#edf7e8] text-right font-semibold">{formatMoney(row.priceTradeIn)}</TableCell>
+                            <TableCell className="whitespace-nowrap bg-[#edf7e8] text-right font-semibold">{formatMoney(row.priceBogo)}</TableCell>
+                            <TableCell className="whitespace-nowrap bg-[#edf7e8] text-right font-semibold">{formatMoney(row.priceSip)}</TableCell>
                           </>
                         ) : (
                           <TableCell className="bg-[#edf7e8] text-center">
@@ -2053,7 +2158,7 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
 
                         {showOfferDetails ? (
                           <>
-                            <TableCell className="whitespace-nowrap bg-[#e2f0d9] font-semibold text-blue-700">{formatMoney(row.ofertaAtual)}</TableCell>
+                            <TableCell className="whitespace-nowrap bg-[#e2f0d9] text-right font-semibold text-blue-700">{formatMoney(row.ofertaAtual)}</TableCell>
                             <TableCell className={`whitespace-nowrap bg-[#e2f0d9] font-black ${row.status === 'MENOR' ? 'text-emerald-700' : row.status === 'MAIOR' ? 'text-red-600' : 'text-slate-700'}`}>
                               {row.status}
                             </TableCell>
@@ -2093,6 +2198,75 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
               </table>
             </div>
           </div>
+
+          {filteredIgnoredRows.length > 0 && (
+            <div className="mt-3 rounded-2xl border border-orange-300 bg-orange-50/90 shadow-sm">
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-t-2xl border-b border-orange-200 bg-orange-100/95 px-3 py-2">
+                <div>
+                  <h3 className="text-xs font-black uppercase tracking-[0.18em] text-orange-800">Campo desconsiderados</h3>
+                  <p className="mt-0.5 text-[11px] font-semibold text-orange-700">
+                    Aparelhos presentes na carta, mas fora do comparativo principal, do Excel e do envio para análise.
+                  </p>
+                </div>
+                <span className="rounded-full bg-white px-3 py-1 text-[11px] font-black text-orange-700 shadow-sm">
+                  {filteredIgnoredRows.length} itens
+                </span>
+              </div>
+
+              <div className="comparativo-scroll w-full overflow-x-auto p-2">
+                <table className="w-full min-w-[1320px] table-fixed border-separate border-spacing-0 overflow-hidden rounded-xl bg-white text-[11px]">
+                  <thead>
+                    <tr className="bg-orange-100 text-[10px] font-black uppercase tracking-[0.12em] text-orange-900">
+                      <th className="w-[320px] border-b border-orange-200 px-3 py-2 text-left">Produto</th>
+                      <th className="w-[110px] border-b border-orange-200 px-2 py-2 text-right">Preço<br />Samsung</th>
+                      <th className="w-[110px] border-b border-orange-200 px-2 py-2 text-right">Preço<br />Telecel</th>
+                      <th className="w-[120px] border-b border-orange-200 px-2 py-2 text-right">Total<br />Desconto</th>
+                      <th className="w-[150px] border-b border-orange-200 px-2 py-2 text-right">Preço<br />Promocional</th>
+                      <th className="w-[90px] border-b border-orange-200 px-2 py-2 text-right">Qtd.<br />Est.</th>
+                      <th className="w-[130px] border-b border-orange-200 px-2 py-2 text-right">Custo<br />Médio</th>
+                      <th className="w-[110px] border-b border-orange-200 px-2 py-2 text-right">Margem<br />Price</th>
+                      <th className="w-[120px] border-b border-orange-200 px-2 py-2 text-right">Oferta<br />Atual</th>
+                      <th className="w-[95px] border-b border-orange-200 px-2 py-2 text-center">Status</th>
+                      <th className="w-[150px] border-b border-orange-200 px-2 py-2 text-center">Ação</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredIgnoredRows.map((row, idx) => {
+                      const margemPriceProblem = row.margemPrice !== null && row.margemPrice < 0.25;
+                      return (
+                        <tr key={row.rowKey} className={idx % 2 === 0 ? 'bg-white' : 'bg-orange-50/40'}>
+                          <td className="border-b border-orange-100 px-3 py-2 font-black uppercase text-slate-900">
+                            <div className="truncate" title={row.descricao}>{row.descricao}</div>
+                            <div className="mt-0.5 text-[10px] font-semibold normal-case text-orange-700">
+                              Desconsiderado — não entra no comparativo, Excel ou envio para análise.
+                            </div>
+                          </td>
+                          <td className="whitespace-nowrap border-b border-orange-100 px-2 py-2 text-right font-semibold text-slate-700">{formatMoney(row.precoSamsung)}</td>
+                          <td className="whitespace-nowrap border-b border-orange-100 px-2 py-2 text-right font-semibold text-slate-700">{formatMoney(row.precoTelecel)}</td>
+                          <td className="whitespace-nowrap border-b border-orange-100 bg-orange-100/70 px-2 py-2 text-right font-black text-orange-800">{formatMoney(row.totalDesconto)}</td>
+                          <td className="whitespace-nowrap border-b border-orange-100 bg-amber-100/80 px-2 py-2 text-right font-black text-amber-950">{formatMoney(row.precoPromocional)}</td>
+                          <td className="border-b border-orange-100 px-2 py-2 text-right font-black text-slate-700">{formatNumber(row.qtdEstoque)}</td>
+                          <td className="whitespace-nowrap border-b border-orange-100 px-2 py-2 text-right text-slate-700">{formatMoney(row.custoMedioEstoque)}</td>
+                          <td className={`whitespace-nowrap border-b border-orange-100 px-2 py-2 text-right font-black ${margemPriceProblem ? 'bg-red-50 text-red-600' : 'text-slate-700'}`}>{formatPercent(row.margemPrice)}</td>
+                          <td className="whitespace-nowrap border-b border-orange-100 px-2 py-2 text-right font-semibold text-slate-700">{formatMoney(row.ofertaAtual)}</td>
+                          <td className="whitespace-nowrap border-b border-orange-100 px-2 py-2 text-center font-black text-slate-700">{row.status || '-'}</td>
+                          <td className="border-b border-orange-100 px-2 py-2 text-center">
+                            <button
+                              type="button"
+                              onClick={() => toggleRowSelected(row.rowKey)}
+                              className="rounded-lg bg-orange-600 px-3 py-1.5 text-[10px] font-black uppercase text-white shadow-sm hover:bg-orange-700"
+                            >
+                              Restaurar
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -2224,6 +2398,30 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
               >
                 {sendingToFlow ? 'Enviando...' : 'Enviar'}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+
+      {showOnlinePricesModal && (
+        <div className="fixed inset-0 z-[100] bg-slate-950/70 p-4 backdrop-blur-sm">
+          <div className="mx-auto flex h-full max-w-[1500px] flex-col overflow-hidden rounded-3xl bg-slate-50 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-200 bg-white px-5 py-3">
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-[0.22em] text-orange-600">Clark IA</p>
+                <h2 className="text-lg font-black uppercase text-slate-900">Agente Preços Online</h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowOnlinePricesModal(false)}
+                className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-700 hover:bg-slate-100"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-auto">
+              <OnlinePricesAgent currentUser={currentUser} />
             </div>
           </div>
         </div>

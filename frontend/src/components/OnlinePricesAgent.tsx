@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Bot,
@@ -53,6 +53,7 @@ type OnlinePriceResult = {
   url: string | null;
   confianca: number;
   observacao: string | null;
+  cacheHit?: boolean;
 };
 
 type OnlinePriceResponse = {
@@ -78,11 +79,27 @@ type OnlinePriceResponse = {
     outputTokens: number;
     webSearchRequests: number;
     custoEstimadoWebSearchUsd: number;
+    cacheHits?: number;
+    cacheMisses?: number;
+    modelosPesquisadosNaApi?: number;
+    cacheTtlDias?: number;
   };
   results: OnlinePriceResult[];
   reportFileName: string;
   downloadUrl: string;
   generatedAt: string;
+  historyId?: string;
+};
+
+type OnlinePriceHistoryEntry = {
+  id: string;
+  originalName: string;
+  createdAt: string;
+  produtosProcessados: number;
+  lojasProcessadas: number;
+  resumo: OnlinePriceResponse['resumo'];
+  reportFileName: string;
+  downloadUrl: string;
 };
 
 type Props = {
@@ -134,6 +151,7 @@ export default function OnlinePricesAgent({ currentUser }: Props) {
   const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState('');
   const [data, setData] = useState<OnlinePriceResponse | null>(null);
+  const [history, setHistory] = useState<OnlinePriceHistoryEntry[]>([]);
 
   const estimatedMode = useMemo(() => {
     const modelLimit = Number(maxModels);
@@ -148,6 +166,28 @@ export default function OnlinePricesAgent({ currentUser }: Props) {
       Number.isFinite(storeLimit) && storeLimit > 0 ? `${storeLimit} loja(s)` : 'todas as lojas',
     ].join(' • ');
   }, [maxModels, maxStores]);
+
+  const loadHistory = async () => {
+    const userId = String(currentUser?.id || '').trim();
+    if (!userId) return;
+
+    try {
+      const response = await fetch(`${API_URL}/api/online-prices/history?limit=5&userId=${encodeURIComponent(userId)}`, {
+        headers: { 'x-user-id': userId },
+      });
+      const json = await response.json().catch(() => null);
+      if (response.ok && Array.isArray(json?.history)) {
+        setHistory(json.history);
+      }
+    } catch (_) {
+      // Histórico é auxiliar. Não bloquear a tela se falhar.
+    }
+  };
+
+  useEffect(() => {
+    loadHistory();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser?.id]);
 
   const handleSubmit = async () => {
     if (!file || loading) return;
@@ -184,6 +224,7 @@ export default function OnlinePricesAgent({ currentUser }: Props) {
       }
 
       setData(json);
+      loadHistory();
     } catch (err: any) {
       setError(err?.message || 'Erro desconhecido ao analisar preços online.');
     } finally {
@@ -191,8 +232,8 @@ export default function OnlinePricesAgent({ currentUser }: Props) {
     }
   };
 
-  const handleDownload = async () => {
-    if (!data?.downloadUrl || downloading) return;
+  const downloadReport = async (downloadUrl: string, fileName: string) => {
+    if (!downloadUrl || downloading) return;
 
     const userId = String(currentUser?.id || '').trim();
     if (!userId) {
@@ -202,9 +243,9 @@ export default function OnlinePricesAgent({ currentUser }: Props) {
 
     try {
       setDownloading(true);
-      const separator = data.downloadUrl.includes('?') ? '&' : '?';
+      const separator = downloadUrl.includes('?') ? '&' : '?';
       const response = await fetch(
-        `${API_URL}${data.downloadUrl}${separator}userId=${encodeURIComponent(userId)}`,
+        `${API_URL}${downloadUrl}${separator}userId=${encodeURIComponent(userId)}`,
         {
           headers: { 'x-user-id': userId },
         },
@@ -219,7 +260,7 @@ export default function OnlinePricesAgent({ currentUser }: Props) {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = data.reportFileName || `precos-online-${Date.now()}.xlsx`;
+      a.download = fileName || `precos-online-${Date.now()}.xlsx`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -229,6 +270,11 @@ export default function OnlinePricesAgent({ currentUser }: Props) {
     } finally {
       setDownloading(false);
     }
+  };
+
+  const handleDownload = async () => {
+    if (!data?.downloadUrl || downloading) return;
+    await downloadReport(data.downloadUrl, data.reportFileName || `precos-online-${Date.now()}.xlsx`);
   };
 
   return (
@@ -325,7 +371,7 @@ export default function OnlinePricesAgent({ currentUser }: Props) {
             <div className="rounded-2xl bg-amber-50 border border-amber-200 p-3 flex gap-2">
               <AlertTriangle size={16} className="text-amber-600 shrink-0 mt-0.5" />
               <p className="text-[11px] leading-relaxed text-amber-800 font-bold">
-                {estimatedMode} Cada modelo pode gerar várias buscas online. Use limite para testes e rode completo quando estiver pronto para consumir tokens/buscas.
+                {estimatedMode} O agente agora usa cache por 7 dias, consulta consolidada por modelo e limite de buscas para reduzir custo.
               </p>
             </div>
 
@@ -337,6 +383,25 @@ export default function OnlinePricesAgent({ currentUser }: Props) {
               {loading ? <Loader2 size={16} className="animate-spin" /> : <Search size={16} />}
               {loading ? 'Pesquisando preços...' : 'Iniciar agente'}
             </button>
+
+            {history.length > 0 && (
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 space-y-2">
+                <p className="text-[10px] font-black uppercase text-slate-500">Últimas consultas</p>
+                {history.slice(0, 3).map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => downloadReport(item.downloadUrl, item.reportFileName)}
+                    className="block w-full text-left rounded-xl bg-white border border-slate-200 p-2 hover:border-orange-300 transition-colors"
+                  >
+                    <p className="text-[11px] font-black text-slate-800 truncate">{item.originalName}</p>
+                    <p className="text-[10px] font-bold text-slate-500">
+                      {new Date(item.createdAt).toLocaleString('pt-BR')} • {item.produtosProcessados} modelo(s) • cache {item.resumo.cacheHits || 0}
+                    </p>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           <div className="lg:col-span-2 space-y-6">
@@ -357,7 +422,7 @@ export default function OnlinePricesAgent({ currentUser }: Props) {
                   Aguardando planilha
                 </h2>
                 <p className="text-sm text-slate-500 font-semibold max-w-xl mt-2">
-                  Após enviar o Excel, a Clark vai identificar modelos e lojas, pesquisar preços online e gerar um relatório comparativo com fontes.
+                  Após enviar o Excel, a Clark identifica modelos e lojas, reutiliza cache recente quando existir, pesquisa apenas o necessário e gera o relatório em Excel.
                 </p>
               </div>
             )}
@@ -369,14 +434,14 @@ export default function OnlinePricesAgent({ currentUser }: Props) {
                   Clark pesquisando na internet
                 </h2>
                 <p className="text-sm text-slate-500 font-semibold max-w-xl mt-2">
-                  Esse processo pode demorar, principalmente em execução completa. A cada modelo, o Claude pode fazer buscas nas lojas do cabeçalho.
+                  Esse processo pode demorar em planilhas grandes. A Clark reaproveita cache recente e faz consultas consolidadas por modelo para reduzir tokens e web searches.
                 </p>
               </div>
             )}
 
             {data && (
               <>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
                   <div className="bg-white rounded-2xl border border-slate-200 p-4">
                     <p className="text-[10px] font-black uppercase text-slate-400">Consultas</p>
                     <p className="text-2xl font-black text-slate-900">{data.resumo.consultasExecutadas}</p>
@@ -384,6 +449,10 @@ export default function OnlinePricesAgent({ currentUser }: Props) {
                   <div className="bg-white rounded-2xl border border-slate-200 p-4">
                     <p className="text-[10px] font-black uppercase text-slate-400">Encontrados</p>
                     <p className="text-2xl font-black text-emerald-600">{data.resumo.encontrados}</p>
+                  </div>
+                  <div className="bg-white rounded-2xl border border-slate-200 p-4">
+                    <p className="text-[10px] font-black uppercase text-slate-400">Cache</p>
+                    <p className="text-2xl font-black text-blue-600">{data.resumo.cacheHits || 0}</p>
                   </div>
                   <div className="bg-white rounded-2xl border border-slate-200 p-4">
                     <p className="text-[10px] font-black uppercase text-slate-400">Web searches</p>
@@ -405,7 +474,7 @@ export default function OnlinePricesAgent({ currentUser }: Props) {
                         <h2 className="text-sm font-black uppercase tracking-widest">Análise concluída</h2>
                       </div>
                       <p className="text-xs text-slate-500 font-semibold mt-1">
-                        {data.planilha.produtosProcessados} de {data.planilha.produtosDetectados} modelos • {data.planilha.lojasProcessadas} de {data.planilha.lojasDetectadas} lojas • custo estimado web search US$ {data.resumo.custoEstimadoWebSearchUsd.toFixed(4)}
+                        {data.planilha.produtosProcessados} de {data.planilha.produtosDetectados} modelos • {data.planilha.lojasProcessadas} de {data.planilha.lojasDetectadas} lojas • cache {data.resumo.cacheHits || 0}/{data.resumo.consultasExecutadas} • web search US$ {data.resumo.custoEstimadoWebSearchUsd.toFixed(4)}
                       </p>
                     </div>
 
@@ -434,7 +503,7 @@ export default function OnlinePricesAgent({ currentUser }: Props) {
                           <th className="px-3 py-3 text-right text-[10px] font-black uppercase">À vista online</th>
                           <th className="px-3 py-3 text-right text-[10px] font-black uppercase">12x online</th>
                           <th className="px-3 py-3 text-right text-[10px] font-black uppercase">Dif. à vista</th>
-                          <th className="px-3 py-3 text-left text-[10px] font-black uppercase">Fonte</th>
+                          <th className="px-3 py-3 text-left text-[10px] font-black uppercase">Obs.</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100 bg-white">
@@ -453,14 +522,10 @@ export default function OnlinePricesAgent({ currentUser }: Props) {
                               {money(item.diferencaAvista)}
                               <span className="block text-[10px] text-slate-400">{pct(item.diferencaAvistaPercentual)}</span>
                             </td>
-                            <td className="px-3 py-3 max-w-[340px]">
-                              {item.url ? (
-                                <a href={item.url} target="_blank" rel="noreferrer" className="text-orange-600 hover:text-orange-700 font-bold line-clamp-2">
-                                  {item.titulo || item.url}
-                                </a>
-                              ) : (
-                                <span className="text-slate-400 font-semibold">{item.observacao || 'Sem fonte'}</span>
-                              )}
+                            <td className="px-3 py-3 max-w-[220px]">
+                              <span className="text-slate-500 font-semibold">
+                                {item.cacheHit ? 'Cache reutilizado' : item.observacao || 'Consulta nova'}
+                              </span>
                             </td>
                           </tr>
                         ))}

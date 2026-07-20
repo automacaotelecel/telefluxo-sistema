@@ -52,6 +52,7 @@ export type OnlinePriceResult = {
   confianca: number;
   observacao: string | null;
   pesquisadoEm: string;
+  cacheHit?: boolean;
 };
 
 export type OnlinePriceClaudeUsage = {
@@ -73,6 +74,10 @@ export type OnlinePriceAnalysisSummary = {
   outputTokens: number;
   webSearchRequests: number;
   custoEstimadoWebSearchUsd: number;
+  cacheHits?: number;
+  cacheMisses?: number;
+  modelosPesquisadosNaApi?: number;
+  cacheTtlDias?: number;
 };
 
 export type OnlinePriceAnalyzeOptions = {
@@ -82,6 +87,23 @@ export type OnlinePriceAnalyzeOptions = {
   maxModels?: number | null;
   maxStores?: number | null;
   forceFullRun?: boolean;
+  bypassCache?: boolean;
+};
+
+export type OnlinePriceHistoryEntry = {
+  id: string;
+  userId: string;
+  originalName: string;
+  sheetName: string;
+  createdAt: string;
+  produtosDetectados: number;
+  lojasDetectadas: number;
+  produtosProcessados: number;
+  lojasProcessadas: number;
+  lojas: string[];
+  resumo: OnlinePriceAnalysisSummary;
+  reportFileName: string;
+  downloadUrl: string;
 };
 
 export type OnlinePriceAnalyzeResponse = {
@@ -102,4 +124,5 @@ export type OnlinePriceAnalyzeResponse = {
   reportFileName: string;
   downloadUrl: string;
   generatedAt: string;
+  historyId?: string;
 };

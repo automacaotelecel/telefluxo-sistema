@@ -12,6 +12,14 @@ interface ChatMessage {
   text: string;
 }
 
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+
+function usuarioPodeUsarClarkJuridica(currentUser: any) {
+  const role = String(currentUser?.role || '').trim().toUpperCase();
+  const isAdmin = currentUser?.isAdmin === true || Number(currentUser?.isAdmin) === 1;
+  return role === 'ADM' || role === 'ADMIN' || isAdmin;
+}
+
 export default function ContractAnalyzer({ currentUser }: ContractAnalyzerProps) {
   const [file, setFile] = useState<File | null>(null);
   const [question, setQuestion] = useState('');
@@ -26,6 +34,20 @@ export default function ContractAnalyzer({ currentUser }: ContractAnalyzerProps)
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatHistory, isLoading]);
+
+  if (!usuarioPodeUsarClarkJuridica(currentUser)) {
+    return (
+      <div className="flex h-full w-full items-center justify-center bg-slate-50 p-8">
+        <div className="max-w-md rounded-3xl border border-slate-200 bg-white p-8 text-center shadow-sm">
+          <AlertCircle className="mx-auto mb-4 text-orange-600" size={36} />
+          <h2 className="text-lg font-black uppercase tracking-tight text-slate-800">Acesso restrito</h2>
+          <p className="mt-2 text-sm font-semibold leading-relaxed text-slate-500">
+            A Clark Jurídica é exclusiva para usuários ADM.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   const handleDrag = (e: React.DragEvent) => {
     e.preventDefault();
@@ -97,15 +119,12 @@ export default function ContractAnalyzer({ currentUser }: ContractAnalyzerProps)
       const formData = new FormData();
       formData.append('pdf', file);
       formData.append('question', currentQuestion);
+      formData.append('userId', String(currentUser?.id || ''));
 
-      //Chamada para a Rota no render
-      const response = await fetch(
-        'https://telefluxo-aplicacao.onrender.com/api/contracts/analyze',
-        {
-          method: 'POST',
-          body: formData,
-        }
-      );
+      const response = await fetch(`${API_URL}/api/contracts/analyze`, {
+        method: 'POST',
+        body: formData,
+      });
 
       const data = await response.json();
 
