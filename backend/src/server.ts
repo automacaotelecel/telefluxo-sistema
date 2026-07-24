@@ -29,6 +29,7 @@ import {
 
 
 
+
 dotenv.config();
 
 //Bloco para enviar as informações ao RH//
@@ -2044,6 +2045,236 @@ function estoqueDetalhadoNormalizeText(value: any): string {
     .toUpperCase();
 }
 
+type StockType = 'ESTOQUE' | 'AMOSTRA' | 'DOA';
+
+function normalizeStockType(value: any): StockType {
+  const text = estoqueDetalhadoNormalizeText(value)
+    .replace(/\./g, '')
+    .replace(/[_-]+/g, ' ');
+
+  if (
+    text.includes('AMOSTRA') ||
+    text.includes('MOSTRUARIO') ||
+    text.includes('DEMONSTRACAO') ||
+    text.includes('EXPOSICAO')
+  ) {
+    return 'AMOSTRA';
+  }
+
+  if (text === 'DOA' || text.startsWith('DOA ') || text.endsWith(' DOA')) {
+    return 'DOA';
+  }
+
+  return 'ESTOQUE';
+}
+
+function extractStockType(item: any): StockType {
+  return normalizeStockType(
+    item?.stockType ??
+      item?.STOCK_TYPE ??
+      item?.tipo_estoque ??
+      item?.TIPO_ESTOQUE ??
+      item?.estoque_tipo ??
+      item?.ESTOQUE_TIPO ??
+      item?.tipo_saldo ??
+      item?.TIPO_SALDO ??
+      item?.deposito ??
+      item?.DEPOSITO ??
+      item?.nome_deposito ??
+      item?.NOME_DEPOSITO ??
+      item?.descricao_deposito ??
+      item?.DESCRICAO_DEPOSITO ??
+      item?.desc_deposito ??
+      item?.DESC_DEPOSITO ??
+      item?.local_estoque ??
+      item?.LOCAL_ESTOQUE ??
+      item?.origem_estoque ??
+      item?.ORIGEM_ESTOQUE ??
+      item?.classificacao_estoque ??
+      item?.CLASSIFICACAO_ESTOQUE ??
+      item?.aba_origem ??
+      item?.ABA_ORIGEM ??
+      item?.sheet_name ??
+      item?.SHEET_NAME ??
+      'ESTOQUE'
+  );
+}
+
+function stockInputHasKey(item: any, keys: string[]): boolean {
+  return keys.some((key) =>
+    Object.prototype.hasOwnProperty.call(item || {}, key)
+  );
+}
+
+function stockInputQuantity(item: any, keys: string[]): number {
+  for (const key of keys) {
+    if (!Object.prototype.hasOwnProperty.call(item || {}, key)) continue;
+
+    const value = estoqueDetalhadoToNumber(item[key]);
+
+    if (Number.isFinite(value)) {
+      return value;
+    }
+  }
+
+  return 0;
+}
+
+function expandStockInputRows(item: any): any[] {
+  const normalKeys = [
+    'ESTOQUE',
+    'estoque',
+    'QTD_ESTOQUE',
+    'qtd_estoque',
+    'QUANTIDADE_ESTOQUE',
+    'quantidade_estoque',
+    'SALDO_ESTOQUE',
+    'saldo_estoque',
+  ];
+
+  const sampleKeys = [
+    'AMOSTRA',
+    'amostra',
+    'QTD_AMOSTRA',
+    'qtd_amostra',
+    'QUANTIDADE_AMOSTRA',
+    'quantidade_amostra',
+    'SALDO_AMOSTRA',
+    'saldo_amostra',
+  ];
+
+  const doaKeys = [
+    'DOA',
+    'doa',
+    'QTD_DOA',
+    'qtd_doa',
+    'QUANTIDADE_DOA',
+    'quantidade_doa',
+    'SALDO_DOA',
+    'saldo_doa',
+  ];
+
+  const hasSeparatedQuantities =
+    stockInputHasKey(item, normalKeys) ||
+    stockInputHasKey(item, sampleKeys) ||
+    stockInputHasKey(item, doaKeys);
+
+  if (!hasSeparatedQuantities) {
+    return [item];
+  }
+
+  const genericQuantity = estoqueDetalhadoToNumber(
+    item?.QUANTIDADE ?? item?.quantity ?? item?.QTD ?? item?.qtd ?? 0
+  );
+
+  const normalQuantity = stockInputHasKey(item, normalKeys)
+    ? stockInputQuantity(item, normalKeys)
+    : genericQuantity;
+
+  const candidates: Array<{
+    stockType: StockType;
+    quantity: number;
+  }> = [
+    {
+      stockType: 'ESTOQUE',
+      quantity: normalQuantity,
+    },
+    {
+      stockType: 'AMOSTRA',
+      quantity: stockInputQuantity(item, sampleKeys),
+    },
+    {
+      stockType: 'DOA',
+      quantity: stockInputQuantity(item, doaKeys),
+    },
+  ];
+
+  const positiveRows = candidates
+    .filter((candidate) => candidate.quantity > 0)
+    .map((candidate) => ({
+      ...item,
+      __stockType: candidate.stockType,
+      __stockQuantity: candidate.quantity,
+    }));
+
+  if (positiveRows.length > 0) {
+    return positiveRows;
+  }
+
+  return [
+    {
+      ...item,
+      __stockType: extractStockType(item),
+      __stockQuantity: genericQuantity,
+    },
+  ];
+}
+
+function stockDeduplicationKey(row: any): string {
+  const serial = estoqueDetalhadoNormalizeText(row?.serial || '');
+
+  if (serial) {
+    return `SERIAL|${serial}`;
+  }
+
+  return [
+    'SEM_SERIAL',
+    extractStockType(row),
+    estoqueDetalhadoNormalizeKey(row?.cnpj || ''),
+    estoqueDetalhadoNormalizeKey(row?.storeName || ''),
+    estoqueDetalhadoNormalizeKey(row?.productCode || ''),
+    estoqueDetalhadoNormalizeKey(row?.reference || ''),
+    estoqueDetalhadoNormalizeKey(row?.description || ''),
+    estoqueDetalhadoNormalizeKey(row?.category || ''),
+  ].join('|');
+}
+
+function deduplicateStockRows<T extends Record<string, any>>(
+  rows: T[]
+): T[] {
+  const unique = new Map<string, T>();
+
+  for (const rawRow of rows) {
+    const row = {
+      ...rawRow,
+      stockType: extractStockType(rawRow),
+    } as T;
+
+    const key = stockDeduplicationKey(row);
+    const existing = unique.get(key);
+
+    if (!existing) {
+      unique.set(key, row);
+      continue;
+    }
+
+    const existingUpdatedAt = new Date(
+      existing.updatedAt || 0
+    ).getTime();
+
+    const currentUpdatedAt = new Date(
+      row.updatedAt || 0
+    ).getTime();
+
+    const existingQty = estoqueDetalhadoToNumber(
+      existing.quantity
+    );
+
+    const currentQty = estoqueDetalhadoToNumber(
+      row.quantity
+    );
+
+    if (
+      currentUpdatedAt > existingUpdatedAt ||
+      currentQty > existingQty
+    ) {
+      unique.set(key, row);
+    }
+  }
+
+  return Array.from(unique.values());
+}
+
 function estoqueDetalhadoNormalizeKey(value: any): string {
   return estoqueDetalhadoNormalizeText(value).replace(/[^A-Z0-9]/g, '');
 }
@@ -2574,6 +2805,8 @@ type AcessoRapidoVariacaoAgg = {
   categoria: string;
   cor: string;
   quantidade: number;
+  quantidadeAmostra: number;
+  quantidadeDoa: number;
   vendasMes: number;
   vendasAno: number;
 };
@@ -2582,6 +2815,8 @@ type AcessoRapidoStoreAgg = {
   loja: string;
   regiao: string;
   quantidade: number;
+  quantidadeAmostra: number;
+  quantidadeDoa: number;
   vendasMes: number;
   vendasAno: number;
   variacoes: AcessoRapidoVariacaoAgg[];
@@ -2593,6 +2828,8 @@ type AcessoRapidoProductAgg = {
   referencia: string;
   categoria: string;
   quantidade: number;
+  quantidadeAmostra: number;
+  quantidadeDoa: number;
   vendasMes: number;
   vendasAno: number;
   lojasComEstoque: number;
@@ -2793,6 +3030,8 @@ function acessoRapidoEnsureLoja(
       loja: safeLoja,
       regiao: ESTOQUE_DETALHADO_STORE_REGIONS[safeLoja] || 'OUTROS',
       quantidade: 0,
+      quantidadeAmostra: 0,
+      quantidadeDoa: 0,
       vendasMes: 0,
       vendasAno: 0,
       variacoes: [],
@@ -2825,6 +3064,8 @@ function acessoRapidoEnsureVariacao(
       categoria: params.categoria,
       cor: params.cor,
       quantidade: 0,
+      quantidadeAmostra: 0,
+      quantidadeDoa: 0,
       vendasMes: 0,
       vendasAno: 0,
     };
@@ -2922,6 +3163,8 @@ app.get('/api/diretoria/acesso-rapido-aparelhos', async (req, res) => {
           referencia,
           categoria,
           quantidade: 0,
+          quantidadeAmostra: 0,
+          quantidadeDoa: 0,
           vendasMes: 0,
           vendasAno: 0,
           lojasComEstoque: 0,
@@ -2943,17 +3186,25 @@ app.get('/api/diretoria/acesso-rapido-aparelhos', async (req, res) => {
       return product;
     };
 
-    const stockRows = await prisma.stock.findMany({
-      select: {
-        cnpj: true,
-        storeName: true,
-        productCode: true,
-        reference: true,
-        description: true,
-        category: true,
-        quantity: true,
-      },
-    });
+    const stockRows = deduplicateStockRows(
+      await prisma.stock.findMany({
+        orderBy: {
+          updatedAt: 'desc',
+        },
+        select: {
+          cnpj: true,
+          storeName: true,
+          productCode: true,
+          reference: true,
+          description: true,
+          category: true,
+          quantity: true,
+          serial: true,
+          stockType: true,
+          updatedAt: true,
+        },
+      })
+    );
 
     for (const stock of stockRows) {
       const modeloCompleto = acessoRapidoCleanName(stock.description || '');
@@ -2963,6 +3214,7 @@ app.get('/api/diretoria/acesso-rapido-aparelhos', async (req, res) => {
       const referencia = acessoRapidoCleanName(stock.reference || stock.productCode || '');
       const categoria = acessoRapidoCleanName(stock.category || 'GERAL').toUpperCase();
       const quantidade = estoqueDetalhadoToNumber(stock.quantity);
+      const stockType = normalizeStockType(stock.stockType);
       const cor = acessoRapidoDetectColor(modeloCompleto);
 
       const product = getOrCreateProduct({
@@ -2972,9 +3224,6 @@ app.get('/api/diretoria/acesso-rapido-aparelhos', async (req, res) => {
       });
 
       const store = acessoRapidoEnsureLoja(product, loja);
-
-      product.quantidade += quantidade;
-      store.quantidade += quantidade;
 
       const productVariation = acessoRapidoEnsureVariacao(product.variacoes, {
         modeloCompleto,
@@ -2990,8 +3239,23 @@ app.get('/api/diretoria/acesso-rapido-aparelhos', async (req, res) => {
         cor,
       });
 
-      productVariation.quantidade += quantidade;
-      storeVariation.quantidade += quantidade;
+      if (stockType === 'AMOSTRA') {
+        product.quantidadeAmostra += quantidade;
+        store.quantidadeAmostra += quantidade;
+        productVariation.quantidadeAmostra += quantidade;
+        storeVariation.quantidadeAmostra += quantidade;
+      } else if (stockType === 'DOA') {
+        product.quantidadeDoa += quantidade;
+        store.quantidadeDoa += quantidade;
+        productVariation.quantidadeDoa += quantidade;
+        storeVariation.quantidadeDoa += quantidade;
+      } else {
+        product.quantidade += quantidade;
+        store.quantidade += quantidade;
+        productVariation.quantidade += quantidade;
+        storeVariation.quantidade += quantidade;
+      }
+    
     }
 
     const addSale = (row: any, origem: 'MES' | 'ANO') => {
@@ -3205,39 +3469,122 @@ app.get('/api/diretoria/acesso-rapido-aparelhos', async (req, res) => {
     }
 
     let produtos = Array.from(productMap.values()).map((product) => {
-      product.variacoes = product.variacoes
-        .map((variacao) => ({
-          ...variacao,
-          quantidade: Number(variacao.quantidade.toFixed(2)),
-          vendasMes: Number(variacao.vendasMes.toFixed(2)),
-          vendasAno: Number(variacao.vendasAno.toFixed(2)),
-        }))
-        .filter((variacao) => variacao.quantidade > 0 || variacao.vendasMes > 0 || variacao.vendasAno > 0)
-        .sort((a, b) => b.quantidade - a.quantidade || a.cor.localeCompare(b.cor));
+  product.variacoes = product.variacoes
+    .map((variacao) => ({
+      ...variacao,
+      quantidade: Number(variacao.quantidade.toFixed(2)),
+      quantidadeAmostra: Number(
+        variacao.quantidadeAmostra.toFixed(2)
+      ),
+      quantidadeDoa: Number(
+        variacao.quantidadeDoa.toFixed(2)
+      ),
+      vendasMes: Number(variacao.vendasMes.toFixed(2)),
+      vendasAno: Number(variacao.vendasAno.toFixed(2)),
+    }))
+    .filter(
+      (variacao) =>
+        variacao.quantidade > 0 ||
+        variacao.quantidadeAmostra > 0 ||
+        variacao.quantidadeDoa > 0 ||
+        variacao.vendasMes > 0 ||
+        variacao.vendasAno > 0
+    )
+    .sort(
+      (a, b) =>
+        b.quantidade - a.quantidade ||
+        b.quantidadeAmostra - a.quantidadeAmostra ||
+        b.quantidadeDoa - a.quantidadeDoa ||
+        a.cor.localeCompare(b.cor)
+    );
 
       product.lojas = product.lojas
         .map((loja) => ({
           ...loja,
           quantidade: Number(loja.quantidade.toFixed(2)),
+          quantidadeAmostra: Number(
+            loja.quantidadeAmostra.toFixed(2)
+          ),
+          quantidadeDoa: Number(
+            loja.quantidadeDoa.toFixed(2)
+          ),
           vendasMes: Number(loja.vendasMes.toFixed(2)),
           vendasAno: Number(loja.vendasAno.toFixed(2)),
           variacoes: loja.variacoes
             .map((variacao) => ({
               ...variacao,
-              quantidade: Number(variacao.quantidade.toFixed(2)),
-              vendasMes: Number(variacao.vendasMes.toFixed(2)),
-              vendasAno: Number(variacao.vendasAno.toFixed(2)),
+              quantidade: Number(
+                variacao.quantidade.toFixed(2)
+              ),
+              quantidadeAmostra: Number(
+                variacao.quantidadeAmostra.toFixed(2)
+              ),
+              quantidadeDoa: Number(
+                variacao.quantidadeDoa.toFixed(2)
+              ),
+              vendasMes: Number(
+                variacao.vendasMes.toFixed(2)
+              ),
+              vendasAno: Number(
+                variacao.vendasAno.toFixed(2)
+              ),
             }))
-            .filter((variacao) => variacao.quantidade > 0 || variacao.vendasMes > 0 || variacao.vendasAno > 0)
-            .sort((a, b) => b.quantidade - a.quantidade || a.cor.localeCompare(b.cor)),
+            .filter(
+              (variacao) =>
+                variacao.quantidade > 0 ||
+                variacao.quantidadeAmostra > 0 ||
+                variacao.quantidadeDoa > 0 ||
+                variacao.vendasMes > 0 ||
+                variacao.vendasAno > 0
+            )
+            .sort(
+              (a, b) =>
+                b.quantidade - a.quantidade ||
+                b.quantidadeAmostra - a.quantidadeAmostra ||
+                b.quantidadeDoa - a.quantidadeDoa ||
+                a.cor.localeCompare(b.cor)
+            ),
         }))
-        .filter((loja) => loja.quantidade > 0 || loja.vendasMes > 0 || loja.vendasAno > 0)
-        .sort((a, b) => b.quantidade - a.quantidade || b.vendasMes - a.vendasMes || a.loja.localeCompare(b.loja));
+        .filter(
+          (loja) =>
+            loja.quantidade > 0 ||
+            loja.quantidadeAmostra > 0 ||
+            loja.quantidadeDoa > 0 ||
+            loja.vendasMes > 0 ||
+            loja.vendasAno > 0
+        )
+        .sort(
+          (a, b) =>
+            b.quantidade - a.quantidade ||
+            b.quantidadeAmostra - a.quantidadeAmostra ||
+            b.quantidadeDoa - a.quantidadeDoa ||
+            b.vendasMes - a.vendasMes ||
+            a.loja.localeCompare(b.loja)
+        );
 
-      product.quantidade = Number(product.quantidade.toFixed(2));
-      product.vendasMes = Number(product.vendasMes.toFixed(2));
-      product.vendasAno = Number(product.vendasAno.toFixed(2));
-      product.lojasComEstoque = product.lojas.filter((loja) => loja.quantidade > 0).length;
+      product.quantidade = Number(
+        product.quantidade.toFixed(2)
+      );
+
+      product.quantidadeAmostra = Number(
+        product.quantidadeAmostra.toFixed(2)
+      );
+
+      product.quantidadeDoa = Number(
+        product.quantidadeDoa.toFixed(2)
+      );
+
+      product.vendasMes = Number(
+        product.vendasMes.toFixed(2)
+      );
+
+      product.vendasAno = Number(
+        product.vendasAno.toFixed(2)
+      );
+
+      product.lojasComEstoque = product.lojas.filter(
+        (loja) => loja.quantidade > 0
+      ).length;
 
       product.status = acessoRapidoGetStatus({
         quantidade: product.quantidade,
@@ -3248,18 +3595,25 @@ app.get('/api/diretoria/acesso-rapido-aparelhos', async (req, res) => {
       return product;
     });
 
-    produtos.sort((a, b) =>
-      b.quantidade - a.quantidade ||
-      b.vendasMes - a.vendasMes ||
-      b.vendasAno - a.vendasAno ||
-      a.modelo.localeCompare(b.modelo)
+    produtos.sort(
+      (a, b) =>
+        b.quantidade - a.quantidade ||
+        b.quantidadeAmostra - a.quantidadeAmostra ||
+        b.quantidadeDoa - a.quantidadeDoa ||
+        b.vendasMes - a.vendasMes ||
+        b.vendasAno - a.vendasAno ||
+        a.modelo.localeCompare(b.modelo)
     );
 
     const resumo = {
       modelos: produtos.length,
       modelosComEstoque: produtos.filter((item) => item.quantidade > 0).length,
       modelosVendidosMes: produtos.filter((item) => item.vendasMes > 0).length,
+      modelosComAmostra: produtos.filter((item) => item.quantidadeAmostra > 0).length,
+      modelosComDoa: produtos.filter((item) => item.quantidadeDoa > 0).length,
       quantidade: Number(produtos.reduce((acc, item) => acc + item.quantidade, 0).toFixed(2)),
+      quantidadeAmostra: Number(produtos.reduce((acc, item) => acc + item.quantidadeAmostra, 0).toFixed(2)),
+      quantidadeDoa: Number(produtos.reduce((acc, item) => acc + item.quantidadeDoa, 0).toFixed(2)),
       vendasMes: Number(produtos.reduce((acc, item) => acc + item.vendasMes, 0).toFixed(2)),
       vendasAno: Number(produtos.reduce((acc, item) => acc + item.vendasAno, 0).toFixed(2)),
       lojas: Array.from(
@@ -6425,65 +6779,161 @@ app.post('/stock/sync', async (req, res) => {
   const data = req.body;
   const shouldReset = req.query.reset !== 'false';
 
-  console.log(`📦 Recebendo lote de estoque... Resetar Banco: ${shouldReset}`);
+  console.log(
+    `📦 Recebendo lote de estoque... Resetar Banco: ${shouldReset}`
+  );
 
   if (!Array.isArray(data)) {
-    return res.status(400).json({ error: "Formato inválido. Envie uma lista." });
+    return res.status(400).json({
+      error: 'Formato inválido. Envie uma lista.',
+    });
   }
 
   try {
     if (shouldReset) {
       await prisma.stock.deleteMany();
-      console.log("🗑️ Banco de estoque limpo para iniciar nova carga.");
+
+      console.log(
+        '🗑️ Banco de estoque limpo para iniciar nova carga.'
+      );
     }
 
-    const safeNum = (val: any) => {
-      const parsed = Number(val);
-      return isNaN(parsed) ? 0 : parsed;
+    const safeNum = (value: any): number =>
+      estoqueDetalhadoToNumber(value);
+
+    const safeStr = (
+      value: any,
+      fallback = ''
+    ): string => {
+      if (value === null || value === undefined) {
+        return fallback;
+      }
+
+      return String(value).trim();
     };
 
-    const safeStr = (val: any, fallback = "") => {
-      if (val === null || val === undefined) return fallback;
-      return String(val).trim();
-    };
+    const expandedInputRows = data.flatMap(
+      (item: any) => expandStockInputRows(item)
+    );
 
-    const formattedData = data.map((item: any) => {
-      const emLinhaValue = safeStr(
-        item.EM_LINHA ??
-        item.em_linha ??
-        item.emLinha ??
-        item.linha,
-        ""
+    const formattedData = deduplicateStockRows(
+      expandedInputRows.map((item: any) => {
+        const emLinhaValue = safeStr(
+          item.EM_LINHA ??
+            item.em_linha ??
+            item.emLinha ??
+            item.linha,
+          ''
+        );
+
+        const clusterValue = safeStr(
+          item.CLUSTER ??
+            item.cluster ??
+            item.Cluster,
+          ''
+        );
+
+        return {
+          cnpj: safeStr(
+            item.CNPJ_ORIGEM ?? item.cnpj
+          ),
+
+          storeName: safeStr(
+            item.NOME_FANTASIA ?? item.storeName,
+            'LOJA'
+          ),
+
+          productCode: safeStr(
+            item.CODIGO_PRODUTO ?? item.productCode
+          ),
+
+          reference: safeStr(
+            item.REFERENCIA ?? item.reference
+          ),
+
+          description: safeStr(
+            item.DESCRICAO ?? item.description,
+            'SEM DESCRIÇÃO'
+          ),
+
+          category: safeStr(
+            item.CATEGORIA ?? item.category,
+            'GERAL'
+          ),
+
+          quantity: safeNum(
+            item.__stockQuantity ??
+              item.QUANTIDADE ??
+              item.quantity
+          ),
+
+          costPrice: safeNum(
+            item.PRECO_CUSTO ?? item.costPrice
+          ),
+
+          salePrice: safeNum(
+            item.PRECO_VENDA ?? item.salePrice
+          ),
+
+          averageCost: safeNum(
+            item.CUSTO_MEDIO ?? item.averageCost
+          ),
+
+          serial: safeStr(
+            item.SERIAL ?? item.serial
+          ),
+
+          emLinha: emLinhaValue,
+          cluster: clusterValue,
+
+          stockType: normalizeStockType(
+            item.__stockType ?? extractStockType(item)
+          ),
+        };
+      })
+    );
+
+    /*
+     * Se o mesmo lote for reenviado por timeout,
+     * removemos os mesmos itens antes de inserir.
+     */
+    if (!shouldReset && formattedData.length > 0) {
+      const serials = formattedData
+        .map((item) => item.serial.trim())
+        .filter(Boolean);
+
+      if (serials.length > 0) {
+        await prisma.stock.deleteMany({
+          where: {
+            serial: {
+              in: serials,
+            },
+          },
+        });
+      }
+
+      const rowsWithoutSerial = formattedData.filter(
+        (item) => !item.serial.trim()
       );
 
-      const clusterValue = safeStr(
-        item.CLUSTER ??
-        item.cluster ??
-        item.Cluster,
-        ""
-      );
-
-      return {
-        cnpj: safeStr(item.CNPJ_ORIGEM),
-        storeName: safeStr(item.NOME_FANTASIA, "LOJA"),
-        productCode: safeStr(item.CODIGO_PRODUTO),
-        reference: safeStr(item.REFERENCIA),
-        description: safeStr(item.DESCRICAO, "SEM DESCRIÇÃO"),
-        category: safeStr(item.CATEGORIA, "GERAL"),
-        quantity: safeNum(item.QUANTIDADE),
-        costPrice: safeNum(item.PRECO_CUSTO),
-        salePrice: safeNum(item.PRECO_VENDA),
-        averageCost: safeNum(item.CUSTO_MEDIO),
-        serial: safeStr(item.SERIAL),
-
-        // ✅ NOVAS COLUNAS
-        emLinha: emLinhaValue,
-        cluster: clusterValue
-      };
-    });
+      for (const item of rowsWithoutSerial) {
+        await prisma.stock.deleteMany({
+          where: {
+            cnpj: item.cnpj,
+            storeName: item.storeName,
+            productCode: item.productCode,
+            reference: item.reference,
+            description: item.description,
+            category: item.category,
+            serial: '',
+            stockType: item.stockType,
+          },
+        });
+      }
+    }
 
     await prisma.stock.createMany({
-      data: formattedData
+      data: formattedData,
     });
 
     // =======================================================
@@ -6493,9 +6943,12 @@ app.post('/stock/sync', async (req, res) => {
       if (item.serial && item.serial.trim() !== '') {
         const serialClean = item.serial.trim();
 
-        const existing = await prisma.imeiHistory.findUnique({
-          where: { serial: serialClean }
-        });
+        const existing =
+          await prisma.imeiHistory.findUnique({
+            where: {
+              serial: serialClean,
+            },
+          });
 
         if (!existing) {
           await prisma.imeiHistory.create({
@@ -6503,51 +6956,76 @@ app.post('/stock/sync', async (req, res) => {
               serial: serialClean,
               productCode: item.productCode,
               description: item.description,
-              currentStore: item.storeName
-            }
+              currentStore: item.storeName,
+            },
           });
-        } else if (existing.currentStore !== item.storeName) {
+        } else if (
+          existing.currentStore !== item.storeName
+        ) {
           await prisma.imeiHistory.update({
-            where: { serial: serialClean },
+            where: {
+              serial: serialClean,
+            },
             data: {
               currentStore: item.storeName,
               entryDateStore: new Date(),
-              transferCount: existing.transferCount + 1
-            }
+              transferCount:
+                existing.transferCount + 1,
+            },
           });
         }
       }
     }
-    // =======================================================
 
-    console.log(`✅ Lote processado com sucesso: ${formattedData.length} registros.`);
-    console.log("🔎 Exemplo do primeiro item salvo:", formattedData[0]);
+    console.log(
+      `✅ Lote processado com sucesso: ${formattedData.length} registros.`
+    );
+
+    console.log(
+      '🔎 Exemplo do primeiro item salvo:',
+      formattedData[0]
+    );
 
     return res.json({
       success: true,
-      count: formattedData.length
+      count: formattedData.length,
     });
-
   } catch (error: any) {
-    console.error("❌ ERRO CRÍTICO NO PRISMA:", error);
+    console.error(
+      '❌ ERRO CRÍTICO NO PRISMA:',
+      error
+    );
+
     return res.status(500).json({
-      error: "Erro ao sincronizar estoque.",
-      details: error.message
+      error: 'Erro ao sincronizar estoque.',
+      details: error.message,
     });
   }
 });
 
-
 // ==========================================
 // 📦 ROTA QUE O REACT USA PARA LER O ESTOQUE
 // ==========================================
-app.get('/stock', async (req, res) => {
+app.get('/stock', async (_req, res) => {
   try {
-    const stock = await prisma.stock.findMany();
-    res.json(stock);
+    const stock = deduplicateStockRows(
+      await prisma.stock.findMany({
+        orderBy: {
+          updatedAt: 'desc',
+        },
+      })
+    );
+
+    return res.json(stock);
   } catch (error) {
-    console.error("Erro ao buscar estoque:", error);
-    res.status(500).json({ error: "Erro ao carregar estoque" });
+    console.error(
+      'Erro ao buscar estoque:',
+      error
+    );
+
+    return res.status(500).json({
+      error: 'Erro ao carregar estoque',
+    });
   }
 });
 

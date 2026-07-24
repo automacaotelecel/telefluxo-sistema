@@ -77,6 +77,129 @@ def normalizar_loja(s):
 def normalizar_referencia(s):
     return str(s or "").strip().upper()
 
+
+def normalizar_tipo_estoque(valor):
+    texto = (
+        str(valor or "")
+        .strip()
+        .upper()
+        .replace("Á", "A")
+        .replace("Ã", "A")
+        .replace("Â", "A")
+        .replace("À", "A")
+        .replace("É", "E")
+        .replace("Ê", "E")
+        .replace("Í", "I")
+        .replace("Ó", "O")
+        .replace("Ô", "O")
+        .replace("Õ", "O")
+        .replace("Ú", "U")
+        .replace("Ç", "C")
+    )
+
+    if "AMOSTRA" in texto or "MOSTRUARIO" in texto or "DEMONSTRACAO" in texto or "EXPOSICAO" in texto:
+        return "AMOSTRA"
+
+    if texto == "DOA" or texto.startswith("DOA ") or texto.endswith(" DOA") or " D.O.A" in texto:
+        return "DOA"
+
+    return "ESTOQUE"
+
+
+def identificar_tipo_estoque_linha(row):
+    candidatos_exatos = [
+        "tipo_estoque",
+        "estoque_tipo",
+        "stock_type",
+        "tipo_saldo",
+        "deposito",
+        "nome_deposito",
+        "descricao_deposito",
+        "desc_deposito",
+        "deposito_descricao",
+        "local_estoque",
+        "origem_estoque",
+        "classificacao_estoque",
+        "status_estoque",
+        "aba_origem",
+        "sheet_name",
+    ]
+
+    for coluna in candidatos_exatos:
+        if coluna in row.index:
+            tipo = normalizar_tipo_estoque(row.get(coluna))
+            if tipo != "ESTOQUE":
+                return tipo
+
+    # Fallback para bases que trazem a informação em uma coluna com outro nome.
+    for coluna in row.index:
+        nome_coluna = str(coluna or "").strip().lower()
+        if any(termo in nome_coluna for termo in ["deposit", "estoque", "amostra", "doa", "mostruario"]):
+            tipo = normalizar_tipo_estoque(row.get(coluna))
+            if tipo != "ESTOQUE":
+                return tipo
+
+    return "ESTOQUE"
+
+def _primeira_coluna_existente(df, candidatos):
+    mapa = {str(c).strip().lower(): c for c in df.columns}
+    for candidato in candidatos:
+        if candidato.lower() in mapa:
+            return mapa[candidato.lower()]
+    return None
+
+
+def expandir_quantidades_por_tipo(df):
+    """
+    Suporta bases que entregam ESTOQUE, AMOSTRA e DOA em colunas separadas.
+    Cada quantidade vira uma linha independente com TIPO_ESTOQUE explícito.
+    Se a base já vier em linhas separadas, mantém o formato atual.
+    """
+    if df is None or df.empty:
+        return df
+
+    col_estoque = _primeira_coluna_existente(df, [
+        "estoque", "qtd_estoque", "quantidade_estoque", "saldo_estoque"
+    ])
+    col_amostra = _primeira_coluna_existente(df, [
+        "amostra", "qtd_amostra", "quantidade_amostra", "saldo_amostra"
+    ])
+    col_doa = _primeira_coluna_existente(df, [
+        "doa", "qtd_doa", "quantidade_doa", "saldo_doa"
+    ])
+
+    if not any([col_estoque, col_amostra, col_doa]):
+        return df
+
+    linhas = []
+    for _, row in df.iterrows():
+        quantidade_generica = float(to_float([row.get("QUANTIDADE", row.get("quantidade", 0))]).iloc[0])
+
+        quantidades = {
+            "ESTOQUE": float(to_float([row.get(col_estoque, quantidade_generica) if col_estoque else quantidade_generica]).iloc[0]),
+            "AMOSTRA": float(to_float([row.get(col_amostra, 0) if col_amostra else 0]).iloc[0]),
+            "DOA": float(to_float([row.get(col_doa, 0) if col_doa else 0]).iloc[0]),
+        }
+
+        adicionou = False
+        for tipo, quantidade in quantidades.items():
+            if quantidade <= 0:
+                continue
+            nova = row.copy()
+            nova["TIPO_ESTOQUE"] = tipo
+            nova["QUANTIDADE"] = quantidade
+            linhas.append(nova)
+            adicionou = True
+
+        if not adicionou:
+            nova = row.copy()
+            nova["TIPO_ESTOQUE"] = normalizar_tipo_estoque(row.get("TIPO_ESTOQUE", "ESTOQUE"))
+            nova["QUANTIDADE"] = quantidade_generica
+            linhas.append(nova)
+
+    return pd.DataFrame(linhas)
+
+
 # ✅ NOVO: helper para paginação segura por timestamp
 def obter_proximo_timestamp(df, timestamp_atual):
     if df is None or df.empty or "timestamp" not in df.columns:
@@ -392,7 +515,10 @@ def extrair_estoque(cnpj, modo_completo=False):
     if "cod_produto" in base.columns:
         base["cod_produto"] = pd.to_numeric(base["cod_produto"], errors="coerce")
 
-    base = base.drop_duplicates(subset=["cod_produto"], keep="first")
+    # Mantém uma linha por produto e tipo de estoque. Sem o tipo na chave,
+    # ESTOQUE, AMOSTRA e DOA poderiam ser misturados ou sobrescritos.
+    base["TIPO_ESTOQUE"] = base.apply(identificar_tipo_estoque_linha, axis=1)
+    base = base.drop_duplicates(subset=["cod_produto", "TIPO_ESTOQUE"], keep="first")
     base["CNPJ_ORIGEM"] = cnpj
     base["NOME_FANTASIA"] = LOJAS_NOME.get(cnpj, f"LOJA {cnpj[-4:]}")
     base.rename(columns={
@@ -403,7 +529,8 @@ def extrair_estoque(cnpj, modo_completo=False):
         "custo_medio": "CUSTO_MEDIO"
     }, inplace=True)
 
-    log(f"   ✅ {LOJAS_NOME.get(cnpj, cnpj)}: {len(base)} produtos no estoque")
+    tipos_encontrados = base["TIPO_ESTOQUE"].value_counts().to_dict() if "TIPO_ESTOQUE" in base.columns else {}
+    log(f"   ✅ {LOJAS_NOME.get(cnpj, cnpj)}: {len(base)} registros | tipos: {tipos_encontrados}")
     return base
 
 # ===========================================
@@ -661,6 +788,10 @@ def main():
     for col in ["QUANTIDADE", "PRECO_CUSTO", "PRECO_VENDA", "CUSTO_MEDIO"]:
         df_estoque[col] = to_float(df_estoque.get(col, 0))
 
+    # Bases alternativas podem trazer ESTOQUE, AMOSTRA e DOA em colunas separadas.
+    # A expansão ocorre antes do IMEI para que apenas o estoque normal seja serializado.
+    df_estoque = expandir_quantidades_por_tipo(df_estoque)
+
     # 4. A MÁGICA: DESDOBRAMENTO POR IMEI
     log("🔍 Desdobrando itens com IMEI...")
     linhas_expandidas = []
@@ -670,11 +801,17 @@ def main():
         cod = row["CODIGO_PRODUTO"]
         qtd_total = float(row["QUANTIDADE"])
 
-        # Procura se esse produto nessa loja tem IMEIs atrelados
-        seriais_produto = df_seriais[
-            (df_seriais["CNPJ_ORIGEM"] == cnpj) &
-            (df_seriais["codigoproduto"] == cod)
-        ]["serial"].tolist()
+        tipo_estoque = normalizar_tipo_estoque(row.get("TIPO_ESTOQUE", "ESTOQUE"))
+
+        # IMEI é usado apenas para o estoque normal. AMOSTRA e DOA permanecem
+        # como saldos agregados e nunca duplicam os seriais do estoque operacional.
+        if tipo_estoque == "ESTOQUE":
+            seriais_produto = df_seriais[
+                (df_seriais["CNPJ_ORIGEM"] == cnpj) &
+                (df_seriais["codigoproduto"] == cod)
+            ]["serial"].tolist()
+        else:
+            seriais_produto = []
 
         # ✅ NOVO: limpa, deduplica e evita serial vazio
         seriais_produto = list(dict.fromkeys(

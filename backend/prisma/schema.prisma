@@ -9,22 +9,22 @@ datasource db {
 }
 
 model Task {
-  id        String        @id
+  id        String   @id
   title     String
   user      String
   status    String
   priority  String
   deadline  String
   source    String?
-  createdAt DateTime      @default(now())
-  
+  createdAt DateTime @default(now())
+
   // === HIERARQUIA (PAI E FILHO) ===
-  parentId  String?       
-  parent    Task?         @relation("TaskHierarchy", fields: [parentId], references: [id]) 
-  subTasks  Task[]        @relation("TaskHierarchy") 
+  parentId String?
+  parent   Task?   @relation("TaskHierarchy", fields: [parentId], references: [id])
+  subTasks Task[]  @relation("TaskHierarchy")
   // ================================
 
-  history   TaskHistory[]
+  history TaskHistory[]
 }
 
 model Notification {
@@ -67,6 +67,7 @@ model Announcement {
   active    Boolean  @default(true)
   createdAt DateTime @default(now())
 }
+
 model DeptMessage {
   id         String   @id @default(uuid())
   content    String
@@ -81,20 +82,20 @@ model Finance {
   description String
   category    String
   unit        String
-  payer       String?  // <--- O campo novo continua aqui
-  value       Float    // <--- VOLTAMOS PARA FLOAT (Para não dar erro)
+  payer       String? // <--- O campo novo continua aqui
+  value       Float // <--- VOLTAMOS PARA FLOAT (Para não dar erro)
   issueDate   DateTime
   dueDate     DateTime
   status      String   @default("PENDENTE")
-  
+
   // Campos de Inteligência (Recorrência)
-  isRecurring       Boolean  @default(false)
-  totalInstallments Int      @default(1)
+  isRecurring        Boolean @default(false)
+  totalInstallments  Int     @default(1)
   currentInstallment Int     @default(1)
-  groupId           String?  
-  type String @default("EXPENSE") // Vai ser 'EXPENSE' ou 'INCOME'
-  
-  createdAt   DateTime @default(now())
+  groupId            String?
+  type               String  @default("EXPENSE") // Vai ser 'EXPENSE' ou 'INCOME'
+
+  createdAt DateTime @default(now())
 }
 
 model Stock {
@@ -112,8 +113,9 @@ model Stock {
   updatedAt   DateTime @updatedAt
   serial      String?
 
-  emLinha     String?
-  cluster     String?
+  emLinha   String?
+  cluster   String?
+  stockType String  @default("ESTOQUE")
 }
 
 model User {
@@ -121,9 +123,9 @@ model User {
   name          String
   email         String         @unique
   password      String
-  role          String         // CEO, DIRETOR, ADM, LOJA
+  role          String // CEO, DIRETOR, ADM, LOJA
   department    String
-  allowedStores String?        // NOVO: "Loja A, Loja B" (Pode ser nulo para ADM/CEO)
+  allowedStores String? // NOVO: "Loja A, Loja B" (Pode ser nulo para ADM/CEO)
   isAdmin       Boolean        @default(false)
   status        String         @default("active")
   managerId     String?
@@ -135,28 +137,28 @@ model User {
 }
 
 model PriceTable {
-  id          String   @id @default(uuid())
-  category    String   // Ex: "Aparelhos"
-  
+  id       String @id @default(uuid())
+  category String // Ex: "Aparelhos"
+
   // Dados Principais (Tela)
-  vigencia    String?  // Coluna A
-  model       String   // Coluna B
-  price       String   // Coluna J (Preço Final)
-  
+  vigencia String? // Coluna A
+  model    String // Coluna B
+  price    String // Coluna J (Preço Final)
+
   // Dados Complementares (Subtela)
-  reference   String?  // Coluna C
-  priceSSG    String?  // Coluna D
-  descTelecel String?  // Coluna E
-  rebate      String?  // Coluna F
-  tradeIn     String?  // Coluna G
-  bogo        String?  // Coluna H
-  sip         String?  // Coluna I
-  price18x    String?  // Coluna K
-  
+  reference   String? // Coluna C
+  priceSSG    String? // Coluna D
+  descTelecel String? // Coluna E
+  rebate      String? // Coluna F
+  tradeIn     String? // Coluna G
+  bogo        String? // Coluna H
+  sip         String? // Coluna I
+  price18x    String? // Coluna K
+
   // Controle
-  columnM     String?  // Validador (Sim/Não)
-  highlight   Boolean  @default(false)
-  updatedAt   DateTime @default(now())
+  columnM   String? // Validador (Sim/Não)
+  highlight Boolean  @default(false)
+  updatedAt DateTime @default(now())
 }
 
 // Tabela de Rastreabilidade (O Filme do IMEI)
@@ -168,8 +170,8 @@ model ImeiHistory {
   currentStore     String
   entryDateCompany DateTime @default(now()) // Data que chegou na empresa
   entryDateStore   DateTime @default(now()) // Data que chegou nesta loja específica
-  transferCount    Int      @default(0)     // Quantas vezes foi transferido
-  updatedAt        DateTime @updatedAt      // Última vez que o Python confirmou que ele existe
+  transferCount    Int      @default(0) // Quantas vezes foi transferido
+  updatedAt        DateTime @updatedAt // Última vez que o Python confirmou que ele existe
 }
 
 model RhCollaborator {

@@ -22,6 +22,8 @@ type CorAparelho = {
   modeloCompleto: string;
   categoria: string;
   quantidade: number;
+  quantidadeAmostra?: number;
+  quantidadeDoa?: number;
   vendasMes: number;
   vendasAno: number;
   seriais?: string[];
@@ -32,6 +34,8 @@ type LojaAparelho = {
   cnpj?: string;
   regiao?: string;
   quantidade: number;
+  quantidadeAmostra?: number;
+  quantidadeDoa?: number;
   vendasMes: number;
   vendasAno: number;
   cores?: any[];
@@ -47,6 +51,8 @@ type ProdutoAparelho = {
   modeloBusca?: string;
   categoria: string;
   quantidade: number;
+  quantidadeAmostra?: number;
+  quantidadeDoa?: number;
   estoqueTotal?: number;
   vendasMes: number;
   vendasAno: number;
@@ -163,6 +169,14 @@ function getQuantidadeCor(item: CorAparelho) {
   return Number(item.quantidade ?? 0);
 }
 
+function getQuantidadeAmostra(item: any) {
+  return Number(item?.quantidadeAmostra ?? item?.amostra ?? 0);
+}
+
+function getQuantidadeDoa(item: any) {
+  return Number(item?.quantidadeDoa ?? item?.doa ?? 0);
+}
+
 // Lógica para separar Aparelhos de Acessórios
 function isAparelho(categoria: string) {
   const cat = normalizeText(categoria);
@@ -172,6 +186,8 @@ function isAparelho(categoria: string) {
 
 function normalizeCorAparelho(cor: any): CorAparelho {
   const quantidade = Number(cor?.quantidade ?? cor?.estoque ?? cor?.quantity ?? cor?.qtd ?? 0);
+  const quantidadeAmostra = Number(cor?.quantidadeAmostra ?? cor?.amostra ?? 0);
+  const quantidadeDoa = Number(cor?.quantidadeDoa ?? cor?.doa ?? 0);
   const vendasMes = Number(cor?.vendasMes ?? cor?.vendas_mes ?? cor?.mes ?? cor?.salesMonth ?? 0);
   const vendasAno = Number(cor?.vendasAno ?? cor?.vendas_ano ?? cor?.ano ?? cor?.salesYear ?? 0);
   
@@ -180,6 +196,8 @@ function normalizeCorAparelho(cor: any): CorAparelho {
     modeloCompleto: String(cor?.modeloCompleto ?? cor?.modelo_completo ?? cor?.description ?? cor?.descricao ?? cor?.modelo ?? 'Variação').trim(),
     categoria: String(cor?.categoria ?? cor?.category ?? '').trim(),
     quantidade,
+    quantidadeAmostra,
+    quantidadeDoa,
     vendasMes,
     vendasAno,
     seriais: Array.isArray(cor?.seriais) ? cor.seriais : Array.isArray(cor?.serials) ? cor.serials : [],
@@ -192,17 +210,25 @@ function getLojaCores(loja: LojaAparelho): CorAparelho[] {
 
   const normalizadas = lista
     .map((cor) => normalizeCorAparelho(cor))
-    .filter((cor) => getQuantidadeCor(cor) > 0 || cor.vendasMes > 0 || cor.vendasAno > 0);
+    .filter((cor) =>
+      getQuantidadeCor(cor) > 0 ||
+      getQuantidadeAmostra(cor) > 0 ||
+      getQuantidadeDoa(cor) > 0 ||
+      cor.vendasMes > 0 ||
+      cor.vendasAno > 0
+    );
 
   if (normalizadas.length > 0) return normalizadas;
 
   const quantidadeLoja = getQuantidadeLoja(loja);
-  if (quantidadeLoja > 0 || loja.vendasMes > 0 || loja.vendasAno > 0) {
+  if (quantidadeLoja > 0 || getQuantidadeAmostra(loja) > 0 || getQuantidadeDoa(loja) > 0 || loja.vendasMes > 0 || loja.vendasAno > 0) {
     return [{
       cor: 'Padrão',
       modeloCompleto: 'Sem detalhamento',
       categoria: '',
       quantidade: quantidadeLoja,
+      quantidadeAmostra: getQuantidadeAmostra(loja),
+      quantidadeDoa: getQuantidadeDoa(loja),
       vendasMes: Number(loja?.vendasMes ?? 0),
       vendasAno: Number(loja?.vendasAno ?? 0),
       seriais: [],
@@ -361,19 +387,23 @@ export default function AcessoRapidoAparelhos({ currentUser }: Props) {
     return filteredProducts.reduce((acc, item) => {
       const quantidade = getQuantidadeProduto(item);
       acc.quantidade += quantidade;
+      acc.quantidadeAmostra += getQuantidadeAmostra(item);
+      acc.quantidadeDoa += getQuantidadeDoa(item);
       acc.vendasMes += item.vendasMes;
       acc.vendasAno += item.vendasAno;
       item.lojas.forEach(loja => { if (getQuantidadeLoja(loja) > 0) storesSet.add(loja.loja); });
       acc.lojas = storesSet.size;
       return acc;
-    }, { quantidade: 0, vendasMes: 0, vendasAno: 0, lojas: 0 });
+    }, { quantidade: 0, quantidadeAmostra: 0, quantidadeDoa: 0, vendasMes: 0, vendasAno: 0, lojas: 0 });
   }, [filteredProducts]);
 
   const handleDownload = () => {
     const resumoRows = filteredProducts.map((item) => ({
       Modelo_Agrupado: item.modelo,
       Categoria: item.categoria,
-      Estoque_Total: getQuantidadeProduto(item),
+      Estoque_Normal: getQuantidadeProduto(item),
+      Amostra: getQuantidadeAmostra(item),
+      DOA: getQuantidadeDoa(item),
       Vendas_Mes: item.vendasMes,
       Vendas_Ano: item.vendasAno,
     }));
@@ -386,7 +416,9 @@ export default function AcessoRapidoAparelhos({ currentUser }: Props) {
           Cor: cor.cor,
           Categoria: cor.categoria || item.categoria,
           Loja: loja.loja,
-          Quantidade: getQuantidadeCor(cor),
+          Estoque_Normal: getQuantidadeCor(cor),
+          Amostra: getQuantidadeAmostra(cor),
+          DOA: getQuantidadeDoa(cor),
           Vendas_Mes: cor.vendasMes,
           Vendas_Ano: cor.vendasAno,
         }))
@@ -453,11 +485,13 @@ export default function AcessoRapidoAparelhos({ currentUser }: Props) {
         </div>
 
         {/* KPIs Reduzidos */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <KpiCard icon={Warehouse} label="Estoque" value={formatNumber(filteredSummary.quantidade)} helper="Peças filtradas" />
+        <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+          <KpiCard icon={Warehouse} label="Estoque" value={formatNumber(filteredSummary.quantidade)} helper="Estoque normal" />
+          <KpiCard icon={Package} label="Amostra" value={formatNumber(filteredSummary.quantidadeAmostra)} helper="Não compõe estoque normal" />
+          <KpiCard icon={AlertCircle} label="DOA" value={formatNumber(filteredSummary.quantidadeDoa)} helper="Separado do estoque normal" />
           <KpiCard icon={TrendingUp} label="Mês" value={formatNumber(filteredSummary.vendasMes)} helper="Vendas no mês" />
           <KpiCard icon={TrendingUp} label="Ano" value={formatNumber(filteredSummary.vendasAno)} helper="Vendas no ano" />
-          <KpiCard icon={Store} label="Lojas" value={formatNumber(filteredSummary.lojas)} helper="Com estoque atual" />
+          <KpiCard icon={Store} label="Lojas" value={formatNumber(filteredSummary.lojas)} helper="Com estoque normal" />
         </div>
 
         {/* Filtros Simplificados */}
@@ -523,7 +557,9 @@ export default function AcessoRapidoAparelhos({ currentUser }: Props) {
               <thead className="bg-slate-50 border-b border-slate-100">
                 <tr>
                   <th className="px-4 py-3 text-[10px] font-black uppercase tracking-widest text-slate-400">Modelo</th>
-                  <th className="px-4 py-3 text-[10px] font-black uppercase tracking-widest text-slate-400 text-center">Estoque</th>
+                  <th className="px-4 py-3 text-[10px] font-black uppercase tracking-widest text-slate-400 text-center">Est</th>
+                  <th className="px-4 py-3 text-[10px] font-black uppercase tracking-widest text-amber-500 text-center">Amostra</th>
+                  <th className="px-4 py-3 text-[10px] font-black uppercase tracking-widest text-red-500 text-center">DOA</th>
                   <th className="px-4 py-3 text-[10px] font-black uppercase tracking-widest text-slate-400 text-center">Vendas Mês</th>
                   <th className="px-4 py-3 text-[10px] font-black uppercase tracking-widest text-slate-400 text-center">Vendas Ano</th>
                 </tr>
@@ -548,13 +584,15 @@ export default function AcessoRapidoAparelhos({ currentUser }: Props) {
                           </div>
                         </td>
                         <td className="px-4 py-3 text-center text-sm font-black text-slate-900">{formatNumber(quantidade)}</td>
+                        <td className="px-4 py-3 text-center text-sm font-black text-amber-600">{formatNumber(getQuantidadeAmostra(item))}</td>
+                        <td className="px-4 py-3 text-center text-sm font-black text-red-600">{formatNumber(getQuantidadeDoa(item))}</td>
                         <td className="px-4 py-3 text-center text-sm font-black text-emerald-600">{formatNumber(item.vendasMes)}</td>
                         <td className="px-4 py-3 text-center text-sm font-black text-slate-500">{formatNumber(item.vendasAno)}</td>
                       </tr>
 
                       {isOpen && (
                         <tr key={`${item.id}-details`}>
-                          <td colSpan={4} className="bg-slate-50 px-2 py-3 md:px-6 md:py-4">
+                          <td colSpan={6} className="bg-slate-50 px-2 py-3 md:px-6 md:py-4">
                             <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
                               <div className="divide-y divide-slate-100">
                                 {/* Otimização: Ordenar lojas com maior estoque primeiro */}
@@ -575,6 +613,14 @@ export default function AcessoRapidoAparelhos({ currentUser }: Props) {
                                             <p className="text-[11px] font-black text-slate-900 leading-none">{formatNumber(getQuantidadeLoja(loja))}</p>
                                           </div>
                                           <div className="flex flex-col items-center justify-center">
+                                            <p className="text-[8px] font-black text-amber-500 uppercase leading-none mb-0.5">Amostra</p>
+                                            <p className="text-[11px] font-black text-amber-600 leading-none">{formatNumber(getQuantidadeAmostra(loja))}</p>
+                                          </div>
+                                          <div className="flex flex-col items-center justify-center">
+                                            <p className="text-[8px] font-black text-red-500 uppercase leading-none mb-0.5">DOA</p>
+                                            <p className="text-[11px] font-black text-red-600 leading-none">{formatNumber(getQuantidadeDoa(loja))}</p>
+                                          </div>
+                                          <div className="flex flex-col items-center justify-center">
                                             <p className="text-[8px] font-black text-slate-400 uppercase leading-none mb-0.5">Mês</p>
                                             <p className="text-[11px] font-black text-emerald-600 leading-none">{formatNumber(loja.vendasMes)}</p>
                                           </div>
@@ -590,6 +636,8 @@ export default function AcessoRapidoAparelhos({ currentUser }: Props) {
                                                   <th className="px-3 py-1.5 text-[9px] font-black uppercase text-slate-400">Modelo Exato</th>
                                                   <th className="px-3 py-1.5 text-[9px] font-black uppercase text-slate-400">Cor</th>
                                                   <th className="px-3 py-1.5 text-[9px] font-black uppercase text-slate-400 text-center">Est</th>
+                                                  <th className="px-3 py-1.5 text-[9px] font-black uppercase text-amber-500 text-center">Amostra</th>
+                                                  <th className="px-3 py-1.5 text-[9px] font-black uppercase text-red-500 text-center">DOA</th>
                                                   <th className="px-3 py-1.5 text-[9px] font-black uppercase text-slate-400 text-center">Mês</th>
                                                 </tr>
                                               </thead>
@@ -599,6 +647,8 @@ export default function AcessoRapidoAparelhos({ currentUser }: Props) {
                                                     <td className="px-3 py-1.5 text-[10px] font-black text-slate-700 uppercase leading-tight">{cor.modeloCompleto}</td>
                                                     <td className="px-3 py-1.5 text-[10px] font-bold text-slate-500 uppercase">{cor.cor}</td>
                                                     <td className="px-3 py-1.5 text-center text-[11px] font-black text-slate-900">{formatNumber(getQuantidadeCor(cor))}</td>
+                                                    <td className="px-3 py-1.5 text-center text-[11px] font-black text-amber-600">{formatNumber(getQuantidadeAmostra(cor))}</td>
+                                                    <td className="px-3 py-1.5 text-center text-[11px] font-black text-red-600">{formatNumber(getQuantidadeDoa(cor))}</td>
                                                     <td className="px-3 py-1.5 text-center text-[11px] font-black text-emerald-600">{formatNumber(cor.vendasMes)}</td>
                                                   </tr>
                                                 ))}
@@ -622,7 +672,7 @@ export default function AcessoRapidoAparelhos({ currentUser }: Props) {
                 {/* 🔥 BOTÃO DE CARREGAR MAIS AJUSTADO PARA 10 🔥 */}
                 {visibleCount < filteredProducts.length && (
                   <tr>
-                    <td colSpan={4} className="p-4 text-center bg-slate-50">
+                    <td colSpan={6} className="p-4 text-center bg-slate-50">
                       <button
                         onClick={() => setVisibleCount((v) => v + 10)}
                         className="bg-white border border-slate-300 text-slate-700 hover:bg-slate-100 px-6 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest shadow-sm transition-all"
@@ -638,7 +688,7 @@ export default function AcessoRapidoAparelhos({ currentUser }: Props) {
 
                 {filteredProducts.length === 0 && (
                   <tr>
-                    <td colSpan={4} className="px-4 py-10 text-center">
+                    <td colSpan={6} className="px-4 py-10 text-center">
                       <Package className="mx-auto text-slate-300" size={32} />
                       <p className="mt-2 text-xs font-black text-slate-700 uppercase">Nenhum item encontrado</p>
                     </td>

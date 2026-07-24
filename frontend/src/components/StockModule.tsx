@@ -133,6 +133,31 @@ const getClusterValue = (item: any) =>
     .trim()
     .toUpperCase();
 
+type StockType = 'ESTOQUE' | 'AMOSTRA' | 'DOA';
+
+const normalizeStockType = (value: any): StockType => {
+  const normalized = String(value || 'ESTOQUE')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[_-]+/g, ' ')
+    .trim()
+    .toUpperCase();
+
+  if (normalized.includes('AMOSTRA') || normalized.includes('MOSTRUARIO') || normalized.includes('DEMONSTRACAO')) {
+    return 'AMOSTRA';
+  }
+
+  if (normalized === 'DOA' || normalized.startsWith('DOA ') || normalized.endsWith(' DOA')) {
+    return 'DOA';
+  }
+
+  return 'ESTOQUE';
+};
+
+const getStockType = (item: any): StockType => normalizeStockType(
+  item?.stockType ?? item?.tipo_estoque ?? item?.TIPO_ESTOQUE ?? 'ESTOQUE'
+);
+
 const CD_STORE_NAME = "CD TAGUATINGA";
 
 const LOGISTICALLY_EXCLUDED_STORES = [
@@ -251,6 +276,7 @@ export default function StockModule() {
   const [analysisStatusFilter, setAnalysisStatusFilter] = useState('TODOS');
   const [maloteViewMode, setMaloteViewMode] = useState<'table' | 'cards'>('table');
   const [stockViewFilter, setStockViewFilter] = useState<'TODOS' | 'COM_GIRO' | 'SEM_GIRO' | 'ESTOQUE_BAIXO'>('TODOS');
+  const [stockTypeView, setStockTypeView] = useState<StockType>('ESTOQUE');
   const [showInsightsPanel, setShowInsightsPanel] = useState(false);
   const [insightCategory, setInsightCategory] = useState('TODAS');
 
@@ -277,10 +303,11 @@ export default function StockModule() {
         const groupedStock: Record<string, any> = {};
 
         jsonStock.forEach((item: any) => {
-          const key = `${item.storeName}|${item.productCode}`;
+          const stockType = getStockType(item);
+          const key = `${item.storeName}|${item.productCode}|${stockType}`;
 
           if (!groupedStock[key]) {
-            groupedStock[key] = { ...item, quantity: 0 };
+            groupedStock[key] = { ...item, stockType, quantity: 0 };
           }
           groupedStock[key].quantity += Number(item.quantity) || 0;
         });
@@ -423,10 +450,30 @@ export default function StockModule() {
     return Math.max(1, diff);
   }, [startDate, endDate]);
 
+  const operationalStockData = useMemo(
+    () => stockData.filter((item) => getStockType(item) === 'ESTOQUE'),
+    [stockData]
+  );
+
+  const stockTypeData = useMemo(
+    () => stockData.filter((item) => getStockType(item) === stockTypeView),
+    [stockData, stockTypeView]
+  );
+
+  const stockTypeTotals = useMemo(() => {
+    const totals: Record<StockType, number> = { ESTOQUE: 0, AMOSTRA: 0, DOA: 0 };
+
+    stockData.forEach((item) => {
+      totals[getStockType(item)] += Math.max(0, Number(item.quantity) || 0);
+    });
+
+    return totals;
+  }, [stockData]);
+
   const stockCatalogByDescription = useMemo(() => {
     const catalog: Record<string, any> = {};
 
-    stockData.forEach(item => {
+    operationalStockData.forEach(item => {
       const descKey = normalizeStr(item.description);
       if (!descKey) return;
 
@@ -447,12 +494,12 @@ export default function StockModule() {
     });
 
     return catalog;
-  }, [stockData]);
+  }, [operationalStockData]);
 
   // --- ALGORITMOS ---
   
   const redistributionSuggestions = useMemo(() => {
-    if (stockData.length === 0 && salesData.length === 0) return { moves: [] };
+    if (operationalStockData.length === 0 && salesData.length === 0) return { moves: [] };
 
     const suggestions: any[] = [];
     const productGroups: Record<string, any> = {};
@@ -522,7 +569,7 @@ export default function StockModule() {
       }
     };
 
-    stockData.forEach(item => {
+    operationalStockData.forEach(item => {
       addStoreProduct({
         storeName: item.storeName,
         description: item.description || 'SEM DESCRIÇÃO',
@@ -644,7 +691,7 @@ export default function StockModule() {
         return (priorityScore[b.priority] || 0) - (priorityScore[a.priority] || 0) || b.receiverSales - a.receiverSales || b.qty - a.qty;
       }),
     };
-  }, [stockData, salesData, regionFilter, categoryFilter, lineFilter, clusterFilter, periodDays, stockCatalogByDescription]);
+  }, [operationalStockData, salesData, regionFilter, categoryFilter, lineFilter, clusterFilter, periodDays, stockCatalogByDescription]);
 
   const redistributionMetrics = useMemo(() => {
     const moves = redistributionSuggestions.moves || [];
@@ -680,11 +727,11 @@ export default function StockModule() {
   // --- ALGORITMO: PREVISÃO DE RUPTURA (PREDICTIVE STOCKOUT) ---
   // Note o <PredictiveRisk[]> forçando a tipagem do retorno
   const predictiveStockout = useMemo<PredictiveRisk[]>(() => {
-    if (stockData.length === 0) return [];
+    if (operationalStockData.length === 0) return [];
 
     const risks: PredictiveRisk[] = [];
 
-    stockData.forEach(item => {
+    operationalStockData.forEach(item => {
       const region = STORE_REGIONS[item.storeName] || "OUTROS";
       if (regionFilter.length > 0 && !regionFilter.includes(region)) return;
       if (categoryFilter.length > 0 && !categoryFilter.includes(item.category || 'GERAL')) return;
@@ -721,18 +768,18 @@ export default function StockModule() {
     });
 
     return risks.sort((a, b) => a.coverageDays - b.coverageDays || b.financialRisk - a.financialRisk);
-  }, [stockData, salesData, regionFilter, categoryFilter, periodDays]);
+  }, [operationalStockData, salesData, regionFilter, categoryFilter, periodDays]);
 
    // --- ALGORITMO MALOTE (FRONT-END) ---
   const calculatedMalote = useMemo(() => {
-    if (stockData.length === 0 && salesData.length === 0) return [];
+    if (operationalStockData.length === 0 && salesData.length === 0) return [];
 
     const suggestions: any[] = [];
     const cdStockByProduct: Record<string, any> = {};
     const productGroups: Record<string, any> = {};
     const groupStoreIndex: Record<string, any> = {};
 
-    stockData.forEach(item => {
+    operationalStockData.forEach(item => {
       if (!isCdStore(item.storeName || '')) return;
 
       const descKey = normalizeStr(item.description);
@@ -792,7 +839,7 @@ export default function StockModule() {
       if (salesToAdd > 0) storeItem.vendaPeriodo += salesToAdd;
     };
 
-    stockData.forEach(item => {
+    operationalStockData.forEach(item => {
       addDestination({
         storeName: item.storeName,
         description: item.description || 'SEM DESCRIÇÃO',
@@ -885,7 +932,7 @@ export default function StockModule() {
     });
 
     return suggestions;
-  }, [stockData, salesData, periodDays, stockCatalogByDescription]); 
+  }, [operationalStockData, salesData, periodDays, stockCatalogByDescription]); 
 
 
     
@@ -904,7 +951,7 @@ export default function StockModule() {
   }, [purchaseData, regionFilter]);
 
   const filteredData = useMemo(() => {
-    return stockData.filter(item => {
+    return stockTypeData.filter(item => {
       const itemRegion = STORE_REGIONS[item.storeName] || "OUTROS";
 
       const matchesSearch =
@@ -935,7 +982,7 @@ export default function StockModule() {
       );
     });
   }, [
-    stockData,
+    stockTypeData,
     filter,
     categoryFilter,
     regionFilter,
@@ -977,9 +1024,11 @@ export default function StockModule() {
 
     const totalItems = base.length;
     const totalStockQty = base.reduce((acc, item) => acc + (Number(item.quantity) || 0), 0);
-    const totalStockValue = base.reduce((acc, item) => {
-      return acc + ((Number(item.quantity) || 0) * (Number(item.costPrice) || 0));
-    }, 0);
+    const totalStockValue = stockTypeView === 'ESTOQUE'
+      ? base.reduce((acc, item) => {
+          return acc + ((Number(item.quantity) || 0) * (Number(item.costPrice) || 0));
+        }, 0)
+      : 0;
 
     const totalSalesQty = base.reduce((acc, item) => {
       return acc + getProductSales(item.storeName, item.description);
@@ -1002,7 +1051,7 @@ export default function StockModule() {
       lowStockCount,
       noSalesCount
     };
-  }, [expandedStore, currentStoreProducts, filteredData, salesMap]);
+  }, [expandedStore, currentStoreProducts, filteredData, salesMap, stockTypeView]);
 
   const groupedStores = useMemo(() => {
     const groups: Record<string, any[]> = {};
@@ -1024,7 +1073,9 @@ export default function StockModule() {
 
       const q = Number(item.quantity) || 0;
       storeStats[store].qty += q;
-      storeStats[store].value += (Number(item.costPrice) || 0) * q;
+      if (stockTypeView === 'ESTOQUE') {
+        storeStats[store].value += (Number(item.costPrice) || 0) * q;
+      }
       if (q > 0 && q < 3) storeStats[store].lowStockCount += 1;
     });
 
@@ -1039,26 +1090,26 @@ export default function StockModule() {
     });
 
     return sortedGroups;
-  }, [filteredData]);
+  }, [filteredData, stockTypeView]);
 
-  const uniqueCategories = useMemo(() => Array.from(new Set(stockData.map(i => i.category || 'GERAL'))).sort(), [stockData]);
+  const uniqueCategories = useMemo(() => Array.from(new Set(stockTypeData.map(i => i.category || 'GERAL'))).sort(), [stockTypeData]);
   const uniqueRegions = useMemo(() => Array.from(new Set(Object.values(STORE_REGIONS))).sort(), []);
 
   const uniqueLines = useMemo(() => {
-    const values = stockData
+    const values = stockTypeData
       .map(item => getLineValue(item))
       .filter(Boolean);
 
     return Array.from(new Set(values)).sort();
-  }, [stockData]);
+  }, [stockTypeData]);
 
   const uniqueClusters = useMemo(() => {
-    const values = stockData
+    const values = stockTypeData
       .map(item => getClusterValue(item))
       .filter(Boolean);
 
     return Array.from(new Set(values)).sort();
-  }, [stockData]);
+  }, [stockTypeData]);
 
   const getStoreTotalSales = (storeName: string) => {
     const sales = salesData.filter(s => getStoreNameFromCNPJ(s.cnpj_empresa || s.loja) === storeName);
@@ -1131,10 +1182,12 @@ export default function StockModule() {
 
     if (moduleMode === 'stock') {
       const dataToExport = expandedStore ? currentStoreProducts : filteredData;
-      headers = ["Loja", "Cluster", "Linha", "Região", "Código", "Produto", "Categoria", "Qtd Estoque", "Qtd Vendida Período", "Custo Unit", "Preço Venda", "Custo Total"];
+      headers = ["Tipo de Estoque", "Loja", "Cluster", "Linha", "Região", "Código", "Produto", "Categoria", "Quantidade", "Qtd Vendida Período", "Custo Unit", "Preço Venda", "Custo Total Considerado"];
       csvRows = dataToExport.map(item => {
         const sold = getProductSales(item.storeName, item.description);
+        const isOperationalStock = getStockType(item) === 'ESTOQUE';
         return [
+          `"${getStockType(item)}"`,
           `"${item.storeName}"`,
           `"${getClusterValue(item)}"`,
           `"${getLineValue(item)}"`,
@@ -1146,10 +1199,12 @@ export default function StockModule() {
           String(sold).replace('.', ','),
           Number(item.costPrice || 0).toFixed(2).replace('.', ','),
           Number(item.salePrice || 0).toFixed(2).replace('.', ','),
-          (item.quantity * (item.costPrice || 0)).toFixed(2).replace('.', ',')
+          (isOperationalStock ? item.quantity * (item.costPrice || 0) : 0).toFixed(2).replace('.', ',')
         ].join(';');
       });
-      fileName = expandedStore ? `Estoque_${expandedStore}.csv` : `Estoque_Geral.csv`;
+      fileName = expandedStore
+        ? `${stockTypeView}_${expandedStore}.csv`
+        : `${stockTypeView}_Geral.csv`;
     }
 
     else if (moduleMode === 'malote') {
@@ -1246,15 +1301,17 @@ export default function StockModule() {
               )}
               <div>
                 <h1 className="text-xl md:text-2xl font-black uppercase tracking-tight text-slate-800">
-                  {moduleMode === 'stock' ? (expandedStore || "Visão Estratégica de Estoque") :
-                    moduleMode === 'redistribution' ? "Central de Remanejamento" :
+                  {moduleMode === 'stock'
+                    ? (expandedStore || (stockTypeView === 'ESTOQUE' ? 'Visão Estratégica de Estoque' : stockTypeView === 'AMOSTRA' ? 'Estoque de Amostras' : 'Estoque DOA'))
+                    : moduleMode === 'redistribution' ? "Central de Remanejamento" :
                     moduleMode === 'analysis' ? "Análise de Estoque" :
                     "Controle de Compras"}
                 </h1>
                 <div className="flex items-center gap-2">
                   <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                    {moduleMode === 'stock' ? "Físico & Giro por Período" :
-                      moduleMode === 'redistribution' ? "Inteligência de Distribuição" :
+                    {moduleMode === 'stock'
+                      ? (stockTypeView === 'ESTOQUE' ? 'Físico, giro e custo operacional' : 'Controle informativo separado do estoque normal')
+                      : moduleMode === 'redistribution' ? "Inteligência de Distribuição" :
                       moduleMode === 'analysis' ? "Rastreabilidade por IMEI" :
                       "Gestão de Pedidos em Aberto"}
                   </p>
@@ -1902,6 +1959,43 @@ export default function StockModule() {
           <>
             {!expandedStore && (
               <div className="space-y-4">
+                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-3">
+                  <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                    <div>
+                      <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Tipo de estoque exibido</p>
+                      <p className={`text-xs font-bold mt-1 ${stockTypeView === 'ESTOQUE' ? 'text-emerald-700' : stockTypeView === 'AMOSTRA' ? 'text-amber-700' : 'text-red-700'}`}>
+                        {stockTypeView === 'ESTOQUE'
+                          ? 'Estoque normal: compõe custo e todos os cálculos operacionais.'
+                          : stockTypeView === 'AMOSTRA'
+                            ? 'Amostras: exibição informativa. Não compõem custo, remanejamento, ruptura ou compras.'
+                            : 'DOA: exibição informativa. Não compõe custo, remanejamento, ruptura ou compras.'}
+                      </p>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 w-full lg:w-auto">
+                      {([
+                        { type: 'ESTOQUE' as StockType, label: 'Estoque normal', qty: stockTypeTotals.ESTOQUE, active: 'border-emerald-500 bg-emerald-50 text-emerald-800 ring-2 ring-emerald-100' },
+                        { type: 'AMOSTRA' as StockType, label: 'Amostra', qty: stockTypeTotals.AMOSTRA, active: 'border-amber-500 bg-amber-50 text-amber-800 ring-2 ring-amber-100' },
+                        { type: 'DOA' as StockType, label: 'DOA', qty: stockTypeTotals.DOA, active: 'border-red-500 bg-red-50 text-red-800 ring-2 ring-red-100' }
+                      ]).map(option => (
+                        <button
+                          key={option.type}
+                          type="button"
+                          onClick={() => {
+                            setStockTypeView(option.type);
+                            setExpandedStore(null);
+                            setStockViewFilter('TODOS');
+                            setFilter('');
+                          }}
+                          className={`rounded-xl border px-4 py-2.5 text-left transition-all ${stockTypeView === option.type ? option.active : 'border-slate-200 bg-slate-50 text-slate-600 hover:border-slate-300'}`}
+                        >
+                          <span className="block text-[9px] font-black uppercase tracking-widest">{option.label}</span>
+                          <span className="block text-lg font-black mt-0.5">{option.qty.toLocaleString('pt-BR')} un</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
                 <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
                   <button
                     onClick={() => setStockViewFilter('TODOS')}
@@ -1978,14 +2072,20 @@ export default function StockModule() {
                   </button>
                 </div>
 
-                <div className="bg-gradient-to-r from-slate-900 to-indigo-900 rounded-2xl p-5 text-white shadow-lg flex flex-col md:flex-row justify-between gap-4">
+                <div className={`rounded-2xl p-5 text-white shadow-lg flex flex-col md:flex-row justify-between gap-4 ${stockTypeView === 'ESTOQUE' ? 'bg-gradient-to-r from-slate-900 to-indigo-900' : stockTypeView === 'AMOSTRA' ? 'bg-gradient-to-r from-amber-700 to-orange-700' : 'bg-gradient-to-r from-red-800 to-rose-800'}`}>
                   <div>
-                    <p className="text-[10px] font-black uppercase tracking-widest text-white/60">Valor Total em Estoque</p>
+                    <p className="text-[10px] font-black uppercase tracking-widest text-white/60">
+                      {stockTypeView === 'ESTOQUE' ? 'Valor Total em Estoque' : `Custo do estoque ${stockTypeView}`}
+                    </p>
                     <h3 className="text-3xl font-black mt-2">
-                      R$ {stockSummary.totalStockValue.toLocaleString('pt-BR', { maximumFractionDigits: 0 })}
+                      {stockTypeView === 'ESTOQUE'
+                        ? `R$ ${stockSummary.totalStockValue.toLocaleString('pt-BR', { maximumFractionDigits: 0 })}`
+                        : 'NÃO COMPÕE'}
                     </h3>
                     <p className="text-[11px] text-white/70 mt-1">
-                      Totais calculados com os filtros e pesquisa atuais
+                      {stockTypeView === 'ESTOQUE'
+                        ? 'Totais calculados com os filtros e pesquisa atuais.'
+                        : 'Esta categoria é informativa e está excluída dos cálculos financeiros e operacionais.'}
                     </p>
                   </div>
 
@@ -2187,16 +2287,21 @@ export default function StockModule() {
                           <span className="bg-white/10 border border-white/10 px-2.5 py-1 rounded-full text-[9px] font-black uppercase tracking-widest">Detalhe da Loja</span>
                           <span className="bg-indigo-400/20 border border-indigo-300/20 px-2.5 py-1 rounded-full text-[9px] font-black uppercase tracking-widest">{STORE_REGIONS[expandedStore] || 'OUTROS'}</span>
                           <span className="bg-purple-400/20 border border-purple-300/20 px-2.5 py-1 rounded-full text-[9px] font-black uppercase tracking-widest">Cluster: {currentStoreProducts[0] ? getClusterValue(currentStoreProducts[0]) : 'SEM CLUSTER'}</span>
+                          <span className={`${stockTypeView === 'ESTOQUE' ? 'bg-emerald-400/20 border-emerald-300/20' : stockTypeView === 'AMOSTRA' ? 'bg-amber-400/20 border-amber-300/20' : 'bg-red-400/20 border-red-300/20'} border px-2.5 py-1 rounded-full text-[9px] font-black uppercase tracking-widest`}>{stockTypeView}</span>
                         </div>
                         <h2 className="text-2xl md:text-3xl font-black uppercase tracking-tight truncate">{expandedStore}</h2>
-                        <p className="text-[11px] text-white/60 font-bold uppercase mt-1">Produtos, estoque, giro e valor financeiro no período selecionado.</p>
+                        <p className="text-[11px] text-white/60 font-bold uppercase mt-1">
+                          {stockTypeView === 'ESTOQUE'
+                            ? 'Produtos, estoque, giro e valor financeiro no período selecionado.'
+                            : `${stockTypeView}: quantidade informativa, excluída dos cálculos financeiros e operacionais.`}
+                        </p>
                       </div>
 
                       <div className="grid grid-cols-2 md:grid-cols-4 gap-2 w-full xl:w-auto">
                         <div className="bg-white/10 border border-white/10 rounded-2xl p-3 min-w-[120px]"><p className="text-[9px] font-black uppercase text-white/50">Itens</p><p className="text-xl font-black">{storeDetailProducts.length}</p></div>
                         <div className="bg-white/10 border border-white/10 rounded-2xl p-3 min-w-[120px]"><p className="text-[9px] font-black uppercase text-white/50">Peças</p><p className="text-xl font-black">{storeDetailProducts.reduce((acc, i) => acc + (Number(i.quantity) || 0), 0).toLocaleString('pt-BR')}</p></div>
                         <div className="bg-white/10 border border-white/10 rounded-2xl p-3 min-w-[120px]"><p className="text-[9px] font-black uppercase text-white/50">Vendas</p><p className="text-xl font-black text-emerald-300">{storeDetailProducts.reduce((acc, i) => acc + getProductSales(i.storeName, i.description), 0).toLocaleString('pt-BR')}</p></div>
-                        <div className="bg-white/10 border border-white/10 rounded-2xl p-3 min-w-[120px]"><p className="text-[9px] font-black uppercase text-white/50">Custo</p><p className="text-xl font-black">R$ {storeDetailProducts.reduce((acc, i) => acc + ((Number(i.costPrice) || 0) * (Number(i.quantity) || 0)), 0).toLocaleString('pt-BR', { notation: "compact", maximumFractionDigits: 1 })}</p></div>
+                        <div className="bg-white/10 border border-white/10 rounded-2xl p-3 min-w-[120px]"><p className="text-[9px] font-black uppercase text-white/50">Custo considerado</p><p className="text-xl font-black">{stockTypeView === 'ESTOQUE' ? `R$ ${storeDetailProducts.reduce((acc, i) => acc + ((Number(i.costPrice) || 0) * (Number(i.quantity) || 0)), 0).toLocaleString('pt-BR', { notation: "compact", maximumFractionDigits: 1 })}` : 'NÃO COMPÕE'}</p></div>
                       </div>
                     </div>
                   </div>
@@ -2239,7 +2344,7 @@ export default function StockModule() {
                             <th className="px-4 py-3 text-right whitespace-nowrap">Vendas</th>
                             <th className="px-4 py-3 text-right whitespace-nowrap">Custo Unit.</th>
                             <th className="px-4 py-3 text-right whitespace-nowrap">Preço Venda</th>
-                            <th className="px-4 py-3 text-right whitespace-nowrap">Custo Total</th>
+                            <th className="px-4 py-3 text-right whitespace-nowrap">Custo Considerado</th>
                             <th className="px-4 py-3 text-center whitespace-nowrap">Status</th>
                           </tr>
                         </thead>
@@ -2247,7 +2352,9 @@ export default function StockModule() {
                           {storeDetailProducts.map((item, idx) => {
                             const stockQty = Number(item.quantity) || 0;
                             const soldQty = getProductSales(item.storeName, item.description);
-                            const totalCost = (Number(item.costPrice) || 0) * stockQty;
+                            const totalCost = stockTypeView === 'ESTOQUE'
+                              ? (Number(item.costPrice) || 0) * stockQty
+                              : 0;
                             const isLowStock = stockQty > 0 && stockQty < 3;
                             const isNoStock = stockQty === 0;
 
@@ -2270,7 +2377,7 @@ export default function StockModule() {
                                 <td className="px-4 py-3 text-right"><span className={`text-sm font-black ${soldQty > 0 ? 'text-emerald-600' : 'text-slate-300'}`}>{soldQty.toLocaleString('pt-BR')}</span></td>
                                 <td className="px-4 py-3 text-right text-xs font-bold text-slate-600 whitespace-nowrap">R$ {Number(item.costPrice || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</td>
                                 <td className="px-4 py-3 text-right text-xs font-black text-emerald-600 whitespace-nowrap">R$ {Number(item.salePrice || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</td>
-                                <td className="px-4 py-3 text-right text-xs font-black text-indigo-700 whitespace-nowrap">R$ {totalCost.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</td>
+                                <td className="px-4 py-3 text-right text-xs font-black text-indigo-700 whitespace-nowrap">{stockTypeView === 'ESTOQUE' ? `R$ ${totalCost.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}` : 'NÃO COMPÕE'}</td>
                                 <td className="px-4 py-3 text-center">
                                   {isNoStock ? <span className="inline-flex rounded-full bg-red-50 text-red-600 border border-red-100 px-2 py-1 text-[9px] font-black uppercase">Zerado</span> :
                                     isLowStock ? <span className="inline-flex rounded-full bg-amber-50 text-amber-600 border border-amber-100 px-2 py-1 text-[9px] font-black uppercase">Baixo</span> :
@@ -2318,7 +2425,7 @@ export default function StockModule() {
                               <div className="grid grid-cols-3 gap-2 mt-4">
                                 <div className="bg-slate-50 rounded-xl p-2"><p className="text-[8px] font-black text-slate-400 uppercase">Vendas</p><p className={`text-sm font-black ${soldQty > 0 ? 'text-emerald-600' : 'text-slate-300'}`}>{soldQty}</p></div>
                                 <div className="bg-slate-50 rounded-xl p-2"><p className="text-[8px] font-black text-slate-400 uppercase">Custo</p><p className="text-xs font-black text-slate-700">R$ {Number(item.costPrice || 0).toLocaleString('pt-BR', { notation: "compact", maximumFractionDigits: 1 })}</p></div>
-                                <div className="bg-slate-50 rounded-xl p-2"><p className="text-[8px] font-black text-slate-400 uppercase">Total</p><p className="text-xs font-black text-indigo-700">R$ {((Number(item.costPrice) || 0) * stockQty).toLocaleString('pt-BR', { notation: "compact", maximumFractionDigits: 1 })}</p></div>
+                                <div className="bg-slate-50 rounded-xl p-2"><p className="text-[8px] font-black text-slate-400 uppercase">Custo considerado</p><p className="text-xs font-black text-indigo-700">{stockTypeView === 'ESTOQUE' ? `R$ ${((Number(item.costPrice) || 0) * stockQty).toLocaleString('pt-BR', { notation: "compact", maximumFractionDigits: 1 })}` : 'NÃO COMPÕE'}</p></div>
                               </div>
                             </div>
                           );
@@ -2364,8 +2471,8 @@ export default function StockModule() {
                                   <span className={`text-lg font-black ${store.qty === 0 ? 'text-slate-300' : (hasLowStockAlert ? 'text-red-600' : 'text-slate-700')}`}>{store.qty.toLocaleString('pt-BR')}</span>
                                 </div>
                                 <div className="flex justify-between items-end">
-                                  <span className="text-[10px] font-bold text-slate-400 uppercase">Financeiro</span>
-                                  <span className="text-sm font-bold text-indigo-600">R$ {store.value.toLocaleString('pt-BR', { notation: "compact", maximumFractionDigits: 1 })}</span>
+                                  <span className="text-[10px] font-bold text-slate-400 uppercase">Custo considerado</span>
+                                  <span className="text-sm font-bold text-indigo-600">{stockTypeView === 'ESTOQUE' ? `R$ ${store.value.toLocaleString('pt-BR', { notation: "compact", maximumFractionDigits: 1 })}` : 'NÃO COMPÕE'}</span>
                                 </div>
                               </div>
                               <div className="absolute bottom-0 right-0 p-4 opacity-0 group-hover:opacity-100 transition-opacity transform translate-y-2 group-hover:translate-y-0"><ChevronRight className="text-indigo-600" size={20} /></div>
@@ -2381,7 +2488,7 @@ export default function StockModule() {
                               <th className="p-4">Loja</th>
                               <th className="p-4">Cluster</th>
                               <th className="p-4 text-right">Estoque Geral</th>
-                              <th className="p-4 text-right">Financeiro Geral</th>
+                              <th className="p-4 text-right">Custo Considerado</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-100">
@@ -2407,7 +2514,9 @@ export default function StockModule() {
                                      {store.qty.toLocaleString('pt-BR')} un
                                    </td>
                                    <td className="p-4 text-right text-sm font-bold text-indigo-600 whitespace-nowrap">
-                                     R$ {store.value.toLocaleString('pt-BR', { notation: "compact", maximumFractionDigits: 1 })}
+                                     {stockTypeView === 'ESTOQUE'
+                                       ? `R$ ${store.value.toLocaleString('pt-BR', { notation: "compact", maximumFractionDigits: 1 })}`
+                                       : 'NÃO COMPÕE'}
                                    </td>
                                  </tr>
                                )
