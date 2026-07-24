@@ -112,10 +112,10 @@ model Stock {
   averageCost Float
   updatedAt   DateTime @updatedAt
   serial      String?
+  emLinha     String?
+  cluster     String?
 
-  emLinha   String?
-  cluster   String?
-  stockType String  @default("ESTOQUE")
+  stockType   String   @default("ESTOQUE")
 }
 
 model User {
