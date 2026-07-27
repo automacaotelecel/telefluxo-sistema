@@ -99,23 +99,26 @@ model Finance {
 }
 
 model Stock {
-  id          String   @id @default(uuid())
-  cnpj        String
-  storeName   String
-  productCode String
-  reference   String
-  description String
-  category    String
-  quantity    Float
-  costPrice   Float
-  salePrice   Float
-  averageCost Float
-  updatedAt   DateTime @updatedAt
-  serial      String?
-  emLinha     String?
-  cluster     String?
+  id              String   @id @default(uuid())
+  cnpj            String
+  storeName       String
+  productCode     String
+  reference       String
+  description     String
+  category        String
+  quantity        Float
+  costPrice       Float
+  salePrice       Float
+  averageCost     Float
+  acquisitionCost Float?
+  updatedAt       DateTime @updatedAt
+  serial          String?
+  emLinha         String?
+  cluster         String?
+  stockType       String   @default("ESTOQUE")
 
-  stockType   String   @default("ESTOQUE")
+  @@index([serial])
+  @@index([storeName, productCode, stockType])
 }
 
 model User {
@@ -168,10 +171,19 @@ model ImeiHistory {
   productCode      String
   description      String
   currentStore     String
-  entryDateCompany DateTime @default(now()) // Data que chegou na empresa
-  entryDateStore   DateTime @default(now()) // Data que chegou nesta loja específica
-  transferCount    Int      @default(0) // Quantas vezes foi transferido
-  updatedAt        DateTime @updatedAt // Última vez que o Python confirmou que ele existe
+  entryDateCompany DateTime @default(now())
+  entryDateStore   DateTime @default(now())
+  transferCount    Int      @default(0)
+  updatedAt        DateTime @updatedAt
+
+  acquisitionCost   Float?
+  acquisitionDate   DateTime?
+  acquisitionCnpj   String?
+  sourceTransaction String?
+  sourceIdentifier  String?
+  sourceDocument    String?
+  costSource        String?
+  costResolvedAt    DateTime?
 }
 
 model RhCollaborator {
