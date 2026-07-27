@@ -318,12 +318,25 @@ export default function StockModule() {
           const key = `${item.storeName}|${item.productCode}|${stockType}`;
 
           if (!groupedStock[key]) {
-            groupedStock[key] = { ...item, stockType, quantity: 0 };
+            groupedStock[key] = {
+              ...item,
+              stockType,
+              quantity: 0,
+            };
           }
+
           groupedStock[key].quantity += Number(item.quantity) || 0;
         });
 
-        setStockData(Object.values(groupedStock));
+        setStockData(
+          Object.values(groupedStock).map((item: any) => ({
+            ...item,
+            quantity: Math.max(
+              0,
+              Math.round(Number(item.quantity) || 0)
+            ),
+          }))
+        );
       }
 
       // 2. Compras
