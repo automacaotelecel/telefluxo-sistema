@@ -555,6 +555,7 @@ export async function analisarPrecosOnline(params: OnlinePriceAnalyzeOptions): P
     resumo,
     reportFileName: report.fileName,
     downloadUrl,
+    results: orderedResults.slice(0, 5000),
   };
 
   adicionarHistorico(historyEntry);

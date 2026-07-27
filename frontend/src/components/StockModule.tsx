@@ -248,6 +248,17 @@ const getSaleProductCode = (sale: any) =>
     sale.productCode
   )).trim();
 
+const getUnitCost = (item: any): number => {
+  const considered = Number(item?.costConsidered);
+  if (Number.isFinite(considered) && considered > 0) return considered;
+
+  const average = Number(item?.averageCost);
+  if (Number.isFinite(average) && average > 0) return average;
+
+  const purchase = Number(item?.costPrice);
+  return Number.isFinite(purchase) ? purchase : 0;
+};
+
 export default function StockModule() {
   const [stockData, setStockData] = useState<any[]>([]);
   const [salesData, setSalesData] = useState<any[]>([]);
@@ -1013,7 +1024,7 @@ export default function StockModule() {
       })
       .sort((a, b) => {
         if (storeDetailSort === 'GIRO') return getProductSales(b.storeName, b.description) - getProductSales(a.storeName, a.description);
-        if (storeDetailSort === 'VALOR') return ((Number(b.costPrice) || 0) * (Number(b.quantity) || 0)) - ((Number(a.costPrice) || 0) * (Number(a.quantity) || 0));
+        if (storeDetailSort === 'VALOR') return ((getUnitCost(b)) * (Number(b.quantity) || 0)) - ((getUnitCost(a)) * (Number(a.quantity) || 0));
         if (storeDetailSort === 'NOME') return String(a.description || '').localeCompare(String(b.description || ''));
         return (Number(b.quantity) || 0) - (Number(a.quantity) || 0);
       });
@@ -1026,7 +1037,7 @@ export default function StockModule() {
     const totalStockQty = base.reduce((acc, item) => acc + (Number(item.quantity) || 0), 0);
     const totalStockValue = stockTypeView === 'ESTOQUE'
       ? base.reduce((acc, item) => {
-          return acc + ((Number(item.quantity) || 0) * (Number(item.costPrice) || 0));
+          return acc + ((Number(item.quantity) || 0) * (getUnitCost(item)));
         }, 0)
       : 0;
 
@@ -1074,7 +1085,7 @@ export default function StockModule() {
       const q = Number(item.quantity) || 0;
       storeStats[store].qty += q;
       if (stockTypeView === 'ESTOQUE') {
-        storeStats[store].value += (Number(item.costPrice) || 0) * q;
+        storeStats[store].value += (getUnitCost(item)) * q;
       }
       if (q > 0 && q < 3) storeStats[store].lowStockCount += 1;
     });
@@ -1197,9 +1208,9 @@ export default function StockModule() {
           `"${item.category || 'GERAL'}"`,
           String(item.quantity).replace('.', ','),
           String(sold).replace('.', ','),
-          Number(item.costPrice || 0).toFixed(2).replace('.', ','),
+          getUnitCost(item).toFixed(2).replace('.', ','),
           Number(item.salePrice || 0).toFixed(2).replace('.', ','),
-          (isOperationalStock ? item.quantity * (item.costPrice || 0) : 0).toFixed(2).replace('.', ',')
+          (isOperationalStock ? item.quantity * getUnitCost(item) : 0).toFixed(2).replace('.', ',')
         ].join(';');
       });
       fileName = expandedStore
@@ -2353,7 +2364,7 @@ export default function StockModule() {
                             const stockQty = Number(item.quantity) || 0;
                             const soldQty = getProductSales(item.storeName, item.description);
                             const totalCost = stockTypeView === 'ESTOQUE'
-                              ? (Number(item.costPrice) || 0) * stockQty
+                              ? (getUnitCost(item)) * stockQty
                               : 0;
                             const isLowStock = stockQty > 0 && stockQty < 3;
                             const isNoStock = stockQty === 0;
@@ -2375,7 +2386,7 @@ export default function StockModule() {
                                 </td>
                                 <td className={`px-4 py-3 text-right text-base font-black ${isNoStock ? 'text-red-500' : isLowStock ? 'text-amber-600' : 'text-slate-800'}`}>{stockQty.toLocaleString('pt-BR')}</td>
                                 <td className="px-4 py-3 text-right"><span className={`text-sm font-black ${soldQty > 0 ? 'text-emerald-600' : 'text-slate-300'}`}>{soldQty.toLocaleString('pt-BR')}</span></td>
-                                <td className="px-4 py-3 text-right text-xs font-bold text-slate-600 whitespace-nowrap">R$ {Number(item.costPrice || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</td>
+                                <td className="px-4 py-3 text-right text-xs font-bold text-slate-600 whitespace-nowrap">R$ {getUnitCost(item).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</td>
                                 <td className="px-4 py-3 text-right text-xs font-black text-emerald-600 whitespace-nowrap">R$ {Number(item.salePrice || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</td>
                                 <td className="px-4 py-3 text-right text-xs font-black text-indigo-700 whitespace-nowrap">{stockTypeView === 'ESTOQUE' ? `R$ ${totalCost.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}` : 'NÃO COMPÕE'}</td>
                                 <td className="px-4 py-3 text-center">
@@ -2424,8 +2435,8 @@ export default function StockModule() {
                               </div>
                               <div className="grid grid-cols-3 gap-2 mt-4">
                                 <div className="bg-slate-50 rounded-xl p-2"><p className="text-[8px] font-black text-slate-400 uppercase">Vendas</p><p className={`text-sm font-black ${soldQty > 0 ? 'text-emerald-600' : 'text-slate-300'}`}>{soldQty}</p></div>
-                                <div className="bg-slate-50 rounded-xl p-2"><p className="text-[8px] font-black text-slate-400 uppercase">Custo</p><p className="text-xs font-black text-slate-700">R$ {Number(item.costPrice || 0).toLocaleString('pt-BR', { notation: "compact", maximumFractionDigits: 1 })}</p></div>
-                                <div className="bg-slate-50 rounded-xl p-2"><p className="text-[8px] font-black text-slate-400 uppercase">Custo considerado</p><p className="text-xs font-black text-indigo-700">{stockTypeView === 'ESTOQUE' ? `R$ ${((Number(item.costPrice) || 0) * stockQty).toLocaleString('pt-BR', { notation: "compact", maximumFractionDigits: 1 })}` : 'NÃO COMPÕE'}</p></div>
+                                <div className="bg-slate-50 rounded-xl p-2"><p className="text-[8px] font-black text-slate-400 uppercase">Custo</p><p className="text-xs font-black text-slate-700">R$ {getUnitCost(item).toLocaleString('pt-BR', { notation: "compact", maximumFractionDigits: 1 })}</p></div>
+                                <div className="bg-slate-50 rounded-xl p-2"><p className="text-[8px] font-black text-slate-400 uppercase">Custo considerado</p><p className="text-xs font-black text-indigo-700">{stockTypeView === 'ESTOQUE' ? `R$ ${((getUnitCost(item)) * stockQty).toLocaleString('pt-BR', { notation: "compact", maximumFractionDigits: 1 })}` : 'NÃO COMPÕE'}</p></div>
                               </div>
                             </div>
                           );

@@ -7016,7 +7016,16 @@ app.get('/stock', async (_req, res) => {
       })
     );
 
-    return res.json(stock);
+    return res.json(
+      stock.map((item: any) => ({
+        ...item,
+
+        costConsidered:
+          estoqueDetalhadoToNumber(item.averageCost) > 0
+            ? estoqueDetalhadoToNumber(item.averageCost)
+            : estoqueDetalhadoToNumber(item.costPrice),
+      }))
+    );
   } catch (error) {
     console.error(
       'Erro ao buscar estoque:',

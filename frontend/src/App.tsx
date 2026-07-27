@@ -28,6 +28,7 @@ import EstoqueDetalhado from './components/EstoqueDetalhado';
 import SolicitacoesModule from './components/SolicitacoesModule';
 import Stockout from './components/StockOut';
 import ComparativosModule from './components/ComparativosModule';
+import LeituraCartas from './components/LeituraCartas';
 import FluxoComparativoModule from './components/FluxoComparativoModule';
 import ComprasVendas from './components/ComprasVendas';
 import Clark from './components/Clark';
@@ -209,6 +210,7 @@ function App() {
     controle_stone: 'CONCILIAÇÃO STONE',
     comparativos_pdf: 'MONTAR COMPARATIVO',
     comparativos_fluxo: 'FLUXO COMPARATIVO',
+    comparativos_cartas: 'LEITURA DE CARTAS',
     comparativo: 'VENDAS ANUAIS',
     compras_vendas: 'COMPRAS X VENDAS',
     rh: 'RH',
@@ -486,7 +488,7 @@ function App() {
               <NavButton
                 icon={BarChart3}
                 label="Comparativos"
-                active={['comparativos_pdf', 'comparativos_fluxo'].includes(currentView)}
+                active={['comparativos_pdf', 'comparativos_fluxo', 'comparativos_cartas'].includes(currentView)}
                 onClick={() => handleSectionToggle('comparativos')}
                 hasChevron
                 chevronOpen={expanded.comparativos}
@@ -497,6 +499,7 @@ function App() {
                 <div className="mt-1 space-y-1">
                   <SubMenuItem label="Montar Comparativo" view="comparativos_pdf" active={currentView === 'comparativos_pdf'} />
                   <SubMenuItem label="Fluxo Comparativo" view="comparativos_fluxo" active={currentView === 'comparativos_fluxo'} />
+                  <SubMenuItem label="Leitura de Cartas" view="comparativos_cartas" active={currentView === 'comparativos_cartas'} />
                 </div>
               )}
             </div>
@@ -772,6 +775,8 @@ function App() {
             <ComparativosModule currentUser={user} />
           ) : currentView === 'comparativos_fluxo' ? (
             <FluxoComparativoModule currentUser={user} />
+          ) : currentView === 'comparativos_cartas' ? (
+            <LeituraCartas currentUser={user} />
           ) : currentView === 'stock' ? (
             <StockModule />
           ) : currentView.startsWith('dept_') ? (

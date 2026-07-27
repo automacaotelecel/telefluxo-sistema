@@ -1,5 +1,5 @@
 # ===========================================
-# 📦 SINCRONIZADOR DE ESTOQUE v8.1 (COM EXTRAÇÃO DE IMEI/SERIAL)
+# 📦 SINCRONIZADOR DE ESTOQUE v9.2 (DEPÓSITOS: ESTOQUE / AMOSTRA / DOA + IMEI)
 # ===========================================
 
 import requests
@@ -19,6 +19,7 @@ USUARIO = "linx_export"
 SENHA   = "linx_export"
 CHAVE   = "2618f2b2-8f1d-4502-8321-342dc2cd1470"
 URL     = "https://webapi.microvix.com.br/1.0/api/integracao"
+API_STOCK_SYNC_URL = "https://telefluxo-aplicacao.onrender.com/stock/sync"
 
 # CNPJ PRINCIPAL PARA O CONTEXTO DO CATÁLOGO
 CNPJ_CONTEXTO = "12309173001309"
@@ -104,6 +105,60 @@ def normalizar_tipo_estoque(valor):
         return "DOA"
 
     return "ESTOQUE"
+
+
+def normalizar_codigo_deposito(valor):
+    """Normaliza 1, 1.0 e "1" para a mesma chave textual: "1"."""
+    if valor is None:
+        return ""
+
+    texto = str(valor).strip()
+    if not texto:
+        return ""
+
+    try:
+        return str(int(float(texto.replace(",", "."))))
+    except (TypeError, ValueError):
+        return texto.upper()
+
+
+def classificar_nome_deposito(nome_deposito):
+    """
+    Classifica somente os depósitos que fazem parte do estoque exibido no TeleFluxo.
+
+    Importante: depósitos desconhecidos não viram ESTOQUE automaticamente, pois isso
+    poderia somar assistência, avaria, troca ou outros depósitos ao estoque normal.
+    """
+    texto = (
+        str(nome_deposito or "")
+        .strip()
+        .upper()
+        .replace("Á", "A")
+        .replace("Ã", "A")
+        .replace("Â", "A")
+        .replace("À", "A")
+        .replace("É", "E")
+        .replace("Ê", "E")
+        .replace("Í", "I")
+        .replace("Ó", "O")
+        .replace("Ô", "O")
+        .replace("Õ", "O")
+        .replace("Ú", "U")
+        .replace("Ç", "C")
+    )
+
+    if any(termo in texto for termo in ["AMOSTRA", "MOSTRUARIO", "DEMONSTRACAO", "EXPOSICAO"]):
+        return "AMOSTRA"
+
+    texto_doa = texto.replace(".", "").replace("-", " ")
+    if texto_doa == "DOA" or texto_doa.startswith("DOA ") or texto_doa.endswith(" DOA"):
+        return "DOA"
+
+    # O ERP do cliente utiliza o nome "Estoque" para o depósito operacional.
+    if texto == "ESTOQUE" or texto.startswith("ESTOQUE ") or texto.endswith(" ESTOQUE"):
+        return "ESTOQUE"
+
+    return None
 
 
 def identificar_tipo_estoque_linha(row):
@@ -388,7 +443,7 @@ def extrair_catalogo_completo():
     return df[final_cols]
 
 # ===========================================
-# 2. EXTRAÇÃO DE ESTOQUE AGREGADO
+# 2. EXTRAÇÃO DE ESTOQUE E SALDOS POR DEPÓSITO
 # ===========================================
 def chamar_api_detalhes(parametros):
     params_xml = "".join([f'<Parameter id="{k}">{v}</Parameter>' for k, v in parametros.items()])
@@ -409,7 +464,7 @@ def chamar_api_detalhes(parametros):
             log(f"❌ HTTP {r.status_code} em LinxProdutosDetalhes | params={parametros}")
             try:
                 log(r.text[:1000])
-            except:
+            except Exception:
                 pass
             return pd.DataFrame()
 
@@ -422,7 +477,7 @@ def chamar_api_detalhes(parametros):
             log(f"❌ ResponseSuccess=false em LinxProdutosDetalhes | params={parametros} | msg={erro}")
             try:
                 log(r.text[:1000])
-            except:
+            except Exception:
                 pass
             return pd.DataFrame()
 
@@ -440,11 +495,268 @@ def chamar_api_detalhes(parametros):
         log(f"❌ Exceção em chamar_api_detalhes: {e} | params={parametros}")
         return pd.DataFrame()
 
-def extrair_estoque(cnpj, modo_completo=False):
+
+def chamar_api_depositos(parametros):
+    """Consulta o cadastro de depósitos: cod_deposito + nome_deposito."""
+    params_xml = "".join([f'<Parameter id="{k}">{v}</Parameter>' for k, v in parametros.items()])
+    xml = f"""<?xml version="1.0" encoding="utf-8"?>
+    <LinxMicrovix>
+      <Authentication user="{USUARIO}" password="{SENHA}" />
+      <ResponseFormat>xml</ResponseFormat>
+      <Command>
+        <Name>LinxProdutosDepositos</Name>
+        <Parameters><Parameter id="chave">{CHAVE}</Parameter>{params_xml}</Parameters>
+      </Command>
+    </LinxMicrovix>"""
+
+    try:
+        r = requests.post(URL, data=xml.encode("utf-8"), headers=headers, auth=auth, timeout=120)
+        if r.status_code != 200:
+            log(f"❌ HTTP {r.status_code} em LinxProdutosDepositos | params={parametros}")
+            return pd.DataFrame()
+
+        root = etree.fromstring(r.content)
+        success = root.xpath(".//ResponseSuccess/text()")
+        if success and success[0].strip().lower() == "false":
+            msg = root.xpath(".//ResponseMessage/text()")
+            erro = msg[0] if msg else "Sem mensagem"
+            log(f"❌ ResponseSuccess=false em LinxProdutosDepositos | params={parametros} | msg={erro}")
+            return pd.DataFrame()
+
+        cols = [d.text for d in root.xpath(".//C[last()]/D")]
+        rows = root.xpath(".//R")
+        if not rows:
+            return pd.DataFrame()
+
+        return pd.DataFrame([
+            dict(zip(cols, [d.text for d in rr.xpath('./D')]))
+            for rr in rows
+        ])
+    except Exception as e:
+        log(f"❌ Exceção em LinxProdutosDepositos: {e} | params={parametros}")
+        return pd.DataFrame()
+
+
+def extrair_depositos_loja(cnpj):
     """
-    modo_completo=False -> modo principal e mais seguro:
-                           busca por movimentação no período
-    modo_completo=True  -> tenta carga completa com retornar_saldo_zero=1
+    Descobre os códigos reais dos depósitos em cada loja.
+
+    Retorno:
+        {
+            "1": {"nome": "Estoque", "tipo": "ESTOQUE"},
+            "2": {"nome": "DOA", "tipo": "DOA"},
+            "4": {"nome": "AMOSTRAS", "tipo": "AMOSTRA"},
+        }
+    """
+    dfs = []
+    ts = 0
+
+    while True:
+        df = chamar_api_depositos({"cnpjEmp": cnpj, "timestamp": str(ts)})
+        if df.empty:
+            break
+
+        df.columns = [str(c).strip().lower() for c in df.columns]
+        dfs.append(df)
+
+        novo_ts = obter_proximo_timestamp(df, ts)
+        if novo_ts is None:
+            break
+
+        ts = novo_ts
+        time.sleep(TEMPO_ESPERA_API)
+
+    if not dfs:
+        log(f"   ⚠️ Nenhum cadastro de depósito retornado para {LOJAS_NOME.get(cnpj, cnpj)}.")
+        return {}
+
+    base = pd.concat(dfs, ignore_index=True)
+    if "timestamp" in base.columns:
+        base["timestamp"] = pd.to_numeric(base["timestamp"], errors="coerce")
+        base = base.sort_values("timestamp", ascending=False)
+
+    if "cod_deposito" not in base.columns or "nome_deposito" not in base.columns:
+        log(f"   ⚠️ LinxProdutosDepositos não retornou cod_deposito/nome_deposito para {LOJAS_NOME.get(cnpj, cnpj)}.")
+        return {}
+
+    base["COD_DEPOSITO_NORMALIZADO"] = base["cod_deposito"].apply(normalizar_codigo_deposito)
+    base = base.drop_duplicates(subset=["COD_DEPOSITO_NORMALIZADO"], keep="first")
+
+    mapa = {}
+    ignorados = []
+
+    for _, row in base.iterrows():
+        codigo = normalizar_codigo_deposito(row.get("cod_deposito"))
+        nome = str(row.get("nome_deposito") or "").strip()
+        tipo = classificar_nome_deposito(nome)
+
+        if codigo and tipo:
+            mapa[codigo] = {"nome": nome, "tipo": tipo}
+        elif codigo:
+            ignorados.append(f"{codigo}={nome or '(sem nome)'}")
+
+    if mapa:
+        resumo = ", ".join(
+            f"{codigo}={dados['nome']}→{dados['tipo']}"
+            for codigo, dados in sorted(mapa.items(), key=lambda item: item[0])
+        )
+        log(f"   🗂️ Depósitos considerados em {LOJAS_NOME.get(cnpj, cnpj)}: {resumo}")
+    else:
+        log(f"   ⚠️ Não encontrei depósitos chamados Estoque, DOA ou Amostras em {LOJAS_NOME.get(cnpj, cnpj)}.")
+
+    if ignorados:
+        log(f"   ℹ️ Outros depósitos ignorados: {', '.join(ignorados)}")
+
+    return mapa
+
+
+def chamar_api_saldos_depositos(parametros):
+    """Consulta cod_produto + cod_deposito + saldo atual."""
+    params_xml = "".join([f'<Parameter id="{k}">{v}</Parameter>' for k, v in parametros.items()])
+    xml = f"""<?xml version="1.0" encoding="utf-8"?>
+    <LinxMicrovix>
+      <Authentication user="{USUARIO}" password="{SENHA}" />
+      <ResponseFormat>xml</ResponseFormat>
+      <Command>
+        <Name>LinxProdutosDetalhesDepositos</Name>
+        <Parameters><Parameter id="chave">{CHAVE}</Parameter>{params_xml}</Parameters>
+      </Command>
+    </LinxMicrovix>"""
+
+    try:
+        r = requests.post(URL, data=xml.encode("utf-8"), headers=headers, auth=auth, timeout=180)
+        if r.status_code != 200:
+            log(f"❌ HTTP {r.status_code} em LinxProdutosDetalhesDepositos | params={parametros}")
+            try:
+                log(r.text[:1000])
+            except Exception:
+                pass
+            return pd.DataFrame()
+
+        root = etree.fromstring(r.content)
+        success = root.xpath(".//ResponseSuccess/text()")
+        if success and success[0].strip().lower() == "false":
+            msg = root.xpath(".//ResponseMessage/text()")
+            erro = msg[0] if msg else "Sem mensagem"
+            log(f"❌ ResponseSuccess=false em LinxProdutosDetalhesDepositos | params={parametros} | msg={erro}")
+            return pd.DataFrame()
+
+        cols = [d.text for d in root.xpath(".//C[last()]/D")]
+        rows = root.xpath(".//R")
+        if not rows:
+            return pd.DataFrame()
+
+        return pd.DataFrame([
+            dict(zip(cols, [d.text for d in rr.xpath('./D')]))
+            for rr in rows
+        ])
+    except Exception as e:
+        log(f"❌ Exceção em LinxProdutosDetalhesDepositos: {e} | params={parametros}")
+        return pd.DataFrame()
+
+
+def extrair_saldos_por_deposito(cnpj, mapa_depositos):
+    """Obtém e soma o saldo de cada produto por ESTOQUE, AMOSTRA e DOA."""
+    if not mapa_depositos:
+        return pd.DataFrame()
+
+    codigos_ordenados = sorted(mapa_depositos.keys(), key=lambda codigo: (not str(codigo).isdigit(), int(codigo) if str(codigo).isdigit() else str(codigo)))
+    codigos = ",".join(codigos_ordenados)
+    dfs = []
+    ts = 0
+
+    log(f"   📚 Extraindo saldos por depósito de {LOJAS_NOME.get(cnpj, cnpj)}...")
+
+    while True:
+        params = {
+            "cnpjEmp": cnpj,
+            "timestamp": str(ts),
+            "cod_deposito": codigos,
+        }
+        df = chamar_api_saldos_depositos(params)
+        if df.empty:
+            break
+
+        df.columns = [str(c).strip().lower() for c in df.columns]
+        dfs.append(df)
+
+        novo_ts = obter_proximo_timestamp(df, ts)
+        if novo_ts is None:
+            break
+
+        ts = novo_ts
+        time.sleep(TEMPO_ESPERA_API)
+
+    if not dfs:
+        return pd.DataFrame()
+
+    base = pd.concat(dfs, ignore_index=True)
+    campos_obrigatorios = {"cod_produto", "cod_deposito", "saldo"}
+    if not campos_obrigatorios.issubset(set(base.columns)):
+        log(
+            "   ⚠️ LinxProdutosDetalhesDepositos retornou colunas inesperadas: "
+            + ", ".join(map(str, base.columns))
+        )
+        return pd.DataFrame()
+
+    if "timestamp" in base.columns:
+        base["timestamp"] = pd.to_numeric(base["timestamp"], errors="coerce")
+        base = base.sort_values("timestamp", ascending=False)
+
+    base["cod_produto"] = pd.to_numeric(base["cod_produto"], errors="coerce")
+    base["COD_DEPOSITO_NORMALIZADO"] = base["cod_deposito"].apply(normalizar_codigo_deposito)
+    base["saldo"] = to_float(base["saldo"])
+
+    # Mantém o registro mais recente de cada produto em cada depósito.
+    base = base.drop_duplicates(
+        subset=["cod_produto", "COD_DEPOSITO_NORMALIZADO"],
+        keep="first",
+    )
+
+    base = base[base["COD_DEPOSITO_NORMALIZADO"].isin(mapa_depositos.keys())].copy()
+    base["TIPO_ESTOQUE"] = base["COD_DEPOSITO_NORMALIZADO"].map(
+        lambda codigo: mapa_depositos.get(codigo, {}).get("tipo")
+    )
+    base["NOME_DEPOSITO"] = base["COD_DEPOSITO_NORMALIZADO"].map(
+        lambda codigo: mapa_depositos.get(codigo, {}).get("nome", "")
+    )
+
+    # O TeleFluxo exibe posição disponível; saldos zerados/negativos não geram linhas.
+    base = base[base["saldo"] > 0].copy()
+    base = base.dropna(subset=["cod_produto", "TIPO_ESTOQUE"])
+
+    if base.empty:
+        return pd.DataFrame()
+
+    # Caso existam dois depósitos com o mesmo tipo, soma-os em uma única categoria.
+    agrupado = (
+        base.groupby(["cod_produto", "TIPO_ESTOQUE"], as_index=False)
+        .agg(
+            saldo=("saldo", "sum"),
+            CODIGOS_DEPOSITO=("COD_DEPOSITO_NORMALIZADO", lambda s: ",".join(dict.fromkeys(map(str, s)))),
+            NOMES_DEPOSITO=("NOME_DEPOSITO", lambda s: " | ".join(dict.fromkeys(str(v) for v in s if str(v).strip()))),
+        )
+    )
+
+    agrupado.rename(columns={
+        "cod_produto": "CODIGO_PRODUTO",
+        "saldo": "QUANTIDADE",
+    }, inplace=True)
+    agrupado["CNPJ_ORIGEM"] = cnpj
+    agrupado["NOME_FANTASIA"] = LOJAS_NOME.get(cnpj, f"LOJA {cnpj[-4:]}")
+
+    resumo = agrupado.groupby("TIPO_ESTOQUE")["QUANTIDADE"].sum().round(2).to_dict()
+    log(f"   ✅ Saldos por depósito: {len(agrupado)} registros | quantidades: {resumo}")
+    return agrupado
+
+
+def extrair_estoque(cnpj, modo_completo=False, mapa_depositos=None):
+    """
+    Mantém LinxProdutosDetalhes para preços/custos e usa
+    LinxProdutosDetalhesDepositos para a quantidade separada por depósito.
+
+    Se o método por depósito não retornar dados, preserva o comportamento antigo
+    usando o saldo agregado como ESTOQUE.
     """
     hoje = datetime.now().date()
     mov_ini = hoje - timedelta(days=JANELA_DIAS_MOV)
@@ -464,7 +776,7 @@ def extrair_estoque(cnpj, modo_completo=False):
             if df.empty:
                 break
 
-            df.columns = [c.lower() for c in df.columns]
+            df.columns = [str(c).strip().lower() for c in df.columns]
             dfs.append(df)
 
             novo_ts = obter_proximo_timestamp(df, ts)
@@ -488,7 +800,7 @@ def extrair_estoque(cnpj, modo_completo=False):
             if df.empty:
                 break
 
-            df.columns = [c.lower() for c in df.columns]
+            df.columns = [str(c).strip().lower() for c in df.columns]
             dfs.append(df)
 
             novo_ts = obter_proximo_timestamp(df, ts)
@@ -498,30 +810,43 @@ def extrair_estoque(cnpj, modo_completo=False):
             ts = novo_ts
             time.sleep(TEMPO_ESPERA_API)
 
-        # fallback automático pro modo completo
+        # Fallback automático para o modo completo, mantendo a lógica já existente.
         if not dfs:
             log(f"   🔁 Sem retorno por movimentação para {LOJAS_NOME.get(cnpj, cnpj)}. Tentando modo completo...")
-            return extrair_estoque(cnpj, modo_completo=True)
+            return extrair_estoque(
+                cnpj,
+                modo_completo=True,
+                mapa_depositos=mapa_depositos,
+            )
 
     if not dfs:
+        # Mesmo que LinxProdutosDetalhes não retorne dados, ainda tenta o método
+        # específico por depósito. O catálogo carregado depois preencherá nome,
+        # referência e categoria; preços/custos ficam zerados somente nesse fallback.
+        saldos_sem_detalhes = extrair_saldos_por_deposito(cnpj, mapa_depositos or {})
+        if not saldos_sem_detalhes.empty:
+            for coluna in ["PRECO_CUSTO", "PRECO_VENDA", "CUSTO_MEDIO"]:
+                saldos_sem_detalhes[coluna] = 0
+            log(
+                f"   ⚠️ Sem LinxProdutosDetalhes em {LOJAS_NOME.get(cnpj, cnpj)}, "
+                "mas os saldos por depósito foram preservados."
+            )
+            return saldos_sem_detalhes
         return pd.DataFrame()
 
-    base = pd.concat(dfs, ignore_index=True)
+    detalhes = pd.concat(dfs, ignore_index=True)
 
-    if "timestamp" in base.columns:
-        base["timestamp"] = pd.to_numeric(base["timestamp"], errors="coerce")
-        base = base.sort_values("timestamp", ascending=False)
+    if "timestamp" in detalhes.columns:
+        detalhes["timestamp"] = pd.to_numeric(detalhes["timestamp"], errors="coerce")
+        detalhes = detalhes.sort_values("timestamp", ascending=False)
 
-    if "cod_produto" in base.columns:
-        base["cod_produto"] = pd.to_numeric(base["cod_produto"], errors="coerce")
+    if "cod_produto" in detalhes.columns:
+        detalhes["cod_produto"] = pd.to_numeric(detalhes["cod_produto"], errors="coerce")
 
-    # Mantém uma linha por produto e tipo de estoque. Sem o tipo na chave,
-    # ESTOQUE, AMOSTRA e DOA poderiam ser misturados ou sobrescritos.
-    base["TIPO_ESTOQUE"] = base.apply(identificar_tipo_estoque_linha, axis=1)
-    base = base.drop_duplicates(subset=["cod_produto", "TIPO_ESTOQUE"], keep="first")
-    base["CNPJ_ORIGEM"] = cnpj
-    base["NOME_FANTASIA"] = LOJAS_NOME.get(cnpj, f"LOJA {cnpj[-4:]}")
-    base.rename(columns={
+    detalhes = detalhes.drop_duplicates(subset=["cod_produto"], keep="first")
+    detalhes["CNPJ_ORIGEM"] = cnpj
+    detalhes["NOME_FANTASIA"] = LOJAS_NOME.get(cnpj, f"LOJA {cnpj[-4:]}")
+    detalhes.rename(columns={
         "cod_produto": "CODIGO_PRODUTO",
         "quantidade": "QUANTIDADE",
         "preco_custo": "PRECO_CUSTO",
@@ -529,12 +854,45 @@ def extrair_estoque(cnpj, modo_completo=False):
         "custo_medio": "CUSTO_MEDIO"
     }, inplace=True)
 
-    tipos_encontrados = base["TIPO_ESTOQUE"].value_counts().to_dict() if "TIPO_ESTOQUE" in base.columns else {}
-    log(f"   ✅ {LOJAS_NOME.get(cnpj, cnpj)}: {len(base)} registros | tipos: {tipos_encontrados}")
-    return base
+    saldos_depositos = extrair_saldos_por_deposito(cnpj, mapa_depositos or {})
+
+    if not saldos_depositos.empty:
+        # Quantidade vem exclusivamente do método por depósito; detalhes continuam
+        # fornecendo preço, custo, custo médio e os demais campos já usados.
+        colunas_detalhes = [
+            coluna for coluna in detalhes.columns
+            if coluna not in {"QUANTIDADE", "TIPO_ESTOQUE", "CNPJ_ORIGEM", "NOME_FANTASIA"}
+        ]
+        detalhes_para_merge = detalhes[colunas_detalhes].copy()
+        base = saldos_depositos.merge(
+            detalhes_para_merge,
+            on="CODIGO_PRODUTO",
+            how="left",
+        )
+
+        for coluna in ["PRECO_CUSTO", "PRECO_VENDA", "CUSTO_MEDIO"]:
+            if coluna not in base.columns:
+                base[coluna] = 0
+
+        tipos_encontrados = base["TIPO_ESTOQUE"].value_counts().to_dict()
+        log(f"   ✅ {LOJAS_NOME.get(cnpj, cnpj)}: {len(base)} registros separados | tipos: {tipos_encontrados}")
+        return base
+
+    # Fallback seguro: mantém exatamente o comportamento anterior.
+    detalhes["TIPO_ESTOQUE"] = "ESTOQUE"
+    if "QUANTIDADE" not in detalhes.columns:
+        detalhes["QUANTIDADE"] = 0
+    detalhes["QUANTIDADE"] = to_float(detalhes["QUANTIDADE"])
+    detalhes = detalhes[detalhes["QUANTIDADE"] > 0].copy()
+    log(
+        f"   ⚠️ Sem saldo por depósito em {LOJAS_NOME.get(cnpj, cnpj)}; "
+        f"usando {len(detalhes)} registros do estoque agregado como ESTOQUE."
+    )
+    return detalhes
+
 
 # ===========================================
-# 3. EXTRAÇÃO DE SERIAIS (IMEI) - NOVIDADE!
+# 3. EXTRAÇÃO DE SERIAIS (IMEI) POR DEPÓSITO
 # ===========================================
 def chamar_api_seriais(parametros):
     params_xml = "".join([f'<Parameter id="{k}">{v}</Parameter>' for k, v in parametros.items()])
@@ -550,32 +908,55 @@ def chamar_api_seriais(parametros):
     try:
         r = requests.post(URL, data=xml.encode("utf-8"), headers=headers, auth=auth, timeout=120)
         if r.status_code != 200:
+            log(f"❌ HTTP {r.status_code} em LinxProdutosSerial | params={parametros}")
             return pd.DataFrame()
+
         root = etree.fromstring(r.content)
+        success = root.xpath(".//ResponseSuccess/text()")
+        if success and success[0].strip().lower() == "false":
+            msg = root.xpath(".//ResponseMessage/text()")
+            erro = msg[0] if msg else "Sem mensagem"
+            log(f"❌ ResponseSuccess=false em LinxProdutosSerial | params={parametros} | msg={erro}")
+            return pd.DataFrame()
+
         cols = [d.text for d in root.xpath(".//C[last()]/D")]
         rows = root.xpath(".//R")
         data = [dict(zip(cols, [d.text for d in rr.xpath('./D')])) for rr in rows]
         return pd.DataFrame(data)
-    except:
+    except Exception as e:
+        log(f"❌ Exceção em LinxProdutosSerial: {e} | params={parametros}")
         return pd.DataFrame()
 
-def extrair_seriais_loja(cnpj):
+
+def extrair_seriais_loja(cnpj, mapa_depositos=None):
     dfs = []
     ts = 0
+    mapa_depositos = mapa_depositos or {}
+    codigos_ordenados = sorted(mapa_depositos.keys(), key=lambda codigo: (not str(codigo).isdigit(), int(codigo) if str(codigo).isdigit() else str(codigo)))
+    codigos_depositos = ",".join(codigos_ordenados)
+
     while True:
         params = {"cnpjEmp": cnpj, "timestamp": str(ts)}
+        if codigos_depositos:
+            # Na documentação, o filtro deste método se chama "depositos".
+            params["depositos"] = codigos_depositos
+
         df = chamar_api_seriais(params)
         if df.empty:
             break
-        df.columns = [c.lower() for c in df.columns]
 
-        # Filtra apenas IMEIs que estão efetivamente em estoque (saldo = True ou 1)
+        df.columns = [str(c).strip().lower() for c in df.columns]
+
+        # Calcula a próxima página antes do filtro de saldo. Assim, uma página
+        # contendo somente seriais inativos não interrompe a paginação.
+        novo_ts = obter_proximo_timestamp(df, ts)
+
         if "saldo" in df.columns:
             df = df[df["saldo"].astype(str).str.lower().isin(["true", "1", "s", "sim", "1.0"])]
 
-        dfs.append(df)
+        if not df.empty:
+            dfs.append(df)
 
-        novo_ts = obter_proximo_timestamp(df, ts)
         if novo_ts is None:
             break
 
@@ -591,8 +972,31 @@ def extrair_seriais_loja(cnpj):
         base["timestamp"] = pd.to_numeric(base["timestamp"], errors="coerce")
         base = base.sort_values("timestamp", ascending=False)
 
-    base = base.drop_duplicates(subset=["serial"], keep="first")  # Garante 1 registro por IMEI
+    if "id_deposito" in base.columns:
+        base["COD_DEPOSITO_NORMALIZADO"] = base["id_deposito"].apply(normalizar_codigo_deposito)
+
+        if mapa_depositos:
+            base = base[base["COD_DEPOSITO_NORMALIZADO"].isin(mapa_depositos.keys())].copy()
+            base["TIPO_ESTOQUE"] = base["COD_DEPOSITO_NORMALIZADO"].map(
+                lambda codigo: mapa_depositos.get(codigo, {}).get("tipo", "ESTOQUE")
+            )
+            base["NOME_DEPOSITO"] = base["COD_DEPOSITO_NORMALIZADO"].map(
+                lambda codigo: mapa_depositos.get(codigo, {}).get("nome", "")
+            )
+        else:
+            base["TIPO_ESTOQUE"] = "ESTOQUE"
+    else:
+        # Compatibilidade com respostas antigas que não tragam id_deposito.
+        base["TIPO_ESTOQUE"] = "ESTOQUE"
+
+    if base.empty:
+        return pd.DataFrame()
+
+    base = base.drop_duplicates(subset=["serial"], keep="first")
     base["CNPJ_ORIGEM"] = cnpj
+
+    resumo = base["TIPO_ESTOQUE"].value_counts().to_dict()
+    log(f"   🔢 IMEIs ativos por tipo em {LOJAS_NOME.get(cnpj, cnpj)}: {resumo}")
     return base
 
 # ===========================================
@@ -663,7 +1067,7 @@ def encontrar_valores_invalidos(lote):
 
 
 def enviar_para_api(dataframe):
-    base_url = "https://telefluxo-aplicacao.onrender.com/stock/sync"
+    base_url = API_STOCK_SYNC_URL
 
     if dataframe is None or dataframe.empty:
         log("⚠️ Nenhum dado para enviar para a API.")
@@ -717,7 +1121,24 @@ def enviar_para_api(dataframe):
                 log(f"      ⚠️ Erro no Lote {lote_num} (Tentativa {attempt}): {response.status_code}")
 
                 try:
-                    log(f"      Resposta API: {response.text[:500]}")
+                    resposta_api = response.text or ""
+                    log(f"      Resposta API: {resposta_api[:500]}")
+
+                    # Erro estrutural: não adianta repetir cinco vezes.
+                    # O banco de produção precisa receber a migration/DB push
+                    # que cria a coluna Stock.stockType.
+                    resposta_normalizada = resposta_api.lower()
+                    if (
+                        "stocktype" in resposta_normalizada
+                        and (
+                            "does not exist" in resposta_normalizada
+                            or "nao existe" in resposta_normalizada
+                            or "não existe" in resposta_normalizada
+                        )
+                    ):
+                        log("❌ O banco do backend ainda não possui a coluna stockType.")
+                        log("👉 Faça o deploy da migration/schema no Render antes de executar o sincronizador novamente.")
+                        return False
                 except Exception:
                     pass
 
@@ -738,7 +1159,7 @@ def enviar_para_api(dataframe):
 # ▶ EXECUÇÃO PRINCIPAL
 # ===========================================
 def main():
-    log("🚀 Iniciando Sincronização v8.1 (Auditoria com IMEI)...")
+    log("🚀 Iniciando Sincronização v9.2 (DEPÓSITOS: ESTOQUE / AMOSTRA / DOA + IMEI)...")
 
     # ✅ NOVO: carrega classificações do Excel
     mapa_em_linha, mapa_cluster = carregar_classificacoes_excel()
@@ -757,13 +1178,21 @@ def main():
     for i, cnpj in enumerate(CNPJS):
         log(f"[{i+1}/{len(CNPJS)}] CNPJ: {cnpj}...")
 
-        # ✅ ALTERADO: agora busca estoque completo por padrão, sem quebrar o modo antigo
-        df_est = extrair_estoque(cnpj, modo_completo=False)
+        # Descobre os códigos dos depósitos daquela loja pelo nome cadastrado no ERP.
+        mapa_depositos = extrair_depositos_loja(cnpj)
+
+        # Mantém preços/custos do método já usado e substitui somente a origem
+        # das quantidades pelos saldos fragmentados por depósito.
+        df_est = extrair_estoque(
+            cnpj,
+            modo_completo=False,
+            mapa_depositos=mapa_depositos,
+        )
         if not df_est.empty:
             todos_dados.append(df_est)
 
-        # Puxa os IMEIs
-        df_ser = extrair_seriais_loja(cnpj)
+        # Puxa os IMEIs e preserva o id_deposito para não misturar os tipos.
+        df_ser = extrair_seriais_loja(cnpj, mapa_depositos=mapa_depositos)
         if not df_ser.empty:
             todos_seriais.append(df_ser)
 
@@ -772,7 +1201,7 @@ def main():
         return
 
     df_estoque = pd.concat(todos_dados, ignore_index=True)
-    df_seriais = pd.concat(todos_seriais, ignore_index=True) if todos_seriais else pd.DataFrame(columns=["CNPJ_ORIGEM", "codigoproduto", "serial"])
+    df_seriais = pd.concat(todos_seriais, ignore_index=True) if todos_seriais else pd.DataFrame(columns=["CNPJ_ORIGEM", "codigoproduto", "serial", "TIPO_ESTOQUE"])
 
     # 3. Cruzamento Estoque x Catálogo
     log("🔄 Unificando dados de Catálogo...")
@@ -789,7 +1218,7 @@ def main():
         df_estoque[col] = to_float(df_estoque.get(col, 0))
 
     # Bases alternativas podem trazer ESTOQUE, AMOSTRA e DOA em colunas separadas.
-    # A expansão ocorre antes do IMEI para que apenas o estoque normal seja serializado.
+    # A expansão ocorre antes do IMEI; cada tipo usa somente seriais do seu depósito.
     df_estoque = expandir_quantidades_por_tipo(df_estoque)
 
     # 4. A MÁGICA: DESDOBRAMENTO POR IMEI
@@ -803,15 +1232,22 @@ def main():
 
         tipo_estoque = normalizar_tipo_estoque(row.get("TIPO_ESTOQUE", "ESTOQUE"))
 
-        # IMEI é usado apenas para o estoque normal. AMOSTRA e DOA permanecem
-        # como saldos agregados e nunca duplicam os seriais do estoque operacional.
-        if tipo_estoque == "ESTOQUE":
-            seriais_produto = df_seriais[
-                (df_seriais["CNPJ_ORIGEM"] == cnpj) &
-                (df_seriais["codigoproduto"] == cod)
-            ]["serial"].tolist()
-        else:
-            seriais_produto = []
+        # Usa somente os IMEIs pertencentes ao mesmo depósito/tipo da quantidade.
+        # Assim um aparelho em DOA ou AMOSTRA não aparece no ESTOQUE normal.
+        mascara_seriais = (
+            (df_seriais["CNPJ_ORIGEM"] == cnpj) &
+            (df_seriais["codigoproduto"] == cod)
+        )
+
+        if "TIPO_ESTOQUE" in df_seriais.columns:
+            mascara_seriais = mascara_seriais & (
+                df_seriais["TIPO_ESTOQUE"].apply(normalizar_tipo_estoque) == tipo_estoque
+            )
+        elif tipo_estoque != "ESTOQUE":
+            # Resposta antiga sem id_deposito: não atribui o mesmo IMEI a AMOSTRA/DOA.
+            mascara_seriais = mascara_seriais & False
+
+        seriais_produto = df_seriais[mascara_seriais]["serial"].tolist()
 
         # ✅ NOVO: limpa, deduplica e evita serial vazio
         seriais_produto = list(dict.fromkeys(
@@ -857,9 +1293,58 @@ def main():
     # ✅ NOVO: busca o cluster pela loja
     df_final["CLUSTER"] = df_final["NOME_FANTASIA"].map(mapa_cluster).fillna("")
 
+    # Garante que todo registro enviado tenha um tipo de estoque explícito.
+    if "TIPO_ESTOQUE" not in df_final.columns:
+        df_final["TIPO_ESTOQUE"] = "ESTOQUE"
+
+    df_final["TIPO_ESTOQUE"] = df_final["TIPO_ESTOQUE"].apply(normalizar_tipo_estoque)
+
+    resumo_tipos = (
+        df_final.groupby("TIPO_ESTOQUE")["QUANTIDADE"]
+        .sum()
+        .round(2)
+        .to_dict()
+    )
+    log(f"📊 Quantidades por tipo antes do envio: {resumo_tipos}")
+
+    # Auditoria local: permite conferir exatamente o que será enviado ao backend.
+    auditoria_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "auditoria_estoque_por_tipo.csv",
+    )
+    colunas_auditoria = [
+        coluna for coluna in [
+            "CNPJ_ORIGEM", "NOME_FANTASIA", "CODIGO_PRODUTO",
+            "DESCRICAO", "REFERENCIA", "TIPO_ESTOQUE",
+            "QUANTIDADE", "SERIAL",
+        ]
+        if coluna in df_final.columns
+    ]
+    df_final[colunas_auditoria].to_csv(
+        auditoria_path,
+        index=False,
+        encoding="utf-8-sig",
+    )
+    log(f"🧾 Auditoria pré-envio salva em: {auditoria_path}")
+
+    # O diagnóstico oficial da própria API confirmou saldo no depósito AMOSTRAS
+    # (código 4) para a loja Araguaia. Se AMOSTRA continuar zerada aqui,
+    # interrompemos antes do primeiro lote para não limpar a produção com uma
+    # carga novamente classificada apenas como ESTOQUE.
+    if float(resumo_tipos.get("AMOSTRA", 0) or 0) <= 0:
+        log("❌ Validação de segurança: nenhuma AMOSTRA foi preparada para envio.")
+        log("👉 A API confirmou saldo no depósito AMOSTRAS; o banco de produção NÃO será limpo.")
+        return 1
+
     # 5. SALVAMENTO DIRETO
     log("💾 Disparando dados com IMEIs para a API da Produção...")
-    enviar_para_api(df_final)
+    sucesso = enviar_para_api(df_final)
+
+    if not sucesso:
+        log("❌ Sincronização não concluída. O estoque não foi totalmente enviado.")
+        return 1
+
+    return 0
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

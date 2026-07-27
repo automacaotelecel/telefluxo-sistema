@@ -104,6 +104,7 @@ export type OnlinePriceHistoryEntry = {
   resumo: OnlinePriceAnalysisSummary;
   reportFileName: string;
   downloadUrl: string;
+  results?: OnlinePriceResult[];
 };
 
 export type OnlinePriceAnalyzeResponse = {
