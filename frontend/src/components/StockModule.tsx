@@ -2563,4 +2563,5 @@ export default function StockModule() {
       </div>
     </div>
   );
+  
 }
