@@ -249,14 +249,38 @@ const getSaleProductCode = (sale: any) =>
   )).trim();
 
 const getUnitCost = (item: any): number => {
+  const acquisition = Number(item?.acquisitionCost);
+
+  if (
+    Number.isFinite(acquisition) &&
+    acquisition > 0
+  ) {
+    return acquisition;
+  }
+
   const considered = Number(item?.costConsidered);
-  if (Number.isFinite(considered) && considered > 0) return considered;
+
+  if (
+    Number.isFinite(considered) &&
+    considered > 0
+  ) {
+    return considered;
+  }
 
   const average = Number(item?.averageCost);
-  if (Number.isFinite(average) && average > 0) return average;
+
+  if (
+    Number.isFinite(average) &&
+    average > 0
+  ) {
+    return average;
+  }
 
   const purchase = Number(item?.costPrice);
-  return Number.isFinite(purchase) ? purchase : 0;
+
+  return Number.isFinite(purchase)
+    ? purchase
+    : 0;
 };
 
 export default function StockModule() {
@@ -322,20 +346,42 @@ export default function StockModule() {
               ...item,
               stockType,
               quantity: 0,
+              totalAcquisitionCost: 0,
             };
           }
 
-          groupedStock[key].quantity += Number(item.quantity) || 0;
+          const itemQuantity = Math.max(
+            0,
+            Number(item.quantity) || 0
+          );
+
+          const itemCost = getUnitCost(item);
+
+          groupedStock[key].quantity += itemQuantity;
+          groupedStock[key].totalAcquisitionCost +=
+            itemCost * itemQuantity;
         });
 
         setStockData(
-          Object.values(groupedStock).map((item: any) => ({
-            ...item,
-            quantity: Math.max(
+          Object.values(groupedStock).map((item: any) => {
+            const quantity = Math.max(
               0,
               Math.round(Number(item.quantity) || 0)
-            ),
-          }))
+            );
+
+            const averageAcquisitionCost =
+              quantity > 0
+                ? Number(item.totalAcquisitionCost || 0) / quantity
+                : 0;
+
+            return {
+              ...item,
+              quantity,
+              acquisitionCost: averageAcquisitionCost,
+              costConsidered: averageAcquisitionCost,
+              averageCost: averageAcquisitionCost,
+            };
+          })
         );
       }
 

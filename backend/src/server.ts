@@ -3131,6 +3131,88 @@ app.get('/api/diretoria/acesso-rapido-aparelhos', async (req, res) => {
     const byDescription = new Map<string, string>();
     const byBaseModel = new Map<string, string>();
 
+        // Catálogo histórico: código/referência -> descrição real do produto
+    const descriptionByReference = new Map<string, string>();
+
+    const isWeakProductName = (
+      value: any,
+      reference?: any
+    ): boolean => {
+      const name = acessoRapidoCleanName(value);
+      const nameKey = acessoRapidoSearchKey(name);
+      const referenceKey = acessoRapidoSearchKey(reference);
+
+      if (!nameKey) return true;
+
+      // Exemplos inválidos como nome: 7370, 7368, 7322...
+      if (/^\d+$/.test(nameKey)) return true;
+
+      // A descrição é apenas uma repetição do código.
+      if (referenceKey && nameKey === referenceKey) return true;
+
+      return false;
+    };
+
+    const registerProductDescription = (
+      reference: any,
+      description: any,
+      force = false
+    ) => {
+      const referenceKey = acessoRapidoSearchKey(reference);
+      const cleanDescription =
+        acessoRapidoCleanName(description);
+
+      if (
+        !referenceKey ||
+        !cleanDescription ||
+        isWeakProductName(cleanDescription, reference)
+      ) {
+        return;
+      }
+
+      const current =
+        descriptionByReference.get(referenceKey);
+
+      if (
+        force ||
+        !current ||
+        isWeakProductName(current, reference)
+      ) {
+        descriptionByReference.set(
+          referenceKey,
+          cleanDescription
+        );
+      }
+    };
+
+    const resolveProductDescription = (
+      description: any,
+      reference: any
+    ): string => {
+      const cleanDescription =
+        acessoRapidoCleanName(description);
+
+      if (
+        cleanDescription &&
+        !isWeakProductName(cleanDescription, reference)
+      ) {
+        return cleanDescription;
+      }
+
+      const referenceKey =
+        acessoRapidoSearchKey(reference);
+
+      const catalogDescription =
+        descriptionByReference.get(referenceKey);
+
+      if (catalogDescription) {
+        return catalogDescription;
+      }
+
+      return cleanDescription ||
+        acessoRapidoCleanName(reference);
+  };
+
     const getOrCreateProduct = (params: {
       modeloCompleto: string;
       referencia?: string;
@@ -3176,8 +3258,26 @@ app.get('/api/diretoria/acesso-rapido-aparelhos', async (req, res) => {
         productMap.set(mapKey, product);
       }
 
-      if (!product.referencia && referencia) product.referencia = referencia;
-      if ((!product.categoria || product.categoria === 'GERAL') && categoria) product.categoria = categoria;
+      if (!product.referencia && referencia) {
+  product.referencia = referencia;
+          }
+
+          if (
+            (!product.categoria ||
+              product.categoria === 'GERAL') &&
+            categoria
+          ) {
+            product.categoria = categoria;
+          }
+
+          // Se o produto nasceu como "7370", mas depois encontramos
+          // "GALAXY S26 ULTRA...", substitui o nome numérico.
+          if (
+            isWeakProductName(product.modelo, product.referencia) &&
+            !isWeakProductName(modeloBase, referencia)
+          ) {
+            product.modelo = modeloBase;
+          }
 
       if (baseKey) byBaseModel.set(baseKey, mapKey);
       if (referenceKey) byReference.set(referenceKey, mapKey);
@@ -3185,6 +3285,23 @@ app.get('/api/diretoria/acesso-rapido-aparelhos', async (req, res) => {
 
       return product;
     };
+
+    // Recupera descrições de aparelhos que já passaram pelo
+    // estoque, mesmo que hoje estejam com estoque zerado.
+    const imeiHistoryRows =
+      await prisma.imeiHistory.findMany({
+        select: {
+          productCode: true,
+          description: true,
+        },
+      });
+
+    for (const history of imeiHistoryRows) {
+      registerProductDescription(
+        history.productCode,
+        history.description
+      );
+    }
 
     const stockRows = deduplicateStockRows(
       await prisma.stock.findMany({
@@ -3207,13 +3324,39 @@ app.get('/api/diretoria/acesso-rapido-aparelhos', async (req, res) => {
     );
 
     for (const stock of stockRows) {
-      const modeloCompleto = acessoRapidoCleanName(stock.description || '');
-      if (!modeloCompleto) continue;
+        const modeloCompleto =
+          acessoRapidoCleanName(
+            stock.description || ''
+          );
 
-      const loja = estoqueDetalhadoStoreName(stock);
-      const referencia = acessoRapidoCleanName(stock.reference || stock.productCode || '');
-      const categoria = acessoRapidoCleanName(stock.category || 'GERAL').toUpperCase();
-      const quantidade = estoqueDetalhadoToNumber(stock.quantity);
+        if (!modeloCompleto) continue;
+
+        const loja =
+          estoqueDetalhadoStoreName(stock);
+
+        const referencia =
+          acessoRapidoCleanName(
+            stock.reference ||
+            stock.productCode ||
+            ''
+          );
+
+        registerProductDescription(
+          referencia,
+          modeloCompleto,
+          true
+        );
+
+        const categoria =
+          acessoRapidoCleanName(
+            stock.category || 'GERAL'
+          ).toUpperCase();
+
+        const quantidade =
+          estoqueDetalhadoToNumber(
+            stock.quantity
+          );
+
       const stockType = normalizeStockType(stock.stockType);
       const cor = acessoRapidoDetectColor(modeloCompleto);
 
@@ -3278,23 +3421,50 @@ app.get('/api/diretoria/acesso-rapido-aparelhos', async (req, res) => {
       if (!quantidade) return;
 
       const referencia = acessoRapidoCleanName(
-        row.referencia ||
-          row.REFERENCIA ||
-          row.codigo_produto ||
-          row.CODIGO_PRODUTO ||
-          row.familia ||
-          row.FAMILIA ||
-          ''
-      );
+  row.referencia ||
+    row.REFERENCIA ||
+    row.codigo_produto ||
+    row.CODIGO_PRODUTO ||
+    row.familia ||
+    row.FAMILIA ||
+    ''
+);
 
-      const descricao = acessoRapidoCleanName(
-        row.descricao ||
-          row.DESCRICAO ||
-          row.produto ||
-          row.PRODUTO ||
-          referencia ||
-          ''
-      );
+      const descricaoInformada =
+        acessoRapidoCleanName(
+          row.descricao ||
+            row.DESCRICAO ||
+            row.produto ||
+            row.PRODUTO ||
+            ''
+        );
+
+      const categoria =
+        acessoRapidoCleanName(
+          row.categoria_real ||
+            row.CATEGORIA_REAL ||
+            row.categoria ||
+            row.CATEGORIA ||
+            row.familia ||
+            row.FAMILIA ||
+            'GERAL'
+        ).toUpperCase();
+
+      // VALE não é aparelho e não deve aparecer
+      // no Acesso Rápido de Aparelhos.
+      if (
+        acessoRapidoSearchKey(categoria) === 'VALE'
+      ) {
+        return;
+      }
+
+      const descricao =
+        resolveProductDescription(
+          descricaoInformada,
+          referencia
+        );
+
+      if (!referencia && !descricao) return;
 
       if (!referencia && !descricao) return;
 
@@ -3311,22 +3481,25 @@ app.get('/api/diretoria/acesso-rapido-aparelhos', async (req, res) => {
         descriptionKey;
 
       const product =
-        productKey && productMap.get(productKey)
-          ? productMap.get(productKey)!
-          : getOrCreateProduct({
-              modeloCompleto: descricao || referencia,
-              referencia,
-              categoria: acessoRapidoCleanName(
-                row.categoria_real ||
-                  row.CATEGORIA_REAL ||
-                  row.categoria ||
-                  row.CATEGORIA ||
-                  row.familia ||
-                  row.FAMILIA ||
-                  'GERAL'
-              ).toUpperCase(),
-            });
+          productKey && productMap.get(productKey)
+            ? productMap.get(productKey)!
+            : getOrCreateProduct({
+                modeloCompleto: descricao || referencia,
+                referencia,
+                categoria,
+              });
 
+        // Caso o produto tenha sido criado anteriormente apenas com o código,
+        // substitui pelo nome verdadeiro quando uma descrição válida aparecer.
+        if (
+          isWeakProductName(product.modelo, product.referencia) &&
+          !isWeakProductName(descricao, referencia)
+        ) {
+          product.modelo = acessoRapidoBaseModel(
+            descricao,
+            referencia
+          );
+        }
       const loja = estoqueDetalhadoStoreName(row);
       const store = acessoRapidoEnsureLoja(product, loja);
       const cor = acessoRapidoDetectColor(descricao);
@@ -4991,6 +5164,8 @@ async function remapGenerateSuggestionsForUser(user: any): Promise<RemapSuggesti
           quantidade
         FROM vendas_anuais
         WHERE ${securityFilter}
+        AND data_emissao >= ?
+        AND data_emissao <= ?
       `);
 
       rows.forEach((row: any) => addSale(row));
