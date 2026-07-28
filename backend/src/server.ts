@@ -7051,7 +7051,14 @@ app.post('/stock/sync', async (req, res) => {
           ),
 
           averageCost: safeNum(
-            item.CUSTO_MEDIO ?? item.averageCost
+            item.CUSTO_MEDIO ??
+              item.averageCost
+          ),
+
+          acquisitionCost: safeNum(
+            item.CUSTO_SERIAL_ENTRADA ??
+              item.acquisitionCost ??
+              item.ACQUISITION_COST
           ),
 
           serial: safeStr(
@@ -7132,25 +7139,48 @@ app.post('/stock/sync', async (req, res) => {
               productCode: item.productCode,
               description: item.description,
               currentStore: item.storeName,
+
+              acquisitionCost:
+                item.acquisitionCost > 0
+                  ? item.acquisitionCost
+                  : null,
             },
           });
-        } else if (
-          existing.currentStore !== item.storeName
-        ) {
-          await prisma.imeiHistory.update({
-            where: {
-              serial: serialClean,
-            },
-            data: {
-              currentStore: item.storeName,
-              entryDateStore: new Date(),
-              transferCount:
-                existing.transferCount + 1,
-            },
-          });
+        } else {
+          const historyUpdate: any = {};
+
+          if (item.acquisitionCost > 0) {
+            historyUpdate.acquisitionCost =
+              item.acquisitionCost;
+          }
+
+          if (
+            existing.currentStore !==
+            item.storeName
+          ) {
+            historyUpdate.currentStore =
+              item.storeName;
+
+            historyUpdate.entryDateStore =
+              new Date();
+
+            historyUpdate.transferCount =
+              existing.transferCount + 1;
+          }
+
+          if (
+            Object.keys(historyUpdate).length > 0
+          ) {
+            await prisma.imeiHistory.update({
+              where: {
+                serial: serialClean,
+              },
+              data: historyUpdate,
+            });
+          }
         }
       }
-    }
+    }  
 
     console.log(
       `✅ Lote processado com sucesso: ${formattedData.length} registros.`
