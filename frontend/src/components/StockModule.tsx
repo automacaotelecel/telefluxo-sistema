@@ -249,6 +249,15 @@ const getSaleProductCode = (sale: any) =>
   )).trim();
 
 const getUnitCost = (item: any): number => {
+  const groupedUnitCost = Number(item?.unitCost);
+
+  if (
+    Number.isFinite(groupedUnitCost) &&
+    groupedUnitCost > 0
+  ) {
+    return groupedUnitCost;
+  }
+
   const acquisition = Number(item?.acquisitionCost);
 
   if (
@@ -347,6 +356,8 @@ export default function StockModule() {
               stockType,
               quantity: 0,
               totalAcquisitionCost: 0,
+              exactCostQuantity: 0,
+              fallbackCostQuantity: 0,
             };
           }
 
@@ -360,6 +371,20 @@ export default function StockModule() {
           groupedStock[key].quantity += itemQuantity;
           groupedStock[key].totalAcquisitionCost +=
             itemCost * itemQuantity;
+
+          const exactAcquisitionCost =
+            Number(item?.acquisitionCost);
+
+          if (
+            Number.isFinite(exactAcquisitionCost) &&
+            exactAcquisitionCost > 0
+          ) {
+            groupedStock[key].exactCostQuantity +=
+              itemQuantity;
+          } else {
+            groupedStock[key].fallbackCostQuantity +=
+              itemQuantity;
+          }
         });
 
         setStockData(
@@ -377,9 +402,18 @@ export default function StockModule() {
             return {
               ...item,
               quantity,
-              acquisitionCost: averageAcquisitionCost,
+              unitCost: averageAcquisitionCost,
+              acquisitionCost:
+                Number(item.fallbackCostQuantity || 0) === 0
+                  ? averageAcquisitionCost
+                  : 0,
               costConsidered: averageAcquisitionCost,
-              averageCost: averageAcquisitionCost,
+              costSource:
+                Number(item.fallbackCostQuantity || 0) === 0
+                  ? 'CUSTO_SERIAL_ENTRADA'
+                  : Number(item.exactCostQuantity || 0) > 0
+                    ? 'CUSTO_MISTO_COM_FALLBACK'
+                    : 'CUSTO_FALLBACK',
             };
           })
         );
@@ -1099,6 +1133,16 @@ export default function StockModule() {
           return acc + ((Number(item.quantity) || 0) * (getUnitCost(item)));
         }, 0)
       : 0;
+    const exactCostQty = base.reduce(
+      (acc, item) =>
+        acc + (Number(item.exactCostQuantity) || 0),
+      0
+    );
+    const fallbackCostQty = base.reduce(
+      (acc, item) =>
+        acc + (Number(item.fallbackCostQuantity) || 0),
+      0
+    );
 
     const totalSalesQty = base.reduce((acc, item) => {
       return acc + getProductSales(item.storeName, item.description);
@@ -1117,6 +1161,8 @@ export default function StockModule() {
       totalItems,
       totalStockQty,
       totalStockValue,
+      exactCostQty,
+      fallbackCostQty,
       totalSalesQty,
       lowStockCount,
       noSalesCount
@@ -2154,7 +2200,9 @@ export default function StockModule() {
                     </h3>
                     <p className="text-[11px] text-white/70 mt-1">
                       {stockTypeView === 'ESTOQUE'
-                        ? 'Totais calculados com os filtros e pesquisa atuais.'
+                        ? stockSummary.fallbackCostQty > 0
+                          ? `${stockSummary.exactCostQty.toLocaleString('pt-BR')} un. com custo serial exato e ${stockSummary.fallbackCostQty.toLocaleString('pt-BR')} un. com fallback.`
+                          : 'Total calculado integralmente com o custo serial de entrada.'
                         : 'Esta categoria é informativa e está excluída dos cálculos financeiros e operacionais.'}
                     </p>
                   </div>
@@ -2371,7 +2419,7 @@ export default function StockModule() {
                         <div className="bg-white/10 border border-white/10 rounded-2xl p-3 min-w-[120px]"><p className="text-[9px] font-black uppercase text-white/50">Itens</p><p className="text-xl font-black">{storeDetailProducts.length}</p></div>
                         <div className="bg-white/10 border border-white/10 rounded-2xl p-3 min-w-[120px]"><p className="text-[9px] font-black uppercase text-white/50">Peças</p><p className="text-xl font-black">{storeDetailProducts.reduce((acc, i) => acc + (Number(i.quantity) || 0), 0).toLocaleString('pt-BR')}</p></div>
                         <div className="bg-white/10 border border-white/10 rounded-2xl p-3 min-w-[120px]"><p className="text-[9px] font-black uppercase text-white/50">Vendas</p><p className="text-xl font-black text-emerald-300">{storeDetailProducts.reduce((acc, i) => acc + getProductSales(i.storeName, i.description), 0).toLocaleString('pt-BR')}</p></div>
-                        <div className="bg-white/10 border border-white/10 rounded-2xl p-3 min-w-[120px]"><p className="text-[9px] font-black uppercase text-white/50">Custo considerado</p><p className="text-xl font-black">{stockTypeView === 'ESTOQUE' ? `R$ ${storeDetailProducts.reduce((acc, i) => acc + ((Number(i.costPrice) || 0) * (Number(i.quantity) || 0)), 0).toLocaleString('pt-BR', { notation: "compact", maximumFractionDigits: 1 })}` : 'NÃO COMPÕE'}</p></div>
+                        <div className="bg-white/10 border border-white/10 rounded-2xl p-3 min-w-[120px]"><p className="text-[9px] font-black uppercase text-white/50">Custo considerado</p><p className="text-xl font-black">{stockTypeView === 'ESTOQUE' ? `R$ ${storeDetailProducts.reduce((acc, i) => acc + (getUnitCost(i) * (Number(i.quantity) || 0)), 0).toLocaleString('pt-BR', { notation: "compact", maximumFractionDigits: 1 })}` : 'NÃO COMPÕE'}</p></div>
                       </div>
                     </div>
                   </div>

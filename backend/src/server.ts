@@ -4209,6 +4209,7 @@ app.get('/api/intelligent-alerts', async (req, res) => {
         quantity: true,
         costPrice: true,
         averageCost: true,
+        acquisitionCost: true,
       },
     });
 
@@ -4232,7 +4233,12 @@ app.get('/api/intelligent-alerts', async (req, res) => {
 
       const storeProduct = getStoreProduct(product, store);
       const quantity = smartAlertsToNumber(stock.quantity);
-      const unitCost = smartAlertsToNumber(stock.averageCost || stock.costPrice);
+      const unitCost =
+        smartAlertsToNumber(stock.acquisitionCost) > 0
+          ? smartAlertsToNumber(stock.acquisitionCost)
+          : smartAlertsToNumber(stock.averageCost) > 0
+            ? smartAlertsToNumber(stock.averageCost)
+            : smartAlertsToNumber(stock.costPrice);
       const value = quantity * unitCost;
 
       product.stock += quantity;
@@ -7222,14 +7228,40 @@ app.get('/stock', async (_req, res) => {
     );
 
     return res.json(
-      stock.map((item: any) => ({
-        ...item,
+      stock.map((item: any) => {
+        const acquisitionCost =
+          estoqueDetalhadoToNumber(
+            item.acquisitionCost
+          );
 
-        costConsidered:
-          estoqueDetalhadoToNumber(item.averageCost) > 0
-            ? estoqueDetalhadoToNumber(item.averageCost)
-            : estoqueDetalhadoToNumber(item.costPrice),
-      }))
+        const averageCost =
+          estoqueDetalhadoToNumber(
+            item.averageCost
+          );
+
+        const costPrice =
+          estoqueDetalhadoToNumber(
+            item.costPrice
+          );
+
+        return {
+          ...item,
+
+          costConsidered:
+            acquisitionCost > 0
+              ? acquisitionCost
+              : averageCost > 0
+                ? averageCost
+                : costPrice,
+
+          costSource:
+            acquisitionCost > 0
+              ? 'CUSTO_SERIAL_ENTRADA'
+              : averageCost > 0
+                ? 'CUSTO_MEDIO_FALLBACK'
+                : 'PRECO_CUSTO_FALLBACK',
+        };
+      })
     );
   } catch (error) {
     console.error(
