@@ -112,6 +112,7 @@ function App() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [expanded, setExpanded] = useState(DEFAULT_EXPANDED);
+  const [mountedViews, setMountedViews] = useState<string[]>(['home']);
 
   useEffect(() => {
     try {
@@ -125,8 +126,10 @@ function App() {
     if (savedUser && savedUser !== "undefined") {
       try {
         const parsedUser = JSON.parse(savedUser);
+        const initialView = getInitialViewForUser(parsedUser);
         setUser(parsedUser);
-        setCurrentView(getInitialViewForUser(parsedUser));
+        setCurrentView(initialView);
+        setMountedViews([initialView]);
         setExpanded(DEFAULT_EXPANDED);
       } catch (e) {
         localStorage.removeItem('telefluxo_user');
@@ -180,6 +183,16 @@ function App() {
       setExpanded(DEFAULT_EXPANDED);
     }
   }, [user, isStoreOnly, currentView]);
+
+  useEffect(() => {
+    if (!user) return;
+
+    setMountedViews((previous) =>
+      previous.includes(currentView)
+        ? previous
+        : [...previous, currentView]
+    );
+  }, [currentView, user]);
 
   const handleLogout = () => {
     localStorage.clear();
@@ -244,9 +257,11 @@ function App() {
     return (
       <Login
         onLogin={(data: any) => {
+          const initialView = getInitialViewForUser(data);
           setUser(data);
           localStorage.setItem('telefluxo_user', JSON.stringify(data));
-          setCurrentView(getInitialViewForUser(data));
+          setCurrentView(initialView);
+          setMountedViews([initialView]);
           setExpanded(DEFAULT_EXPANDED);
         }}
       />
@@ -297,6 +312,168 @@ function App() {
       )}
     </div>
   );
+
+  const renderViewContent = (view: string) => {
+    if (view === 'home') {
+      return <Home currentUser={user} />;
+    }
+
+    if (
+      view === 'executive_dashboard' &&
+      canViewExecutiveDashboard
+    ) {
+      return <ExecutiveDashboard currentUser={user} />;
+    }
+
+    if (
+      view === 'avaliacoes_lojas' &&
+      canViewExecutiveDashboard
+    ) {
+      return <AvaliacoesLojas />;
+    }
+
+    if (
+      view === 'acesso_rapido_aparelhos' &&
+      canViewExecutiveDashboard
+    ) {
+      return <AcessoRapidoAparelhos currentUser={user} />;
+    }
+
+    if (view === 'alertas_inteligentes') {
+      return (
+        <IntelligentAlerts
+          currentUser={user}
+          onNavigateStock={() =>
+            handleNavigate('estoque_detalhado')
+          }
+        />
+      );
+    }
+
+    if (view === 'finance') return <FinanceModule />;
+    if (view === 'controle_stone') return <ControleStone />;
+
+    if (view === 'recebimento_cartao') {
+      return <RecebimentoCartao currentUser={user} />;
+    }
+
+    if (view === 'comparativos_pdf') {
+      return <ComparativosModule currentUser={user} />;
+    }
+
+    if (view === 'comparativos_fluxo') {
+      return <FluxoComparativoModule currentUser={user} />;
+    }
+
+    if (view === 'comparativos_cartas') {
+      return <LeituraCartas currentUser={user} />;
+    }
+
+    if (view === 'stock') return <StockModule />;
+
+    if (view.startsWith('dept_')) {
+      return (
+        <DeptBulletin
+          department={view.replace('dept_', '')}
+          currentUser={user}
+          isActive={view === currentView}
+        />
+      );
+    }
+
+    if (view === 'detail' && selectedTask) {
+      return (
+        <TaskDashboard
+          task={selectedTask}
+          currentUser={user}
+          onBack={() => handleNavigate('home')}
+        />
+      );
+    }
+
+    if (view === 'agenda') {
+      return <Agenda currentUser={user} />;
+    }
+
+    if (view === 'manager_dash') {
+      return <ManagerDashboard currentUser={user} />;
+    }
+
+    if (view === 'sales_dash') return <SalesDashboard />;
+    if (view === 'comparativo') return <ComparativoAnual />;
+    if (view === 'estoque_vendas') return <EstoqueVendas />;
+    if (view === 'estoque_inteligente') return <EstoqueInteligente />;
+    if (view === 'estoque_detalhado') return <EstoqueDetalhado />;
+    if (view === 'stockout') return <Stockout />;
+    if (view === 'auditoria_lojas') return <AuditoriaLojas />;
+    if (view === 'price_table') return <PriceTablePage />;
+
+    if (view === 'solicitacoes') {
+      return <SolicitacoesModule currentUser={user} />;
+    }
+
+    if (view === 'compras_vendas' && isAdmin) {
+      return <ComprasVendas />;
+    }
+
+    if (view === 'rh') {
+      return <RhModule currentUser={user} />;
+    }
+
+    if (view === 'contract_analyzer' && canUseClarkAdm) {
+      return <ContractAnalyzer currentUser={user} />;
+    }
+
+    if (view === 'online_prices' && canUseClarkAdm) {
+      return <OnlinePricesAgent currentUser={user} />;
+    }
+
+    if (
+      ['contract_analyzer', 'online_prices'].includes(view) &&
+      !canUseClarkAdm
+    ) {
+      return <Home currentUser={user} />;
+    }
+
+    if (view === 'team') {
+      return (
+        <div className="flex-1 p-4 md:p-8 overflow-y-auto">
+          <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
+            <div>
+              <h2 className="text-2xl font-black uppercase tracking-tight">
+                Equipe Telecel
+              </h2>
+
+              <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest">
+                Gestão de acessos e cargos do sistema.
+              </p>
+            </div>
+
+            <button
+              onClick={() => setIsUserModalOpen(true)}
+              className="w-full md:w-auto bg-slate-900 text-white px-6 py-3 rounded-2xl font-black text-xs uppercase flex gap-2 hover:bg-slate-800 shadow-lg transition-all active:scale-95 justify-center items-center"
+            >
+              <Plus size={16} />
+              Novo Membro
+            </button>
+          </div>
+
+          <UserList />
+        </div>
+      );
+    }
+
+    return (
+      <TaskList
+        onOpenTask={(task: any) => {
+          setSelectedTask(task);
+          setCurrentView('detail');
+        }}
+        viewMode={view}
+        currentUser={user}
+      />
+    );
+  };
 
   return (
     <div className="flex h-screen bg-slate-50 font-sans text-slate-800 overflow-hidden">
@@ -752,107 +929,23 @@ function App() {
         </header>
 
         <div className="flex-1 overflow-hidden relative flex flex-col">
-          {currentView === 'home' ? (
-            <Home currentUser={user} />
-          ) : currentView === 'executive_dashboard' && canViewExecutiveDashboard ? (
-            <ExecutiveDashboard currentUser={user} />
-          ) : currentView === 'avaliacoes_lojas' && canViewExecutiveDashboard ? (
-            <AvaliacoesLojas />
-          ) : currentView === 'acesso_rapido_aparelhos' && canViewExecutiveDashboard ? (
-            <AcessoRapidoAparelhos currentUser={user} />
-          ) : currentView === 'alertas_inteligentes' ? (
-            <IntelligentAlerts
-              currentUser={user}
-              onNavigateStock={() => handleNavigate('estoque_detalhado')}
-            />
-          ) : currentView === 'finance' ? (
-            <FinanceModule />
-          ) : currentView === 'controle_stone' ? (
-            <ControleStone />
-          ) : currentView === 'recebimento_cartao' ? (
-            <RecebimentoCartao currentUser={user} />
-          ) : currentView === 'comparativos_pdf' ? (
-            <ComparativosModule currentUser={user} />
-          ) : currentView === 'comparativos_fluxo' ? (
-            <FluxoComparativoModule currentUser={user} />
-          ) : currentView === 'comparativos_cartas' ? (
-            <LeituraCartas currentUser={user} />
-          ) : currentView === 'stock' ? (
-            <StockModule />
-          ) : currentView.startsWith('dept_') ? (
-            <DeptBulletin department={currentView.replace('dept_', '')} currentUser={user} />
-          ) : currentView === 'detail' && selectedTask ? (
-            <TaskDashboard
-              task={selectedTask}
-              currentUser={user}
-              onBack={() => setCurrentView('home')}
-            />
-          ) : currentView === 'agenda' ? (
-            <Agenda currentUser={user} />
-          ) : currentView === 'manager_dash' ? (
-            <ManagerDashboard currentUser={user} />
-          ) : currentView === 'sales_dash' ? (
-            <SalesDashboard />
-          ) : currentView === 'comparativo' ? (
-            <ComparativoAnual />
-          ) : currentView === 'estoque_vendas' ? (
-            <EstoqueVendas />
-          ) : currentView === 'estoque_inteligente' ? (
-            <EstoqueInteligente />
-          ) : currentView === 'estoque_detalhado' ? (
-            <EstoqueDetalhado />
-          ) : currentView === 'stockout' ? (
-            <Stockout />
-          ) : currentView === 'auditoria_lojas' ? (
-            <AuditoriaLojas />
-          ) : currentView === 'price_table' ? (
-            <PriceTablePage />
-          ) : currentView === 'solicitacoes' ? (
-            <SolicitacoesModule currentUser={user} />
-          ) : currentView === 'compras_vendas' && isAdmin ? (
-            <ComprasVendas />
-          ) : currentView === 'rh' ? (
-            <RhModule currentUser={user} />
-          ) : currentView === 'contract_analyzer' && canUseClarkAdm ? (
-            <ContractAnalyzer currentUser={user} />
-          ) : currentView === 'online_prices' && canUseClarkAdm ? (
-            <OnlinePricesAgent currentUser={user} />
-          ) : ['contract_analyzer', 'online_prices'].includes(currentView) && !canUseClarkAdm ? (
-            <Home currentUser={user} />
-          ) : currentView === 'team' ? (
-            <div className="flex-1 p-4 md:p-8 overflow-y-auto">
-              <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
-                <div>
-                  <h2 className="text-2xl font-black uppercase tracking-tight">
-                    Equipe Telecel
-                  </h2>
-
-                  <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest">
-                    Gestão de acessos e cargos do sistema.
-                  </p>
-                </div>
-
-                <button
-                  onClick={() => setIsUserModalOpen(true)}
-                  className="w-full md:w-auto bg-slate-900 text-white px-6 py-3 rounded-2xl font-black text-xs uppercase flex gap-2 hover:bg-slate-800 shadow-lg transition-all active:scale-95 justify-center items-center"
-                >
-                  <Plus size={16} />
-                  Novo Membro
-                </button>
-              </div>
-
-              <UserList />
+          {(
+            mountedViews.includes(currentView)
+              ? mountedViews
+              : [...mountedViews, currentView]
+          ).map((view) => (
+            <div
+              key={view}
+              className={
+                view === currentView
+                  ? 'contents'
+                  : 'hidden'
+              }
+              aria-hidden={view !== currentView}
+            >
+              {renderViewContent(view)}
             </div>
-          ) : (
-            <TaskList
-              onOpenTask={(task: any) => {
-                setSelectedTask(task);
-                setCurrentView('detail');
-              }}
-              viewMode={currentView}
-              currentUser={user}
-            />
-          )}
+          ))}
         </div>
       </main>
 

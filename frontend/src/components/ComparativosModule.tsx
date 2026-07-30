@@ -802,6 +802,14 @@ const buildStockMap = (records: any[]) => {
   const grouped = new Map<string, StockRow>();
 
   records.forEach((item) => {
+    const stockType = String(
+      item.stockType || item.TIPO_ESTOQUE || 'ESTOQUE'
+    ).trim().toUpperCase();
+
+    // AMOSTRA e DOA são acompanhados em telas próprias e não entram
+    // na quantidade nem no custo operacional do comparativo.
+    if (stockType !== 'ESTOQUE') return;
+
     const reference = normalizeReference(item.reference || item.REFERENCIA || item.REFERENCIA2 || item.referencia2 || '');
     const reference2 = familyFromReference(reference || item.referencia2 || item.REFERENCIA2 || '');
     if (!reference2) return;
@@ -809,6 +817,12 @@ const buildStockMap = (records: any[]) => {
     const descricao = String(item.description || item.DESCRICAO || item['DESCRIÇÃO 2'] || '').trim();
     const quantity = toNumber(item.quantity || item.QUANTIDADE || item.SALDO);
     const avgCost =
+      toNumber(
+        item.costConsidered ??
+        item.CUSTO_CONSIDERADO ??
+        item.acquisitionCost ??
+        item.CUSTO_SERIAL_ENTRADA
+      ) ||
       toNumber(item.averageCost || item.CUSTO_MEDIO || item['CUSTO MÉDIO ESTOQUE'] || item['CUSTO NOVO PREÇO']) ||
       toNumber(item.costPrice || item.PRECO_CUSTO || item['CUSTO COMPRA CORRETO']);
     const store = String(item.storeName || item.NOME_FANTASIA || '').trim();

@@ -5723,6 +5723,7 @@ type ExecutiveStoreAgg = {
   pecasMes: number;
   faturamento30: number;
   faturamento30Anterior: number;
+  vendas30: number;
   vendas90: number;
   estoque: number;
   valorEstoque: number;
@@ -5737,10 +5738,18 @@ type ExecutiveProductAgg = {
   faturamentoMes: number;
   pecasMes: number;
   faturamento30: number;
+  vendas30: number;
   vendas90: number;
   estoque: number;
   valorEstoque: number;
   coberturaDias: number | null;
+};
+
+type ExecutiveProductIdentity = {
+  produto: string;
+  referencia: string;
+  codigoProduto: string;
+  categoria: string;
 };
 
 type ExecutiveInsight = {
@@ -5859,12 +5868,52 @@ function execDashStoreName(row: any): string {
 
 function execDashProductLabel(row: any): string {
   return String(
-    row?.descricao || row?.DESCRICAO || row?.produto || row?.PRODUTO || row?.description || row?.familia || row?.FAMILIA || 'PRODUTO NÃO INFORMADO'
+    row?.descricao ||
+    row?.DESCRICAO ||
+    row?.produto ||
+    row?.PRODUTO ||
+    row?.description ||
+    ''
   ).trim();
 }
 
 function execDashReference(row: any): string {
-  return String(row?.referencia || row?.REFERENCIA || row?.codigo_produto || row?.CODIGO_PRODUTO || row?.productCode || row?.familia || '').trim();
+  return String(
+    row?.referencia ||
+    row?.REFERENCIA ||
+    row?.reference ||
+    row?.familia ||
+    row?.FAMILIA ||
+    ''
+  ).trim();
+}
+
+function execDashProductCode(row: any): string {
+  return String(
+    row?.codigo_produto ||
+    row?.CODIGO_PRODUTO ||
+    row?.productCode ||
+    ''
+  ).trim();
+}
+
+function execDashIsWeakProductName(
+  value: any,
+  reference?: any,
+): boolean {
+  const nameKey = execDashNormalizeKey(value);
+  const referenceKey = execDashNormalizeKey(reference);
+
+  if (!nameKey) return true;
+  if (/^\d+$/.test(nameKey)) return true;
+  if (referenceKey && nameKey === referenceKey) return true;
+
+  return [
+    'PRODUTONAOINFORMADO',
+    'SEMDESCRICAO',
+    'NAOINFORMADO',
+    'PRODUTO',
+  ].includes(nameKey);
 }
 
 function execDashCategory(row: any): string {
@@ -5902,6 +5951,7 @@ function execDashGetStore(map: Map<string, ExecutiveStoreAgg>, loja: string): Ex
     pecasMes: 0,
     faturamento30: 0,
     faturamento30Anterior: 0,
+    vendas30: 0,
     vendas90: 0,
     estoque: 0,
     valorEstoque: 0,
@@ -5923,10 +5973,32 @@ function execDashGetProduct(map: Map<string, ExecutiveProductAgg>, params: {
   const existing = map.get(safeKey);
 
   if (existing) {
-    if (!existing.referencia && params.referencia) existing.referencia = params.referencia;
-    if ((!existing.categoria || existing.categoria === 'GERAL') && params.categoria) existing.categoria = params.categoria;
-    return existing;
+  if (!existing.referencia && params.referencia) {
+    existing.referencia = params.referencia;
   }
+
+  if (
+    (!existing.categoria || existing.categoria === 'GERAL') &&
+    params.categoria
+  ) {
+    existing.categoria = params.categoria;
+  }
+
+  if (
+    execDashIsWeakProductName(
+      existing.produto,
+      existing.referencia,
+    ) &&
+    !execDashIsWeakProductName(
+      params.produto,
+      params.referencia,
+    )
+  ) {
+    existing.produto = params.produto;
+  }
+
+  return existing;
+}
 
   const created: ExecutiveProductAgg = {
     produto: params.produto || params.referencia || 'PRODUTO NÃO INFORMADO',
@@ -5935,6 +6007,7 @@ function execDashGetProduct(map: Map<string, ExecutiveProductAgg>, params: {
     faturamentoMes: 0,
     pecasMes: 0,
     faturamento30: 0,
+    vendas30: 0,
     vendas90: 0,
     estoque: 0,
     valorEstoque: 0,
@@ -6017,7 +6090,115 @@ app.get('/api/painel-diretoria/resumo', async (req, res) => {
     const seenStores = new Set<string>();
     const seenProducts = new Set<string>();
 
+    const productByCode =
+      new Map<string, ExecutiveProductIdentity>();
+
+    const productByReference =
+      new Map<string, ExecutiveProductIdentity>();
+
+    const productByDescription =
+      new Map<string, ExecutiveProductIdentity>();
+
+    const registerProductIdentity = (params: {
+      produto?: any;
+      referencia?: any;
+      codigoProduto?: any;
+      categoria?: any;
+    }) => {
+    const produto = String(params.produto || '').trim();
+    const referencia = String(params.referencia || '').trim();
+    const codigoProduto = String(
+      params.codigoProduto || '',
+    ).trim();
+
+    const categoria = execDashCategory({
+      categoria: params.categoria,
+    });
+
+    const codeKey = execDashNormalizeKey(codigoProduto);
+    const referenceKey = execDashNormalizeKey(referencia);
+    const descriptionKey = execDashNormalizeKey(produto);
+
+    let identity =
+      productByCode.get(codeKey) ||
+      productByReference.get(referenceKey) ||
+      productByDescription.get(descriptionKey);
+
+    if (!identity) {
+      identity = {
+        produto: '',
+        referencia: '',
+        codigoProduto: '',
+        categoria: 'GERAL',
+      };
+    }
+
+    if (
+      !execDashIsWeakProductName(produto, referencia) &&
+      execDashIsWeakProductName(
+        identity.produto,
+        identity.referencia,
+      )
+    ) {
+      identity.produto = produto;
+    }
+
+    if (!identity.referencia && referencia) {
+      identity.referencia = referencia;
+    }
+
+    if (!identity.codigoProduto && codigoProduto) {
+      identity.codigoProduto = codigoProduto;
+    }
+
+    if (
+      (!identity.categoria ||
+        identity.categoria === 'GERAL') &&
+      categoria
+    ) {
+      identity.categoria = categoria;
+    }
+
+    if (codeKey) {
+      productByCode.set(codeKey, identity);
+    }
+
+    if (referenceKey) {
+      productByReference.set(referenceKey, identity);
+    }
+
+    if (
+      descriptionKey &&
+      !execDashIsWeakProductName(produto, referencia)
+    ) {
+      productByDescription.set(descriptionKey, identity);
+    }
+
+    return identity;
+  };
+
+// Recupera o nome mesmo quando o produto já está sem estoque.
+const imeiHistoryRows =
+  await prisma.imeiHistory.findMany({
+    select: {
+      productCode: true,
+      description: true,
+    },
+  });
+
+for (const history of imeiHistoryRows) {
+  registerProductIdentity({
+    produto: history.description,
+    referencia: '',
+    codigoProduto: history.productCode,
+    categoria: 'GERAL',
+  });
+}
+
     const stockRows = await prisma.stock.findMany({
+      where: {
+        stockType: 'ESTOQUE',
+      },
       select: {
         storeName: true,
         cnpj: true,
@@ -6036,7 +6217,15 @@ app.get('/api/painel-diretoria/resumo', async (req, res) => {
       const referencia = String(stock.reference || stock.productCode || '').trim();
       const categoria = execDashCategory(stock);
       const quantidade = execDashToNumber(stock.quantity);
-      const valorVenda = quantidade * execDashToNumber(stock.salePrice);
+      const valorVenda =
+        quantidade * execDashToNumber(stock.salePrice);
+
+      registerProductIdentity({
+        produto,
+        referencia,
+        codigoProduto: stock.productCode,
+        categoria,
+      });
 
       const store = execDashGetStore(storeMap, loja);
       store.estoque += quantidade;
@@ -6050,129 +6239,333 @@ app.get('/api/painel-diretoria/resumo', async (req, res) => {
       seenProducts.add(execDashNormalizeKey(referencia) || execDashNormalizeKey(produto));
     }
 
-    const addSale = (row: any) => {
-      const date = execDashParseDate(row.data_emissao || row.DATA_EMISSAO || row.data || row.DATA);
-      if (!date) return;
+  const addSale = (row: any) => {
+  const date = execDashParseDate(
+    row.data_emissao ||
+    row.DATA_EMISSAO ||
+    row.data ||
+    row.DATA,
+  );
 
-      const qty = execDashToNumber(row.qtd_real ?? row.QTD_REAL ?? row.quantidade ?? row.QUANTIDADE ?? row.qtd ?? row.QTD ?? 1);
-      if (!qty) return;
+  if (!date) return;
 
-      const total = execDashToNumber(row.total_liquido ?? row.TOTAL_LIQUIDO ?? row.valor_total ?? row.VALOR_TOTAL ?? row.total ?? row.TOTAL ?? row.preco ?? row.PRECO ?? 0);
-      const loja = execDashStoreName(row);
-      const produto = execDashProductLabel(row);
-      const referencia = execDashReference(row);
-      const categoria = execDashCategory(row);
+  const qty = execDashToNumber(
+    row.qtd_real ??
+    row.QTD_REAL ??
+    row.quantidade ??
+    row.QUANTIDADE ??
+    row.qtd ??
+    row.QTD ??
+    1,
+  );
 
-      const store = execDashGetStore(storeMap, loja);
-      const product = execDashGetProduct(productMap, { produto, referencia, categoria });
+  if (!qty) return;
 
-      if (date >= monthStart && date <= now) {
-        store.faturamentoMes += total;
-        store.pecasMes += qty;
-        product.faturamentoMes += total;
-        product.pecasMes += qty;
+  const totalReal = execDashToNumber(
+    row.total_real ?? row.TOTAL_REAL,
+  );
+
+  const total =
+    totalReal ||
+    execDashToNumber(
+      row.total_liquido ??
+      row.TOTAL_LIQUIDO ??
+      row.valor_total ??
+      row.VALOR_TOTAL ??
+      row.total ??
+      row.TOTAL ??
+      row.preco ??
+      row.PRECO ??
+      0,
+    );
+
+  const loja = execDashStoreName(row);
+  const produtoInformado = execDashProductLabel(row);
+  const referenciaInformada = execDashReference(row);
+  const codigoProduto = execDashProductCode(row);
+  const categoriaInformada = execDashCategory(row);
+
+  const identity =
+    productByReference.get(
+      execDashNormalizeKey(referenciaInformada),
+    ) ||
+    productByCode.get(
+      execDashNormalizeKey(referenciaInformada),
+    ) ||
+    productByCode.get(
+      execDashNormalizeKey(codigoProduto),
+    ) ||
+    productByReference.get(
+      execDashNormalizeKey(codigoProduto),
+    ) ||
+    productByDescription.get(
+      execDashNormalizeKey(produtoInformado),
+    );
+
+  const referencia =
+    identity?.referencia ||
+    referenciaInformada ||
+    identity?.codigoProduto ||
+    codigoProduto;
+
+  const referenceIsOnlyCode = /^\d+$/.test(
+    execDashNormalizeKey(referencia),
+  );
+
+  const fallbackCode =
+    codigoProduto ||
+    (referenceIsOnlyCode ? referencia : '');
+
+  const produto =
+    (
+      !execDashIsWeakProductName(
+        produtoInformado,
+        referenciaInformada || codigoProduto,
+      )
+        ? produtoInformado
+        : identity?.produto
+    ) ||
+    (!referenceIsOnlyCode ? referencia : '') ||
+    (
+      fallbackCode
+        ? `PRODUTO CÓDIGO ${fallbackCode}`
+        : ''
+    );
+
+  const categoria =
+    categoriaInformada !== 'GERAL'
+      ? categoriaInformada
+      : identity?.categoria || 'GERAL';
+
+  const store = execDashGetStore(storeMap, loja);
+
+  const hasProductIdentity = Boolean(
+    execDashNormalizeKey(referencia) ||
+    (
+      produto &&
+      !execDashIsWeakProductName(
+        produto,
+        referencia,
+      )
+    ),
+  );
+
+  const product = hasProductIdentity
+    ? execDashGetProduct(productMap, {
+        produto,
+        referencia,
+        categoria,
+      })
+    : null;
+
+  if (date >= monthStart && date <= now) {
+    store.faturamentoMes += total;
+    store.pecasMes += qty;
+
+    if (product) {
+      product.faturamentoMes += total;
+      product.pecasMes += qty;
+    }
+  }
+
+  if (date >= start30 && date <= now) {
+    store.faturamento30 += total;
+    store.vendas30 += qty;
+
+    if (product) {
+      product.faturamento30 += total;
+      product.vendas30 += qty;
+    }
+  }
+
+  if (
+    date >= startPrevious30 &&
+    date <= endPrevious30
+  ) {
+    store.faturamento30Anterior += total;
+  }
+
+  if (date >= start90 && date <= now) {
+    store.vendas90 += qty;
+
+    if (product) {
+      product.vendas90 += qty;
+    }
+  }
+};
+
+  const annualPath = execDashAnnualDbPath();
+  let annualMaxTimestamp = 0;
+
+  const addAnnualRows = (rows: any[]) => {
+    for (const row of rows) {
+      const rowDate = execDashParseDate(
+        row.data_emissao || row.DATA_EMISSAO
+      );
+
+      if (
+        rowDate &&
+        rowDate.getTime() > annualMaxTimestamp
+      ) {
+        annualMaxTimestamp = rowDate.getTime();
       }
 
-      if (date >= start30 && date <= now) {
-        store.faturamento30 += total;
-        product.faturamento30 += total;
-      }
+      addSale(row);
+    }
+  };
 
-      if (date >= startPrevious30 && date <= endPrevious30) {
-        store.faturamento30Anterior += total;
-      }
+if (fs.existsSync(annualPath)) {
+  annualDb = await open({
+    filename: annualPath,
+    driver: sqlite3.Database,
+  });
 
-      if (date >= start90 && date <= now) {
-        store.vendas90 += qty;
-        product.vendas90 += qty;
-      }
-    };
+  const hasRaw = await execDashTableExists(
+    annualDb,
+    'vendas_anuais_raw'
+  );
 
-    if (fs.existsSync(GLOBAL_DB_PATH)) {
-      globalDb = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
-      const hasDetailed = await execDashTableExists(globalDb, 'vendas_detalhadas_imei');
-      const hasLegacy = await execDashTableExists(globalDb, 'vendas');
+  const hasAnnual = await execDashTableExists(
+    annualDb,
+    'vendas_anuais'
+  );
 
-      if (hasDetailed) {
-        const rows = await globalDb.all(`
-          SELECT
-            data_emissao,
-            cnpj_empresa,
-            nome_fantasia AS loja,
-            referencia,
-            codigo_produto,
-            descricao,
-            categoria,
-            quantidade,
-            total_liquido
-          FROM vendas_detalhadas_imei
-        `);
-        rows.forEach(addSale);
-      } else if (hasLegacy) {
-        const rows = await globalDb.all(`
-          SELECT
-            data_emissao,
-            cnpj_empresa,
-            NULL AS loja,
-            familia AS referencia,
-            descricao,
-            familia AS categoria,
-            quantidade,
-            total_liquido
-          FROM vendas
-        `);
-        rows.forEach(addSale);
-      }
+  let annualRows: any[] = [];
 
-      await globalDb.close();
-      globalDb = null;
+  if (hasRaw) {
+    annualRows = await annualDb.all(`
+      SELECT
+        data_emissao,
+        cnpj_empresa,
+        loja,
+        referencia,
+        codigo_produto,
+        descricao,
+        categoria,
+        categoria_real,
+        quantidade,
+        qtd_real,
+        total_liquido,
+        total_real,
+        cancelado
+      FROM vendas_anuais_raw
+      WHERE COALESCE(cancelado, 'N') = 'N'
+    `);
+  }
+
+  if (annualRows.length === 0 && hasAnnual) {
+    annualRows = await annualDb.all(`
+      SELECT
+        data_emissao,
+        cnpj_empresa,
+        loja,
+        familia AS referencia,
+        descricao,
+        familia AS categoria,
+        quantidade,
+        total_liquido
+      FROM vendas_anuais
+    `);
+  }
+
+  addAnnualRows(annualRows);
+
+  await annualDb.close();
+  annualDb = null;
+}
+
+/*
+ * O banco anual contém o histórico fechado.
+ * O banco diário entra somente depois da última data anual.
+ */
+const dailySupplementStart =
+  annualMaxTimestamp >= start90.getTime()
+    ? execDashAddDays(
+        new Date(annualMaxTimestamp),
+        1
+      )
+    : start90;
+
+const isDailySupplement = (row: any) => {
+  const rowDate = execDashParseDate(
+    row.data_emissao || row.DATA_EMISSAO
+  );
+
+  return Boolean(
+    rowDate &&
+    rowDate >= dailySupplementStart &&
+    rowDate <= now
+  );
+};
+
+  if (fs.existsSync(GLOBAL_DB_PATH)) {
+    globalDb = await open({
+      filename: GLOBAL_DB_PATH,
+      driver: sqlite3.Database,
+    });
+
+    const hasDetailed = await execDashTableExists(
+      globalDb,
+      'vendas_detalhadas_imei'
+    );
+
+    const hasLegacy = await execDashTableExists(
+      globalDb,
+      'vendas'
+    );
+
+    let dailyRows: any[] = [];
+
+    if (hasDetailed) {
+      const detailedRows = await globalDb.all(`
+        SELECT
+          data_emissao,
+          cnpj_empresa,
+          nome_fantasia AS loja,
+          referencia,
+          codigo_produto,
+          descricao,
+          categoria,
+          quantidade,
+          total_liquido
+        FROM vendas_detalhadas_imei
+      `);
+
+      dailyRows = detailedRows.filter(
+        isDailySupplement
+      );
     }
 
-    const annualPath = execDashAnnualDbPath();
-    if (fs.existsSync(annualPath)) {
-      annualDb = await open({ filename: annualPath, driver: sqlite3.Database });
-      const hasRaw = await execDashTableExists(annualDb, 'vendas_anuais_raw');
-      const hasAnnual = await execDashTableExists(annualDb, 'vendas_anuais');
+    /*
+    * Se a tabela detalhada não tiver registros no período,
+    * utiliza a tabela mensal legada.
+    */
+    if (dailyRows.length === 0 && hasLegacy) {
+      const legacyRows = await globalDb.all(`
+        SELECT
+          data_emissao,
+          cnpj_empresa,
+          NULL AS loja,
+          familia AS referencia,
+          descricao,
+          familia AS categoria,
+          quantidade,
+          total_liquido
+        FROM vendas
+      `);
 
-      if (hasRaw) {
-        const rows = await annualDb.all(`
-          SELECT
-            data_emissao,
-            cnpj_empresa,
-            loja,
-            referencia,
-            codigo_produto,
-            descricao,
-            categoria,
-            categoria_real,
-            quantidade,
-            qtd_real,
-            total_liquido,
-            cancelado
-          FROM vendas_anuais_raw
-          WHERE COALESCE(cancelado, 'N') = 'N'
-        `);
-        rows.forEach(addSale);
-      } else if (hasAnnual) {
-        const rows = await annualDb.all(`
-          SELECT
-            data_emissao,
-            cnpj_empresa,
-            loja,
-            familia AS referencia,
-            descricao,
-            familia AS categoria,
-            quantidade,
-            total_liquido
-          FROM vendas_anuais
-        `);
-        rows.forEach(addSale);
-      }
-
-      await annualDb.close();
-      annualDb = null;
+      dailyRows = legacyRows.filter(
+        isDailySupplement
+      );
     }
 
+    dailyRows.forEach(addSale);
+
+    await globalDb.close();
+    globalDb = null;
+  }
+
+  
     const stores = Array.from(storeMap.values()).map((store) => {
       store.coberturaDias = execDashCalculateCoverage(store.estoque, store.vendas90);
       store.status = execDashStatus(store);
@@ -6188,7 +6581,10 @@ app.get('/api/painel-diretoria/resumo', async (req, res) => {
     const pecasMes = stores.reduce((sum, item) => sum + item.pecasMes, 0);
     const faturamentoUltimos30 = stores.reduce((sum, item) => sum + item.faturamento30, 0);
     const faturamento30Anterior = stores.reduce((sum, item) => sum + item.faturamento30Anterior, 0);
-    const vendasUltimos30 = products.reduce((sum, item) => sum + item.pecasMes, 0);
+    const vendasUltimos30 = stores.reduce(
+          (sum, item) => sum + item.vendas30,
+          0
+        );
     const estoqueTotal = stores.reduce((sum, item) => sum + item.estoque, 0);
     const valorEstoque = stores.reduce((sum, item) => sum + item.valorEstoque, 0);
     const crescimentoVs30Anterior = faturamento30Anterior > 0

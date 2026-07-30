@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Send, Hash } from 'lucide-react';
 
-export default function DeptBulletin({ department, currentUser }: any) {
+export default function DeptBulletin({ department, currentUser, isActive = true }: any) {
   const [messages, setMessages] = useState<any[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -14,10 +14,12 @@ export default function DeptBulletin({ department, currentUser }: any) {
   };
 
   useEffect(() => {
+    if (!isActive) return;
+
     fetchMessages();
     const interval = setInterval(fetchMessages, 5000); // Atualiza a cada 5 segundos
     return () => clearInterval(interval);
-  }, [department]);
+  }, [department, isActive]);
 
   useEffect(() => {
     scrollRef.current?.scrollIntoView({ behavior: 'smooth' });
