@@ -7,10 +7,10 @@
     "dev": "nodemon --exec ts-node src/server.ts",
     "prisma:generate": "node ./node_modules/prisma/build/index.js generate",
     "build": "npm run prisma:generate && tsc",
-    "start": "node dist/server.js"
+    "start": "node scripts/ensure_prisma_schema.js && node dist/server.js"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.104.2",
+    "@anthropic-ai/sdk": "^0.105.0",
     "@google/genai": "^2.2.0",
     "@prisma/client": "^6.2.1",
     "bcryptjs": "^2.4.3",

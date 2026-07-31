@@ -7367,14 +7367,6 @@ app.post('/stock/sync', async (req, res) => {
   }
 
   try {
-    if (shouldReset) {
-      await prisma.stock.deleteMany();
-
-      console.log(
-        '🗑️ Banco de estoque limpo para iniciar nova carga.'
-      );
-    }
-
     const safeNum = (value: any): number =>
       estoqueDetalhadoToNumber(value);
 
@@ -7478,16 +7470,25 @@ app.post('/stock/sync', async (req, res) => {
     );
 
     /*
-     * Se o mesmo lote for reenviado por timeout,
-     * removemos os mesmos itens antes de inserir.
-     */
-    if (!shouldReset && formattedData.length > 0) {
+ * A limpeza e a inserção precisam acontecer na mesma transação.
+ * Se o createMany falhar, o estoque anterior é restaurado
+ * automaticamente pelo SQLite.
+ */
+await prisma.$transaction(
+  async (tx) => {
+    if (shouldReset) {
+      await tx.stock.deleteMany();
+    } else if (formattedData.length > 0) {
+      /*
+       * Se o mesmo lote for reenviado por timeout,
+       * removemos os mesmos itens antes de inserir.
+       */
       const serials = formattedData
         .map((item) => item.serial.trim())
         .filter(Boolean);
 
       if (serials.length > 0) {
-        await prisma.stock.deleteMany({
+        await tx.stock.deleteMany({
           where: {
             serial: {
               in: serials,
@@ -7497,29 +7498,42 @@ app.post('/stock/sync', async (req, res) => {
       }
 
       const rowsWithoutSerial = formattedData.filter(
-        (item) => !item.serial.trim()
+              (item) => !item.serial.trim()
+            );
+
+            for (const item of rowsWithoutSerial) {
+              await tx.stock.deleteMany({
+                where: {
+                  cnpj: item.cnpj,
+                  storeName: item.storeName,
+                  productCode: item.productCode,
+                  reference: item.reference,
+                  description: item.description,
+                  category: item.category,
+                  serial: '',
+                  stockType: item.stockType,
+                },
+              });
+            }
+          }
+
+          await tx.stock.createMany({
+            data: formattedData,
+          });
+        },
+        {
+          maxWait: 10000,
+          timeout: 30000,
+        }
       );
 
-      for (const item of rowsWithoutSerial) {
-        await prisma.stock.deleteMany({
-          where: {
-            cnpj: item.cnpj,
-            storeName: item.storeName,
-            productCode: item.productCode,
-            reference: item.reference,
-            description: item.description,
-            category: item.category,
-            serial: '',
-            stockType: item.stockType,
-          },
-        });
+      if (shouldReset) {
+        console.log(
+          '🗑️ Banco de estoque substituído pelo primeiro lote da nova carga.'
+        );
       }
-    }
 
-    await prisma.stock.createMany({
-      data: formattedData,
-    });
-
+    
     // =======================================================
     // INTELIGÊNCIA DE RASTREAMENTO DE IMEI
     // =======================================================
