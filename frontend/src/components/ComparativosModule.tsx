@@ -231,6 +231,59 @@ const familyFromReference = (value: string) => {
   return m?.[1]?.toUpperCase() || ref;
 };
 
+const extractStorageCapacity = (...values: any[]) => {
+  const text = values
+    .map((value) => String(value || '').toUpperCase())
+    .join(' ')
+    .replace(/,/g, '.');
+
+  const capacities = Array.from(
+    text.matchAll(/(?:^|[^A-Z0-9])(\d+(?:\.\d+)?)\s*(TB|GB)(?=$|[^A-Z0-9])/g)
+  )
+    .map((match) => {
+      const amount = Number(match[1]);
+      const unit = match[2];
+      if (!Number.isFinite(amount) || amount <= 0) return null;
+
+      const sizeInGb = unit === 'TB' ? amount * 1024 : amount;
+      const normalizedAmount = Number.isInteger(amount)
+        ? String(amount)
+        : String(amount).replace('.', ',');
+
+      return {
+        sizeInGb,
+        label:
+          unit === 'GB' && amount >= 1024 && amount % 1024 === 0
+            ? `${amount / 1024}TB`
+            : `${normalizedAmount}${unit}`,
+      };
+    })
+    .filter((item): item is { sizeInGb: number; label: string } => Boolean(item));
+
+  if (!capacities.length) return '';
+
+  return capacities.sort((a, b) => b.sizeInGb - a.sizeInGb)[0]?.label || '';
+};
+
+const productVariantKey = (
+  reference: any,
+  ...descriptionCandidates: any[]
+) => {
+  const family = familyFromReference(String(reference || ''));
+  const capacity = extractStorageCapacity(...descriptionCandidates);
+
+  if (family && capacity) return `${family}||${capacity}`;
+  if (family) return family;
+
+  const description = descriptionCandidates
+    .map((value) => normalizeDesc(String(value || '')))
+    .find(Boolean) || '';
+
+  return capacity && description
+    ? `${description}||${capacity}`
+    : description;
+};
+
 const getCurrentUserId = () => {
   for (const key of ['telefluxo_user', 'user']) {
     try {
@@ -432,6 +485,7 @@ const fetchPriceGuideSheet = async () => {
 
 const buildPriceGuideMap = (rows: any[]) => {
   const byDesc = new Map<string, PriceGuideRow>();
+  const byVariant = new Map<string, PriceGuideRow>();
   const byRef = new Map<string, PriceGuideRow>();
   const allRows: PriceGuideRow[] = [];
 
@@ -611,10 +665,12 @@ const buildPriceGuideMap = (rows: any[]) => {
 
     if (descricao || referencia) allRows.push(payload);
     if (descricao) byDesc.set(normalizeDesc(descricao), payload);
+    const variantKey = productVariantKey(referencia, descricao);
+    if (variantKey) byVariant.set(variantKey, payload);
     if (referencia) byRef.set(referencia, payload);
   });
 
-  return { byDesc, byRef, rows: allRows };
+  return { byDesc, byVariant, byRef, rows: allRows };
 };
 
 const extractFieldFromLines = (lines: string[], label: string) => {
@@ -810,11 +866,12 @@ const buildStockMap = (records: any[]) => {
     // na quantidade nem no custo operacional do comparativo.
     if (stockType !== 'ESTOQUE') return;
 
+    const descricao = String(item.description || item.DESCRICAO || item['DESCRIÇÃO 2'] || '').trim();
     const reference = normalizeReference(item.reference || item.REFERENCIA || item.REFERENCIA2 || item.referencia2 || '');
     const reference2 = familyFromReference(reference || item.referencia2 || item.REFERENCIA2 || '');
-    if (!reference2) return;
+    const variantKey = productVariantKey(reference2, descricao);
+    if (!variantKey) return;
 
-    const descricao = String(item.description || item.DESCRICAO || item['DESCRIÇÃO 2'] || '').trim();
     const quantity = toNumber(item.quantity || item.QUANTIDADE || item.SALDO);
     const avgCost =
       toNumber(
@@ -828,8 +885,8 @@ const buildStockMap = (records: any[]) => {
     const store = String(item.storeName || item.NOME_FANTASIA || '').trim();
     const status = String(item.status || item.STATUS || item.Coluna3 || '').trim();
 
-    if (!grouped.has(reference2)) {
-      grouped.set(reference2, {
+    if (!grouped.has(variantKey)) {
+      grouped.set(variantKey, {
         referencia2: reference2,
         descricao,
         quantidade: 0,
@@ -840,7 +897,7 @@ const buildStockMap = (records: any[]) => {
       });
     }
 
-    const current = grouped.get(reference2)!;
+    const current = grouped.get(variantKey)!;
     current.quantidade += quantity;
     current.custoTotal += avgCost * quantity;
     if (store && !current.lojas.includes(store)) current.lojas.push(store);
@@ -857,26 +914,34 @@ const buildStockMap = (records: any[]) => {
 
 const buildSalesMap = (rows: any[]) => {
   const byDesc = new Map<string, SaleAgg>();
+  const byVariant = new Map<string, SaleAgg>();
   const byFamily = new Map<string, SaleAgg>();
 
   rows.forEach((row) => {
     const desc = normalizeDesc(row.DESCRICAO || row.descricao || row['DESCRIÇÃO 2'] || '');
     const familia = familyFromReference(String(row.FAMILIA || row.familia || row.REFERENCIA || row.referencia || ''));
+    const variantKey = productVariantKey(familia, desc);
     const qtd = toNumber(row.QUANTIDADE ?? row.quantidade ?? 0);
 
     if (desc) {
       byDesc.set(desc, { quantidade: (byDesc.get(desc)?.quantidade || 0) + qtd });
+    }
+    if (variantKey) {
+      byVariant.set(variantKey, {
+        quantidade: (byVariant.get(variantKey)?.quantidade || 0) + qtd,
+      });
     }
     if (familia) {
       byFamily.set(familia, { quantidade: (byFamily.get(familia)?.quantidade || 0) + qtd });
     }
   });
 
-  return { byDesc, byFamily };
+  return { byDesc, byVariant, byFamily };
 };
 
 const buildPriceMap = (rows: any[]) => {
   const byDesc = new Map<string, PriceRow>();
+  const byVariant = new Map<string, PriceRow>();
   const byRef = new Map<string, PriceRow>();
 
   const getCandidate = (row: any, names: string[]) => {
@@ -908,10 +973,12 @@ const buildPriceMap = (rows: any[]) => {
     };
 
     if (descricao) byDesc.set(normalizeDesc(descricao), payload);
+    const variantKey = productVariantKey(referencia, descricao);
+    if (variantKey) byVariant.set(variantKey, payload);
     if (referencia) byRef.set(referencia, payload);
   });
 
-  return { byDesc, byRef };
+  return { byDesc, byVariant, byRef };
 };
 
 const margin = (price: number, cost: number) => {
@@ -1439,10 +1506,26 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
     const salesMap = buildSalesMap(data.salesRows);
     const onlineMap = buildOnlinePriceMap(data.onlineRows);
 
-    const getSalesQuantity = (descricao: string, referencia: string) =>
-      salesMap.byDesc.get(normalizeDesc(descricao))?.quantidade ||
-      salesMap.byFamily.get(referencia)?.quantidade ||
-      0;
+    const getSalesQuantity = (descricao: string, referencia: string) => {
+      const exactQuantity = salesMap.byDesc.get(
+        normalizeDesc(descricao)
+      )?.quantidade;
+
+      if (exactQuantity !== undefined) return exactQuantity;
+
+      const capacity = extractStorageCapacity(descricao);
+      const variantQuantity = salesMap.byVariant.get(
+        productVariantKey(referencia, descricao)
+      )?.quantidade;
+
+      if (variantQuantity !== undefined) return variantQuantity;
+
+      // Só usa a família como fallback quando a descrição não informa memória.
+      // Isso impede 128/256/512 GB e 1 TB de compartilharem a mesma quantidade.
+      return capacity
+        ? 0
+        : salesMap.byFamily.get(referencia)?.quantidade || 0;
+    };
 
     const buildBaseRow = ({
       rowKey,
@@ -1546,14 +1629,18 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
       const traducao = traducaoMap.get(basicModel);
       const descricao = traducao?.descricao2 || traducao?.marketingName || item.modeloPdf || '-';
       const referencia = familyFromReference(traducao?.referencia2 || '');
-      const stock = stockMap.get(referencia);
+      const capacity = extractStorageCapacity(descricao, basicModel);
+      const variantKey = productVariantKey(referencia, descricao, basicModel);
+      const stock = stockMap.get(variantKey);
       const price =
         priceMap.byDesc.get(normalizeDesc(descricao)) ||
-        priceMap.byRef.get(referencia);
+        priceMap.byVariant.get(variantKey) ||
+        (!capacity ? priceMap.byRef.get(referencia) : undefined);
 
       const priceGuide =
         priceGuideMap.byDesc.get(normalizeDesc(descricao)) ||
-        priceGuideMap.byRef.get(referencia);
+        priceGuideMap.byVariant.get(variantKey) ||
+        (!capacity ? priceGuideMap.byRef.get(referencia) : undefined);
 
       return buildBaseRow({
         rowKey: `oferta-${item.refCampanha || item.arquivo}-${basicModel}-${item.inicio}-${item.termino}-${index}`,
@@ -1581,10 +1668,13 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
       .map((guide, index) => {
         const descricao = guide.descricao || '-';
         const referencia = guide.referencia || '';
-        const stock = stockMap.get(referencia);
+        const capacity = extractStorageCapacity(descricao);
+        const variantKey = productVariantKey(referencia, descricao);
+        const stock = stockMap.get(variantKey);
         const price =
           priceMap.byDesc.get(normalizeDesc(descricao)) ||
-          priceMap.byRef.get(referencia);
+          priceMap.byVariant.get(variantKey) ||
+          (!capacity ? priceMap.byRef.get(referencia) : undefined);
 
         return buildBaseRow({
           rowKey: `sem-oferta-${normalizeDesc(descricao) || referencia}-${index}`,
@@ -1607,7 +1697,7 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
     return {
       finalRows,
       apiInfoText:
-        `Google Sheets: ${traducaoMap.size} modelos · Online: ${onlineMap.size} chaves · Cartas: ${selectedPdfItems.length} itens · Guia preços: ${priceGuideMap.byDesc.size + priceGuideMap.byRef.size} chaves · Estoque: ${stockMap.size} famílias · Vendas mês: ${salesMap.byDesc.size} descrições · Preços sistema: ${priceMap.byDesc.size + priceMap.byRef.size} chaves`,
+        `Google Sheets: ${traducaoMap.size} modelos · Online: ${onlineMap.size} chaves · Cartas: ${selectedPdfItems.length} itens · Guia preços: ${priceGuideMap.byDesc.size + priceGuideMap.byVariant.size} chaves · Estoque: ${stockMap.size} variantes · Vendas mês: ${salesMap.byVariant.size} variantes · Preços sistema: ${priceMap.byDesc.size + priceMap.byVariant.size} chaves`,
     };
   };
 
