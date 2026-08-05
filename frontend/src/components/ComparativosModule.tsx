@@ -72,6 +72,7 @@ type PriceGuideRow = {
 type StockRow = {
   referencia2: string;
   descricao: string;
+  productType: string;
   quantidade: number;
   custoMedio: number;
   custoTotal: number;
@@ -867,6 +868,14 @@ const buildStockMap = (records: any[]) => {
     if (stockType !== 'ESTOQUE') return;
 
     const descricao = String(item.description || item.DESCRICAO || item['DESCRIÇÃO 2'] || '').trim();
+    const productType = String(
+      item.category ||
+      item.CATEGORIA ||
+      item.categoria ||
+      item.productType ||
+      item.TIPO_PRODUTO ||
+      ''
+    ).trim();
     const reference = normalizeReference(item.reference || item.REFERENCIA || item.REFERENCIA2 || item.referencia2 || '');
     const reference2 = familyFromReference(reference || item.referencia2 || item.REFERENCIA2 || '');
     const variantKey = productVariantKey(reference2, descricao);
@@ -889,6 +898,7 @@ const buildStockMap = (records: any[]) => {
       grouped.set(variantKey, {
         referencia2: reference2,
         descricao,
+        productType,
         quantidade: 0,
         custoMedio: 0,
         custoTotal: 0,
@@ -902,6 +912,7 @@ const buildStockMap = (records: any[]) => {
     current.custoTotal += avgCost * quantity;
     if (store && !current.lojas.includes(store)) current.lojas.push(store);
     if (!current.descricao && descricao) current.descricao = descricao;
+    if (!current.productType && productType) current.productType = productType;
     if (!current.status && status) current.status = status;
   });
 
@@ -991,7 +1002,84 @@ const floorMoney = (value: number) => {
   return Number.isFinite(n) ? Math.floor(n) : 0;
 };
 
-const PRICE_TO_DISCOUNT_FACTOR = 1.9;
+type DiscountProductType =
+  | 'COMPUTER'
+  | 'SMART PHONE'
+  | 'WEARABLE'
+  | 'TABLET'
+  | 'ACCESSORY'
+  | 'HA : HTS'
+  | 'CTV : COLOR TV'
+  | 'UNKNOWN';
+
+const DISCOUNT_FORMULA_FACTORS: Partial<Record<DiscountProductType, number>> = {
+  'SMART PHONE': 44.47,
+  WEARABLE: 39.22,
+  TABLET: 51.9,
+  ACCESSORY: 51.9,
+  'HA : HTS': 51.9,
+  'CTV : COLOR TV': 51.9,
+};
+
+const normalizeProductTypeText = (...values: any[]) =>
+  values
+    .map((value) => String(value || ''))
+    .join(' ')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const resolveDiscountProductType = (
+  rawProductType: string,
+  description: string
+): DiscountProductType => {
+  const category = normalizeProductTypeText(rawProductType);
+  const product = normalizeProductTypeText(description);
+
+  if (
+    /\b(COMPUTER|COMPUTADOR|NOTEBOOK|INFORMATICA)\b/.test(category) ||
+    /\b(GALAXY BOOK|NOTEBOOK|LAPTOP)\b/.test(product)
+  ) return 'COMPUTER';
+
+  if (/\b(SMART PHONE|SMARTPHONE|CELULAR|TELEFONE)\b/.test(category)) {
+    return 'SMART PHONE';
+  }
+
+  if (
+    /\b(WEARABLE|VESTIVEL|RELOGIO)\b/.test(category) ||
+    /\b(WATCH|GALAXY FIT|GALAXY RING)\b/.test(product)
+  ) return 'WEARABLE';
+
+  if (/\bTABLET\b/.test(category) || /\bGALAXY TAB\b/.test(product)) {
+    return 'TABLET';
+  }
+
+  if (
+    /\b(ACCESSORY|ACCESSORIES|ACESSORIO|ACESSORIOS)\b/.test(category) ||
+    /\b(BUDS|CARREGADOR|CAPA|COVER|ADAPTADOR|CABO)\b/.test(product)
+  ) return 'ACCESSORY';
+
+  if (/\b(HTS|HOME APPLIANCE|ELETRODOMESTICO)\b/.test(category)) {
+    return 'HA : HTS';
+  }
+
+  if (
+    /\b(CTV|COLOR TV|TELEVISAO|TELEVISORES)\b/.test(category) ||
+    /\b(TV|TELEVISAO)\b/.test(product)
+  ) return 'CTV : COLOR TV';
+
+  // Os aparelhos Galaxy que não foram classificados como Tablet, Wearable,
+  // acessório ou computador são smartphones.
+  if (/\bGALAXY\b/.test(product)) return 'SMART PHONE';
+
+  return 'UNKNOWN';
+};
+
+const getDiscountFormulaFactor = (productType: DiscountProductType) =>
+  DISCOUNT_FORMULA_FACTORS[productType] || 0;
 
 const MIN_COLUMN_WIDTH = 54;
 const MAX_COLUMN_WIDTH = 640;
@@ -1066,23 +1154,17 @@ const getVisibleColumnKeys = (
   ...(showOfferDetails ? ['ofertaAtual', 'status'] : ['ofertaCollapsed']),
 ];
 
-const roundToStep = (value: number, step: number) => {
-  if (!Number.isFinite(value) || value <= 0) return 0;
-  return Math.round(value / step) * step;
-};
+const roundMoneyToCents = (value: number) =>
+  Number.isFinite(value) ? Math.round((value + Number.EPSILON) * 100) / 100 : 0;
 
-const calculateDiscountFromPrice = (priceValue: number) => {
+const calculateDiscountFromPrice = (priceValue: number, formulaFactor: number) => {
   const price = Number(priceValue || 0);
-  if (!Number.isFinite(price) || price <= 0) return 0;
+  const factor = Number(formulaFactor || 0);
+  if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(factor) || factor <= 0) return 0;
 
-  // Regra operacional aproximada do comparativo:
-  // o desconto nasce do Price x ~2, com arredondamento comercial.
-  // Pelos exemplos da planilha, o fator 1.9 + arredondamento em degraus
-  // reproduz melhor os descontos do modelo do que multiplicar por 2 seco.
-  const estimatedDiscount = price * PRICE_TO_DISCOUNT_FACTOR;
-  const step = estimatedDiscount < 300 ? 10 : 50;
-
-  return roundToStep(estimatedDiscount, step);
+  // Fórmula oficial por tipo de produto:
+  // (Price / fator da categoria) * 100.
+  return roundMoneyToCents((price / factor) * 100);
 };
 
 const recalculateRow = (row: LinhaTabela): LinhaTabela => {
@@ -1554,26 +1636,36 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
       const precoTelecel = price?.precoTelecel || 0;
       const ofertaAtual = priceGuide?.ofertaAtual || price?.ofertaAtual || 0;
 
+      // Desconto Telecel é exclusivamente a diferença entre o preço Samsung
+      // e o preço de tabela Telecel. Os investimentos das cartas não entram aqui.
       const totalDescontoTelecel =
-        priceGuide?.descontoTelecel ||
-        (precoSamsung > 0 && precoTelecel > 0
+        precoSamsung > 0 && precoTelecel > 0
           ? Math.max(precoSamsung - precoTelecel, 0)
-          : 0);
+          : 0;
 
-      // Regra operacional:
-      // - Com ofertas: o Price vem primeiro da carta; se não houver, cai na planilha guia.
-      // - Sem ofertas: não existe Price, então não pode existir desconto baseado em Price.
-      const effectivePriceRebate = hasOferta ? (campaignPrices?.priceRebate || priceGuide?.priceRebate || 0) : 0;
-      const effectivePriceTradeIn = hasOferta ? (campaignPrices?.priceTradeIn || priceGuide?.priceTradeIn || 0) : 0;
-      const effectivePriceBogo = hasOferta ? (campaignPrices?.priceBogo || priceGuide?.priceBogo || 0) : 0;
-      const effectivePriceSip = hasOferta ? (campaignPrices?.priceSip || priceGuide?.priceSip || 0) : 0;
+      const productType = resolveDiscountProductType(
+        stock?.productType || '',
+        descricao || stock?.descricao || ''
+      );
+      const discountFormulaFactor = getDiscountFormulaFactor(productType);
+      const hasOperationalStock = Number(stock?.quantidade || 0) > 0;
+      const shouldIgnoreAutomatically = !hasOperationalStock || productType === 'COMPUTER';
+
+      // Cada investimento é direcionado exclusivamente pelo tipo identificado
+      // na carta lida. Uma carta Rebate não preenche Trade In/Bogo/SIP, e assim
+      // sucessivamente. Sem carta/oferta, nenhum desconto de investimento nasce.
+      const effectivePriceRebate = hasOferta ? (campaignPrices?.priceRebate || 0) : 0;
+      const effectivePriceTradeIn = hasOferta ? (campaignPrices?.priceTradeIn || 0) : 0;
+      const effectivePriceBogo = hasOferta ? (campaignPrices?.priceBogo || 0) : 0;
+      const effectivePriceSip = hasOferta ? (campaignPrices?.priceSip || 0) : 0;
 
       const online = onlineMap.get(normalizeDesc(descricao)) || onlineMap.get(referencia) || null;
 
       const baseRow: LinhaTabela = {
         rowKey,
         hasOferta,
-        isSelected: true,
+        // Estoque zero e COMPUTER já nascem em "Desconsiderados".
+        isSelected: !shouldIgnoreAutomatically,
         comparativoKind: kind,
         descricao: descricao || stock?.descricao || '-',
         referencia,
@@ -1584,10 +1676,10 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
         // Ex.: Price Rebate -> Desc. Rebate; Price Trade In -> Desc. Trade In.
         // Se Price = 0, então o desconto também precisa ser 0.
         // O usuário ainda pode editar manualmente os campos na tela.
-        descontoRebate: calculateDiscountFromPrice(effectivePriceRebate),
-        descontoTradeIn: calculateDiscountFromPrice(effectivePriceTradeIn),
-        descontoBogo: calculateDiscountFromPrice(effectivePriceBogo),
-        descontoSip: calculateDiscountFromPrice(effectivePriceSip),
+        descontoRebate: calculateDiscountFromPrice(effectivePriceRebate, discountFormulaFactor),
+        descontoTradeIn: calculateDiscountFromPrice(effectivePriceTradeIn, discountFormulaFactor),
+        descontoBogo: calculateDiscountFromPrice(effectivePriceBogo, discountFormulaFactor),
+        descontoSip: calculateDiscountFromPrice(effectivePriceSip, discountFormulaFactor),
         descontoGeral: 0,
         totalDesconto: 0,
         precoPromocional: 0,
@@ -2255,8 +2347,10 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
                 </thead>
                 <tbody>
                   {filteredRows.map((row, idx) => {
-                    const baseRow = idx % 2 === 0 ? 'bg-white hover:bg-slate-50' : 'bg-slate-50/40 hover:bg-slate-100/60';
-                    const descBg = idx % 2 === 0 ? 'bg-white' : 'bg-slate-50/40';
+                    const baseRow = idx % 2 === 0 ? 'bg-white hover:bg-slate-50' : 'bg-slate-50 hover:bg-slate-100';
+                    const descBg = idx % 2 === 0
+                      ? 'bg-white group-hover:bg-slate-50'
+                      : 'bg-slate-50 group-hover:bg-slate-100';
                     const margemPriceProblem = row.margemPrice !== null && row.margemPrice < 0.25;
                     const isDragging = draggedRowKey === row.rowKey;
 
@@ -2277,7 +2371,7 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
                           setDraggedRowKey(null);
                         }}
                         onDragEnd={() => setDraggedRowKey(null)}
-                        className={`${baseRow} ${isDragging ? 'opacity-50 ring-2 ring-blue-300' : ''} cursor-grab active:cursor-grabbing`}
+                        className={`group ${baseRow} ${isDragging ? 'opacity-50 ring-2 ring-blue-300' : ''} cursor-grab active:cursor-grabbing`}
                       >
                         <TableCell style={getColumnStyle('descricao')} className={`sticky left-0 z-20 whitespace-nowrap font-black text-slate-900 shadow-[1px_0_0_0_rgba(148,163,184,0.35)] ${descBg}`}>
                           <div className="flex min-w-0 items-center gap-2">
