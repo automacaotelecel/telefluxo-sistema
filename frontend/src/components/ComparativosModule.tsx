@@ -1968,6 +1968,139 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
     XLSX.writeFile(workbook, `comparativo_ofertas_${Date.now()}.xlsx`);
   };
 
+  const exportLettersExcel = () => {
+    if (!pendingData?.pdfItems?.length) {
+      setErrorMsg('Importe as cartas em PDF antes de usar o botão Exportar Cartas.');
+      return;
+    }
+
+    setErrorMsg('');
+
+    const traducaoMap = buildTraducaoMap(pendingData.traducaoRows);
+    const stockMap = buildStockMap(pendingData.stockRows);
+
+    const letterRows = pendingData.pdfItems.map((item) => {
+      const basicModel = normalizeBasicModel(item.modeloPdf);
+      const traducao = traducaoMap.get(basicModel);
+      const descricao =
+        traducao?.descricao2 ||
+        traducao?.marketingName ||
+        item.modeloPdf ||
+        'MODELO NÃO TRADUZIDO';
+      const referencia = familyFromReference(traducao?.referencia2 || '');
+      const variantKey = productVariantKey(referencia, descricao, basicModel);
+      const stock = stockMap.get(variantKey);
+      const productType = resolveDiscountProductType(
+        stock?.productType || '',
+        descricao
+      );
+      const formulaFactor = getDiscountFormulaFactor(productType);
+      const prices = getCampaignPriceFields(item);
+
+      const descontoRebate = calculateDiscountFromPrice(
+        prices.priceRebate,
+        formulaFactor
+      );
+      const descontoTradeIn = calculateDiscountFromPrice(
+        prices.priceTradeIn,
+        formulaFactor
+      );
+      const descontoBogo = calculateDiscountFromPrice(
+        prices.priceBogo,
+        formulaFactor
+      );
+      const descontoSip = calculateDiscountFromPrice(
+        prices.priceSip,
+        formulaFactor
+      );
+
+      const investmentTypes = [
+        prices.priceRebate > 0 ? 'REBATE' : '',
+        prices.priceTradeIn > 0 ? 'TRADE IN' : '',
+        prices.priceBogo > 0 ? 'BOGO' : '',
+        prices.priceSip > 0 ? 'SIP' : '',
+      ].filter(Boolean);
+
+      return {
+        'ARQUIVO PDF': item.arquivo,
+        'REF. CAMPANHA': item.refCampanha,
+        'CAMPANHA': item.campanha,
+        'TIPO DA CARTA': item.tipoCampanha,
+        'TIPO DE INVESTIMENTO': investmentTypes.join(' + ') || 'NÃO IDENTIFICADO',
+        'DATA INICIAL': item.inicio,
+        'DATA FINAL': item.termino,
+        'PERÍODO': item.inicio && item.termino ? `${item.inicio} a ${item.termino}` : '-',
+        'MODELO NA CARTA': item.modeloPdf,
+        'BASIC MODEL': basicModel,
+        'MODELO TRADUZIDO': descricao,
+        'REFERÊNCIA': referencia,
+        'TIPO DE PRODUTO': productType,
+        'FATOR DA FÓRMULA': formulaFactor,
+        'QTD DISPONÍVEL NA CARTA': item.quantidadeCarta,
+        'QTD DISPONÍVEL EM ESTOQUE': stock?.quantidade || 0,
+        'PRICE REBATE': prices.priceRebate,
+        'DESCONTO REBATE': descontoRebate,
+        'PRICE TRADE IN': prices.priceTradeIn,
+        'DESCONTO TRADE IN': descontoTradeIn,
+        'PRICE BOGO': prices.priceBogo,
+        'DESCONTO BOGO': descontoBogo,
+        'PRICE SIP': prices.priceSip,
+        'DESCONTO SIP': descontoSip,
+        'PRICE TOTAL DA CARTA':
+          prices.priceRebate +
+          prices.priceTradeIn +
+          prices.priceBogo +
+          prices.priceSip,
+        'DESCONTO TOTAL CALCULADO':
+          descontoRebate +
+          descontoTradeIn +
+          descontoBogo +
+          descontoSip,
+        'VERBA TOTAL DA CARTA': item.verbaTotal,
+        'TRADUÇÃO ENCONTRADA': traducao ? 'SIM' : 'NÃO',
+      };
+    });
+
+    const worksheet = XLSX.utils.json_to_sheet(letterRows);
+    if (worksheet['!ref']) {
+      worksheet['!autofilter'] = { ref: worksheet['!ref'] };
+    }
+    worksheet['!cols'] = [
+      { wch: 28 },
+      { wch: 18 },
+      { wch: 36 },
+      { wch: 24 },
+      { wch: 22 },
+      { wch: 14 },
+      { wch: 14 },
+      { wch: 26 },
+      { wch: 22 },
+      { wch: 20 },
+      { wch: 42 },
+      { wch: 18 },
+      { wch: 20 },
+      { wch: 18 },
+      { wch: 24 },
+      { wch: 26 },
+      { wch: 16 },
+      { wch: 18 },
+      { wch: 18 },
+      { wch: 20 },
+      { wch: 16 },
+      { wch: 18 },
+      { wch: 14 },
+      { wch: 16 },
+      { wch: 22 },
+      { wch: 26 },
+      { wch: 22 },
+      { wch: 20 },
+    ];
+
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Cartas Traduzidas');
+    XLSX.writeFile(workbook, `cartas_traduzidas_${Date.now()}.xlsx`);
+  };
+
 
 
   const openSendToFlowModal = () => {
@@ -2105,6 +2238,16 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
               >
                 <FileSpreadsheet size={15} />
                 Exportar Excel
+              </button>
+
+              <button
+                type="button"
+                onClick={exportLettersExcel}
+                className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-xs font-black text-white shadow-sm transition-colors hover:bg-indigo-700"
+                title="Converter os itens das cartas em PDF para uma planilha Excel"
+              >
+                <FileSpreadsheet size={15} />
+                Exportar Cartas
               </button>
 
               <button
