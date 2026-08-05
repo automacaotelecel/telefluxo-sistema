@@ -1154,8 +1154,10 @@ const getVisibleColumnKeys = (
   ...(showOfferDetails ? ['ofertaAtual', 'status'] : ['ofertaCollapsed']),
 ];
 
-const roundMoneyToCents = (value: number) =>
-  Number.isFinite(value) ? Math.round((value + Number.EPSILON) * 100) / 100 : 0;
+const floorMoneyToTen = (value: number) => {
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  return Math.floor((value + Number.EPSILON) / 10) * 10;
+};
 
 const calculateDiscountFromPrice = (priceValue: number, formulaFactor: number) => {
   const price = Number(priceValue || 0);
@@ -1164,10 +1166,19 @@ const calculateDiscountFromPrice = (priceValue: number, formulaFactor: number) =
 
   // Fórmula oficial por tipo de produto:
   // (Price / fator da categoria) * 100.
-  return roundMoneyToCents((price / factor) * 100);
+  // O resultado é sempre arredondado para baixo na dezena:
+  // 148,12 -> 140 | 199,99 -> 190.
+  return floorMoneyToTen((price / factor) * 100);
 };
 
 const recalculateRow = (row: LinhaTabela): LinhaTabela => {
+  // Mantém a regra verdadeira mesmo quando o usuário edita o desconto Telecel:
+  // Preço Telecel = Preço Samsung - Desconto Telecel.
+  const precoTelecel =
+    row.precoSamsung > 0
+      ? Math.max(row.precoSamsung - row.totalDescontoTelecel, 0)
+      : row.precoTelecel;
+
   const totalDescontoBruto =
     row.totalDescontoTelecel +
     row.descontoRebate +
@@ -1194,7 +1205,12 @@ const recalculateRow = (row: LinhaTabela): LinhaTabela => {
     row.priceSip;
 
   const novoCustoMedio = Number.isFinite(novoCustoMedioBruto) ? novoCustoMedioBruto : null;
-  const margemEstoque = precoPromocional > 0 ? 1 - row.custoMedioEstoque / precoPromocional : null;
+  // Margem do estoque atual: usa o preço de tabela Telecel antes dos
+  // investimentos Samsung. Fórmula: 1 - (custo médio / preço Telecel).
+  const margemEstoque =
+    precoTelecel > 0
+      ? 1 - row.custoMedioEstoque / precoTelecel
+      : null;
 
   // Fórmula fiel ao Excel: =100%-(NOVO CUSTO MÉDIO ESTOQUE / PREÇO PROMOCIONAL)
   const margemPrice =
@@ -1211,6 +1227,7 @@ const recalculateRow = (row: LinhaTabela): LinhaTabela => {
 
   return {
     ...row,
+    precoTelecel,
     totalDesconto,
     precoPromocional,
     novoCustoMedio,
@@ -1479,6 +1496,7 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
         inputMode="decimal"
         value={formatEditableNumber(value)}
         onChange={(event) => updateDiscountField(rowKey, field, event.target.value)}
+        onBlur={() => normalizeDiscountField(rowKey, field)}
         className="block w-full min-w-0 rounded-md bg-transparent py-1 pl-6 pr-1.5 text-right text-[11px] font-black text-slate-800 outline-none"
         placeholder="0,00"
       />
@@ -1570,6 +1588,23 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
     );
   };
 
+  const normalizeDiscountField = (rowKey: string, field: EditableDiscountField) => {
+    // O desconto Telecel representa a diferença exata entre os dois preços.
+    // Os demais descontos são sempre fechados para baixo na dezena.
+    if (field === 'totalDescontoTelecel') return;
+
+    setRows((prevRows) =>
+      prevRows.map((row) =>
+        row.rowKey === rowKey
+          ? recalculateRow({
+              ...row,
+              [field]: floorMoneyToTen(Number(row[field] || 0)),
+            })
+          : row
+      )
+    );
+  };
+
   const toggleRowSelected = (rowKey: string) => {
     setRows((prevRows) =>
       prevRows.map((row) =>
@@ -1633,15 +1668,22 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
       campaignPrices?: { priceRebate: number; priceTradeIn: number; priceBogo: number; priceSip: number };
     }) => {
       const precoSamsung = priceGuide?.precoSamsung || price?.precoSamsung || 0;
-      const precoTelecel = price?.precoTelecel || 0;
+      const precoTabelaTelecel = price?.precoTelecel || 0;
       const ofertaAtual = priceGuide?.ofertaAtual || price?.ofertaAtual || 0;
 
       // Desconto Telecel é exclusivamente a diferença entre o preço Samsung
       // e o preço de tabela Telecel. Os investimentos das cartas não entram aqui.
       const totalDescontoTelecel =
-        precoSamsung > 0 && precoTelecel > 0
-          ? Math.max(precoSamsung - precoTelecel, 0)
+        precoSamsung > 0 && precoTabelaTelecel > 0
+          ? Math.max(precoSamsung - precoTabelaTelecel, 0)
           : 0;
+
+      // Regra explícita do comparativo:
+      // Preço Telecel = Preço Samsung - Desconto Telecel.
+      const precoTelecel =
+        precoSamsung > 0
+          ? Math.max(precoSamsung - totalDescontoTelecel, 0)
+          : precoTabelaTelecel;
 
       const productType = resolveDiscountProductType(
         stock?.productType || '',
