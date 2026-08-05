@@ -266,6 +266,46 @@ const extractStorageCapacity = (...values: any[]) => {
   return capacities.sort((a, b) => b.sizeInGb - a.sizeInGb)[0]?.label || '';
 };
 
+const extractProductConnectivity = (...values: any[]) => {
+  const text = values
+    .map((value) => String(value || '').toUpperCase())
+    .join(' ')
+    .replace(/[‐‑–—−]/g, '-')
+    .replace(/WI[\s-]*FI/g, 'WIFI')
+    .replace(/\s+/g, ' ');
+
+  if (/(?:^|[^A-Z0-9])5G(?=$|[^A-Z0-9])/.test(text)) return '5G';
+  if (/(?:^|[^A-Z0-9])4G(?=$|[^A-Z0-9])/.test(text)) return '4G';
+  if (/(?:^|[^A-Z0-9])LTE(?=$|[^A-Z0-9])/.test(text)) return 'LTE';
+  if (/(?:^|[^A-Z0-9])WIFI(?=$|[^A-Z0-9])/.test(text)) return 'WIFI';
+
+  return '';
+};
+
+const pickMostSpecificProductDescription = (...values: any[]) => {
+  const candidates = values
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
+
+  if (!candidates.length) return '-';
+
+  const score = (value: string) => {
+    const connectivity = extractProductConnectivity(value);
+    const capacity = extractStorageCapacity(value);
+    const normalized = normalizeDesc(value);
+
+    return (
+      (connectivity ? 1000 : 0) +
+      (capacity ? 500 : 0) +
+      Math.min(normalized.length, 120) / 1000
+    );
+  };
+
+  return candidates.reduce((best, candidate) =>
+    score(candidate) > score(best) ? candidate : best
+  );
+};
+
 const productVariantKey = (
   reference: any,
   ...descriptionCandidates: any[]
@@ -283,6 +323,18 @@ const productVariantKey = (
   return capacity && description
     ? `${description}||${capacity}`
     : description;
+};
+
+const productStrictVariantKey = (
+  reference: any,
+  ...descriptionCandidates: any[]
+) => {
+  const baseKey = productVariantKey(reference, ...descriptionCandidates);
+  const connectivity = extractProductConnectivity(...descriptionCandidates);
+
+  return baseKey && connectivity
+    ? `${baseKey}||${connectivity}`
+    : baseKey;
 };
 
 const getCurrentUserId = () => {
@@ -1269,9 +1321,17 @@ const getComparativoKindLabel = (kind: ComparativoKind) => {
 };
 
 const getMergeKey = (row: LinhaTabela) => {
-  // Uma linha por aparelho exato: a descrição completa é a chave mais fiel.
-  // Não usamos referência como primeira chave porque modelos como 256GB e 512GB
-  // podem compartilhar o mesmo prefixo de referência.
+  // A referência identifica o aparelho e a descrição completa separa
+  // memória e conectividade (4G/5G/LTE/Wi-Fi). Isso impede que uma descrição
+  // genérica faça variantes diferentes compartilharem preço, custo ou estoque.
+  const byVariant = productStrictVariantKey(
+    row.referencia,
+    row.descricao,
+    row.basicModel,
+    row.modeloPdf
+  );
+  if (byVariant) return byVariant;
+
   const byDescription = normalizeDesc(row.descricao || '');
   if (byDescription) return byDescription;
 
@@ -1624,18 +1684,18 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
     const onlineMap = buildOnlinePriceMap(data.onlineRows);
 
     const getSalesQuantity = (descricao: string, referencia: string) => {
-      const exactQuantity = salesMap.byDesc.get(
-        normalizeDesc(descricao)
-      )?.quantidade;
-
-      if (exactQuantity !== undefined) return exactQuantity;
-
       const capacity = extractStorageCapacity(descricao);
       const variantQuantity = salesMap.byVariant.get(
         productVariantKey(referencia, descricao)
       )?.quantidade;
 
       if (variantQuantity !== undefined) return variantQuantity;
+
+      const exactQuantity = salesMap.byDesc.get(
+        normalizeDesc(descricao)
+      )?.quantidade;
+
+      if (exactQuantity !== undefined) return exactQuantity;
 
       // Só usa a família como fallback quando a descrição não informa memória.
       // Isso impede 128/256/512 GB e 1 TB de compartilharem a mesma quantidade.
@@ -1667,6 +1727,12 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
       campaignItem?: PdfItem;
       campaignPrices?: { priceRebate: number; priceTradeIn: number; priceBogo: number; priceSip: number };
     }) => {
+      const resolvedDescription = pickMostSpecificProductDescription(
+        descricao,
+        priceGuide?.descricao,
+        price?.descricao,
+        stock?.descricao
+      );
       const precoSamsung = priceGuide?.precoSamsung || price?.precoSamsung || 0;
       const precoTabelaTelecel = price?.precoTelecel || 0;
       const ofertaAtual = priceGuide?.ofertaAtual || price?.ofertaAtual || 0;
@@ -1687,7 +1753,7 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
 
       const productType = resolveDiscountProductType(
         stock?.productType || '',
-        descricao || stock?.descricao || ''
+        resolvedDescription
       );
       const discountFormulaFactor = getDiscountFormulaFactor(productType);
       const hasOperationalStock = Number(stock?.quantidade || 0) > 0;
@@ -1701,7 +1767,11 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
       const effectivePriceBogo = hasOferta ? (campaignPrices?.priceBogo || 0) : 0;
       const effectivePriceSip = hasOferta ? (campaignPrices?.priceSip || 0) : 0;
 
-      const online = onlineMap.get(normalizeDesc(descricao)) || onlineMap.get(referencia) || null;
+      const online =
+        onlineMap.get(normalizeDesc(resolvedDescription)) ||
+        onlineMap.get(normalizeDesc(descricao)) ||
+        onlineMap.get(referencia) ||
+        null;
 
       const baseRow: LinhaTabela = {
         rowKey,
@@ -1709,7 +1779,7 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
         // Estoque zero e COMPUTER já nascem em "Desconsiderados".
         isSelected: !shouldIgnoreAutomatically,
         comparativoKind: kind,
-        descricao: descricao || stock?.descricao || '-',
+        descricao: resolvedDescription,
         referencia,
         precoSamsung,
         precoTelecel,
@@ -1767,13 +1837,13 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
       const variantKey = productVariantKey(referencia, descricao, basicModel);
       const stock = stockMap.get(variantKey);
       const price =
-        priceMap.byDesc.get(normalizeDesc(descricao)) ||
         priceMap.byVariant.get(variantKey) ||
+        priceMap.byDesc.get(normalizeDesc(descricao)) ||
         (!capacity ? priceMap.byRef.get(referencia) : undefined);
 
       const priceGuide =
-        priceGuideMap.byDesc.get(normalizeDesc(descricao)) ||
         priceGuideMap.byVariant.get(variantKey) ||
+        priceGuideMap.byDesc.get(normalizeDesc(descricao)) ||
         (!capacity ? priceGuideMap.byRef.get(referencia) : undefined);
 
       return buildBaseRow({
@@ -1792,12 +1862,32 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
 
     const offerRows = mergeDuplicateRowsByModel(offerRowsRaw);
     const offerKeys = new Set(offerRows.map((row) => getMergeKey(row)));
+    const offerBaseVariantKeys = new Set(
+      offerRows
+        .map((row) => productVariantKey(
+          row.referencia,
+          row.descricao,
+          row.basicModel,
+          row.modeloPdf
+        ))
+        .filter(Boolean)
+    );
 
     const noOfferRowsRaw: LinhaTabela[] = priceGuideMap.rows
       .filter((guide) => {
-        const fakeKey = normalizeDesc(guide.descricao || '') || normalizeReference(guide.referencia || '');
+        const baseVariantKey = productVariantKey(
+          guide.referencia,
+          guide.descricao
+        );
+        const fakeKey = productStrictVariantKey(
+          guide.referencia,
+          guide.descricao
+        ) || normalizeDesc(guide.descricao || '') || normalizeReference(guide.referencia || '');
         if (!fakeKey) return false;
-        return !offerKeys.has(fakeKey);
+        return (
+          !offerKeys.has(fakeKey) &&
+          (!baseVariantKey || !offerBaseVariantKeys.has(baseVariantKey))
+        );
       })
       .map((guide, index) => {
         const descricao = guide.descricao || '-';
@@ -1806,8 +1896,8 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
         const variantKey = productVariantKey(referencia, descricao);
         const stock = stockMap.get(variantKey);
         const price =
-          priceMap.byDesc.get(normalizeDesc(descricao)) ||
           priceMap.byVariant.get(variantKey) ||
+          priceMap.byDesc.get(normalizeDesc(descricao)) ||
           (!capacity ? priceMap.byRef.get(referencia) : undefined);
 
         return buildBaseRow({
@@ -2032,9 +2122,13 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
       const referencia = familyFromReference(traducao?.referencia2 || '');
       const variantKey = productVariantKey(referencia, descricao, basicModel);
       const stock = stockMap.get(variantKey);
+      const resolvedDescription = pickMostSpecificProductDescription(
+        descricao,
+        stock?.descricao
+      );
       const productType = resolveDiscountProductType(
         stock?.productType || '',
-        descricao
+        resolvedDescription
       );
       const formulaFactor = getDiscountFormulaFactor(productType);
       const prices = getCampaignPriceFields(item);
@@ -2074,7 +2168,7 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
         'PERÍODO': item.inicio && item.termino ? `${item.inicio} a ${item.termino}` : '-',
         'MODELO NA CARTA': item.modeloPdf,
         'BASIC MODEL': basicModel,
-        'MODELO TRADUZIDO': descricao,
+        'MODELO TRADUZIDO': resolvedDescription,
         'REFERÊNCIA': referencia,
         'TIPO DE PRODUTO': productType,
         'FATOR DA FÓRMULA': formulaFactor,
