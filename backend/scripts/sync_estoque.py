@@ -1,5 +1,5 @@
 # ===========================================
-# 📦 SINCRONIZADOR DE ESTOQUE v10.0 (CUSTO REAL DE ENTRADA POR IMEI)
+# 📦 SINCRONIZADOR DE ESTOQUE v10.3.1 (CUSTO POR IMEI + DEPÓSITOS)
 # ===========================================
 
 import requests
@@ -104,8 +104,13 @@ LOJAS_NOME = {
 CNPJS = list(LOJAS_NOME.keys())
 JANELA_DIAS_MOV = 365
 
-# ✅ NOVO: comportamento padrão do estoque
-ESTOQUE_MODO_COMPLETO = True
+# Depósitos cadastrados no Microvix, confirmados pelo diagnóstico do projeto:
+# 1 = Estoque normal, 2 = DOA e 4 = Amostras.
+DEPOSITOS_POR_TIPO = {
+    "ESTOQUE": "1",
+    "DOA": "2",
+    "AMOSTRA": "4",
+}
 TEMPO_ESPERA_API = 0.1
 
 # ===========================================
@@ -1804,6 +1809,12 @@ def extrair_estoque(cnpj, modo_completo=False):
         while True:
             params = {
                 "cnpjEmp": cnpj,
+                # Nesta versão do LinxProdutosDetalhes as datas continuam
+                # obrigatórias mesmo com retornar_saldo_zero=1. O histórico
+                # amplo é necessário para alcançar AMOSTRA/DOA sem
+                # movimentação recente.
+                "data_mov_ini": iso(CUSTO_IMEI_DATA_MINIMA),
+                "data_mov_fim": iso(hoje),
                 "timestamp": str(ts),
                 "retornar_saldo_zero": "1"
             }
@@ -1881,6 +1892,194 @@ def extrair_estoque(cnpj, modo_completo=False):
     log(f"   ✅ {LOJAS_NOME.get(cnpj, cnpj)}: {len(base)} registros | tipos: {tipos_encontrados}")
     return base
 
+
+def extrair_saldos_depositos(cnpj):
+    """
+    Extrai os saldos dos depósitos 1 (ESTOQUE), 2 (DOA) e 4 (AMOSTRAS).
+
+    Esta é a fonte oficial das quantidades por depósito. Os preços continuam
+    vindo de LinxProdutosDetalhes e são unidos posteriormente.
+    """
+    partes = []
+
+    for tipo_estoque in ("ESTOQUE", "DOA", "AMOSTRA"):
+        codigo_deposito = DEPOSITOS_POR_TIPO[tipo_estoque]
+        paginas = []
+        ts = 0
+
+        while True:
+            pagina = chamar_api_metodo(
+                "LinxProdutosDetalhesDepositos",
+                {
+                    "cnpjEmp": cnpj,
+                    "cod_deposito": codigo_deposito,
+                    "timestamp": str(ts),
+                },
+            )
+
+            if pagina.empty:
+                break
+
+            proximo_ts = obter_proximo_timestamp(pagina, ts)
+            paginas.append(pagina)
+
+            if proximo_ts is None:
+                break
+
+            ts = proximo_ts
+            time.sleep(TEMPO_ESPERA_API)
+
+        if not paginas:
+            continue
+
+        base = pd.concat(
+            paginas,
+            ignore_index=True,
+            sort=False,
+        )
+
+        if "timestamp" in base.columns:
+            base["timestamp_numero"] = pd.to_numeric(
+                base["timestamp"],
+                errors="coerce",
+            )
+            base = base.sort_values(
+                "timestamp_numero",
+                ascending=False,
+            )
+
+        if "cod_produto" not in base.columns:
+            log(
+                f"⚠️ Depósito {codigo_deposito} de "
+                f"{LOJAS_NOME.get(cnpj, cnpj)} sem cod_produto."
+            )
+            continue
+
+        base["cod_produto"] = pd.to_numeric(
+            base["cod_produto"],
+            errors="coerce",
+        )
+        base["saldo_numero"] = to_float(
+            base.get("saldo", 0)
+        )
+
+        if "cod_deposito" in base.columns:
+            base = base[
+                base["cod_deposito"].map(
+                    normalizar_codigo_produto
+                )
+                == codigo_deposito
+            ].copy()
+
+        base = base.drop_duplicates(
+            subset=["cod_produto"],
+            keep="first",
+        )
+        base = base[base["saldo_numero"] > 0].copy()
+
+        if base.empty:
+            continue
+
+        especial = pd.DataFrame(
+            {
+                "CNPJ_ORIGEM": cnpj,
+                "NOME_FANTASIA": LOJAS_NOME.get(
+                    cnpj,
+                    f"LOJA {cnpj[-4:]}",
+                ),
+                "CODIGO_PRODUTO": base["cod_produto"],
+                "QUANTIDADE": base["saldo_numero"],
+                "PRECO_CUSTO": 0.0,
+                "PRECO_VENDA": 0.0,
+                "CUSTO_MEDIO": 0.0,
+                "TIPO_ESTOQUE": tipo_estoque,
+                "COD_DEPOSITO": codigo_deposito,
+            }
+        )
+        partes.append(especial)
+
+        log(
+            f"   ✅ {LOJAS_NOME.get(cnpj, cnpj)} | "
+            f"{tipo_estoque}: "
+            f"{especial['QUANTIDADE'].sum():.0f} un."
+        )
+
+    if not partes:
+        return pd.DataFrame()
+
+    return pd.concat(
+        partes,
+        ignore_index=True,
+        sort=False,
+    )
+
+
+def aplicar_precos_nos_saldos(
+    saldos: pd.DataFrame,
+    detalhes: pd.DataFrame,
+) -> pd.DataFrame:
+    if saldos.empty:
+        return saldos
+
+    resultado = saldos.copy()
+    colunas_preco = [
+        "PRECO_CUSTO",
+        "PRECO_VENDA",
+        "CUSTO_MEDIO",
+    ]
+
+    if not detalhes.empty and "CODIGO_PRODUTO" in detalhes.columns:
+        precos = detalhes.copy()
+        precos["CODIGO_PRODUTO"] = pd.to_numeric(
+            precos["CODIGO_PRODUTO"],
+            errors="coerce",
+        )
+
+        for coluna in colunas_preco:
+            if coluna not in precos.columns:
+                precos[coluna] = 0.0
+
+        precos = precos[
+            ["CODIGO_PRODUTO", *colunas_preco]
+        ].drop_duplicates(
+            subset=["CODIGO_PRODUTO"],
+            keep="first",
+        )
+
+        resultado = resultado.drop(
+            columns=colunas_preco,
+            errors="ignore",
+        ).merge(
+            precos,
+            on="CODIGO_PRODUTO",
+            how="left",
+        )
+
+    for coluna in colunas_preco:
+        if coluna not in resultado.columns:
+            resultado[coluna] = 0.0
+        else:
+            # Pandas 3/Python 3.14 mantém os valores da API como dtype
+            # string e não permite atribuir 0.0 em parte dessa coluna.
+            # Convertemos a coluna inteira antes de zerar AMOSTRA/DOA.
+            resultado[coluna] = (
+                resultado[coluna]
+                .map(numero_api)
+                .astype(float)
+            )
+
+    # AMOSTRA e DOA nunca compõem custo ou cálculos operacionais.
+    especiais = resultado["TIPO_ESTOQUE"].isin(
+        ["AMOSTRA", "DOA"]
+    )
+    for coluna in colunas_preco:
+        resultado[coluna] = resultado[coluna].mask(
+            especiais,
+            0.0,
+        )
+
+    return resultado
+
 # ===========================================
 # 3. EXTRAÇÃO DE SERIAIS (IMEI) - NOVIDADE!
 # ===========================================
@@ -1911,19 +2110,29 @@ def extrair_seriais_loja(cnpj):
     dfs = []
     ts = 0
     while True:
-        params = {"cnpjEmp": cnpj, "timestamp": str(ts)}
+        params = {
+            "cnpjEmp": cnpj,
+            "timestamp": str(ts),
+            "depositos": ",".join(
+                DEPOSITOS_POR_TIPO.values()
+            ),
+        }
         df = chamar_api_seriais(params)
         if df.empty:
             break
         df.columns = [c.lower() for c in df.columns]
 
+        # Calcula a próxima página antes do filtro de saldo. Caso uma página
+        # contenha apenas seriais inativos, a paginação não pode ser encerrada.
+        novo_ts = obter_proximo_timestamp(df, ts)
+
         # Filtra apenas IMEIs que estão efetivamente em estoque (saldo = True ou 1)
         if "saldo" in df.columns:
             df = df[df["saldo"].astype(str).str.lower().isin(["true", "1", "s", "sim", "1.0"])]
 
-        dfs.append(df)
+        if not df.empty:
+            dfs.append(df)
 
-        novo_ts = obter_proximo_timestamp(df, ts)
         if novo_ts is None:
             break
 
@@ -1941,6 +2150,17 @@ def extrair_seriais_loja(cnpj):
 
     base = base.drop_duplicates(subset=["serial"], keep="first")  # Garante 1 registro por IMEI
     base["CNPJ_ORIGEM"] = cnpj
+
+    if "id_deposito" in base.columns:
+        base["id_deposito_normalizado"] = base[
+            "id_deposito"
+        ].map(normalizar_codigo_produto)
+    else:
+        # Compatibilidade com respostas antigas que não informavam depósito.
+        base["id_deposito_normalizado"] = DEPOSITOS_POR_TIPO[
+            "ESTOQUE"
+        ]
+
     return base
 
 # ===========================================
@@ -2103,7 +2323,7 @@ def enviar_para_api(dataframe):
 # ▶ EXECUÇÃO PRINCIPAL
 # ===========================================
 def main():
-    log("🚀 Iniciando Sincronização v10.0 (CUSTO REAL DE ENTRADA POR IMEI)...")
+    log("🚀 Iniciando Sincronização v10.3.1 (CUSTO POR IMEI + DEPÓSITOS)...")
 
     # ✅ NOVO: carrega classificações do Excel
     mapa_em_linha, mapa_cluster = carregar_classificacoes_excel()
@@ -2122,12 +2342,24 @@ def main():
     for i, cnpj in enumerate(CNPJS):
         log(f"[{i+1}/{len(CNPJS)}] CNPJ: {cnpj}...")
 
-        # ✅ ALTERADO: agora busca estoque completo por padrão, sem quebrar o modo antigo
-        df_est = extrair_estoque(cnpj, modo_completo=False)
-        if not df_est.empty:
-            todos_dados.append(df_est)
+        # LinxProdutosDetalhes fornece os preços dos produtos, mas não é a
+        # fonte correta para separar as quantidades por depósito.
+        df_detalhes = extrair_estoque(
+            cnpj,
+            modo_completo=False,
+        )
 
-        # Puxa os IMEIs
+        # As quantidades oficiais vêm separadas dos depósitos:
+        # 1 = ESTOQUE, 2 = DOA e 4 = AMOSTRA.
+        df_saldos = extrair_saldos_depositos(cnpj)
+        df_saldos = aplicar_precos_nos_saldos(
+            df_saldos,
+            df_detalhes,
+        )
+        if not df_saldos.empty:
+            todos_dados.append(df_saldos)
+
+        # Puxa os IMEIs dos depósitos 1, 2 e 4.
         df_ser = extrair_seriais_loja(cnpj)
         if not df_ser.empty:
             todos_seriais.append(df_ser)
@@ -2137,13 +2369,39 @@ def main():
         return
 
     df_estoque = pd.concat(todos_dados, ignore_index=True)
-    df_seriais = pd.concat(todos_seriais, ignore_index=True) if todos_seriais else pd.DataFrame(columns=["CNPJ_ORIGEM", "codigoproduto", "serial"])
+    df_seriais = (
+        pd.concat(
+            todos_seriais,
+            ignore_index=True,
+        )
+        if todos_seriais
+        else pd.DataFrame(
+            columns=[
+                "CNPJ_ORIGEM",
+                "codigoproduto",
+                "serial",
+                "id_deposito_normalizado",
+            ]
+        )
+    )
 
-    # 3. Resolve o preço real da compra original de cada IMEI.
+    if "id_deposito_normalizado" not in df_seriais.columns:
+        df_seriais["id_deposito_normalizado"] = (
+            DEPOSITOS_POR_TIPO["ESTOQUE"]
+        )
+
+    # 3. Resolve o preço real da compra somente dos IMEIs do estoque normal.
+    # AMOSTRA e DOA não compõem o custo operacional.
     # A consulta usa primeiro os caches históricos existentes e só chama
     # LinxMovimentoSerial/LinxMovimento para os IMEIs ainda não resolvidos.
+    df_seriais_normais = df_seriais[
+        df_seriais["id_deposito_normalizado"]
+        == DEPOSITOS_POR_TIPO["ESTOQUE"]
+    ].copy()
     log("💰 Resolvendo CUSTO_SERIAL_ENTRADA dos IMEIs atuais...")
-    mapa_custos_imei = obter_mapa_custos_imei(df_seriais)
+    mapa_custos_imei = obter_mapa_custos_imei(
+        df_seriais_normais
+    )
 
     # 4. Cruzamento Estoque x Catálogo
     log("🔄 Unificando dados de Catálogo...")
@@ -2159,9 +2417,8 @@ def main():
     for col in ["QUANTIDADE", "PRECO_CUSTO", "PRECO_VENDA", "CUSTO_MEDIO"]:
         df_estoque[col] = to_float(df_estoque.get(col, 0))
 
-    # Bases alternativas podem trazer ESTOQUE, AMOSTRA e DOA em colunas separadas.
-    # A expansão ocorre antes do IMEI para que apenas o estoque normal seja serializado.
-    df_estoque = expandir_quantidades_por_tipo(df_estoque)
+    # Os saldos já chegam em linhas separadas por depósito. Não use a
+    # expansão por colunas aqui, pois ela poderia duplicar quantidades.
 
     # 5. A MÁGICA: DESDOBRAMENTO POR IMEI + CUSTO DA COMPRA ORIGINAL
     log("🔍 Desdobrando itens com IMEI...")
@@ -2174,15 +2431,15 @@ def main():
 
         tipo_estoque = normalizar_tipo_estoque(row.get("TIPO_ESTOQUE", "ESTOQUE"))
 
-        # IMEI é usado apenas para o estoque normal. AMOSTRA e DOA permanecem
-        # como saldos agregados e nunca duplicam os seriais do estoque operacional.
-        if tipo_estoque == "ESTOQUE":
-            seriais_produto = df_seriais[
-                (df_seriais["CNPJ_ORIGEM"] == cnpj) &
-                (df_seriais["codigoproduto"] == cod)
-            ]["serial"].tolist()
-        else:
-            seriais_produto = []
+        codigo_deposito = DEPOSITOS_POR_TIPO[tipo_estoque]
+        seriais_produto = df_seriais[
+            (df_seriais["CNPJ_ORIGEM"] == cnpj) &
+            (df_seriais["codigoproduto"] == cod) &
+            (
+                df_seriais["id_deposito_normalizado"]
+                == codigo_deposito
+            )
+        ]["serial"].tolist()
 
         # ✅ NOVO: limpa, deduplica e evita serial vazio
         seriais_produto = list(dict.fromkeys(
@@ -2194,13 +2451,22 @@ def main():
             qtd_serializada = min(len(seriais_produto), int(qtd_total))
 
             if len(seriais_produto) > int(qtd_total):
-                log(f"⚠️ Divergência de serial x saldo | Loja: {row['NOME_FANTASIA']} | Produto: {cod} | Saldo API: {qtd_total} | Seriais: {len(seriais_produto)}")
+                log(
+                    "⚠️ Divergência de serial x saldo "
+                    f"| Loja: {row['NOME_FANTASIA']} "
+                    f"| Produto: {cod} "
+                    f"| Tipo: {tipo_estoque} "
+                    f"| Saldo API: {qtd_total} "
+                    f"| Seriais: {len(seriais_produto)}"
+                )
 
             # Aparelho com IMEI encontrado! Quebra em 1 linha para cada IMEI válido até o saldo da API
             for s in seriais_produto[:qtd_serializada]:
                 serial_normalizado = normalizar_serial(s)
-                dados_custo = mapa_custos_imei.get(
-                    serial_normalizado
+                dados_custo = (
+                    mapa_custos_imei.get(serial_normalizado)
+                    if tipo_estoque == "ESTOQUE"
+                    else None
                 )
                 custo_serial = (
                     numero_api(
@@ -2214,11 +2480,16 @@ def main():
                 nova_linha["QUANTIDADE"] = 1.0  # Cada IMEI é 1 unidade
                 nova_linha["SERIAL"] = s
                 nova_linha["CUSTO_SERIAL_ENTRADA"] = custo_serial
-                nova_linha["CUSTO_SERIAL_STATUS"] = (
-                    "CUSTO_EXATO_ENCONTRADO"
-                    if custo_serial > 0
-                    else "CUSTO_NAO_ENCONTRADO"
-                )
+                if tipo_estoque == "ESTOQUE":
+                    nova_linha["CUSTO_SERIAL_STATUS"] = (
+                        "CUSTO_EXATO_ENCONTRADO"
+                        if custo_serial > 0
+                        else "CUSTO_NAO_ENCONTRADO"
+                    )
+                else:
+                    nova_linha["CUSTO_SERIAL_STATUS"] = (
+                        "NAO_APLICAVEL"
+                    )
                 nova_linha["CUSTO_SERIAL_ORIGEM"] = (
                     str(
                         dados_custo.get("campo_origem")
@@ -2276,7 +2547,11 @@ def main():
                 nova_linha["QUANTIDADE"] = qtd_restante
                 nova_linha["SERIAL"] = ""
                 nova_linha["CUSTO_SERIAL_ENTRADA"] = 0.0
-                nova_linha["CUSTO_SERIAL_STATUS"] = "SEM_IMEI"
+                nova_linha["CUSTO_SERIAL_STATUS"] = (
+                    "SEM_IMEI"
+                    if tipo_estoque == "ESTOQUE"
+                    else "NAO_APLICAVEL"
+                )
                 nova_linha["CUSTO_SERIAL_ORIGEM"] = ""
                 nova_linha["DOCUMENTO_COMPRA"] = ""
                 nova_linha["CNPJ_COMPRA"] = ""
@@ -2289,7 +2564,11 @@ def main():
             nova_linha = row.copy()
             nova_linha["SERIAL"] = ""
             nova_linha["CUSTO_SERIAL_ENTRADA"] = 0.0
-            nova_linha["CUSTO_SERIAL_STATUS"] = "SEM_IMEI"
+            nova_linha["CUSTO_SERIAL_STATUS"] = (
+                "SEM_IMEI"
+                if tipo_estoque == "ESTOQUE"
+                else "NAO_APLICAVEL"
+            )
             nova_linha["CUSTO_SERIAL_ORIGEM"] = ""
             nova_linha["DOCUMENTO_COMPRA"] = ""
             nova_linha["CNPJ_COMPRA"] = ""
@@ -2328,8 +2607,35 @@ def main():
     )
     log(f"📊 Quantidades por tipo antes do envio: {resumo_tipos}")
 
+    # Segurança: como o primeiro lote substitui o estoque existente, não
+    # permitimos o envio quando a extração completa deixou de trazer os
+    # depósitos especiais. Isso evita zerar AMOSTRA/DOA silenciosamente.
+    tipos_especiais_ausentes = [
+        tipo
+        for tipo in ("AMOSTRA", "DOA")
+        if float(resumo_tipos.get(tipo, 0) or 0) <= 0
+    ]
+    if tipos_especiais_ausentes:
+        log(
+            "❌ ENVIO CANCELADO: a API não retornou saldo para "
+            + ", ".join(tipos_especiais_ausentes)
+            + "."
+        )
+        log(
+            "👉 O estoque atual foi preservado. Verifique a extração "
+            "completa dos depósitos antes de tentar novamente."
+        )
+        return 1
+
     linhas_com_imei = df_final[
-        df_final["SERIAL"].fillna("").astype(str).str.strip().ne("")
+        (
+            df_final["TIPO_ESTOQUE"] == "ESTOQUE"
+        )
+        & df_final["SERIAL"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .ne("")
     ]
     linhas_com_custo_exato = linhas_com_imei[
         linhas_com_imei["CUSTO_SERIAL_ENTRADA"] > 0

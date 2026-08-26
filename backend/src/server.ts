@@ -15,6 +15,7 @@ import nodemailer from 'nodemailer';
 import dotenv from 'dotenv';
 import clarkRoutes from './modules/clark/clark.routes'; //IMPORT ROTAS DA CLARK
 import rhRoutes from './modules/rh/rh.routes'; 
+import inventoryAuditRoutes from './modules/inventoryAudit/inventoryAudit.routes';
 import { google } from 'googleapis';
 import { spawn } from 'child_process';
 import os from 'os';
@@ -240,6 +241,68 @@ const ANUAL_DB_PATH = path.join(DATABASE_DIR, 'samsung_vendas_anuais.db');
 
 console.log("📂 Banco Vendas:", GLOBAL_DB_PATH);
 console.log("📂 Banco BestFlow:", BESTFLOW_DB_PATH);
+
+// =======================================================
+// 📅 PERÍODO OFICIAL DO PAINEL MENSAL (HORÁRIO DE BRASÍLIA)
+// =======================================================
+function getBrazilTodayIso(): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Sao_Paulo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date());
+
+  const values: Record<string, string> = {};
+
+  for (const part of parts) {
+    if (part.type !== 'literal') {
+      values[part.type] = part.value;
+    }
+  }
+
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
+function getCurrentMonthRange() {
+  const today = getBrazilTodayIso();
+
+  return {
+    startDate: `${today.slice(0, 7)}-01`,
+    endDate: today,
+  };
+}
+
+function normalizeCurrentMonthRange(startRaw?: any, endRaw?: any) {
+  const current = getCurrentMonthRange();
+  const isoPattern = /^\d{4}-\d{2}-\d{2}$/;
+  const monthPrefix = current.startDate.slice(0, 7);
+
+  let startDate = String(startRaw || '');
+  let endDate = String(endRaw || '');
+
+  if (!isoPattern.test(startDate) || !startDate.startsWith(monthPrefix)) {
+    startDate = current.startDate;
+  }
+
+  if (!isoPattern.test(endDate) || !endDate.startsWith(monthPrefix)) {
+    endDate = current.endDate;
+  }
+
+  if (startDate < current.startDate) {
+    startDate = current.startDate;
+  }
+
+  if (endDate > current.endDate) {
+    endDate = current.endDate;
+  }
+
+  if (startDate > endDate) {
+    return current;
+  }
+
+  return { startDate, endDate };
+}
 
 // ----------------------------------------------------
 // INICIALIZAÇÃO DAS TABELAS (MANTIDA)
@@ -788,6 +851,7 @@ app.post(
 app.use('/api/clark', clarkRoutes);
 app.use('/api/contracts', contractRoutes); // Injeção do módulo de análise de contratos
 app.use('/api/rh', rhRoutes); // Aproveitei para garantir que a rota RH (importada na linha 19) também esteja registrada
+app.use('/api/inventory-audit', inventoryAuditRoutes);
 
 // ============================================================
 // ✅ ROTAS DO HISTÓRICO ANUAL - CORRIGIDAS PARA FILTROS REAIS
@@ -6756,21 +6820,24 @@ app.get('/sales', async (req, res) => {
 
     // 1. Pega os parâmetros da URL
     const userId = String(req.query.userId || '');
-    const startDate = req.query.startDate ? String(req.query.startDate) : null;
-    const endDate = req.query.endDate ? String(req.query.endDate) : null;
 
-    // 2. Filtro de Segurança (CNPJ/Loja do usuário)
-    // Mantém sua função original que já funciona
-    const securityFilter = await getSalesFilter(userId, 'vendas'); 
+    const startDate = req.query.startDate
+      ? String(req.query.startDate)
+      : null;
 
-    // 3. Monta o Filtro de Datas (SQL)
+    const endDate = req.query.endDate
+      ? String(req.query.endDate)
+      : null;
+
+    // 2. Filtro de Segurança
+    const securityFilter = await getSalesFilter(userId, 'vendas');
+
+    // 3. Monta o filtro de datas
     let dateFilter = "";
-    
-    // Se o frontend mandou as datas, aplicamos o filtro
+
     if (startDate && endDate) {
-        // SQLite grava data como TEXTO (YYYY-MM-DD), então comparação de string funciona perfeitamente
-        // Usamos >= e <= para pegar o dia inteiro
-        dateFilter = ` AND data_emissao >= '${startDate}' AND data_emissao <= '${endDate}'`;
+      dateFilter =
+        ` AND data_emissao >= '${startDate}' AND data_emissao <= '${endDate}'`;
     }
 
     // 4. Conecta e Busca
@@ -8452,25 +8519,362 @@ app.get('/purchases', async (req, res) => {
     }
 });
 
-app.get('/api/bestflow', async (req, res) => {
-    try {
-        const dbConn = await open({ filename: BESTFLOW_DB_PATH, driver: sqlite3.Database });
-        
-        // Verifica se a tabela 'resumo_diario' existe (o Python cria com esse nome)
-        const tables = await dbConn.all("SELECT name FROM sqlite_master WHERE type='table' AND name='resumo_diario'");
-        
-        if (tables.length === 0) {
-            await dbConn.close();
-            return res.json([]); 
-        }
+function bestflowDigits(value: any): string {
+  return String(value ?? '')
+    .replace(/\D/g, '')
+    .slice(0, 14);
+}
 
-        const dados = await dbConn.all("SELECT * FROM resumo_diario");
-        await dbConn.close();
-        res.json(dados);
-    } catch (error) {
-        console.error("Erro Bestflow:", error);
-        res.json([]);
+async function ensureBestflowTable(db: any) {
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS resumo_diario (
+      data TEXT NOT NULL,
+      cnpj14 TEXT NOT NULL,
+      loja TEXT NOT NULL,
+      entradas INTEGER NOT NULL DEFAULT 0,
+      saidas INTEGER NOT NULL DEFAULT 0,
+      qtd_vendida REAL NOT NULL DEFAULT 0,
+      valor_vendido REAL NOT NULL DEFAULT 0,
+      conversao REAL NOT NULL DEFAULT 0,
+      PRIMARY KEY (data, cnpj14)
+    )
+  `);
+
+  const columns = await db.all(`
+    PRAGMA table_info(resumo_diario)
+  `);
+
+  const names = new Set(
+    (columns || []).map(
+      (row: any) => String(row.name || '').toLowerCase()
+    )
+  );
+
+  if (!names.has('qtd_vendida')) {
+    await db.exec(`
+      ALTER TABLE resumo_diario
+      ADD COLUMN qtd_vendida REAL NOT NULL DEFAULT 0
+    `);
+  }
+
+  if (!names.has('valor_vendido')) {
+    await db.exec(`
+      ALTER TABLE resumo_diario
+      ADD COLUMN valor_vendido REAL NOT NULL DEFAULT 0
+    `);
+  }
+
+  if (!names.has('conversao')) {
+    await db.exec(`
+      ALTER TABLE resumo_diario
+      ADD COLUMN conversao REAL NOT NULL DEFAULT 0
+    `);
+  }
+}
+
+
+async function refreshBestflowSalesLink(bestflowDb: any) {
+  if (!fs.existsSync(GLOBAL_DB_PATH)) {
+    return;
+  }
+
+  const range = await bestflowDb.get(`
+    SELECT
+      MIN(data) AS min_data,
+      MAX(data) AS max_data
+    FROM resumo_diario
+  `);
+
+  if (!range?.min_data || !range?.max_data) {
+    return;
+  }
+
+  const salesDb = await open({
+    filename: GLOBAL_DB_PATH,
+    driver: sqlite3.Database
+  });
+
+  try {
+    const salesRows = await salesDb.all(
+      `
+      SELECT
+        substr(data_emissao, 1, 10) AS data,
+        cnpj_empresa,
+        SUM(COALESCE(quantidade, 0)) AS qtd_vendida,
+        SUM(COALESCE(total_liquido, 0)) AS valor_vendido
+      FROM vendas
+      WHERE substr(data_emissao, 1, 10) >= ?
+        AND substr(data_emissao, 1, 10) <= ?
+      GROUP BY
+        substr(data_emissao, 1, 10),
+        cnpj_empresa
+      `,
+      [
+        String(range.min_data),
+        String(range.max_data)
+      ]
+    );
+
+    const salesMap =
+      new Map<string, { qtd: number; valor: number }>();
+
+    for (const row of salesRows || []) {
+      const data =
+        String(row.data || '').slice(0, 10);
+
+      const cnpj =
+        bestflowDigits(row.cnpj_empresa);
+
+      if (!data || !cnpj) {
+        continue;
+      }
+
+      salesMap.set(
+        `${data}|${cnpj}`,
+        {
+          qtd: Number(row.qtd_vendida || 0),
+          valor: Number(row.valor_vendido || 0)
+        }
+      );
     }
+
+    const flowRows = await bestflowDb.all(`
+      SELECT
+        data,
+        cnpj14,
+        entradas
+      FROM resumo_diario
+    `);
+
+    const stmt = await bestflowDb.prepare(`
+      UPDATE resumo_diario
+      SET
+        qtd_vendida = ?,
+        valor_vendido = ?,
+        conversao = ?
+      WHERE data = ?
+        AND cnpj14 = ?
+    `);
+
+    try {
+      for (const row of flowRows || []) {
+        const cnpj =
+          bestflowDigits(row.cnpj14);
+
+        const key =
+          `${String(row.data || '').slice(0, 10)}|${cnpj}`;
+
+        const sales =
+          salesMap.get(key) || {
+            qtd: 0,
+            valor: 0
+          };
+
+        const entradas =
+          Number(row.entradas || 0);
+
+        const conversao =
+          entradas > 0
+            ? sales.qtd / entradas
+            : 0;
+
+        await stmt.run(
+          sales.qtd,
+          sales.valor,
+          conversao,
+          String(row.data || '').slice(0, 10),
+          cnpj
+        );
+      }
+    } finally {
+      await stmt.finalize();
+    }
+
+  } finally {
+    await salesDb
+      .close()
+      .catch(() => undefined);
+  }
+}
+
+
+async function getAllowedBestflowCnpjs(
+  userId: string
+): Promise<string[] | null> {
+
+  if (
+    !userId ||
+    userId === 'undefined' ||
+    userId === 'null'
+  ) {
+    return null;
+  }
+
+  const user = await prisma.user.findUnique({
+    where: {
+      id: userId
+    }
+  });
+
+  if (!user) {
+    return [];
+  }
+
+  const superRoles = [
+    'CEO',
+    'DIRETOR',
+    'ADM',
+    'ADMIN',
+    'GESTOR',
+    'SÓCIO',
+    'MASTER'
+  ];
+
+  if (
+    user.isAdmin ||
+    superRoles.includes(
+      String(user.role || '').toUpperCase()
+    )
+  ) {
+    return null;
+  }
+
+  if (
+    !user.allowedStores ||
+    !String(user.allowedStores).trim()
+  ) {
+    return [];
+  }
+
+  const stores =
+    String(user.allowedStores)
+      .split(',')
+      .map((store) =>
+        normStore(store)
+      )
+      .map((store) =>
+        CORRECAO_NOMES_SERVER[store]
+          ? normStore(
+              CORRECAO_NOMES_SERVER[store]
+            )
+          : store
+      );
+
+  return Array.from(
+    new Set(
+      stores
+        .map((store) =>
+          getCnpjByName(store)
+        )
+        .filter(
+          (cnpj): cnpj is string =>
+            Boolean(cnpj)
+        )
+    )
+  );
+}
+
+
+app.get('/api/bestflow', async (req, res) => {
+  let dbConn: any;
+
+  try {
+    const userId =
+      String(req.query.userId || '');
+
+    const { startDate, endDate } =
+      normalizeCurrentMonthRange(
+        req.query.startDate,
+        req.query.endDate
+      );
+
+    dbConn = await open({
+      filename: BESTFLOW_DB_PATH,
+      driver: sqlite3.Database
+    });
+
+    await ensureBestflowTable(dbConn);
+
+    // Atualiza o vínculo CNPJ + data
+    // com a base de vendas.
+    await refreshBestflowSalesLink(dbConn);
+
+    const allowedCnpjs =
+      await getAllowedBestflowCnpjs(userId);
+
+    if (
+      Array.isArray(allowedCnpjs) &&
+      allowedCnpjs.length === 0
+    ) {
+      return res.json([]);
+    }
+
+    let sql = `
+      SELECT
+        data,
+        cnpj14,
+        loja,
+        entradas,
+        saidas,
+        qtd_vendida,
+        valor_vendido,
+        conversao
+      FROM resumo_diario
+      WHERE data >= ?
+        AND data <= ?
+    `;
+
+    const params: any[] = [
+      startDate,
+      endDate
+    ];
+
+    if (Array.isArray(allowedCnpjs)) {
+      const placeholders =
+        allowedCnpjs
+          .map(() => '?')
+          .join(',');
+
+      sql += `
+        AND cnpj14 IN (${placeholders})
+      `;
+
+      params.push(...allowedCnpjs);
+    }
+
+    sql += `
+      ORDER BY data ASC, loja ASC
+    `;
+
+    const dados =
+      await dbConn.all(
+        sql,
+        params
+      );
+
+    res.json(dados || []);
+
+  } catch (error: any) {
+
+    console.error(
+      'Erro Bestflow:',
+      error
+    );
+
+    res.status(500).json({
+      error:
+        error?.message ||
+        'Erro ao ler fluxo BestFlow.'
+    });
+
+  } finally {
+
+    if (dbConn) {
+      await dbConn
+        .close()
+        .catch(() => undefined);
+    }
+  }
 });
 
 // --- ROTA DE KPIS (TENDÊNCIA, SEGUROS) ---
@@ -8493,38 +8897,224 @@ app.get('/api/kpi-vendedores', async (req, res) => {
 
 // 1. Recebe BESTFLOW (Fluxo)
 app.post('/api/sync/bestflow', async (req, res) => {
-    try {
-        const dados = req.body;
-        if (!Array.isArray(dados)) return res.status(400).json({ error: "Dados inválidos" });
+  let db: any;
 
-        const db = await open({ filename: BESTFLOW_DB_PATH, driver: sqlite3.Database });
-        await db.exec(`
-            CREATE TABLE IF NOT EXISTS resumo_diario (
-                data TEXT, cnpj14 TEXT, loja TEXT, entradas INTEGER, saidas INTEGER,
-                qtd_vendida INTEGER, valor_vendido REAL, conversao REAL,
-                PRIMARY KEY (data, cnpj14)
-            )
-        `);
+  try {
+    const dados = req.body;
 
-        await db.exec("BEGIN TRANSACTION");
-        const stmt = await db.prepare(`
-            INSERT OR REPLACE INTO resumo_diario (data, cnpj14, loja, entradas, saidas, qtd_vendida, valor_vendido, conversao)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        `);
+    const shouldReset =
+      String(req.query.reset || 'true') !== 'false';
 
-        for (const row of dados) {
-            await stmt.run(row.data, row.cnpj14, row.loja, row.entradas, row.saidas, row.qtd_vendida, row.valor_vendido, row.conversao);
-        }
-        await stmt.finalize();
-        await db.exec("COMMIT");
-        await db.close();
-        
-        console.log(`✅ Bestflow Sync: ${dados.length} registros.`);
-        res.json({ success: true });
-    } catch (e: any) {
-        console.error("Erro sync Bestflow:", e);
-        res.status(500).json({ error: e.message });
+    if (!Array.isArray(dados)) {
+      return res.status(400).json({
+        error: 'Dados inválidos. Envie uma lista.'
+      });
     }
+
+    const current =
+      getCurrentMonthRange();
+
+    const normalized =
+      dados
+        .map((row: any) => {
+
+          const data =
+            String(row?.data || '')
+              .slice(0, 10);
+
+          const cnpj14 =
+            bestflowDigits(
+              row?.cnpj14 ??
+              row?.cnpj ??
+              row?.idloja
+            );
+
+          // Nome oficial da loja pelo CNPJ
+          const officialStore =
+            LOJAS_MAP_GLOBAL[cnpj14];
+
+          const loja =
+            officialStore ||
+            String(
+              row?.loja ||
+              row?.nome_loja ||
+              ''
+            )
+              .trim()
+              .toUpperCase();
+
+          const entradas =
+            Math.max(
+              0,
+              Math.round(
+                Number(
+                  row?.entradas || 0
+                )
+              )
+            );
+
+          const saidas =
+            Math.max(
+              0,
+              Math.round(
+                Number(
+                  row?.saidas || 0
+                )
+              )
+            );
+
+          return {
+            data,
+            cnpj14,
+            loja,
+            entradas,
+            saidas
+          };
+        })
+
+        .filter((row: any) => {
+          return (
+            /^\d{4}-\d{2}-\d{2}$/.test(row.data) &&
+            row.data >= current.startDate &&
+            row.data <= current.endDate &&
+            row.cnpj14.length === 14
+          );
+        });
+
+    // IMPORTANTE:
+    // se o BestFlow vier vazio,
+    // não apaga o snapshot atual.
+    if (normalized.length === 0) {
+      return res.status(400).json({
+        error:
+          'Nenhum registro válido do mês corrente foi recebido. O snapshot atual foi preservado.',
+        periodo: current
+      });
+    }
+
+    db = await open({
+      filename: BESTFLOW_DB_PATH,
+      driver: sqlite3.Database
+    });
+
+    await ensureBestflowTable(db);
+
+    await db.exec(
+      'BEGIN TRANSACTION'
+    );
+
+    if (shouldReset) {
+      await db.exec(
+        'DELETE FROM resumo_diario'
+      );
+    }
+
+    const stmt =
+      await db.prepare(`
+        INSERT INTO resumo_diario (
+          data,
+          cnpj14,
+          loja,
+          entradas,
+          saidas,
+          qtd_vendida,
+          valor_vendido,
+          conversao
+        )
+        VALUES (?, ?, ?, ?, ?, 0, 0, 0)
+
+        ON CONFLICT(data, cnpj14)
+        DO UPDATE SET
+          loja = excluded.loja,
+          entradas = excluded.entradas,
+          saidas = excluded.saidas
+      `);
+
+    try {
+
+      for (const row of normalized) {
+
+        await stmt.run(
+          row.data,
+          row.cnpj14,
+          row.loja,
+          row.entradas,
+          row.saidas
+        );
+
+      }
+
+    } finally {
+      await stmt.finalize();
+    }
+
+    await db.exec('COMMIT');
+
+    // Depois de receber o BestFlow,
+    // cruza imediatamente com vendas.
+    await refreshBestflowSalesLink(db);
+
+    const count =
+      await db.get(`
+        SELECT COUNT(*) AS total
+        FROM resumo_diario
+      `);
+
+    console.log(
+      `✅ BestFlow Sync: ${normalized.length} registros recebidos | ` +
+      `snapshot: ${Number(count?.total || 0)} | ` +
+      `reset=${shouldReset}`
+    );
+
+    res.json({
+      success: true,
+
+      gravados:
+        normalized.length,
+
+      totalSnapshot:
+        Number(
+          count?.total || 0
+        ),
+
+      ignoradosForaMes:
+        Math.max(
+          0,
+          dados.length -
+          normalized.length
+        ),
+
+      periodo:
+        current
+    });
+
+  } catch (e: any) {
+
+    if (db) {
+      try {
+        await db.exec('ROLLBACK');
+      } catch {}
+    }
+
+    console.error(
+      'Erro sync Bestflow:',
+      e
+    );
+
+    res.status(500).json({
+      error:
+        e?.message ||
+        'Erro ao sincronizar BestFlow.'
+    });
+
+  } finally {
+
+    if (db) {
+      await db
+        .close()
+        .catch(() => undefined);
+    }
+  }
 });
 
 // ==========================================

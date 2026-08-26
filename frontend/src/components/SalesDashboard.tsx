@@ -60,6 +60,13 @@ const formatMoneyShort = (val: number) => {
     return `R$ ${val.toFixed(0)}`;
 }
 
+const toLocalIsoDate = (value: Date) => {
+    const year = value.getFullYear();
+    const month = String(value.getMonth() + 1).padStart(2, '0');
+    const day = String(value.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+};
+
 export default function SalesDashboard() {
   const [rawData, setRawData] = useState<any[]>([]);
   const [flowRawData, setFlowRawData] = useState<any[]>([]);
@@ -82,9 +89,13 @@ export default function SalesDashboard() {
   
   const today = new Date();
   const firstDay = new Date(today.getFullYear(), today.getMonth(), 1);
+  const currentMonthStart = toLocalIsoDate(firstDay);
+  const todayIso = toLocalIsoDate(today);
 
-  const [startDate, setStartDate] = useState(firstDay.toISOString().split('T')[0]);
-  const [endDate, setEndDate] = useState(today.toISOString().split('T')[0]);
+  // Este módulo é a visão MENSAL: o período fica restrito ao mês corrente.
+  // Usamos a data local (e não toISOString/UTC) para não deslocar um dia no Brasil.
+  const [startDate, setStartDate] = useState(currentMonthStart);
+  const [endDate, setEndDate] = useState(todayIso);
 
   const [selectedStores, setSelectedStores] = useState<string[]>([]);
   const [isStoreMenuOpen, setIsStoreMenuOpen] = useState(false);
@@ -131,7 +142,12 @@ export default function SalesDashboard() {
     }
 
     try {
-        const resSales = await fetch(`${API_URL}/sales?userId=${userId}`);
+        const salesParams = new URLSearchParams({
+            userId,
+            startDate,
+            endDate,
+        });
+        const resSales = await fetch(`${API_URL}/sales?${salesParams.toString()}`);
         if (resSales.ok) {
             const data = await resSales.json();
             setRawData(data.sales || (Array.isArray(data) ? data : []));
@@ -140,7 +156,12 @@ export default function SalesDashboard() {
         }
 
         try {
-            const resFlow = await fetch(`${API_URL}/api/bestflow`);
+            const flowParams = new URLSearchParams({
+                userId,
+                startDate,
+                endDate,
+            });
+            const resFlow = await fetch(`${API_URL}/api/bestflow?${flowParams.toString()}`);
             if (resFlow.ok) {
                 const dataFlow = await resFlow.json();
                 setFlowRawData(Array.isArray(dataFlow) ? dataFlow : []);
@@ -274,7 +295,7 @@ export default function SalesDashboard() {
           if (dataISO < startDate || dataISO > endDate) return false;
 
           if (selectedStores.length > 0) {
-              const nomeLoja = getStoreName(item.loja || "");
+              const nomeLoja = getStoreName(item.cnpj14 || item.loja || "");
               if (!selectedStores.some(s => s.toUpperCase() === nomeLoja.toUpperCase())) return false;
           }
           return true;
@@ -282,7 +303,7 @@ export default function SalesDashboard() {
 
       const groups: Record<string, any> = {};
       filtered.forEach(item => {
-          const nomeLoja = getStoreName(item.loja);
+          const nomeLoja = getStoreName(item.cnpj14 || item.loja);
           if (!groups[nomeLoja]) {
               groups[nomeLoja] = { loja: nomeLoja, entradas: 0, qtd: 0, valor: 0 };
           }
@@ -297,6 +318,19 @@ export default function SalesDashboard() {
       })).sort((a: any, b: any) => b.conversao - a.conversao); 
 
   }, [flowRawData, startDate, endDate, selectedStores]);
+
+  const flowSummary = useMemo(() => {
+      const entradas = groupedFlowData.reduce((acc, item) => acc + (Number(item.entradas) || 0), 0);
+      const vendas = groupedFlowData.reduce((acc, item) => acc + (Number(item.qtd) || 0), 0);
+      const faturamento = groupedFlowData.reduce((acc, item) => acc + (Number(item.valor) || 0), 0);
+
+      return {
+          entradas,
+          vendas,
+          faturamento,
+          conversao: entradas > 0 ? vendas / entradas : 0,
+      };
+  }, [groupedFlowData]);
 
   useEffect(() => {
       const total = filteredData.reduce((acc, curr) => acc + Number(curr.total_liquido || 0), 0);
@@ -583,11 +617,25 @@ setRanking(finalRanking);
             <div className="flex items-center bg-white border border-slate-200 rounded-lg p-1 shadow-sm">
                 <div className="flex items-center px-2 border-r border-slate-100">
                     <Calendar size={14} className="text-slate-400 mr-2"/>
-                    <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} className="bg-transparent border-none text-[10px] font-bold text-slate-600 uppercase focus:outline-none w-24"/>
+                    <input
+                        type="date"
+                        min={currentMonthStart}
+                        max={endDate}
+                        value={startDate}
+                        onChange={e => setStartDate(e.target.value < currentMonthStart ? currentMonthStart : e.target.value)}
+                        className="bg-transparent border-none text-[10px] font-bold text-slate-600 uppercase focus:outline-none w-24"
+                    />
                 </div>
                 <div className="flex items-center px-2">
                     <span className="text-slate-300 font-bold mr-2 text-[10px]">ATÉ</span>
-                    <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} className="bg-transparent border-none text-[10px] font-bold text-slate-600 uppercase focus:outline-none w-24"/>
+                    <input
+                        type="date"
+                        min={startDate}
+                        max={todayIso}
+                        value={endDate}
+                        onChange={e => setEndDate(e.target.value > todayIso ? todayIso : e.target.value)}
+                        className="bg-transparent border-none text-[10px] font-bold text-slate-600 uppercase focus:outline-none w-24"
+                    />
                 </div>
             </div>
 
@@ -845,7 +893,7 @@ setRanking(finalRanking);
                         <div>
                             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Tráfego Total (Filtrado)</p>
                             <h3 className="text-3xl font-black text-slate-800 mt-1">
-                                {groupedFlowData.reduce((acc, i) => acc + (Number(i.entradas) || 0), 0).toLocaleString('pt-BR')}
+                                {flowSummary.entradas.toLocaleString('pt-BR')}
                             </h3>
                         </div>
                         <div className="p-2 bg-blue-50 text-blue-600 rounded-lg"><Users size={20}/></div>
@@ -855,12 +903,9 @@ setRanking(finalRanking);
                 <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
                     <div className="flex justify-between items-start">
                         <div>
-                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Conversão Média</p>
+                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Conversão Geral</p>
                             <h3 className="text-3xl font-black text-emerald-600 mt-1">
-                                {(groupedFlowData.length > 0 
-                                    ? (groupedFlowData.reduce((acc, i) => acc + (Number(i.conversao) || 0), 0) / groupedFlowData.length) * 100 
-                                    : 0
-                                ).toFixed(2)}%
+                                {(flowSummary.conversao * 100).toFixed(2)}%
                             </h3>
                         </div>
                         <div className="p-2 bg-emerald-50 text-emerald-600 rounded-lg"><MousePointerClick size={20}/></div>
@@ -872,7 +917,7 @@ setRanking(finalRanking);
                         <div>
                             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Efetividade (Vendas)</p>
                             <h3 className="text-3xl font-black text-indigo-600 mt-1">
-                                {groupedFlowData.reduce((acc, i) => acc + (Number(i.qtd) || 0), 0)} <span className="text-sm text-slate-400 font-bold">peças</span>
+                                {flowSummary.vendas.toLocaleString('pt-BR')} <span className="text-sm text-slate-400 font-bold">peças</span>
                             </h3>
                         </div>
                         <div className="p-2 bg-indigo-50 text-indigo-600 rounded-lg"><ArrowRightLeft size={20}/></div>

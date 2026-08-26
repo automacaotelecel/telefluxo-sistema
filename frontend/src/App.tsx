@@ -36,6 +36,8 @@ import RhModule from './components/RhModule';
 // NOVA IMPORTAÇÃO: Módulo de Contratos
 import ContractAnalyzer from './components/ContractAnalyzer';
 import OnlinePricesAgent from './components/OnlinePricesAgent';
+import InventoryAuditModule from './components/InventoryAuditModule';
+import InventoryAuditDashboard from './components/InventoryAuditDashboard';
 
 import {
   FileText,
@@ -78,6 +80,7 @@ const STORE_ALLOWED_VIEWS = new Set([
   'home',
   'rh',
   'stock',
+  'inventory_audit',
   'alertas_inteligentes',
   'estoque_detalhado',
   'estoque_vendas',
@@ -171,6 +174,7 @@ function App() {
   const canViewTeam = ['CEO', 'DIRETOR', 'ADM'].includes(userRole) || isAdmin;
   const canViewComparativos = ['ADM', 'CEO'].includes(userRole) || isAdmin || isSamsungUser;
   const canViewExecutiveDashboard = userRole === 'ADM' || isAdmin;
+  const canViewAuditDashboard = ['ADM', 'ADMIN', 'CEO', 'DIRETOR'].includes(userRole) || isAdmin;
   const canUseClarkAdm = userRole === 'ADM' || userRole === 'ADMIN' || isAdmin;
 
   const isStoreOnly = userRole === 'LOJA';
@@ -231,6 +235,7 @@ function App() {
     avaliacoes_lojas: 'PAINEL DIRETORIA / AVALIAÇÕES DAS LOJAS',
     acesso_rapido_aparelhos: 'PAINEL DIRETORIA / ACESSO RÁPIDO',
     stock: 'CONTROLE DE ESTOQUE',
+    inventory_audit: 'CONFERÊNCIA DE APARELHOS / BIPADOR',
     alertas_inteligentes: 'CENTRAL DE ALERTAS INTELIGENTES',
     estoque_detalhado: 'VISÃO DETALHADA DE ESTOQUE',
     estoque_vendas: 'ESTOQUE X VENDAS',
@@ -370,6 +375,8 @@ function App() {
     }
 
     if (view === 'stock') return <StockModule />;
+    if (view === 'inventory_audit') return <InventoryAuditModule currentUser={user} />;
+    if (view === 'inventory_audit_dashboard' && canViewAuditDashboard) return <InventoryAuditDashboard currentUser={user} />;
 
     if (view.startsWith('dept_')) {
       return (
@@ -711,6 +718,8 @@ function App() {
                 label="Controle de Estoque"
                 active={[
                   'stock',
+                  'inventory_audit',
+                  'inventory_audit_dashboard',
                   'alertas_inteligentes',
                   'estoque_vendas',
                   'estoque_inteligente',
@@ -728,6 +737,20 @@ function App() {
               {expanded.stock && !isSidebarCollapsed && (
                 <div className="mt-1 space-y-1">
                   <SubMenuItem label="Visão Geral" view="stock" active={currentView === 'stock'} />
+
+                  <SubMenuItem
+                    label="Bipador de Aparelhos"
+                    view="inventory_audit"
+                    active={currentView === 'inventory_audit'}
+                  />
+
+                  {canViewAuditDashboard && (
+                    <SubMenuItem
+                      label="BI de Conferências"
+                      view="inventory_audit_dashboard"
+                      active={currentView === 'inventory_audit_dashboard'}
+                    />
+                  )}
 
                   <SubMenuItem
                     label="Alertas Inteligentes"

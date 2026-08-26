@@ -1,73 +1,86 @@
-# React + TypeScript + Vite
+# Telecel — Conferência de IMEIs
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Sistema React/Vite para importar uma planilha de estoque, bipar IMEIs e conferir automaticamente aparelhos encontrados, pendentes, divergentes, duplicados e inválidos.
 
-Currently, two official plugins are available:
+O fluxo operacional é direto: importe a planilha, abra **Bipar aparelhos** e faça as leituras. Cada IMEI é comparado imediatamente com o controle ativo e registrado com data, hora, operador e resultado.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## Instalação
 
-## React Compiler
+Requisitos: Node.js 20.19 ou superior.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm install
+npm run dev
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+Abra o endereço exibido no terminal. Em uma instalação padrão do Vite, normalmente será `http://localhost:5173`.
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+Para validar a versão que será publicada:
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm run lint
+npm run build
 ```
+
+## Corrigir a pasta atual no Windows
+
+Se você copiar estes arquivos sobre a pasta que apresentou o erro de PostCSS, execute `CORRIGIR_E_INICIAR.bat`. Ele:
+
+1. confirma que está dentro do projeto `bipador-aparelhos`;
+2. remove somente os arquivos estranhos que foram misturados ao Vite;
+3. reinstala as dependências;
+4. inicia o sistema.
+
+O script não remove a pasta `.git`, portanto o histórico do repositório é preservado.
+
+## Planilha de teste
+
+Use `exemplos/modelo-controle-imeis.csv`. Também são aceitos arquivos `.csv` e `.xlsx`; a coluna de IMEI pode aparecer como `IMEI`, `IMEI 1`, `IMEI1`, `Serial` ou `Número de série`.
+
+## Dados desta primeira etapa
+
+As conferências ficam salvas no navegador do aparelho por meio de armazenamento local. A integração com o estoque central pode ser adicionada posteriormente sem reconstruir a interface.
+
+## Câmera
+
+O leitor por câmera precisa de permissão do navegador. Fora do computador local, a página deve ser publicada em HTTPS.
+
+Na tela **Bipar aparelhos → Usar câmera**, o sistema permite:
+
+- escolher qualquer câmera informada pelo celular ou computador;
+- alternar rapidamente entre as câmeras;
+- memorizar a câmera escolhida para o próximo acesso;
+- priorizar automaticamente a câmera traseira/principal;
+- usar os modos **Normal** e **Código pequeno**;
+- analisar simultaneamente o quadro completo e um recorte central de precisão;
+- manter foco, exposição e balanço de branco contínuos quando suportados;
+- controlar lanterna e zoom nos aparelhos compatíveis;
+- mostrar em tempo real que o decodificador está analisando a imagem;
+- emitir bip, vibração e flash visual assim que um código for reconhecido;
+- testar o retorno do aparelho pelo botão **Testar bip e vibração**;
+- mostrar abaixo da câmera o último código realmente decodificado, inclusive quando for ignorado;
+- extrair números de 15 dígitos e compará-los diretamente com o controle importado;
+- ignorar EANs e outros códigos que não contenham IMEI;
+- bloquear leituras repetidas causadas pelo mesmo código parado diante da câmera.
+
+Se os nomes das câmeras não aparecerem inicialmente, pressione **Iniciar câmera** e aceite a permissão. Os nomes serão atualizados após a autorização.
+
+A vibração depende do suporte oferecido pelo aparelho e pelo navegador. Quando ela não estiver disponível, o bip e o flash colorido continuam confirmando a leitura.
+
+### Como confirmar que está lendo
+
+1. O indicador **Leitor analisando a imagem** deve mostrar a resolução e aumentar o número de quadros analisados.
+2. Assim que qualquer etiqueta for decodificada, o conteúdo aparece em **Último código capturado pela câmera**.
+3. Um IMEI de 15 dígitos é comparado com a planilha. EAN ou outro código aparece como **Ignorado**, sem ficar invisível.
+
+Se os quadros aumentarem, mas nenhum código aparecer, troque para **Código pequeno**, mantenha a etiqueta reta, use boa iluminação e selecione a câmera traseira principal.
+
+## Aplicativo no celular
+
+O projeto é um PWA instalável. Depois de publicado em HTTPS, use o botão **Instalar app** no cabeçalho:
+
+- no Android/Chrome, o navegador abre a instalação diretamente quando disponível;
+- no iPhone/Safari, siga **Compartilhar → Adicionar à Tela de Início**;
+- quando o navegador não libera a instalação automática, o sistema mostra as instruções adequadas.
+
+A versão mobile possui navegação inferior, botões maiores para toque, campos preparados para iPhone/Android e câmera dimensionada para a tela do aparelho. Os relatórios continuam disponíveis em **Baixar**, com exportação da conciliação e do log de bipagens em CSV.

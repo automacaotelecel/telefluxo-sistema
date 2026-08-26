@@ -4,7 +4,6 @@ generator client {
 
 datasource db {
   provider = "sqlite"
-  // Troque url = "file:./dev.db" por:
   url      = env("DATABASE_URL")
 }
 
@@ -33,7 +32,8 @@ model Notification {
   text      String
   read      Boolean  @default(false)
   createdAt DateTime @default(now())
-  User      User     @relation(fields: [userId], references: [id])
+
+  User User @relation(fields: [userId], references: [id])
 }
 
 model AgendaEvent {
@@ -42,7 +42,8 @@ model AgendaEvent {
   title     String
   date      String
   completed Boolean @default(false)
-  User      User    @relation(fields: [userId], references: [id])
+
+  User User @relation(fields: [userId], references: [id])
 }
 
 model TaskHistory {
@@ -54,7 +55,8 @@ model TaskHistory {
   taskId   String
   fileUrl  String?
   fileName String?
-  Task     Task    @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  Task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
 }
 
 model Announcement {
@@ -63,7 +65,7 @@ model Announcement {
   content   String
   author    String
   priority  String   @default("Normal")
-  category  String   @default("Aviso") // "Aviso", "Dica" ou "Agenda"
+  category  String   @default("Aviso")
   active    Boolean  @default(true)
   createdAt DateTime @default(now())
 }
@@ -82,8 +84,8 @@ model Finance {
   description String
   category    String
   unit        String
-  payer       String? // <--- O campo novo continua aqui
-  value       Float // <--- VOLTAMOS PARA FLOAT (Para não dar erro)
+  payer       String?
+  value       Float
   issueDate   DateTime
   dueDate     DateTime
   status      String   @default("PENDENTE")
@@ -93,7 +95,7 @@ model Finance {
   totalInstallments  Int     @default(1)
   currentInstallment Int     @default(1)
   groupId            String?
-  type               String  @default("EXPENSE") // Vai ser 'EXPENSE' ou 'INCOME'
+  type               String  @default("EXPENSE")
 
   createdAt DateTime @default(now())
 }
@@ -122,44 +124,46 @@ model Stock {
 }
 
 model User {
-  id            String         @id @default(uuid())
+  id            String  @id @default(uuid())
   name          String
-  email         String         @unique
+  email         String  @unique
   password      String
-  role          String // CEO, DIRETOR, ADM, LOJA
+  role          String
   department    String
-  allowedStores String? // NOVO: "Loja A, Loja B" (Pode ser nulo para ADM/CEO)
-  isAdmin       Boolean        @default(false)
-  status        String         @default("active")
+  allowedStores String?
+  isAdmin       Boolean @default(false)
+  status        String  @default("active")
   managerId     String?
   operation     String?
-  AgendaEvent   AgendaEvent[]
-  Notification  Notification[]
-  manager       User?          @relation("ManagerStaff", fields: [managerId], references: [id])
-  staff         User[]         @relation("ManagerStaff")
+
+  AgendaEvent  AgendaEvent[]
+  Notification Notification[]
+
+  manager User?  @relation("ManagerStaff", fields: [managerId], references: [id])
+  staff   User[] @relation("ManagerStaff")
 }
 
 model PriceTable {
   id       String @id @default(uuid())
-  category String // Ex: "Aparelhos"
+  category String
 
   // Dados Principais (Tela)
-  vigencia String? // Coluna A
-  model    String // Coluna B
-  price    String // Coluna J (Preço Final)
+  vigencia String?
+  model    String
+  price    String
 
   // Dados Complementares (Subtela)
-  reference   String? // Coluna C
-  priceSSG    String? // Coluna D
-  descTelecel String? // Coluna E
-  rebate      String? // Coluna F
-  tradeIn     String? // Coluna G
-  bogo        String? // Coluna H
-  sip         String? // Coluna I
-  price18x    String? // Coluna K
+  reference   String?
+  priceSSG    String?
+  descTelecel String?
+  rebate      String?
+  tradeIn     String?
+  bogo        String?
+  sip         String?
+  price18x    String?
 
   // Controle
-  columnM   String? // Validador (Sim/Não)
+  columnM   String?
   highlight Boolean  @default(false)
   updatedAt DateTime @default(now())
 }
@@ -200,7 +204,7 @@ model RhCollaborator {
 }
 
 model RhDocument {
-  id             String         @id @default(uuid())
+  id             String   @id @default(uuid())
   collaboratorId String
   documentType   String
   fileName       String
@@ -211,11 +215,74 @@ model RhDocument {
   sizeBytes      Int?
   uploadedById   String?
   uploadedByName String?
-  uploadedAt     DateTime       @default(now())
-  status         String         @default("VALIDADO")
-  collaborator   RhCollaborator @relation(fields: [collaboratorId], references: [id], onDelete: Cascade)
+  uploadedAt     DateTime @default(now())
+  status         String   @default("VALIDADO")
+
+  collaborator RhCollaborator @relation(fields: [collaboratorId], references: [id], onDelete: Cascade)
 
   @@unique([collaboratorId, documentType])
   @@index([documentType])
   @@index([uploadedAt])
+}
+
+// ============================================================
+// BIPADOR DE APARELHOS / AUDITORIA DE ESTOQUE
+// ============================================================
+
+model InventoryAuditSession {
+  id              String    @id @default(uuid())
+  userId          String
+  operatorName    String
+  storeName       String
+  status          String    @default("ACTIVE")
+  expectedCount   Int       @default(0)
+  sourceUpdatedAt DateTime?
+  startedAt       DateTime  @default(now())
+  completedAt     DateTime?
+  updatedAt       DateTime  @updatedAt
+
+  expectedItems InventoryAuditExpectedItem[]
+  scans         InventoryAuditScan[]
+
+  @@index([userId, storeName, status])
+  @@index([storeName, startedAt])
+}
+
+model InventoryAuditExpectedItem {
+  id          String    @id @default(uuid())
+  sessionId   String
+  stockId     String?
+  imei        String
+  productCode String
+  reference   String
+  description String
+  category    String
+  checkedAt   DateTime?
+  createdAt   DateTime  @default(now())
+
+  session InventoryAuditSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, imei])
+  @@index([sessionId, checkedAt])
+  @@index([imei])
+}
+
+model InventoryAuditScan {
+  id          String   @id @default(uuid())
+  sessionId   String
+  imei        String
+  rawValue    String
+  result      String
+  source      String   @default("MANUAL")
+  productCode String?
+  reference   String?
+  description String?
+  foundStore  String?
+  createdAt   DateTime @default(now())
+
+  session InventoryAuditSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, createdAt])
+  @@index([sessionId, result])
+  @@index([imei])
 }

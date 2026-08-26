@@ -48,8 +48,79 @@ async function ensureColumn(tableName, columnName, definition) {
   return true;
 }
 
+
+async function ensureInventoryAuditTables() {
+  await prisma.$executeRawUnsafe(`
+    CREATE TABLE IF NOT EXISTS "InventoryAuditSession" (
+      "id" TEXT NOT NULL PRIMARY KEY,
+      "userId" TEXT NOT NULL,
+      "operatorName" TEXT NOT NULL,
+      "storeName" TEXT NOT NULL,
+      "status" TEXT NOT NULL DEFAULT 'ACTIVE',
+      "expectedCount" INTEGER NOT NULL DEFAULT 0,
+      "sourceUpdatedAt" DATETIME,
+      "startedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      "completedAt" DATETIME,
+      "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  await prisma.$executeRawUnsafe(`
+    CREATE TABLE IF NOT EXISTS "InventoryAuditExpectedItem" (
+      "id" TEXT NOT NULL PRIMARY KEY,
+      "sessionId" TEXT NOT NULL,
+      "stockId" TEXT,
+      "imei" TEXT NOT NULL,
+      "productCode" TEXT NOT NULL,
+      "reference" TEXT NOT NULL,
+      "description" TEXT NOT NULL,
+      "category" TEXT NOT NULL,
+      "checkedAt" DATETIME,
+      "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      CONSTRAINT "InventoryAuditExpectedItem_sessionId_fkey"
+        FOREIGN KEY ("sessionId") REFERENCES "InventoryAuditSession" ("id")
+        ON DELETE CASCADE ON UPDATE CASCADE
+    )
+  `);
+
+  await prisma.$executeRawUnsafe(`
+    CREATE TABLE IF NOT EXISTS "InventoryAuditScan" (
+      "id" TEXT NOT NULL PRIMARY KEY,
+      "sessionId" TEXT NOT NULL,
+      "imei" TEXT NOT NULL,
+      "rawValue" TEXT NOT NULL,
+      "result" TEXT NOT NULL,
+      "source" TEXT NOT NULL DEFAULT 'MANUAL',
+      "productCode" TEXT,
+      "reference" TEXT,
+      "description" TEXT,
+      "foundStore" TEXT,
+      "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      CONSTRAINT "InventoryAuditScan_sessionId_fkey"
+        FOREIGN KEY ("sessionId") REFERENCES "InventoryAuditSession" ("id")
+        ON DELETE CASCADE ON UPDATE CASCADE
+    )
+  `);
+
+  const statements = [
+    'CREATE INDEX IF NOT EXISTS "InventoryAuditSession_userId_storeName_status_idx" ON "InventoryAuditSession"("userId", "storeName", "status")',
+    'CREATE INDEX IF NOT EXISTS "InventoryAuditSession_storeName_startedAt_idx" ON "InventoryAuditSession"("storeName", "startedAt")',
+    'CREATE UNIQUE INDEX IF NOT EXISTS "InventoryAuditExpectedItem_sessionId_imei_key" ON "InventoryAuditExpectedItem"("sessionId", "imei")',
+    'CREATE INDEX IF NOT EXISTS "InventoryAuditExpectedItem_sessionId_checkedAt_idx" ON "InventoryAuditExpectedItem"("sessionId", "checkedAt")',
+    'CREATE INDEX IF NOT EXISTS "InventoryAuditExpectedItem_imei_idx" ON "InventoryAuditExpectedItem"("imei")',
+    'CREATE INDEX IF NOT EXISTS "InventoryAuditScan_sessionId_createdAt_idx" ON "InventoryAuditScan"("sessionId", "createdAt")',
+    'CREATE INDEX IF NOT EXISTS "InventoryAuditScan_sessionId_result_idx" ON "InventoryAuditScan"("sessionId", "result")',
+    'CREATE INDEX IF NOT EXISTS "InventoryAuditScan_imei_idx" ON "InventoryAuditScan"("imei")',
+  ];
+
+  for (const statement of statements) {
+    await prisma.$executeRawUnsafe(statement);
+  }
+}
+
 async function main() {
   console.log('🔎 Verificando compatibilidade do banco Prisma...');
+  await ensureInventoryAuditTables();
 
   const integrity = await prisma.$queryRawUnsafe('PRAGMA integrity_check');
   const integrityResult = String(integrity?.[0]?.integrity_check || '');
