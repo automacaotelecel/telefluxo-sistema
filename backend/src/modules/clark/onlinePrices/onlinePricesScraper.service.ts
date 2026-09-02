@@ -5,6 +5,9 @@ type DirectLookupStats = {
   httpRequests: number;
   reusedUrl: boolean;
   discoveredUrl: boolean;
+  tavilySearchRequests: number;
+  tavilyExtractRequests: number;
+  tavilyCreditsEstimated: number;
 };
 
 type DirectLookupResponse = {
@@ -19,6 +22,7 @@ type PriceCandidate = {
   termPrice: number | null;
   installmentText: string | null;
   confidence: number;
+  matchText?: string | null;
 };
 
 type JsonFetchResult = {
@@ -496,7 +500,7 @@ function rankCandidates(
     .filter((candidate) => !candidate.url || isAllowedStoreUrl(candidate.url, loja))
     .map((candidate) => ({
       candidate,
-      score: modelMatchScore(modelo, `${candidate.title || ''} ${candidate.url || ''}`),
+      score: modelMatchScore(modelo, candidate.matchText || `${candidate.title || ''} ${candidate.url || ''}`),
     }))
     .filter((item) => item.score >= 0.72)
     .sort((a, b) => {
@@ -668,6 +672,71 @@ function resultFromCandidate(params: {
   };
 }
 
+
+
+function isCompletePriceResult(result: OnlinePriceResult | null): boolean {
+  return !!(
+    result &&
+    result.disponibilidade === 'encontrado' &&
+    result.precoAvistaOnline &&
+    result.precoPrazo12xOnline
+  );
+}
+
+function mergeFoundResults(
+  primary: OnlinePriceResult,
+  secondary: OnlinePriceResult,
+): OnlinePriceResult {
+  if (primary.disponibilidade !== 'encontrado') return secondary;
+  if (secondary.disponibilidade !== 'encontrado') return primary;
+
+  const fontes = Array.from(
+    new Set([primary.fonte, secondary.fonte].filter((value): value is string => !!value)),
+  );
+
+  return {
+    ...primary,
+    precoAvistaOnline: primary.precoAvistaOnline ?? secondary.precoAvistaOnline,
+    precoPrazo12xOnline: primary.precoPrazo12xOnline ?? secondary.precoPrazo12xOnline,
+    parcelasTexto: primary.parcelasTexto || secondary.parcelasTexto,
+    titulo: primary.titulo || secondary.titulo,
+    url: primary.url || secondary.url,
+    fonte: fontes.length > 0 ? fontes.join('+') : null,
+    confianca: Math.max(primary.confianca || 0, secondary.confianca || 0),
+    observacao: null,
+    pesquisadoEm: new Date().toISOString(),
+  };
+}
+
+function resultUnavailableFromCandidate(params: {
+  modelo: string;
+  loja: OnlineStoreTarget;
+  candidate: PriceCandidate;
+  source: string;
+}): OnlinePriceResult {
+  return {
+    modelo: params.modelo,
+    loja: params.loja.nome,
+    dominios: params.loja.dominios,
+    disponibilidade: 'indisponivel',
+    precoAvistaOnline: null,
+    precoPrazo12xOnline: null,
+    parcelasTexto: null,
+    precoAvistaPlanilha: null,
+    precoPrazo12xPlanilha: null,
+    diferencaAvista: null,
+    diferencaAvistaPercentual: null,
+    diferencaPrazo12x: null,
+    diferencaPrazo12xPercentual: null,
+    titulo: params.candidate.title,
+    url: params.candidate.url,
+    fonte: params.source,
+    confianca: Math.max(0, Math.min(100, params.candidate.confidence)),
+    observacao: 'PRODUTO ENCONTRADO, MAS INDISPONÍVEL',
+    pesquisadoEm: new Date().toISOString(),
+  };
+}
+
 async function tryProductPage(params: {
   modelo: string;
   loja: OnlineStoreTarget;
@@ -681,7 +750,30 @@ async function tryProductPage(params: {
 
   const candidates = structuredCandidates(page.html, page.finalUrl || params.url, params.modelo);
   const candidate = choosePricedCandidate(candidates, params.modelo, params.loja);
-  if (!candidate) return { result: null, httpRequests: 1 };
+
+  if (!candidate) {
+    const ranked = rankCandidates(candidates, params.modelo, params.loja);
+    const unavailableCandidate = ranked[0] || null;
+    const pageText = stripHtml(page.html).slice(0, 500_000);
+    if (
+      unavailableCandidate &&
+      detectAvailabilityFromText(pageText) === 'indisponivel'
+    ) {
+      return {
+        result: resultUnavailableFromCandidate({
+          modelo: params.modelo,
+          loja: params.loja,
+          candidate: {
+            ...unavailableCandidate,
+            url: unavailableCandidate.url || page.finalUrl || params.url,
+          },
+          source: params.source,
+        }),
+        httpRequests: 1,
+      };
+    }
+    return { result: null, httpRequests: 1 };
+  }
 
   const normalizedCandidate: PriceCandidate = {
     ...candidate,
@@ -832,6 +924,9 @@ async function pesquisarMercadoLivreApi(params: {
 
   const candidates: PriceCandidate[] = [];
   for (const item of items) {
+    const condition = String(item?.condition || '').trim().toLowerCase();
+    if (condition && condition !== 'new') continue;
+
     const title = String(item?.title || '').trim();
     const url = String(item?.permalink || '').trim() || null;
     const score = modelMatchScore(params.modelo, title);
@@ -904,6 +999,8 @@ function isUndesiredCondition(title: string, content: string, url: string): bool
     'AVARIADO',
     'OPEN BOX',
     'CAIXA ABERTA',
+    'RENOVADO',
+    'REFURBISHED',
   ];
 
   if (strongTerms.some((term) => strongText.includes(normalizeProductText(term)))) return true;
@@ -917,11 +1014,129 @@ function isUndesiredCondition(title: string, content: string, url: string): bool
     'PRODUTO RECONDICIONADO',
     'COM AVARIA',
     'TRINCO NA TELA',
+    'PRODUTO RENOVADO',
+    'PRODUTO REFURBISHED',
   ];
 
   return explicitContentTerms.some((term) =>
     contentText.includes(normalizeProductText(term)),
   );
+}
+
+
+function detectAvailabilityFromText(value: string): 'disponivel' | 'indisponivel' | null {
+  const text = normalizeProductText(value);
+  if (!text) return null;
+
+  const unavailableTerms = [
+    'INDISPONIVEL',
+    'SEM ESTOQUE',
+    'ESGOTADO',
+    'NAO DISPONIVEL',
+    'PRODUTO INDISPONIVEL',
+    'AVISE ME',
+    'AVISE-ME',
+    'FORA DE ESTOQUE',
+    'OUT OF STOCK',
+  ];
+  if (unavailableTerms.some((term) => text.includes(normalizeProductText(term)))) {
+    return 'indisponivel';
+  }
+
+  const availableTerms = ['DISPONIVEL', 'EM ESTOQUE', 'ESTOQUE DISPONIVEL', 'COMPRAR AGORA'];
+  if (availableTerms.some((term) => text.includes(normalizeProductText(term)))) {
+    return 'disponivel';
+  }
+
+  return null;
+}
+
+function getTavilyDomains(loja: OnlineStoreTarget): string[] {
+  const domains = new Set(loja.dominios.map(normalizeDomain).filter(Boolean));
+  const store = getStoreKey(loja);
+
+  if (store.includes('MERCADO LIVRE')) {
+    domains.add('mercadolivre.com.br');
+    domains.add('www.mercadolivre.com.br');
+    domains.add('produto.mercadolivre.com.br');
+    domains.add('lista.mercadolivre.com.br');
+  }
+  if (store.includes('CARREFOUR')) {
+    domains.add('carrefour.com.br');
+    domains.add('www.carrefour.com.br');
+  }
+  if (store.includes('MAGALU') || store.includes('MAGAZINE LUIZA')) {
+    domains.add('magazineluiza.com.br');
+    domains.add('www.magazineluiza.com.br');
+    domains.add('magalu.com.br');
+  }
+  if (store.includes('FAST SHOP') || store.includes('FASTSHOP')) {
+    domains.add('fastshop.com.br');
+    domains.add('www.fastshop.com.br');
+    domains.add('site.fastshop.com.br');
+  }
+  if (store.includes('AMAZON')) {
+    domains.add('amazon.com.br');
+    domains.add('www.amazon.com.br');
+  }
+  if (store.includes('SAMSUNG')) {
+    domains.add('samsung.com.br');
+    domains.add('www.samsung.com.br');
+    domains.add('shop.samsung.com.br');
+  }
+
+  return Array.from(domains);
+}
+
+function samsungReferenceHint(modelo: string): string | null {
+  const normalized = normalizeProductText(modelo);
+  const family = normalizeProductText(getBaseModelFamily(normalized) || '');
+  const network = extractNetwork(normalized);
+
+  if (family === 'GALAXY A06') return network === '5G' ? 'SM-A066' : 'SM-A065';
+  if (family === 'GALAXY S26 ULTRA') return 'SM-S948';
+  if (family === 'GALAXY S26') return 'SM-S942';
+  return null;
+}
+
+function buildTavilyQueryVariants(modelo: string, loja: OnlineStoreTarget): string[] {
+  const normalized = normalizeProductText(modelo);
+  const family = normalizeProductText(getBaseModelFamily(normalized) || modelo);
+  const storage = normalizeProductText(extractStorage(normalized) || '');
+  const network = extractNetwork(normalized);
+  const store = getStoreKey(loja);
+  const isGalaxyAmf = /^GALAXY [AMF]\d{2}$/.test(family);
+  const effectiveNetwork = network || (isGalaxyAmf ? '4G' : null);
+
+  const canonicalParts = ['Samsung', family, storage, effectiveNetwork].filter(Boolean);
+  const canonical = canonicalParts.join(' ').replace(/\s+/g, ' ').trim();
+  const queries = new Set<string>();
+
+  queries.add(canonical || `Samsung ${modelo.trim()}`);
+
+  if (store.includes('MERCADO LIVRE')) queries.add(`${canonical} novo`);
+  if (store.includes('CARREFOUR')) queries.add(`${canonical} smartphone`);
+  if (store.includes('MAGALU') || store.includes('MAGAZINE LUIZA')) {
+    queries.add(`${canonical} 4GB RAM`);
+    queries.add(`${family} ${storage} Samsung`);
+  }
+  if (store.includes('FAST SHOP') || store.includes('FASTSHOP')) {
+    queries.add(`${canonical} smartphone Samsung`);
+    queries.add(`${family} ${storage} Samsung`);
+  }
+  if (store.includes('AMAZON')) {
+    queries.add(`${canonical} novo smartphone`);
+    queries.add(`${family} ${storage} Samsung novo`);
+  }
+  if (store.includes('SAMSUNG')) {
+    const ref = samsungReferenceHint(modelo);
+    if (ref) queries.add(`${canonical} ${ref}`);
+    queries.add(`${family} ${storage}`);
+  }
+
+  return Array.from(queries)
+    .map((query) => query.replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
 }
 
 function isLikelyProductDetailUrl(url: string, loja: OnlineStoreTarget): boolean {
@@ -941,7 +1156,7 @@ function isLikelyProductDetailUrl(url: string, loja: OnlineStoreTarget): boolean
   }
 
   if (store.includes('MAGALU') || store.includes('MAGAZINE LUIZA')) {
-    return /\/p\/[a-z0-9]+/i.test(lower) || lower.includes('/produto/');
+    return /\/p(?:\/|\?|#|$)/i.test(lower) || lower.includes('/produto/');
   }
 
   if (store.includes('AMAZON')) {
@@ -949,11 +1164,11 @@ function isLikelyProductDetailUrl(url: string, loja: OnlineStoreTarget): boolean
   }
 
   if (store.includes('FAST SHOP') || store.includes('FASTSHOP')) {
-    return lower.includes('/p/') || lower.includes('/produto/');
+    return /\/p(?:\/|\?|#|$)/i.test(lower) || lower.includes('/produto/');
   }
 
   if (store.includes('SAMSUNG')) {
-    return lower.includes('/p/') || lower.includes('/smartphones/');
+    return /\/p(?:\/|\?|#|$)/i.test(lower) || lower.includes('/smartphones/');
   }
 
   return true;
@@ -1109,164 +1324,209 @@ async function pesquisarTavily(params: {
   result: OnlinePriceResult | null;
   httpRequests: number;
   discoveredUrl: boolean;
+  searchRequests: number;
+  extractRequests: number;
+  creditsEstimated: number;
 }> {
   const apiKey = String(process.env.TAVILY_API_KEY || '').trim();
+  const empty = {
+    result: null as OnlinePriceResult | null,
+    httpRequests: 0,
+    discoveredUrl: false,
+    searchRequests: 0,
+    extractRequests: 0,
+    creditsEstimated: 0,
+  };
 
-  if (!isTavilyEnabled() || !apiKey) {
-    return { result: null, httpRequests: 0, discoveredUrl: false };
-  }
+  if (!isTavilyEnabled() || !apiKey) return empty;
 
-  const domains = Array.from(
-    new Set(params.loja.dominios.map(normalizeDomain).filter(Boolean)),
+  const domains = getTavilyDomains(params.loja);
+  if (domains.length === 0) return empty;
+
+  const queries = buildTavilyQueryVariants(params.modelo, params.loja);
+  const maxAttempts = Math.max(
+    1,
+    Math.min(3, envNumber('ONLINE_PRICES_TAVILY_MAX_SEARCH_ATTEMPTS', 2)),
   );
-
-  if (domains.length === 0) {
-    return { result: null, httpRequests: 0, discoveredUrl: false };
-  }
-
-  const normalizedModel = normalizeProductText(params.modelo);
-  const query = normalizedModel.includes('SAMSUNG')
-    ? params.modelo.trim()
-    : `Samsung ${params.modelo.trim()}`;
-
-  const controller = new AbortController();
   const timeoutMs = Math.max(
     3000,
     envNumber('ONLINE_PRICES_TAVILY_TIMEOUT_MS', 12000),
   );
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-  let payload: any = null;
-
-  try {
-    const response = await fetch('https://api.tavily.com/search', {
-      method: 'POST',
-      signal: controller.signal,
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-      },
-      body: JSON.stringify({
-        query,
-        topic: 'general',
-        search_depth: 'basic',
-        max_results: getTavilyMaxResults(),
-        include_answer: false,
-        include_raw_content: false,
-        include_images: false,
-        include_favicon: false,
-        include_domains: domains,
-        country: 'brazil',
-        language: 'pt',
-        filter_by_language: false,
-        auto_parameters: false,
-        exact_match: false,
-        include_usage: true,
-        safe_search: false,
-      }),
-    });
-
-    payload = await response.json().catch(() => null);
-
-    if (!response.ok) {
-      console.warn(
-        `[Preços Online][Tavily] Busca falhou para ${params.modelo} / ${params.loja.nome}: HTTP ${response.status}`,
-      );
-      return { result: null, httpRequests: 1, discoveredUrl: false };
-    }
-  } catch (error: any) {
-    console.warn(
-      `[Preços Online][Tavily] Erro para ${params.modelo} / ${params.loja.nome}: ${String(error?.message || error)}`,
-    );
-    return { result: null, httpRequests: 1, discoveredUrl: false };
-  } finally {
-    clearTimeout(timer);
-  }
-
-  const items: TavilySearchItem[] = Array.isArray(payload?.results)
-    ? payload.results
-    : [];
-
-  if (items.length === 0) {
-    return { result: null, httpRequests: 1, discoveredUrl: false };
-  }
+  let httpRequests = 0;
+  let searchRequests = 0;
+  let extractRequests = 0;
+  const collected = new Map<string, TavilySearchItem>();
 
   type RankedTavily = {
     candidate: PriceCandidate;
     matchScore: number;
     tavilyScore: number;
     detailUrl: boolean;
+    availability: 'disponivel' | 'indisponivel' | null;
   };
 
-  const ranked: RankedTavily[] = [];
+  const buildRanked = (): RankedTavily[] => {
+    const ranked: RankedTavily[] = [];
 
-  for (const item of items) {
-    const url = String(item?.url || '').trim();
-    const title = String(item?.title || '').trim();
-    const content = String(item?.content || '').trim();
+    for (const item of collected.values()) {
+      const url = String(item?.url || '').trim();
+      const title = String(item?.title || '').trim();
+      const content = String(item?.content || '').trim();
 
-    if (!url || !isAllowedStoreUrl(url, params.loja)) continue;
-    if (isUndesiredCondition(title, content, url)) continue;
+      if (!url || !isAllowedStoreUrl(url, params.loja)) continue;
+      if (isUndesiredCondition(title, content, url)) continue;
 
-    const combined = `${title} ${content} ${url}`;
-    const matchScore = modelMatchScore(params.modelo, combined);
-    if (matchScore < 0.72) continue;
+      const combined = `${title} ${content} ${url}`;
+      const matchScore = modelMatchScore(params.modelo, combined);
+      if (matchScore < 0.72) continue;
 
-    const prices = extractPriceSignalsFromText(
-      params.modelo,
-      `${title}. ${content}`,
-    );
-    const tavilyScore = Number(item?.score || 0);
-    const detailUrl = isLikelyProductDetailUrl(url, params.loja);
+      const prices = extractPriceSignalsFromText(
+        params.modelo,
+        `${title}. ${content}`,
+      );
+      const tavilyScore = Number(item?.score || 0);
+      const detailUrl = isLikelyProductDetailUrl(url, params.loja);
 
-    ranked.push({
-      matchScore,
-      tavilyScore,
-      detailUrl,
-      candidate: {
-        title: title || null,
-        url,
-        price: prices.cash,
-        termPrice: prices.termTotal,
-        installmentText: prices.installmentText,
-        confidence: Math.round(
-          Math.min(
-            98,
-            72 +
-              matchScore * 17 +
-              Math.max(0, Math.min(1, tavilyScore)) * 6 +
-              (detailUrl ? 3 : 0),
+      ranked.push({
+        matchScore,
+        tavilyScore,
+        detailUrl,
+        availability: detectAvailabilityFromText(`${title} ${content}`),
+        candidate: {
+          title: title || null,
+          url,
+          price: prices.cash,
+          termPrice: prices.termTotal,
+          installmentText: prices.installmentText,
+          matchText: combined,
+          confidence: Math.round(
+            Math.min(
+              99,
+              72 +
+                matchScore * 17 +
+                Math.max(0, Math.min(1, tavilyScore)) * 6 +
+                (detailUrl ? 4 : 0),
+            ),
           ),
-        ),
-      },
+        },
+      });
+    }
+
+    ranked.sort((a, b) => {
+      if (a.detailUrl !== b.detailUrl) return a.detailUrl ? -1 : 1;
+
+      const aHasPrice = a.candidate.price || a.candidate.termPrice ? 1 : 0;
+      const bHasPrice = b.candidate.price || b.candidate.termPrice ? 1 : 0;
+      if (aHasPrice !== bHasPrice) return bHasPrice - aHasPrice;
+
+      if (a.matchScore !== b.matchScore) return b.matchScore - a.matchScore;
+      return b.tavilyScore - a.tavilyScore;
     });
+
+    return ranked;
+  };
+
+  for (const query of queries.slice(0, maxAttempts)) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const response = await fetch('https://api.tavily.com/search', {
+        method: 'POST',
+        signal: controller.signal,
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({
+          query,
+          topic: 'general',
+          search_depth: 'basic',
+          max_results: getTavilyMaxResults(),
+          include_answer: false,
+          include_raw_content: false,
+          include_images: false,
+          include_favicon: false,
+          include_domains: domains,
+          country: 'brazil',
+          language: 'pt',
+          filter_by_language: false,
+          auto_parameters: false,
+          exact_match: false,
+          include_usage: true,
+          safe_search: false,
+        }),
+      });
+
+      httpRequests += 1;
+      searchRequests += 1;
+      const payload: any = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        console.warn(
+          `[Preços Online][Tavily] Busca falhou para ${params.modelo} / ${params.loja.nome}: HTTP ${response.status}`,
+        );
+        continue;
+      }
+
+      const items: TavilySearchItem[] = Array.isArray(payload?.results)
+        ? payload.results
+        : [];
+
+      for (const item of items) {
+        const url = String(item?.url || '').trim();
+        if (!url || !isAllowedStoreUrl(url, params.loja)) continue;
+
+        const existing = collected.get(url);
+        if (!existing || Number(item?.score || 0) > Number(existing?.score || 0)) {
+          collected.set(url, item);
+        }
+      }
+
+      const currentRanked = buildRanked();
+      const detailCount = currentRanked.filter((entry) => entry.detailUrl).length;
+      console.log(
+        `[Preços Online][Tavily] ${params.loja.nome} / ${params.modelo}: query="${query}" resultados=${items.length} validos=${currentRanked.length} detalhe=${detailCount}`,
+      );
+
+      // Se já descobrimos uma página de produto compatível, não gastamos outro crédito de Search.
+      if (detailCount > 0) break;
+    } catch (error: any) {
+      httpRequests += 1;
+      searchRequests += 1;
+      console.warn(
+        `[Preços Online][Tavily] Erro para ${params.modelo} / ${params.loja.nome}: ${String(error?.message || error)}`,
+      );
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
+  const ranked = buildRanked();
   if (ranked.length === 0) {
-    return { result: null, httpRequests: 1, discoveredUrl: false };
+    return {
+      ...empty,
+      httpRequests,
+      searchRequests,
+      creditsEstimated: searchRequests,
+    };
   }
 
-  ranked.sort((a, b) => {
-    if (a.detailUrl !== b.detailUrl) return a.detailUrl ? -1 : 1;
-
-    const aHasPrice = a.candidate.price || a.candidate.termPrice ? 1 : 0;
-    const bHasPrice = b.candidate.price || b.candidate.termPrice ? 1 : 0;
-    if (aHasPrice !== bHasPrice) return bHasPrice - aHasPrice;
-
-    if (a.matchScore !== b.matchScore) return b.matchScore - a.matchScore;
-    return b.tavilyScore - a.tavilyScore;
-  });
-
-  let httpRequests = 1;
   const discoveredUrl = ranked.some((item) => !!item.candidate.url);
-
+  const detailRanked = ranked.filter((item) => item.detailUrl);
   const maxPages = Math.max(
     1,
     Math.min(5, envNumber('ONLINE_PRICES_TAVILY_MAX_PRODUCT_PAGES', 3)),
   );
 
-  for (const entry of ranked.filter((item) => item.detailUrl).slice(0, maxPages)) {
+  // Primeiro tentamos abrir a URL encontrada. Quando a loja permite GET normal,
+  // isso evita consumir crédito adicional de Extract. Se vier só um dos preços,
+  // guardamos o parcial e usamos o Extract apenas para completar o que faltou.
+  let tavilyPartialResult: OnlinePriceResult | null = null;
+
+  for (const entry of detailRanked.slice(0, maxPages)) {
     const url = entry.candidate.url;
     if (!url) continue;
 
@@ -1278,19 +1538,40 @@ async function pesquisarTavily(params: {
     });
 
     httpRequests += productAttempt.httpRequests;
-
     if (productAttempt.result) {
-      return {
-        result: productAttempt.result,
-        httpRequests,
-        discoveredUrl: true,
-      };
+      if (productAttempt.result.disponibilidade !== 'encontrado') {
+        return {
+          result: productAttempt.result,
+          httpRequests,
+          discoveredUrl: true,
+          searchRequests,
+          extractRequests,
+          creditsEstimated: searchRequests + extractRequests,
+        };
+      }
+
+      tavilyPartialResult = tavilyPartialResult
+        ? mergeFoundResults(tavilyPartialResult, productAttempt.result)
+        : productAttempt.result;
+
+      if (isCompletePriceResult(tavilyPartialResult)) {
+        return {
+          result: tavilyPartialResult,
+          httpRequests,
+          discoveredUrl: true,
+          searchRequests,
+          extractRequests,
+          creditsEstimated: searchRequests + extractRequests,
+        };
+      }
     }
   }
 
   if (envBoolean('ONLINE_PRICES_TAVILY_EXTRACT_ENABLED', true)) {
-    const extractUrls = ranked
-      .filter((item) => item.detailUrl)
+    // Damos prioridade absoluta a páginas de produto. Só usamos uma listagem quando
+    // a Tavily não conseguiu descobrir nenhuma URL de detalhe.
+    const sourceForExtract = detailRanked.length > 0 ? detailRanked : ranked.slice(0, 1);
+    const extractUrls = sourceForExtract
       .map((item) => item.candidate.url)
       .filter((url): url is string => !!url)
       .slice(
@@ -1323,7 +1604,7 @@ async function pesquisarTavily(params: {
           },
           body: JSON.stringify({
             urls: extractUrls,
-            query: `${params.modelo} preço atual à vista pix parcelamento 12x disponibilidade`,
+            query: `${params.modelo} preço atual à vista pix parcelamento 12x disponibilidade estoque`,
             chunks_per_source: 5,
             extract_depth: 'basic',
             include_images: false,
@@ -1334,57 +1615,52 @@ async function pesquisarTavily(params: {
         });
 
         httpRequests += 1;
-
+        extractRequests += 1;
         const extractPayload = await extractResponse.json().catch(() => null);
 
         if (extractResponse.ok) {
           const extractedResults = Array.isArray(extractPayload?.results)
             ? extractPayload.results
             : [];
-
           const extractedCandidates: PriceCandidate[] = [];
+          const unavailableCandidates: PriceCandidate[] = [];
 
           for (const extracted of extractedResults) {
             const url = String(extracted?.url || '').trim();
             const rawContent = String(extracted?.raw_content || '').trim();
-
-            if (!url || !rawContent || !isAllowedStoreUrl(url, params.loja)) {
-              continue;
-            }
+            if (!url || !rawContent || !isAllowedStoreUrl(url, params.loja)) continue;
 
             const base = ranked.find(
               (entry) => String(entry.candidate.url || '') === url,
             );
-
             const title = base?.candidate.title || null;
-            if (
-              isUndesiredCondition(
-                String(title || ''),
-                rawContent,
-                url,
-              )
-            ) {
-              continue;
-            }
+            const matchText = `${title || ''} ${rawContent} ${url}`;
+
+            if (isUndesiredCondition(String(title || ''), rawContent, url)) continue;
+            if (modelMatchScore(params.modelo, matchText) < 0.72) continue;
 
             const prices = extractPriceSignalsFromText(
               params.modelo,
               `${title || ''}. ${rawContent}`,
             );
-
-            if (!prices.cash && !prices.termTotal) continue;
-
-            extractedCandidates.push({
+            const candidate: PriceCandidate = {
               title,
               url,
               price: prices.cash,
               termPrice: prices.termTotal,
               installmentText: prices.installmentText,
+              matchText,
               confidence: Math.min(
                 99,
-                Math.max(88, (base?.candidate.confidence || 85) + 3),
+                Math.max(90, (base?.candidate.confidence || 86) + 3),
               ),
-            });
+            };
+
+            if (prices.cash || prices.termTotal) {
+              extractedCandidates.push(candidate);
+            } else if (detectAvailabilityFromText(rawContent) === 'indisponivel') {
+              unavailableCandidates.push(candidate);
+            }
           }
 
           const extractedCandidate = choosePricedCandidate(
@@ -1402,12 +1678,39 @@ async function pesquisarTavily(params: {
             });
 
             if (result) {
+              const merged = tavilyPartialResult
+                ? mergeFoundResults(tavilyPartialResult, result)
+                : result;
               return {
-                result,
+                result: merged,
                 httpRequests,
                 discoveredUrl: true,
+                searchRequests,
+                extractRequests,
+                creditsEstimated: searchRequests + extractRequests,
               };
             }
+          }
+
+          const unavailableCandidate = rankCandidates(
+            unavailableCandidates,
+            params.modelo,
+            params.loja,
+          )[0];
+          if (unavailableCandidate) {
+            return {
+              result: resultUnavailableFromCandidate({
+                modelo: params.modelo,
+                loja: params.loja,
+                candidate: unavailableCandidate,
+                source: 'tavily_extract_status',
+              }),
+              httpRequests,
+              discoveredUrl: true,
+              searchRequests,
+              extractRequests,
+              creditsEstimated: searchRequests + extractRequests,
+            };
           }
         } else {
           console.warn(
@@ -1416,6 +1719,7 @@ async function pesquisarTavily(params: {
         }
       } catch (error: any) {
         httpRequests += 1;
+        extractRequests += 1;
         console.warn(
           `[Preços Online][Tavily Extract] Erro para ${params.modelo} / ${params.loja.nome}: ${String(error?.message || error)}`,
         );
@@ -1425,36 +1729,77 @@ async function pesquisarTavily(params: {
     }
   }
 
-  const priced = ranked
-    .map((item) => item.candidate)
-    .filter((candidate) => candidate.price || candidate.termPrice)
+  // Último fallback sem IA: usamos o snippet da Tavily. Se já existem páginas de
+  // detalhe, nunca preferimos uma página de lista apenas por ela ter preço no snippet.
+  const pricedPool = detailRanked.length > 0 ? detailRanked : ranked;
+  const pricedEntry = pricedPool
+    .filter((item) => item.candidate.price || item.candidate.termPrice)
     .sort((a, b) => {
-      const priceA = a.price ?? a.termPrice ?? Number.MAX_SAFE_INTEGER;
-      const priceB = b.price ?? b.termPrice ?? Number.MAX_SAFE_INTEGER;
+      if (a.matchScore !== b.matchScore) return b.matchScore - a.matchScore;
+      const priceA = a.candidate.price ?? a.candidate.termPrice ?? Number.MAX_SAFE_INTEGER;
+      const priceB = b.candidate.price ?? b.candidate.termPrice ?? Number.MAX_SAFE_INTEGER;
       return priceA - priceB;
     })[0];
 
-  if (priced) {
+  if (pricedEntry) {
     const result = resultFromCandidate({
       modelo: params.modelo,
       loja: params.loja,
-      candidate: priced,
+      candidate: pricedEntry.candidate,
       source: 'tavily_search',
     });
-
     if (result) {
+      const merged = tavilyPartialResult
+        ? mergeFoundResults(tavilyPartialResult, result)
+        : result;
       return {
-        result,
+        result: merged,
         httpRequests,
         discoveredUrl: true,
+        searchRequests,
+        extractRequests,
+        creditsEstimated: searchRequests + extractRequests,
       };
     }
+  }
+
+  if (tavilyPartialResult) {
+    return {
+      result: tavilyPartialResult,
+      httpRequests,
+      discoveredUrl: true,
+      searchRequests,
+      extractRequests,
+      creditsEstimated: searchRequests + extractRequests,
+    };
+  }
+
+  const unavailableEntry = detailRanked.find(
+    (entry) => entry.availability === 'indisponivel',
+  );
+  if (unavailableEntry) {
+    return {
+      result: resultUnavailableFromCandidate({
+        modelo: params.modelo,
+        loja: params.loja,
+        candidate: unavailableEntry.candidate,
+        source: 'tavily_search_status',
+      }),
+      httpRequests,
+      discoveredUrl: true,
+      searchRequests,
+      extractRequests,
+      creditsEstimated: searchRequests + extractRequests,
+    };
   }
 
   return {
     result: null,
     httpRequests,
     discoveredUrl,
+    searchRequests,
+    extractRequests,
+    creditsEstimated: searchRequests + extractRequests,
   };
 }
 
@@ -1572,9 +1917,14 @@ export async function pesquisarPrecoSemIa(params: {
     httpRequests: 0,
     reusedUrl: false,
     discoveredUrl: false,
+    tavilySearchRequests: 0,
+    tavilyExtractRequests: 0,
+    tavilyCreditsEstimated: 0,
   };
 
   if (!params.loja.dominios.length) return { result: null, stats };
+
+  let partialResult: OnlinePriceResult | null = null;
 
   if (params.preferredUrl && isAllowedStoreUrl(params.preferredUrl, params.loja)) {
     const cachedUrlAttempt = await tryProductPage({
@@ -1585,7 +1935,12 @@ export async function pesquisarPrecoSemIa(params: {
     });
     stats.httpRequests += cachedUrlAttempt.httpRequests;
     stats.reusedUrl = cachedUrlAttempt.httpRequests > 0;
-    if (cachedUrlAttempt.result) return { result: cachedUrlAttempt.result, stats };
+    if (cachedUrlAttempt.result) {
+      if (cachedUrlAttempt.result.disponibilidade !== 'encontrado' || isCompletePriceResult(cachedUrlAttempt.result)) {
+        return { result: cachedUrlAttempt.result, stats };
+      }
+      partialResult = cachedUrlAttempt.result;
+    }
   }
 
   const store = getStoreKey(params.loja);
@@ -1596,7 +1951,10 @@ export async function pesquisarPrecoSemIa(params: {
     stats.httpRequests += vtex.httpRequests;
     if (vtex.result) {
       stats.discoveredUrl = !!vtex.result.url;
-      return { result: vtex.result, stats };
+      if (vtex.result.disponibilidade !== 'encontrado' || isCompletePriceResult(vtex.result)) {
+        return { result: vtex.result, stats };
+      }
+      partialResult = partialResult ? mergeFoundResults(partialResult, vtex.result) : vtex.result;
     }
   }
 
@@ -1607,15 +1965,27 @@ export async function pesquisarPrecoSemIa(params: {
     stats.httpRequests += mercadoLivre.httpRequests;
     if (mercadoLivre.result) {
       stats.discoveredUrl = !!mercadoLivre.result.url;
-      return { result: mercadoLivre.result, stats };
+      if (mercadoLivre.result.disponibilidade !== 'encontrado' || isCompletePriceResult(mercadoLivre.result)) {
+        return { result: mercadoLivre.result, stats };
+      }
+      partialResult = partialResult ? mergeFoundResults(partialResult, mercadoLivre.result) : mercadoLivre.result;
     }
   }
 
   // Tavily descobre URLs restritas ao domínio da loja e não consome tokens do Claude.
   const tavily = await pesquisarTavily({ modelo: params.modelo, loja: params.loja });
   stats.httpRequests += tavily.httpRequests;
+  stats.tavilySearchRequests += tavily.searchRequests;
+  stats.tavilyExtractRequests += tavily.extractRequests;
+  stats.tavilyCreditsEstimated += tavily.creditsEstimated;
   stats.discoveredUrl = stats.discoveredUrl || tavily.discoveredUrl;
   if (tavily.result) {
+    if (partialResult && tavily.result.disponibilidade === 'encontrado') {
+      return { result: mergeFoundResults(partialResult, tavily.result), stats };
+    }
+    if (partialResult && tavily.result.disponibilidade !== 'encontrado') {
+      return { result: partialResult, stats };
+    }
     return { result: tavily.result, stats };
   }
 
@@ -1630,13 +2000,24 @@ export async function pesquisarPrecoSemIa(params: {
       source: 'google_cse_http',
     });
     stats.httpRequests += googleProductAttempt.httpRequests;
-    if (googleProductAttempt.result) return { result: googleProductAttempt.result, stats };
+    if (googleProductAttempt.result) {
+      if (partialResult && googleProductAttempt.result.disponibilidade === 'encontrado') {
+        return { result: mergeFoundResults(partialResult, googleProductAttempt.result), stats };
+      }
+      return { result: googleProductAttempt.result, stats };
+    }
   }
 
   const htmlSearch = await pesquisarBuscaHtml({ modelo: params.modelo, loja: params.loja });
   stats.httpRequests += htmlSearch.httpRequests;
   stats.discoveredUrl = stats.discoveredUrl || htmlSearch.discoveredUrl;
-  if (htmlSearch.result) return { result: htmlSearch.result, stats };
+  if (htmlSearch.result) {
+    if (partialResult && htmlSearch.result.disponibilidade === 'encontrado') {
+      return { result: mergeFoundResults(partialResult, htmlSearch.result), stats };
+    }
+    return { result: htmlSearch.result, stats };
+  }
 
+  if (partialResult) return { result: partialResult, stats };
   return { result: null, stats };
 }

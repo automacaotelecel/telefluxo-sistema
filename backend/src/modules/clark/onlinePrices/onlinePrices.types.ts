@@ -83,6 +83,9 @@ export type OnlinePriceAnalysisSummary = {
   fallbacksIa?: number;
   urlsReutilizadas?: number;
   urlsDescobertas?: number;
+  tavilySearchRequests?: number;
+  tavilyExtractRequests?: number;
+  tavilyCreditsEstimated?: number;
 };
 
 export type OnlinePriceAnalyzeOptions = {

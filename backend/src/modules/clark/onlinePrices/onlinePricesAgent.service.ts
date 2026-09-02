@@ -15,7 +15,7 @@ import {
 } from './onlinePrices.types';
 
 const ROOT_DIR = process.cwd();
-const CACHE_SCHEMA_VERSION = 4;
+const CACHE_SCHEMA_VERSION = 5;
 
 function envNumber(name: string, fallback: number): number {
   const parsed = Number(process.env[name]);
@@ -114,6 +114,9 @@ function montarResumo(params: {
   fallbacksIa: number;
   urlsReutilizadas: number;
   urlsDescobertas: number;
+  tavilySearchRequests: number;
+  tavilyExtractRequests: number;
+  tavilyCreditsEstimated: number;
 }): OnlinePriceAnalysisSummary {
   const encontrados = params.results.filter((r) => r.disponibilidade === 'encontrado').length;
   const indisponiveis = params.results.filter((r) => r.disponibilidade === 'indisponivel').length;
@@ -142,6 +145,9 @@ function montarResumo(params: {
     fallbacksIa: params.fallbacksIa,
     urlsReutilizadas: params.urlsReutilizadas,
     urlsDescobertas: params.urlsDescobertas,
+    tavilySearchRequests: params.tavilySearchRequests,
+    tavilyExtractRequests: params.tavilyExtractRequests,
+    tavilyCreditsEstimated: params.tavilyCreditsEstimated,
   };
 }
 
@@ -455,6 +461,9 @@ export async function analisarPrecosOnline(params: OnlinePriceAnalyzeOptions): P
   let fallbacksIa = 0;
   let urlsReutilizadas = 0;
   let urlsDescobertas = 0;
+  let tavilySearchRequests = 0;
+  let tavilyExtractRequests = 0;
+  let tavilyCreditsEstimated = 0;
 
   for (const produto of produtos) {
     const unresolvedForAi: OnlineStoreTarget[] = [];
@@ -501,6 +510,9 @@ export async function analisarPrecosOnline(params: OnlinePriceAnalyzeOptions): P
 
       directResults.forEach(({ loja, planilha, direct }) => {
         httpRequests += direct.stats.httpRequests;
+        tavilySearchRequests += direct.stats.tavilySearchRequests;
+        tavilyExtractRequests += direct.stats.tavilyExtractRequests;
+        tavilyCreditsEstimated += direct.stats.tavilyCreditsEstimated;
         if (direct.stats.reusedUrl) urlsReutilizadas += 1;
         if (direct.stats.discoveredUrl) urlsDescobertas += 1;
 
@@ -536,6 +548,9 @@ export async function analisarPrecosOnline(params: OnlinePriceAnalyzeOptions): P
         finalResult.disponibilidade = 'nao_encontrado';
         finalResult.observacao = 'NÃO ENCONTRADO SEM IA';
         allResults.push(finalResult);
+        if (cacheEnabled) {
+          cacheResult({ cache, modelo: produto.modelo, loja, result: finalResult });
+        }
       });
       continue;
     }
@@ -628,6 +643,9 @@ export async function analisarPrecosOnline(params: OnlinePriceAnalyzeOptions): P
     fallbacksIa,
     urlsReutilizadas,
     urlsDescobertas,
+    tavilySearchRequests,
+    tavilyExtractRequests,
+    tavilyCreditsEstimated,
   });
 
   const report = await gerarRelatorioOnlinePricesExcel({
