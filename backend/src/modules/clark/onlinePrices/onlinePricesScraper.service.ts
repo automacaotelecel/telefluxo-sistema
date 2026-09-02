@@ -743,41 +743,64 @@ async function tryProductPage(params: {
   url: string;
   source: string;
 }): Promise<{ result: OnlinePriceResult | null; httpRequests: number }> {
-  if (!isAllowedStoreUrl(params.url, params.loja)) return { result: null, httpRequests: 0 };
+  const requestedUrl = canonicalizeStoreProductUrl(params.url, params.loja);
+  if (!isAllowedStoreUrl(requestedUrl, params.loja)) {
+    return { result: null, httpRequests: 0 };
+  }
 
-  const page = await fetchHtml(params.url);
+  const page = await fetchHtml(requestedUrl);
   if (!page.html) return { result: null, httpRequests: 1 };
 
-  const candidates = structuredCandidates(page.html, page.finalUrl || params.url, params.modelo);
+  const finalUrl = canonicalizeStoreProductUrl(
+    page.finalUrl || requestedUrl,
+    params.loja,
+  );
+  const pageTitle = pageTitleFromHtml(page.html);
+
+  // Rejeita usado/seminovo/recondicionado também depois de abrir a página.
+  // A busca pode retornar um título incompleto e a condição só aparecer na página real.
+  if (isUndesiredCondition(pageTitle, '', finalUrl)) {
+    return { result: null, httpRequests: 1 };
+  }
+
+  const candidates = structuredCandidates(page.html, finalUrl, params.modelo)
+    .filter((candidate) =>
+      !isUndesiredCondition(
+        candidate.title || '',
+        '',
+        candidate.url || finalUrl,
+      ),
+    );
   const candidate = choosePricedCandidate(candidates, params.modelo, params.loja);
 
   if (!candidate) {
     const ranked = rankCandidates(candidates, params.modelo, params.loja);
     const unavailableCandidate = ranked[0] || null;
-    const pageText = stripHtml(page.html).slice(0, 500_000);
-    if (
-      unavailableCandidate &&
-      detectAvailabilityFromText(pageText) === 'indisponivel'
-    ) {
+    const structuredAvailability = detectStructuredAvailabilityFromHtml(page.html);
+
+    // Só declaramos indisponível quando a própria estrutura do produto informa
+    // OutOfStock/SoldOut. Texto genérico do HTML inteiro gera muitos falsos positivos.
+    if (unavailableCandidate && structuredAvailability === 'indisponivel') {
       return {
         result: resultUnavailableFromCandidate({
           modelo: params.modelo,
           loja: params.loja,
           candidate: {
             ...unavailableCandidate,
-            url: unavailableCandidate.url || page.finalUrl || params.url,
+            url: unavailableCandidate.url || finalUrl,
           },
           source: params.source,
         }),
         httpRequests: 1,
       };
     }
+
     return { result: null, httpRequests: 1 };
   }
 
   const normalizedCandidate: PriceCandidate = {
     ...candidate,
-    url: candidate.url || page.finalUrl || params.url,
+    url: candidate.url || finalUrl,
   };
 
   return {
@@ -1103,40 +1126,112 @@ function buildTavilyQueryVariants(modelo: string, loja: OnlineStoreTarget): stri
   const normalized = normalizeProductText(modelo);
   const family = normalizeProductText(getBaseModelFamily(normalized) || modelo);
   const storage = normalizeProductText(extractStorage(normalized) || '');
-  const network = extractNetwork(normalized);
+  const explicitNetwork = extractNetwork(normalized);
   const store = getStoreKey(loja);
-  const isGalaxyAmf = /^GALAXY [AMF]\d{2}$/.test(family);
-  const effectiveNetwork = network || (isGalaxyAmf ? '4G' : null);
 
-  const canonicalParts = ['Samsung', family, storage, effectiveNetwork].filter(Boolean);
+  // Não inferimos "4G" na primeira consulta. Muitos varejistas anunciam a versão
+  // LTE apenas como "Galaxy A06 128GB". O matcher continua rejeitando 5G quando
+  // a planilha não pediu 5G, então ampliar a consulta não reduz a precisão.
+  const canonicalParts = ['Samsung', family, storage, explicitNetwork].filter(Boolean);
   const canonical = canonicalParts.join(' ').replace(/\s+/g, ' ').trim();
+  const base = canonical || `Samsung ${modelo.trim()}`;
   const queries = new Set<string>();
 
-  queries.add(canonical || `Samsung ${modelo.trim()}`);
+  queries.add(base);
 
-  if (store.includes('MERCADO LIVRE')) queries.add(`${canonical} novo`);
-  if (store.includes('CARREFOUR')) queries.add(`${canonical} smartphone`);
-  if (store.includes('MAGALU') || store.includes('MAGAZINE LUIZA')) {
-    queries.add(`${canonical} 4GB RAM`);
+  if (store.includes('MERCADO LIVRE')) {
+    queries.add(explicitNetwork ? `${base} novo` : `${base} 4G novo`);
+  } else if (store.includes('CARREFOUR')) {
+    queries.add(`${base} smartphone`);
+  } else if (store.includes('MAGALU') || store.includes('MAGAZINE LUIZA')) {
+    queries.add(`${base} 4GB RAM`);
     queries.add(`${family} ${storage} Samsung`);
-  }
-  if (store.includes('FAST SHOP') || store.includes('FASTSHOP')) {
-    queries.add(`${canonical} smartphone Samsung`);
+  } else if (store.includes('FAST SHOP') || store.includes('FASTSHOP')) {
+    queries.add(explicitNetwork ? `${base} smartphone` : `${base} 4G smartphone`);
     queries.add(`${family} ${storage} Samsung`);
-  }
-  if (store.includes('AMAZON')) {
-    queries.add(`${canonical} novo smartphone`);
-    queries.add(`${family} ${storage} Samsung novo`);
-  }
-  if (store.includes('SAMSUNG')) {
+  } else if (store.includes('AMAZON')) {
+    queries.add(`${base} novo`);
+    queries.add(`${family} ${storage} Samsung smartphone novo`);
+  } else if (store.includes('SAMSUNG')) {
     const ref = samsungReferenceHint(modelo);
-    if (ref) queries.add(`${canonical} ${ref}`);
-    queries.add(`${family} ${storage}`);
+    if (ref) queries.add(`${base} ${ref}`);
+    queries.add(`${family} ${storage} preço`);
   }
 
   return Array.from(queries)
     .map((query) => query.replace(/\s+/g, ' ').trim())
     .filter(Boolean);
+}
+
+function canonicalizeStoreProductUrl(url: string, loja: OnlineStoreTarget): string {
+  const raw = String(url || '').trim();
+  if (!raw) return raw;
+
+  const store = getStoreKey(loja);
+  if (!store.includes('SAMSUNG')) return raw;
+
+  try {
+    const parsed = new URL(raw);
+    const routingMatch = parsed.pathname.match(
+      /\/_v\/segment\/routing\/[^/]+\/product\/\d+\/([^/?#]+)\/p/i,
+    );
+    if (routingMatch?.[1]) {
+      return `https://shop.samsung.com.br/${routingMatch[1]}/p`;
+    }
+  } catch (_) {
+    return raw;
+  }
+
+  return raw;
+}
+
+function pageTitleFromHtml(html: string): string {
+  const ogTitle = metaContent(html, 'property', 'og:title');
+  if (ogTitle) return ogTitle;
+  const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  return titleMatch?.[1] ? stripHtml(titleMatch[1]) : '';
+}
+
+function detectStructuredAvailabilityFromHtml(
+  html: string,
+): 'disponivel' | 'indisponivel' | null {
+  const signals = [
+    metaContent(html, 'property', 'product:availability'),
+    metaContent(html, 'itemprop', 'availability'),
+  ]
+    .filter((value): value is string => !!value)
+    .join(' ');
+
+  const jsonLdAvailability = Array.from(
+    html.matchAll(/"availability"\s*:\s*"([^"]+)"/gi),
+  )
+    .map((match) => match[1] || '')
+    .join(' ');
+
+  const normalized = normalizeProductText(`${signals} ${jsonLdAvailability}`);
+  if (!normalized) return null;
+
+  if (
+    normalized.includes('OUTOFSTOCK') ||
+    normalized.includes('OUT OF STOCK') ||
+    normalized.includes('SOLDOUT') ||
+    normalized.includes('SOLD OUT') ||
+    normalized.includes('DISCONTINUED') ||
+    normalized.includes('INDISPONIVEL')
+  ) {
+    return 'indisponivel';
+  }
+
+  if (
+    normalized.includes('INSTOCK') ||
+    normalized.includes('IN STOCK') ||
+    normalized.includes('LIMITEDAVAILABILITY') ||
+    normalized.includes('LIMITED AVAILABILITY')
+  ) {
+    return 'disponivel';
+  }
+
+  return null;
 }
 
 function isLikelyProductDetailUrl(url: string, loja: OnlineStoreTarget): boolean {
@@ -1491,8 +1586,13 @@ async function pesquisarTavily(params: {
         `[Preços Online][Tavily] ${params.loja.nome} / ${params.modelo}: query="${query}" resultados=${items.length} validos=${currentRanked.length} detalhe=${detailCount}`,
       );
 
-      // Se já descobrimos uma página de produto compatível, não gastamos outro crédito de Search.
-      if (detailCount > 0) break;
+      // Só encerramos cedo quando já temos preço no snippet e uma URL de detalhe.
+      // Encontrar apenas uma página de produto sem preço não é suficiente: a segunda
+      // consulta costuma trazer listagens/ofertas com Pix e parcelamento.
+      const hasPricedResult = currentRanked.some(
+        (entry) => entry.candidate.price || entry.candidate.termPrice,
+      );
+      if (detailCount > 0 && hasPricedResult) break;
     } catch (error: any) {
       httpRequests += 1;
       searchRequests += 1;
@@ -1525,6 +1625,7 @@ async function pesquisarTavily(params: {
   // isso evita consumir crédito adicional de Extract. Se vier só um dos preços,
   // guardamos o parcial e usamos o Extract apenas para completar o que faltou.
   let tavilyPartialResult: OnlinePriceResult | null = null;
+  let trustedUnavailableResult: OnlinePriceResult | null = null;
 
   for (const entry of detailRanked.slice(0, maxPages)) {
     const url = entry.candidate.url;
@@ -1540,14 +1641,10 @@ async function pesquisarTavily(params: {
     httpRequests += productAttempt.httpRequests;
     if (productAttempt.result) {
       if (productAttempt.result.disponibilidade !== 'encontrado') {
-        return {
-          result: productAttempt.result,
-          httpRequests,
-          discoveredUrl: true,
-          searchRequests,
-          extractRequests,
-          creditsEstimated: searchRequests + extractRequests,
-        };
+        // Não encerra na primeira página marcada como indisponível. Marketplaces podem
+        // ter várias ofertas para o mesmo SKU; continuamos procurando uma oferta válida.
+        trustedUnavailableResult = trustedUnavailableResult || productAttempt.result;
+        continue;
       }
 
       tavilyPartialResult = tavilyPartialResult
@@ -1729,9 +1826,11 @@ async function pesquisarTavily(params: {
     }
   }
 
-  // Último fallback sem IA: usamos o snippet da Tavily. Se já existem páginas de
-  // detalhe, nunca preferimos uma página de lista apenas por ela ter preço no snippet.
-  const pricedPool = detailRanked.length > 0 ? detailRanked : ranked;
+  // Último fallback sem IA: usamos também preço/parcelamento de listagens da Tavily.
+  // Marketplaces frequentemente exibem o preço na listagem, enquanto a página de
+  // detalhe bloqueia o fetch do servidor. Se houver URL específica compatível, usamos
+  // essa URL como referência e apenas aproveitamos o sinal comercial da listagem.
+  const pricedPool = ranked;
   const pricedEntry = pricedPool
     .filter((item) => item.candidate.price || item.candidate.termPrice)
     .sort((a, b) => {
@@ -1742,10 +1841,24 @@ async function pesquisarTavily(params: {
     })[0];
 
   if (pricedEntry) {
+    const preferredDetail = detailRanked[0]?.candidate || null;
+    const candidateForResult: PriceCandidate =
+      preferredDetail && !pricedEntry.detailUrl
+        ? {
+            ...pricedEntry.candidate,
+            title: preferredDetail.title || pricedEntry.candidate.title,
+            url: preferredDetail.url || pricedEntry.candidate.url,
+            confidence: Math.max(
+              pricedEntry.candidate.confidence,
+              preferredDetail.confidence,
+            ),
+          }
+        : pricedEntry.candidate;
+
     const result = resultFromCandidate({
       modelo: params.modelo,
       loja: params.loja,
-      candidate: pricedEntry.candidate,
+      candidate: candidateForResult,
       source: 'tavily_search',
     });
     if (result) {
@@ -1766,6 +1879,17 @@ async function pesquisarTavily(params: {
   if (tavilyPartialResult) {
     return {
       result: tavilyPartialResult,
+      httpRequests,
+      discoveredUrl: true,
+      searchRequests,
+      extractRequests,
+      creditsEstimated: searchRequests + extractRequests,
+    };
+  }
+
+  if (trustedUnavailableResult) {
+    return {
+      result: trustedUnavailableResult,
       httpRequests,
       discoveredUrl: true,
       searchRequests,

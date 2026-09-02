@@ -15,7 +15,7 @@ import {
 } from './onlinePrices.types';
 
 const ROOT_DIR = process.cwd();
-const CACHE_SCHEMA_VERSION = 5;
+const CACHE_SCHEMA_VERSION = 6;
 
 function envNumber(name: string, fallback: number): number {
   const parsed = Number(process.env[name]);
@@ -324,7 +324,13 @@ function aplicarValoresPlanilha(params: {
     diferencaAvistaPercentual: diffAvista.diffPct,
     diferencaPrazo12x: diffPrazo.diff,
     diferencaPrazo12xPercentual: diffPrazo.diffPct,
-    observacao: params.result.disponibilidade === 'encontrado' ? null : 'INDISPONÍVEL',
+    observacao:
+      params.result.disponibilidade === 'encontrado'
+        ? null
+        : params.result.observacao ||
+          (params.result.disponibilidade === 'nao_encontrado'
+            ? 'NÃO ENCONTRADO'
+            : 'INDISPONÍVEL'),
   };
 
   if (typeof params.cacheHit === 'boolean') finalResult.cacheHit = params.cacheHit;
