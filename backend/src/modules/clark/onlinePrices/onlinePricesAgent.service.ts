@@ -15,7 +15,7 @@ import {
 } from './onlinePrices.types';
 
 const ROOT_DIR = process.cwd();
-const ENGINE_VERSION = '4.1.0';
+const ENGINE_VERSION = '4.2.0';
 const CACHE_SCHEMA_VERSION = 11;
 
 function envNumber(name: string, fallback: number): number {
@@ -275,6 +275,25 @@ function isFreshCache(entry: CacheEntry | undefined): entry is CacheEntry {
   if (!entry) return false;
   const expires = new Date(entry.expiresAt).getTime();
   return Number.isFinite(expires) && expires > Date.now();
+}
+
+
+function isCachedResultCommerciallyReliable(result: OnlinePriceResult): boolean {
+  if (result.disponibilidade !== 'encontrado' || !result.ofertaCompleta) return true;
+
+  const cash = toPositiveNumber(result.precoAvistaOnline);
+  const term = toPositiveNumber(result.precoPrazo12xOnline);
+  const installmentValue = toPositiveNumber(result.valorParcela);
+  const count = Number(result.numeroParcelas || 0);
+
+  if (count === 12 && installmentValue && term) {
+    const calculated = Math.round(installmentValue * 12 * 100) / 100;
+    if (Math.abs(term - calculated) > Math.max(1, calculated * 0.005)) return false;
+  }
+
+  if (cash && term && term < cash * 0.95) return false;
+
+  return true;
 }
 
 function isStaleUrlReusable(entry: CacheEntry | undefined): entry is CacheEntry {
@@ -565,7 +584,7 @@ export async function analisarPrecosOnline(params: OnlinePriceAnalyzeOptions): P
       const key = cacheKey(produto.modelo, loja);
       const cached = cache.entries[key];
 
-      if (cacheEnabled && isFreshCache(cached)) {
+      if (cacheEnabled && isFreshCache(cached) && isCachedResultCommerciallyReliable(cached.result)) {
         cacheHits += 1;
         allResults.push(
           aplicarValoresPlanilha({
@@ -576,6 +595,13 @@ export async function analisarPrecosOnline(params: OnlinePriceAnalyzeOptions): P
           }),
         );
         continue;
+      }
+
+      if (cacheEnabled && cached && isFreshCache(cached) && !isCachedResultCommerciallyReliable(cached.result)) {
+        console.warn(
+          `[Preços Online ${ENGINE_VERSION}] cache rejeitado por inconsistência comercial: ${produto.modelo}/${loja.nome}`,
+        );
+        delete cache.entries[key];
       }
 
       cacheMisses += 1;

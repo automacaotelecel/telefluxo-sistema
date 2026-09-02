@@ -578,6 +578,30 @@ function pageTitleFromHtml(html: string): string {
   return titleMatch?.[1] ? stripHtml(titleMatch[1]) : '';
 }
 
+function sanitizeSeller(value: string | null | undefined): string | null {
+  let seller = cleanText(value || '');
+  if (!seller) return null;
+
+  seller = seller
+    .split(/\s+(?:o\s+carrefour\s+garante|entrega(?:\s+gr[aá]tis)?|frete|voltagem|cores?\s*:|ofertas?\s+dispon[ií]veis|prazo\s+de\s+entrega|em\s+estoque|ver\s+mais|r\$)\b/i)[0] || '';
+
+  seller = cleanText(seller)
+    .replace(/[\s\-–—:;,|•.]+$/g, '')
+    .slice(0, 80)
+    .trim();
+
+  if (!seller || seller.length < 2) return null;
+
+  const normalized = normalizeText(seller);
+  if (
+    ['VENDEDOR', 'SELLER', 'LOJA PARCEIRA', 'MARKETPLACE', 'FASTSHOP', 'FAST SHOP'].includes(normalized)
+  ) {
+    return null;
+  }
+
+  return seller;
+}
+
 function extractSeller(value: string): string | null {
   const text = cleanText(value);
   const patterns = [
@@ -590,10 +614,7 @@ function extractSeller(value: string): string | null {
   for (const pattern of patterns) {
     const match = text.match(pattern);
     if (match?.[1]) {
-      const seller = cleanText(match[1])
-        .replace(/\s+(?:R\$|por\s+R\$|a\s+partir\s+de).*$/i, '')
-        .slice(0, 100)
-        .trim();
+      const seller = sanitizeSeller(match[1]);
       if (seller) return seller;
     }
   }
@@ -607,7 +628,7 @@ function extractSellerFromUrl(value: string): string | null {
       parsed.searchParams.get('seller_id') ||
       parsed.searchParams.get('sellerId') ||
       parsed.searchParams.get('seller');
-    return seller ? cleanText(seller).slice(0, 100) : null;
+    return sanitizeSeller(seller);
   } catch (_) {
     return null;
   }
@@ -685,7 +706,7 @@ function extractCommercialSignals(modelo: string, value: string): {
       );
       const beforeNextInstallment = afterInstallment.split(/\b13\s*x\b/i)[0] || afterInstallment;
       const explicitTotalMatch = beforeNextInstallment.match(
-        /(?:\||total\s*[:\-]?)?\s*R\$\s*([0-9]{1,3}(?:\.[0-9]{3})*(?:,\d{2})?|[0-9]{2,6}(?:,\d{2})?)/i,
+        /(?:\btotal\s*[:\-]?\s*|\|\s*)R\$\s*([0-9]{1,3}(?:\.[0-9]{3})*(?:,\d{2})?|[0-9]{2,6}(?:,\d{2})?)/i,
       );
       const explicitTotal = explicitTotalMatch?.[1] ? toPrice(explicitTotalMatch[1]) : null;
       const calculatedTotal = Math.round(amount * 12 * 100) / 100;
@@ -759,8 +780,22 @@ function extractCommercialSignals(modelo: string, value: string): {
     return a.index - b.index;
   });
 
-  let cashPrice = cashCandidates[0]?.value || null;
-  const bestCashScore = cashCandidates[0]?.score ?? -999;
+  let selectedCash: CashCandidate | null = cashCandidates[0] ?? null;
+
+  if (termTotal) {
+    const plausibleCashCandidates = cashCandidates.filter(
+      (candidate) => candidate.value <= termTotal * 1.03,
+    );
+
+    if (plausibleCashCandidates.length > 0) {
+      selectedCash = plausibleCashCandidates[0] || null;
+    } else if (selectedCash && selectedCash.value > termTotal * 1.05) {
+      selectedCash = null;
+    }
+  }
+
+  let cashPrice = selectedCash?.value || null;
+  const bestCashScore = selectedCash?.score ?? -999;
   if (cashPrice && bestCashScore <= 0 && minPrice >= 250 && cashPrice < 350) cashPrice = null;
 
   return {
@@ -808,17 +843,32 @@ function makeOffer(params: {
   if (condition === 'indesejado') return null;
 
   const extracted = extractCommercialSignals(params.modelo, `${title}. ${content}`);
-  const cashPrice = params.cashPrice ?? extracted.cashPrice;
+  let cashPrice = params.cashPrice ?? extracted.cashPrice;
   const installmentCount = params.installmentCount ?? extracted.installmentCount;
   const installmentValue = params.installmentValue ?? extracted.installmentValue;
-  const termTotal = params.termTotal ?? extracted.termTotal;
+  let termTotal = params.termTotal ?? extracted.termTotal;
   const installmentText = params.installmentText ?? extracted.installmentText;
+
+  if (installmentCount === 12 && installmentValue) {
+    const calculatedTermTotal = Math.round(installmentValue * 12 * 100) / 100;
+    if (
+      !termTotal ||
+      Math.abs(termTotal - calculatedTermTotal) > Math.max(1, calculatedTermTotal * 0.005)
+    ) {
+      termTotal = calculatedTermTotal;
+    }
+  }
+
+  if (cashPrice && termTotal && termTotal < cashPrice * 0.95) {
+    cashPrice = null;
+  }
+
   const inferredAvailability = params.availability || determineAvailability(`${title} ${content}`);
   const availability =
     inferredAvailability === 'desconhecido' && (cashPrice || termTotal)
       ? 'disponivel'
       : inferredAvailability;
-  const seller = cleanText(params.seller || extractSeller(content) || extractSellerFromUrl(url)) || null;
+  const seller = sanitizeSeller(params.seller || extractSeller(content) || extractSellerFromUrl(url));
 
   return {
     offerId: offerKey(url, seller),
@@ -1169,7 +1219,7 @@ function offerFromHtml(modelo: string, loja: OnlineStoreTarget, url: string, htm
     title,
     url,
     content: plain,
-    cashPrice: signals.cashPrice ?? structuredPrice,
+    cashPrice: structuredPrice ?? signals.cashPrice,
     installmentCount: signals.installmentCount,
     installmentValue: signals.installmentValue,
     termTotal: signals.termTotal,
@@ -1389,11 +1439,19 @@ function tavilyQueries(modelo: string, loja: OnlineStoreTarget): string[] {
   const storage = signature.storage || '';
   const network = signature.network || '';
 
-  if (store.includes('SAMSUNG')) variants.add(`${family} ${storage} ${network} Samsung Brasil`.replace(/\s+/g, ' ').trim());
-  else if (store.includes('FAST SHOP') || store.includes('FASTSHOP')) variants.add(`${family} ${storage} ${network} smartphone`.replace(/\s+/g, ' ').trim());
-  else if (store.includes('MAGALU') || store.includes('MAGAZINE LUIZA')) variants.add(`${family} ${storage} Samsung`.replace(/\s+/g, ' ').trim());
-  else if (store.includes('AMAZON')) variants.add(`${family} ${storage} ${network} smartphone Samsung novo`.replace(/\s+/g, ' ').trim());
-  else variants.add(`${family} ${storage} ${network}`.replace(/\s+/g, ' ').trim());
+  if (store.includes('SAMSUNG')) {
+    variants.add(`${family} ${storage} ${network} Samsung Brasil`.replace(/\s+/g, ' ').trim());
+  } else if (store.includes('FAST SHOP') || store.includes('FASTSHOP')) {
+    variants.add(`${family} ${storage} ${network} smartphone`.replace(/\s+/g, ' ').trim());
+  } else if (store.includes('MAGALU') || store.includes('MAGAZINE LUIZA')) {
+    variants.add(`${family} ${storage} ${network} 12x pix Magazine Luiza`.replace(/\s+/g, ' ').trim());
+  } else if (store.includes('MERCADO LIVRE')) {
+    variants.add(`${family} ${storage} ${network} 12x pix Mercado Livre`.replace(/\s+/g, ' ').trim());
+  } else if (store.includes('AMAZON')) {
+    variants.add(`${family} ${storage} ${network} smartphone Samsung novo`.replace(/\s+/g, ' ').trim());
+  } else {
+    variants.add(`${family} ${storage} ${network}`.replace(/\s+/g, ' ').trim());
+  }
 
   return Array.from(variants).filter(Boolean);
 }
@@ -1466,13 +1524,14 @@ async function tavilySearch(
 
       if (!response.ok) {
         state.providerFailed = true;
-        console.warn(`[Preços Online V4.1][Tavily] ${loja.nome}/${modelo}: HTTP ${response.status}`);
+        console.warn(`[Preços Online V4.2][Tavily] ${loja.nome}/${modelo}: HTTP ${response.status}`);
         continue;
       }
 
       state.searchSucceeded = true;
       const items: TavilySearchItem[] = Array.isArray(payload?.results) ? payload.results : [];
       let validInThisQuery = 0;
+      let pricedInThisQuery = 0;
 
       for (const item of items) {
         const rawUrl = cleanText(item?.url || '');
@@ -1502,20 +1561,23 @@ async function tavilySearch(
             source: 'tavily_search',
             confidence: Math.round(Math.min(98, 86 + identity.score * 10 + Number(item?.score || 0) * 2)),
           });
-          if (snippetOffer) state.offers.push(snippetOffer);
+          if (snippetOffer) {
+            state.offers.push(snippetOffer);
+            if (snippetOffer.cashPrice || snippetOffer.termTotal) pricedInThisQuery += 1;
+          }
         }
       }
 
       console.log(
-        `[Preços Online V4.1][Tavily] ${loja.nome}/${modelo}: query="${query}" resultados=${items.length} exatos=${validInThisQuery}`,
+        `[Preços Online V4.2][Tavily] ${loja.nome}/${modelo}: query="${query}" resultados=${items.length} exatos=${validInThisQuery} comPreco=${pricedInThisQuery}`,
       );
 
-      if (validInThisQuery > 0) break;
+      if (validInThisQuery > 0 && pricedInThisQuery > 0) break;
     } catch (error: any) {
       state.httpRequests += 1;
       state.searchRequests += 1;
       state.providerFailed = true;
-      console.warn(`[Preços Online V4.1][Tavily] ${loja.nome}/${modelo}: ${String(error?.message || error)}`);
+      console.warn(`[Preços Online V4.2][Tavily] ${loja.nome}/${modelo}: ${String(error?.message || error)}`);
     } finally {
       clearTimeout(timer);
     }
@@ -1590,7 +1652,7 @@ async function tavilySearch(
 
     if (!response.ok) {
       state.providerFailed = true;
-      console.warn(`[Preços Online V4.1][Tavily Extract] ${loja.nome}/${modelo}: HTTP ${response.status}`);
+      console.warn(`[Preços Online V4.2][Tavily Extract] ${loja.nome}/${modelo}: HTTP ${response.status}`);
       return state;
     }
 
@@ -1622,7 +1684,7 @@ async function tavilySearch(
     state.httpRequests += 1;
     state.extractRequests += 1;
     state.providerFailed = true;
-    console.warn(`[Preços Online V4.1][Tavily Extract] ${loja.nome}/${modelo}: ${String(error?.message || error)}`);
+    console.warn(`[Preços Online V4.2][Tavily Extract] ${loja.nome}/${modelo}: ${String(error?.message || error)}`);
   } finally {
     clearTimeout(extractTimer);
   }
