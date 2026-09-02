@@ -15,7 +15,8 @@ import {
 } from './onlinePrices.types';
 
 const ROOT_DIR = process.cwd();
-const CACHE_SCHEMA_VERSION = 8;
+const ENGINE_VERSION = '4.1.0';
+const CACHE_SCHEMA_VERSION = 11;
 
 function envNumber(name: string, fallback: number): number {
   const parsed = Number(process.env[name]);
@@ -55,11 +56,9 @@ function getPartialCacheTtlHours(): number {
 }
 
 function isCompleteFoundPriceResult(result: OnlinePriceResult): boolean {
-  return !!(
-    result.disponibilidade === 'encontrado' &&
-    result.precoAvistaOnline &&
-    result.precoPrazo12xOnline
-  );
+  if (result.disponibilidade !== 'encontrado') return false;
+  if (typeof result.ofertaCompleta === 'boolean') return result.ofertaCompleta;
+  return !!(result.precoAvistaOnline && result.precoPrazo12xOnline);
 }
 
 function getStaleUrlRetentionDays(): number {
@@ -131,6 +130,9 @@ function montarResumo(params: {
   tavilySearchRequests: number;
   tavilyExtractRequests: number;
   tavilyCreditsEstimated: number;
+  ofertasDescobertas: number;
+  ofertasValidas: number;
+  falhasPesquisa: number;
 }): OnlinePriceAnalysisSummary {
   const encontrados = params.results.filter((r) => r.disponibilidade === 'encontrado').length;
   const indisponiveis = params.results.filter((r) => r.disponibilidade === 'indisponivel').length;
@@ -138,6 +140,7 @@ function montarResumo(params: {
   const erros = params.results.filter((r) => r.disponibilidade === 'erro').length;
 
   return {
+    engineVersion: ENGINE_VERSION,
     produtosDetectados: params.produtosDetectados,
     lojasDetectadas: params.lojasDetectadas,
     consultasPlanejadas: params.consultasPlanejadas,
@@ -162,6 +165,9 @@ function montarResumo(params: {
     tavilySearchRequests: params.tavilySearchRequests,
     tavilyExtractRequests: params.tavilyExtractRequests,
     tavilyCreditsEstimated: params.tavilyCreditsEstimated,
+    ofertasDescobertas: params.ofertasDescobertas,
+    ofertasValidas: params.ofertasValidas,
+    falhasPesquisa: params.falhasPesquisa,
   };
 }
 
@@ -339,11 +345,13 @@ function aplicarValoresPlanilha(params: {
     diferencaPrazo12x: diffPrazo.diff,
     diferencaPrazo12xPercentual: diffPrazo.diffPct,
     observacao:
-      params.result.disponibilidade === 'encontrado'
+      params.result.observacao ||
+      (params.result.disponibilidade === 'encontrado'
         ? null
-        : params.result.observacao ||
-          (params.result.disponibilidade === 'nao_encontrado'
-            ? 'NÃO ENCONTRADO'
+        : params.result.disponibilidade === 'nao_encontrado'
+          ? 'NÃO ENCONTRADO'
+          : params.result.disponibilidade === 'erro'
+            ? 'FALHA DE PESQUISA'
             : 'INDISPONÍVEL'),
   };
 
@@ -377,6 +385,54 @@ function criarResultadoIndisponivel(params: {
     confianca: 0,
     observacao: params.mensagem || 'INDISPONÍVEL',
     pesquisadoEm: new Date().toISOString(),
+    seller: null,
+    numeroParcelas: null,
+    valorParcela: null,
+    ofertaCompleta: false,
+    pesquisaStatus: 'produto_indisponivel',
+    offerId: null,
+  };
+
+  return aplicarValoresPlanilha({
+    result: base,
+    loja: params.loja,
+    planilha: params.planilha,
+    cacheHit: false,
+  });
+}
+
+function criarResultadoErro(params: {
+  modelo: string;
+  loja: OnlineStoreTarget;
+  planilha: { planilhaAvista?: number | null; planilhaPrazo12x?: number | null };
+  mensagem?: string;
+}): OnlinePriceResult {
+  const base: OnlinePriceResult = {
+    modelo: params.modelo,
+    loja: params.loja.nome,
+    dominios: params.loja.dominios,
+    disponibilidade: 'erro',
+    precoAvistaOnline: null,
+    precoPrazo12xOnline: null,
+    parcelasTexto: null,
+    precoAvistaPlanilha: null,
+    precoPrazo12xPlanilha: null,
+    diferencaAvista: null,
+    diferencaAvistaPercentual: null,
+    diferencaPrazo12x: null,
+    diferencaPrazo12xPercentual: null,
+    titulo: null,
+    url: null,
+    fonte: null,
+    confianca: 0,
+    observacao: params.mensagem || 'FALHA DE PESQUISA',
+    pesquisadoEm: new Date().toISOString(),
+    seller: null,
+    numeroParcelas: null,
+    valorParcela: null,
+    ofertaCompleta: false,
+    pesquisaStatus: 'falha_pesquisa',
+    offerId: null,
   };
 
   return aplicarValoresPlanilha({
@@ -393,6 +449,10 @@ function cacheResult(params: {
   loja: OnlineStoreTarget;
   result: OnlinePriceResult;
 }) {
+  // Erro técnico / falha de pesquisa não prova ausência do produto.
+  // Não persistimos esse estado para não transformar timeout/bloqueio em falso negativo.
+  if (params.result.disponibilidade === 'erro') return;
+
   const key = cacheKey(params.modelo, params.loja);
   const now = new Date();
   const ttlMs =
@@ -451,6 +511,7 @@ export function obterUltimaConsultaPrecosOnline(): OnlinePriceHistoryEntry | nul
 
 export async function analisarPrecosOnline(params: OnlinePriceAnalyzeOptions): Promise<OnlinePriceAnalyzeResponse> {
   ensureReportDir();
+  console.log(`[Preços Online ${ENGINE_VERSION}] início da análise; cache schema=${CACHE_SCHEMA_VERSION}; IA=${isAiFallbackEnabled() ? 'ON' : 'OFF'}`);
 
   const input = parseOnlinePricesWorkbook({
     fileBuffer: params.fileBuffer,
@@ -486,9 +547,13 @@ export async function analisarPrecosOnline(params: OnlinePriceAnalyzeOptions): P
   let tavilySearchRequests = 0;
   let tavilyExtractRequests = 0;
   let tavilyCreditsEstimated = 0;
+  let ofertasDescobertas = 0;
+  let ofertasValidas = 0;
+  let falhasPesquisa = 0;
 
   for (const produto of produtos) {
     const unresolvedForAi: OnlineStoreTarget[] = [];
+    const directFallbackByStore = new Map<string, OnlinePriceResult>();
     const directCandidates: Array<{
       loja: OnlineStoreTarget;
       planilha: { planilhaAvista?: number | null; planilhaPrazo12x?: number | null };
@@ -535,22 +600,36 @@ export async function analisarPrecosOnline(params: OnlinePriceAnalyzeOptions): P
         tavilySearchRequests += direct.stats.tavilySearchRequests;
         tavilyExtractRequests += direct.stats.tavilyExtractRequests;
         tavilyCreditsEstimated += direct.stats.tavilyCreditsEstimated;
+        ofertasDescobertas += direct.stats.offersDiscovered;
+        ofertasValidas += direct.stats.offersValid;
+        falhasPesquisa += direct.stats.searchFailures;
         if (direct.stats.reusedUrl) urlsReutilizadas += 1;
         if (direct.stats.discoveredUrl) urlsDescobertas += 1;
 
-        if (direct.result) {
-          const finalResult = aplicarValoresPlanilha({
-            result: direct.result,
-            loja,
-            planilha,
-            cacheHit: false,
-          });
-          allResults.push(finalResult);
-          resolvidosSemIa += 1;
-          if (cacheEnabled) cacheResult({ cache, modelo: produto.modelo, loja, result: finalResult });
-        } else {
+        const directResult = aplicarValoresPlanilha({
+          result: direct.result,
+          loja,
+          planilha,
+          cacheHit: false,
+        });
+
+        const needsAi =
+          isAiFallbackEnabled() &&
+          (
+            directResult.disponibilidade === 'erro' ||
+            directResult.disponibilidade === 'nao_encontrado' ||
+            (directResult.disponibilidade === 'encontrado' && !isCompleteFoundPriceResult(directResult))
+          );
+
+        if (needsAi) {
+          directFallbackByStore.set(normalizar(loja.nome), directResult);
           unresolvedForAi.push(loja);
+          return;
         }
+
+        allResults.push(directResult);
+        if (directResult.disponibilidade !== 'erro') resolvidosSemIa += 1;
+        if (cacheEnabled) cacheResult({ cache, modelo: produto.modelo, loja, result: directResult });
       });
     } else {
       directCandidates.forEach(({ loja }) => unresolvedForAi.push(loja));
@@ -559,19 +638,23 @@ export async function analisarPrecosOnline(params: OnlinePriceAnalyzeOptions): P
     if (unresolvedForAi.length === 0) continue;
 
     if (!isAiFallbackEnabled()) {
+      // Com o motor V4, a pesquisa sem IA sempre retorna um estado explícito
+      // (encontrado, indisponível, não encontrado confirmado ou erro técnico).
+      // Este bloco só existe como proteção para um caminho inesperado.
       unresolvedForAi.forEach((loja) => {
-        const planilha = getPlanilhaPoint(produto, loja);
-        const finalResult = criarResultadoIndisponivel({
-          modelo: produto.modelo,
-          loja,
-          planilha,
-          mensagem: 'NÃO ENCONTRADO SEM IA',
-        });
-        finalResult.disponibilidade = 'nao_encontrado';
-        finalResult.observacao = 'NÃO ENCONTRADO SEM IA';
-        allResults.push(finalResult);
-        if (cacheEnabled) {
-          cacheResult({ cache, modelo: produto.modelo, loja, result: finalResult });
+        const fallback = directFallbackByStore.get(normalizar(loja.nome));
+        if (fallback) {
+          allResults.push(fallback);
+          if (cacheEnabled) cacheResult({ cache, modelo: produto.modelo, loja, result: fallback });
+        } else {
+          allResults.push(
+            criarResultadoErro({
+              modelo: produto.modelo,
+              loja,
+              planilha: getPlanilhaPoint(produto, loja),
+              mensagem: 'PESQUISA DIRETA DESATIVADA E FALLBACK DE IA DESATIVADO',
+            }),
+          );
         }
       });
       continue;
@@ -600,9 +683,24 @@ export async function analisarPrecosOnline(params: OnlinePriceAnalyzeOptions): P
       unresolvedForAi.forEach((loja) => {
         const found = resultsByStore.get(normalizar(loja.nome)) || null;
         const planilha = getPlanilhaPoint(produto, loja);
-        const finalResult = found
+        const directFallback = directFallbackByStore.get(normalizar(loja.nome)) || null;
+        const claudeResult = found
           ? aplicarValoresPlanilha({ result: found, loja, planilha, cacheHit: false })
-          : criarResultadoIndisponivel({ modelo: produto.modelo, loja, planilha });
+          : null;
+
+        let finalResult: OnlinePriceResult;
+        if (claudeResult?.disponibilidade === 'encontrado') {
+          finalResult = claudeResult;
+        } else if (directFallback?.disponibilidade === 'encontrado') {
+          // Nunca trocamos uma oferta parcial real por um status negativo da IA.
+          finalResult = directFallback;
+        } else if (claudeResult) {
+          finalResult = claudeResult;
+        } else if (directFallback) {
+          finalResult = directFallback;
+        } else {
+          finalResult = criarResultadoIndisponivel({ modelo: produto.modelo, loja, planilha });
+        }
 
         allResults.push(finalResult);
         if (cacheEnabled) cacheResult({ cache, modelo: produto.modelo, loja, result: finalResult });
@@ -613,12 +711,14 @@ export async function analisarPrecosOnline(params: OnlinePriceAnalyzeOptions): P
 
       unresolvedForAi.forEach((loja) => {
         const planilha = getPlanilhaPoint(produto, loja);
-        const finalResult = criarResultadoIndisponivel({
-          modelo: produto.modelo,
-          loja,
-          planilha,
-          mensagem: 'INDISPONÍVEL',
-        });
+        const finalResult =
+          directFallbackByStore.get(normalizar(loja.nome)) ||
+          criarResultadoErro({
+            modelo: produto.modelo,
+            loja,
+            planilha,
+            mensagem: 'FALHA DE PESQUISA',
+          });
         allResults.push(finalResult);
         if (cacheEnabled) cacheResult({ cache, modelo: produto.modelo, loja, result: finalResult });
       });
@@ -640,10 +740,11 @@ export async function analisarPrecosOnline(params: OnlinePriceAnalyzeOptions): P
         orderedResults.push(existing);
       } else {
         orderedResults.push(
-          criarResultadoIndisponivel({
+          criarResultadoErro({
             modelo: produto.modelo,
             loja,
             planilha: getPlanilhaPoint(produto, loja),
+            mensagem: 'RESULTADO AUSENTE APÓS A EXECUÇÃO DO MOTOR DE PESQUISA',
           }),
         );
       }
@@ -668,6 +769,9 @@ export async function analisarPrecosOnline(params: OnlinePriceAnalyzeOptions): P
     tavilySearchRequests,
     tavilyExtractRequests,
     tavilyCreditsEstimated,
+    ofertasDescobertas,
+    ofertasValidas,
+    falhasPesquisa,
   });
 
   const report = await gerarRelatorioOnlinePricesExcel({
@@ -710,8 +814,9 @@ export async function analisarPrecosOnline(params: OnlinePriceAnalyzeOptions): P
 
   return {
     ok: true,
+    engineVersion: ENGINE_VERSION,
     agent: 'precos_online',
-    message: `Pesquisa concluída: ${resumo.consultasExecutadas} combinações. Cache ${cacheHits}, sem IA ${resolvidosSemIa}, fallback IA ${fallbacksIa}.`,
+    message: `Preços Online ${ENGINE_VERSION}: ${resumo.consultasExecutadas} combinações. Cache ${cacheHits}, sem IA ${resolvidosSemIa}, fallback IA ${fallbacksIa}.`,
     planilha: {
       nomeArquivo: input.originalName,
       aba: input.sheetName,

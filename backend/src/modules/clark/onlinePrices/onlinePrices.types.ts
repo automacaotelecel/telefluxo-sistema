@@ -4,6 +4,13 @@ export type OnlinePriceAvailability =
   | 'nao_encontrado'
   | 'erro';
 
+export type OnlinePriceSearchStatus =
+  | 'oferta_valida'
+  | 'oferta_parcial'
+  | 'produto_indisponivel'
+  | 'nao_encontrado_confirmado'
+  | 'falha_pesquisa';
+
 export type OnlinePricePoint = {
   cashColIndex?: number;
   termColIndex?: number;
@@ -53,6 +60,12 @@ export type OnlinePriceResult = {
   observacao: string | null;
   pesquisadoEm: string;
   cacheHit?: boolean;
+  seller?: string | null;
+  numeroParcelas?: number | null;
+  valorParcela?: number | null;
+  ofertaCompleta?: boolean;
+  pesquisaStatus?: OnlinePriceSearchStatus;
+  offerId?: string | null;
 };
 
 export type OnlinePriceClaudeUsage = {
@@ -62,6 +75,7 @@ export type OnlinePriceClaudeUsage = {
 };
 
 export type OnlinePriceAnalysisSummary = {
+  engineVersion?: string;
   produtosDetectados: number;
   lojasDetectadas: number;
   consultasPlanejadas: number;
@@ -86,6 +100,9 @@ export type OnlinePriceAnalysisSummary = {
   tavilySearchRequests?: number;
   tavilyExtractRequests?: number;
   tavilyCreditsEstimated?: number;
+  ofertasDescobertas?: number;
+  ofertasValidas?: number;
+  falhasPesquisa?: number;
 };
 
 export type OnlinePriceAnalyzeOptions = {
@@ -117,6 +134,7 @@ export type OnlinePriceHistoryEntry = {
 
 export type OnlinePriceAnalyzeResponse = {
   ok: boolean;
+  engineVersion: string;
   agent: 'precos_online';
   message: string;
   planilha: {
