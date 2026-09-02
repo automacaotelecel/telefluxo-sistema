@@ -337,11 +337,12 @@ function collectProductJson(value: any, out: any[]) {
 }
 
 function extractInstallment(html: string): { total: number | null; text: string | null } {
-  const plain = stripHtml(html).slice(0, 900_000);
+  // 1) Primeiro tenta o texto visível. Cobertura para as formas mais comuns nas lojas.
+  const plain = stripHtml(html).slice(0, 1_200_000);
   const patterns = [
-    /12\s*x\s*(?:de\s*)?R\$\s*([0-9.]+,[0-9]{2})/i,
-    /12\s*parcelas?\s*(?:de\s*)?R\$\s*([0-9.]+,[0-9]{2})/i,
-    /em\s+ate\s+12x\s+de\s+R\$\s*([0-9.]+,[0-9]{2})/i,
+    /(?:em\s+at[eé]\s+)?12\s*x\s*(?:sem\s+juros\s*)?(?:de\s*)?R\$\s*([0-9]{1,3}(?:\.[0-9]{3})*(?:,\d{2})?|[0-9]{2,6}(?:,\d{2})?)/i,
+    /12\s*parcelas?\s*(?:sem\s+juros\s*)?(?:de\s*)?R\$\s*([0-9]{1,3}(?:\.[0-9]{3})*(?:,\d{2})?|[0-9]{2,6}(?:,\d{2})?)/i,
+    /(?:em\s+at[eé]\s+)?12x\s*(?:sem\s+juros\s*)?R\$\s*([0-9]{1,3}(?:\.[0-9]{3})*(?:,\d{2})?|[0-9]{2,6}(?:,\d{2})?)/i,
   ];
 
   for (const pattern of patterns) {
@@ -351,6 +352,28 @@ function extractInstallment(html: string): { total: number | null; text: string 
     if (!parcela) continue;
     const total = Math.round(parcela * 12 * 100) / 100;
     return { total, text: `12x de R$ ${parcela.toFixed(2).replace('.', ',')}` };
+  }
+
+  // 2) Muitas lojas deixam parcelamento somente no JSON de hidratação/checkout.
+  // Não removemos <script> aqui: procuramos diretamente pares quantidade=12 + valor da parcela.
+  const raw = decodeHtmlEntities(String(html || ''))
+    .replace(/\\u002F/gi, '/')
+    .replace(/\\\//g, '/');
+
+  const jsonPatterns: RegExp[] = [
+    /["'](?:NumberOfInstallments|numberOfInstallments|quantity|installments|installmentCount)["']\s*:\s*12\s*,[\s\S]{0,260}?["'](?:Value|value|amount|installmentValue|installmentAmount)["']\s*:\s*["']?([0-9]+(?:\.[0-9]+)?)["']?/gi,
+    /["'](?:Value|value|amount|installmentValue|installmentAmount)["']\s*:\s*["']?([0-9]+(?:\.[0-9]+)?)["']?\s*,[\s\S]{0,260}?["'](?:NumberOfInstallments|numberOfInstallments|quantity|installments|installmentCount)["']\s*:\s*12/gi,
+  ];
+
+  for (const pattern of jsonPatterns) {
+    pattern.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(raw)) !== null) {
+      const parcela = toPrice(match[1] ?? '');
+      if (!parcela || parcela < 10 || parcela > 20_000) continue;
+      const total = Math.round(parcela * 12 * 100) / 100;
+      return { total, text: `12x de R$ ${parcela.toFixed(2).replace('.', ',')}` };
+    }
   }
 
   return { total: null, text: null };
@@ -667,7 +690,12 @@ function resultFromCandidate(params: {
     url: params.candidate.url,
     fonte: params.source,
     confianca: Math.max(0, Math.min(100, params.candidate.confidence)),
-    observacao: null,
+    observacao:
+      cash && !term
+        ? 'PREÇO À VISTA ENCONTRADO; 12X NÃO LOCALIZADO'
+        : !cash && term
+          ? '12X ENCONTRADO; PREÇO À VISTA NÃO LOCALIZADO'
+          : null,
     pesquisadoEm: new Date().toISOString(),
   };
 }
@@ -787,7 +815,10 @@ async function tryProductPage(params: {
           loja: params.loja,
           candidate: {
             ...unavailableCandidate,
-            url: unavailableCandidate.url || finalUrl,
+            url: canonicalizeStoreProductUrl(
+              unavailableCandidate.url || finalUrl,
+              params.loja,
+            ),
           },
           source: params.source,
         }),
@@ -800,7 +831,9 @@ async function tryProductPage(params: {
 
   const normalizedCandidate: PriceCandidate = {
     ...candidate,
-    url: candidate.url || finalUrl,
+    // Não deixe URLs internas de roteamento (ex.: VTEX/Samsung) escaparem para o
+    // resultado final. A URL pública/canônica é sempre preferida.
+    url: canonicalizeStoreProductUrl(candidate.url || finalUrl, params.loja),
   };
 
   return {
@@ -1041,8 +1074,29 @@ function isUndesiredCondition(title: string, content: string, url: string): bool
     'PRODUTO REFURBISHED',
   ];
 
-  return explicitContentTerms.some((term) =>
-    contentText.includes(normalizeProductText(term)),
+  if (
+    explicitContentTerms.some((term) =>
+      contentText.includes(normalizeProductText(term)),
+    )
+  ) {
+    return true;
+  }
+
+  // Tavily/Amazon às vezes encurtam o título e a palavra "Seminovo" aparece
+  // somente no início do conteúdo extraído. Limitamos a inspeção ao começo do
+  // conteúdo para não rejeitar um produto novo por causa de recomendações laterais.
+  const primaryContent = contentText.slice(0, 5000);
+  const primaryConditionTerms = [
+    'SEMINOVO',
+    'SEMI NOVO',
+    'RECONDICIONADO',
+    'REFURBISHED',
+    'PRODUTO USADO',
+    'APARELHO USADO',
+  ];
+
+  return primaryConditionTerms.some((term) =>
+    primaryContent.includes(normalizeProductText(term)),
   );
 }
 
@@ -1075,40 +1129,23 @@ function detectAvailabilityFromText(value: string): 'disponivel' | 'indisponivel
 }
 
 function getTavilyDomains(loja: OnlineStoreTarget): string[] {
-  const domains = new Set(loja.dominios.map(normalizeDomain).filter(Boolean));
   const store = getStoreKey(loja);
 
-  if (store.includes('MERCADO LIVRE')) {
-    domains.add('mercadolivre.com.br');
-    domains.add('www.mercadolivre.com.br');
-    domains.add('produto.mercadolivre.com.br');
-    domains.add('lista.mercadolivre.com.br');
-  }
-  if (store.includes('CARREFOUR')) {
-    domains.add('carrefour.com.br');
-    domains.add('www.carrefour.com.br');
-  }
+  // A Tavily já considera subdomínios quando restringimos pelo domínio raiz.
+  // Mandar www/site/produto/lista simultaneamente deixou a busca diferente do
+  // comportamento validado no Playground e piorou especialmente Mercado Livre.
+  if (store.includes('MERCADO LIVRE')) return ['mercadolivre.com.br'];
+  if (store.includes('CARREFOUR')) return ['carrefour.com.br'];
   if (store.includes('MAGALU') || store.includes('MAGAZINE LUIZA')) {
-    domains.add('magazineluiza.com.br');
-    domains.add('www.magazineluiza.com.br');
-    domains.add('magalu.com.br');
+    return ['magazineluiza.com.br', 'magalu.com.br'];
   }
-  if (store.includes('FAST SHOP') || store.includes('FASTSHOP')) {
-    domains.add('fastshop.com.br');
-    domains.add('www.fastshop.com.br');
-    domains.add('site.fastshop.com.br');
-  }
-  if (store.includes('AMAZON')) {
-    domains.add('amazon.com.br');
-    domains.add('www.amazon.com.br');
-  }
-  if (store.includes('SAMSUNG')) {
-    domains.add('samsung.com.br');
-    domains.add('www.samsung.com.br');
-    domains.add('shop.samsung.com.br');
-  }
+  if (store.includes('FAST SHOP') || store.includes('FASTSHOP')) return ['fastshop.com.br'];
+  if (store.includes('AMAZON')) return ['amazon.com.br'];
+  if (store.includes('SAMSUNG')) return ['samsung.com.br'];
 
-  return Array.from(domains);
+  return Array.from(
+    new Set(loja.dominios.map(normalizeDomain).filter(Boolean)),
+  );
 }
 
 function samsungReferenceHint(modelo: string): string | null {
@@ -1536,22 +1573,16 @@ async function pesquisarTavily(params: {
           Accept: 'application/json',
         },
         body: JSON.stringify({
+          // Mantemos o payload propositalmente igual ao teste validado no
+          // Playground da Tavily. Parâmetros extras de localização/idioma estavam
+          // alterando o ranking e faziam o Mercado Livre sumir em produção.
           query,
-          topic: 'general',
           search_depth: 'basic',
           max_results: getTavilyMaxResults(),
           include_answer: false,
           include_raw_content: false,
           include_images: false,
-          include_favicon: false,
           include_domains: domains,
-          country: 'brazil',
-          language: 'pt',
-          filter_by_language: false,
-          auto_parameters: false,
-          exact_match: false,
-          include_usage: true,
-          safe_search: false,
         }),
       });
 
@@ -1586,13 +1617,10 @@ async function pesquisarTavily(params: {
         `[Preços Online][Tavily] ${params.loja.nome} / ${params.modelo}: query="${query}" resultados=${items.length} validos=${currentRanked.length} detalhe=${detailCount}`,
       );
 
-      // Só encerramos cedo quando já temos preço no snippet e uma URL de detalhe.
-      // Encontrar apenas uma página de produto sem preço não é suficiente: a segunda
-      // consulta costuma trazer listagens/ofertas com Pix e parcelamento.
-      const hasPricedResult = currentRanked.some(
-        (entry) => entry.candidate.price || entry.candidate.termPrice,
-      );
-      if (detailCount > 0 && hasPricedResult) break;
+      // Uma busca válida já é suficiente para seguir para HTTP/Extract. A segunda
+      // consulta só existe para recuperação quando a primeira não trouxe nenhum
+      // candidato compatível. Isso reduz os créditos Tavily sem sacrificar cobertura.
+      if (currentRanked.length > 0) break;
     } catch (error: any) {
       httpRequests += 1;
       searchRequests += 1;
@@ -2104,13 +2132,21 @@ export async function pesquisarPrecoSemIa(params: {
   stats.tavilyCreditsEstimated += tavily.creditsEstimated;
   stats.discoveredUrl = stats.discoveredUrl || tavily.discoveredUrl;
   if (tavily.result) {
-    if (partialResult && tavily.result.disponibilidade === 'encontrado') {
-      return { result: mergeFoundResults(partialResult, tavily.result), stats };
+    if (tavily.result.disponibilidade !== 'encontrado') {
+      if (!partialResult) return { result: tavily.result, stats };
+      // Já temos preço parcial válido. Não trocamos um preço real por status negativo;
+      // continuamos procurando para tentar completar especificamente à vista + 12x.
+    } else {
+      partialResult = partialResult
+        ? mergeFoundResults(partialResult, tavily.result)
+        : tavily.result;
+
+      if (isCompletePriceResult(partialResult)) {
+        return { result: partialResult, stats };
+      }
+      // IMPORTANTE: preço parcial não encerra mais a pesquisa. Se Tavily trouxe apenas
+      // à vista ou apenas 12x, seguimos para URL/HTML adicionais para tentar completar.
     }
-    if (partialResult && tavily.result.disponibilidade !== 'encontrado') {
-      return { result: partialResult, stats };
-    }
-    return { result: tavily.result, stats };
   }
 
   const googleDiscovery = await discoverWithGoogleCse({ modelo: params.modelo, loja: params.loja });
@@ -2125,10 +2161,16 @@ export async function pesquisarPrecoSemIa(params: {
     });
     stats.httpRequests += googleProductAttempt.httpRequests;
     if (googleProductAttempt.result) {
-      if (partialResult && googleProductAttempt.result.disponibilidade === 'encontrado') {
-        return { result: mergeFoundResults(partialResult, googleProductAttempt.result), stats };
+      if (googleProductAttempt.result.disponibilidade === 'encontrado') {
+        partialResult = partialResult
+          ? mergeFoundResults(partialResult, googleProductAttempt.result)
+          : googleProductAttempt.result;
+        if (isCompletePriceResult(partialResult)) {
+          return { result: partialResult, stats };
+        }
+      } else if (!partialResult) {
+        return { result: googleProductAttempt.result, stats };
       }
-      return { result: googleProductAttempt.result, stats };
     }
   }
 
@@ -2136,10 +2178,13 @@ export async function pesquisarPrecoSemIa(params: {
   stats.httpRequests += htmlSearch.httpRequests;
   stats.discoveredUrl = stats.discoveredUrl || htmlSearch.discoveredUrl;
   if (htmlSearch.result) {
-    if (partialResult && htmlSearch.result.disponibilidade === 'encontrado') {
-      return { result: mergeFoundResults(partialResult, htmlSearch.result), stats };
+    if (htmlSearch.result.disponibilidade === 'encontrado') {
+      partialResult = partialResult
+        ? mergeFoundResults(partialResult, htmlSearch.result)
+        : htmlSearch.result;
+      return { result: partialResult, stats };
     }
-    return { result: htmlSearch.result, stats };
+    if (!partialResult) return { result: htmlSearch.result, stats };
   }
 
   if (partialResult) return { result: partialResult, stats };

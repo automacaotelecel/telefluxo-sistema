@@ -15,7 +15,7 @@ import {
 } from './onlinePrices.types';
 
 const ROOT_DIR = process.cwd();
-const CACHE_SCHEMA_VERSION = 6;
+const CACHE_SCHEMA_VERSION = 8;
 
 function envNumber(name: string, fallback: number): number {
   const parsed = Number(process.env[name]);
@@ -46,6 +46,20 @@ function getCacheTtlDays(): number {
 
 function getNegativeCacheTtlHours(): number {
   return Math.max(1, envNumber('ONLINE_PRICES_NEGATIVE_CACHE_TTL_HOURS', 12));
+}
+
+function getPartialCacheTtlHours(): number {
+  // Resultado parcial (só à vista ou só 12x) não pode ficar congelado por 7 dias.
+  // Guardamos por poucas horas para evitar custo repetido, mas permitimos nova tentativa.
+  return Math.max(1, envNumber('ONLINE_PRICES_PARTIAL_CACHE_TTL_HOURS', 6));
+}
+
+function isCompleteFoundPriceResult(result: OnlinePriceResult): boolean {
+  return !!(
+    result.disponibilidade === 'encontrado' &&
+    result.precoAvistaOnline &&
+    result.precoPrazo12xOnline
+  );
 }
 
 function getStaleUrlRetentionDays(): number {
@@ -383,7 +397,9 @@ function cacheResult(params: {
   const now = new Date();
   const ttlMs =
     params.result.disponibilidade === 'encontrado'
-      ? getCacheTtlDays() * 24 * 60 * 60 * 1000
+      ? isCompleteFoundPriceResult(params.result)
+        ? getCacheTtlDays() * 24 * 60 * 60 * 1000
+        : getPartialCacheTtlHours() * 60 * 60 * 1000
       : getNegativeCacheTtlHours() * 60 * 60 * 1000;
   const expiresAt = new Date(now.getTime() + ttlMs);
 
