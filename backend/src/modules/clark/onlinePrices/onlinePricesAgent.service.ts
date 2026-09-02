@@ -15,7 +15,7 @@ import {
 } from './onlinePrices.types';
 
 const ROOT_DIR = process.cwd();
-const CACHE_SCHEMA_VERSION = 2;
+const CACHE_SCHEMA_VERSION = 3;
 
 function envNumber(name: string, fallback: number): number {
   const parsed = Number(process.env[name]);
@@ -58,6 +58,10 @@ function isCacheEnabled(): boolean {
 
 function isDirectScrapeEnabled(): boolean {
   return envBoolean('ONLINE_PRICES_DIRECT_SCRAPE_ENABLED', true);
+}
+
+function isAiFallbackEnabled(): boolean {
+  return envBoolean('ONLINE_PRICES_AI_FALLBACK_ENABLED', true);
 }
 
 function getWebSearchUnitPriceUsd(): number {
@@ -224,11 +228,15 @@ function loadCache(): CacheStore {
     entries: {},
   });
 
-  if (!cache || !cache.entries || typeof cache.entries !== 'object') {
+  if (
+    !cache ||
+    cache.version !== CACHE_SCHEMA_VERSION ||
+    !cache.entries ||
+    typeof cache.entries !== 'object'
+  ) {
     return { version: CACHE_SCHEMA_VERSION, updatedAt: new Date().toISOString(), entries: {} };
   }
 
-  cache.version = CACHE_SCHEMA_VERSION;
   return cache;
 }
 
@@ -515,6 +523,22 @@ export async function analisarPrecosOnline(params: OnlinePriceAnalyzeOptions): P
     }
 
     if (unresolvedForAi.length === 0) continue;
+
+    if (!isAiFallbackEnabled()) {
+      unresolvedForAi.forEach((loja) => {
+        const planilha = getPlanilhaPoint(produto, loja);
+        const finalResult = criarResultadoIndisponivel({
+          modelo: produto.modelo,
+          loja,
+          planilha,
+          mensagem: 'NÃO ENCONTRADO SEM IA',
+        });
+        finalResult.disponibilidade = 'nao_encontrado';
+        finalResult.observacao = 'NÃO ENCONTRADO SEM IA';
+        allResults.push(finalResult);
+      });
+      continue;
+    }
 
     fallbacksIa += unresolvedForAi.length;
 

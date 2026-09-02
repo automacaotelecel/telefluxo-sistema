@@ -1,3 +1,4 @@
+import { getBaseModelFamily, extractStorage } from '../../productDictionary/productDictionary.utils';
 import { OnlinePriceResult, OnlineStoreTarget } from './onlinePrices.types';
 
 type DirectLookupStats = {
@@ -20,8 +21,27 @@ type PriceCandidate = {
   confidence: number;
 };
 
+type JsonFetchResult = {
+  data: any;
+  status: number;
+  ok: boolean;
+};
+
+type HtmlFetchResult = {
+  html: string | null;
+  status: number;
+  finalUrl: string;
+};
+
+type ProductSignature = {
+  family: string | null;
+  storage: string | null;
+  network: '4G' | '5G' | null;
+  normalized: string;
+};
+
 const DEFAULT_TIMEOUT_MS = 9000;
-const DEFAULT_MAX_HTML_CHARS = 1_800_000;
+const DEFAULT_MAX_HTML_CHARS = 2_400_000;
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36';
 
@@ -126,7 +146,10 @@ function isAllowedStoreUrl(value: string | null, loja: OnlineStoreTarget): boole
 
 function absolutizeUrl(href: string, baseUrl: string): string | null {
   try {
-    const value = decodeHtmlEntities(href).trim();
+    const value = decodeHtmlEntities(href)
+      .replace(/\\u002F/gi, '/')
+      .replace(/\\\//g, '/')
+      .trim();
     if (!value || value.startsWith('javascript:') || value.startsWith('#')) return null;
     return new URL(value, baseUrl).toString();
   } catch (_) {
@@ -134,52 +157,91 @@ function absolutizeUrl(href: string, baseUrl: string): string | null {
   }
 }
 
-function getModelTokens(modelo: string): string[] {
-  const stop = new Set([
-    'SMARTPHONE',
-    'CELULAR',
-    'APARELHO',
-    'SAMSUNG',
-    'GALAXY',
-    'APPLE',
-    'MOTOROLA',
-    'XIAOMI',
-    'MOTO',
-    'COM',
-    'DUAL',
-    'CHIP',
-    'ANDROID',
-    '5G',
-  ]);
+function extractNetwork(value: unknown): '4G' | '5G' | null {
+  const normalized = ` ${normalizeProductText(value)} `;
+  if (normalized.includes(' 5G ')) return '5G';
+  if (normalized.includes(' 4G ')) return '4G';
+  return null;
+}
 
-  return normalizeProductText(modelo)
-    .split(' ')
-    .filter(Boolean)
-    .filter((token) => !stop.has(token) && (token.length >= 2 || /\d/.test(token)));
+function buildProductSignature(value: string): ProductSignature {
+  const normalized = normalizeProductText(value);
+  const family = getBaseModelFamily(normalized) || null;
+  const storage = extractStorage(normalized) || null;
+  const network = extractNetwork(normalized);
+
+  return {
+    family: family ? normalizeProductText(family) : null,
+    storage: storage ? normalizeProductText(storage) : null,
+    network,
+    normalized,
+  };
+}
+
+function hasExactToken(haystack: string, token: string): boolean {
+  return ` ${haystack} `.includes(` ${token} `);
 }
 
 function modelMatchScore(modelo: string, candidateText: string): number {
-  const tokens = getModelTokens(modelo);
-  if (tokens.length === 0) return 0;
+  const target = buildProductSignature(modelo);
+  const candidateNormalized = normalizeProductText(candidateText);
+  if (!candidateNormalized) return 0;
 
-  const haystack = ` ${normalizeProductText(candidateText)} `;
-  const numericTokens = tokens.filter((token) => /\d/.test(token));
+  const candidateFamilyRaw = getBaseModelFamily(candidateNormalized) || '';
+  const candidateFamily = normalizeProductText(candidateFamilyRaw);
+  const candidateStorage = normalizeProductText(extractStorage(candidateNormalized) || '');
+  const candidateNetwork = extractNetwork(candidateNormalized);
 
-  for (const token of numericTokens) {
-    if (!haystack.includes(` ${token} `) && !haystack.includes(token)) {
-      return 0;
+  if (target.family) {
+    const familyMatches =
+      candidateFamily === target.family ||
+      candidateNormalized.includes(target.family);
+    if (!familyMatches) return 0;
+  }
+
+  if (target.storage) {
+    const storageMatches =
+      candidateStorage === target.storage ||
+      hasExactToken(candidateNormalized, target.storage);
+    if (!storageMatches) return 0;
+  }
+
+  if (target.network === '5G' && candidateNetwork !== '5G') return 0;
+  if (target.network === '4G' && candidateNetwork === '5G') return 0;
+
+  // Na planilha do projeto existem, por exemplo, A06 e A06 5G como produtos distintos.
+  // Se a consulta não fala 5G, não aceite silenciosamente a variante 5G.
+  if (!target.network && target.family?.match(/^GALAXY [AMF]\d{2}$/) && candidateNetwork === '5G') {
+    return 0;
+  }
+
+  const importantQualifiers = ['ULTRA', 'PLUS', 'PRO', 'FE', 'FOLD', 'FLIP'];
+  for (const qualifier of importantQualifiers) {
+    const targetHas = hasExactToken(target.normalized, qualifier);
+    const candidateHas = hasExactToken(candidateNormalized, qualifier);
+    if (targetHas && !candidateHas) return 0;
+    if (!targetHas && candidateHas && ['ULTRA', 'PLUS', 'PRO', 'FE'].includes(qualifier)) {
+      if (target.family?.startsWith('GALAXY S')) return 0;
     }
   }
 
+  let score = 0.55;
+  if (target.family) score += 0.2;
+  if (target.storage) score += 0.15;
+  if (target.network) score += 0.08;
+
+  const rawTokens = target.normalized
+    .split(' ')
+    .filter(Boolean)
+    .filter((token) => !['SAMSUNG', 'GALAXY', 'SMARTPHONE', 'CELULAR', 'APARELHO'].includes(token));
+
   let matched = 0;
-  let weight = 0;
-  for (const token of tokens) {
-    const tokenWeight = /\d/.test(token) ? 2 : 1;
-    weight += tokenWeight;
-    if (haystack.includes(` ${token} `) || haystack.includes(token)) matched += tokenWeight;
+  for (const token of rawTokens) {
+    if (hasExactToken(candidateNormalized, token) || candidateNormalized.includes(token)) matched += 1;
   }
 
-  return weight > 0 ? matched / weight : 0;
+  if (rawTokens.length > 0) score += (matched / rawTokens.length) * 0.12;
+  return Math.min(1, score);
 }
 
 function metaContent(html: string, attrName: string, attrValue: string): string | null {
@@ -265,10 +327,11 @@ function collectProductJson(value: any, out: any[]) {
 }
 
 function extractInstallment(html: string): { total: number | null; text: string | null } {
-  const plain = stripHtml(html).slice(0, 600_000);
+  const plain = stripHtml(html).slice(0, 900_000);
   const patterns = [
     /12\s*x\s*(?:de\s*)?R\$\s*([0-9.]+,[0-9]{2})/i,
     /12\s*parcelas?\s*(?:de\s*)?R\$\s*([0-9.]+,[0-9]{2})/i,
+    /em\s+ate\s+12x\s+de\s+R\$\s*([0-9.]+,[0-9]{2})/i,
   ];
 
   for (const pattern of patterns) {
@@ -294,19 +357,22 @@ function structuredCandidates(html: string, pageUrl: string, modelo: string): Pr
     const price = firstPriceFromOffer(product?.offers ?? product?.aggregateOffer ?? product?.priceSpecification);
     const score = modelMatchScore(modelo, `${title || ''} ${url || ''}`);
 
-    if (score >= 0.55 && (price || url)) {
+    if (score >= 0.72 && (price || url)) {
       candidates.push({
         title,
         url,
         price,
         termPrice: null,
         installmentText: null,
-        confidence: Math.round(Math.min(98, 72 + score * 24)),
+        confidence: Math.round(Math.min(99, 72 + score * 26)),
       });
     }
   }
 
-  const ogTitle = metaContent(html, 'property', 'og:title') || metaContent(html, 'name', 'title');
+  const ogTitle =
+    metaContent(html, 'property', 'og:title') ||
+    metaContent(html, 'name', 'title') ||
+    metaContent(html, 'name', 'twitter:title');
   const ogUrl = metaContent(html, 'property', 'og:url') || pageUrl;
   const metaPrice =
     toPrice(metaContent(html, 'property', 'product:price:amount')) ||
@@ -314,84 +380,173 @@ function structuredCandidates(html: string, pageUrl: string, modelo: string): Pr
     toPrice(metaContent(html, 'property', 'og:price:amount'));
   const metaScore = modelMatchScore(modelo, `${ogTitle || ''} ${ogUrl || ''}`);
 
-  if (metaScore >= 0.55 && (metaPrice || ogUrl)) {
+  if (metaScore >= 0.72 && (metaPrice || ogUrl)) {
     candidates.push({
       title: ogTitle,
       url: ogUrl,
       price: metaPrice,
       termPrice: null,
       installmentText: null,
-      confidence: Math.round(Math.min(94, 68 + metaScore * 22)),
+      confidence: Math.round(Math.min(97, 70 + metaScore * 25)),
     });
   }
 
   return candidates;
 }
 
-function anchorCandidates(html: string, pageUrl: string, modelo: string, loja: OnlineStoreTarget): PriceCandidate[] {
+function extractHrefCandidatesWithContext(
+  html: string,
+  pageUrl: string,
+  modelo: string,
+  loja: OnlineStoreTarget,
+): PriceCandidate[] {
   const candidates: PriceCandidate[] = [];
-  const regex = /<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]{0,1600}?)<\/a>/gi;
+  const regex = /<a\b[^>]*href=(["'])([\s\S]*?)\1[^>]*>([\s\S]*?)<\/a>/gi;
   let match: RegExpExecArray | null;
   let seen = 0;
 
-  while ((match = regex.exec(html)) !== null && seen < 5000) {
+  while ((match = regex.exec(html)) !== null && seen < 8000) {
     seen += 1;
-    const href = absolutizeUrl(match[1] || '', pageUrl);
+    const href = absolutizeUrl(match[2] || '', pageUrl);
     if (!href || !isAllowedStoreUrl(href, loja)) continue;
 
-    const text = stripHtml(match[2] || '').slice(0, 400);
-    const score = modelMatchScore(modelo, `${text} ${href}`);
-    if (score < 0.68) continue;
+    const inner = stripHtml(match[3] || '').slice(0, 500);
+    const start = Math.max(0, match.index - 2400);
+    const end = Math.min(html.length, regex.lastIndex + 2400);
+    const context = stripHtml(html.slice(start, end)).slice(0, 5000);
+
+    const scoreInner = modelMatchScore(modelo, `${inner} ${href}`);
+    const scoreContext = modelMatchScore(modelo, `${context} ${href}`);
+    const score = Math.max(scoreInner, scoreContext * 0.96);
+    if (score < 0.72) continue;
 
     candidates.push({
-      title: text || null,
+      title: inner || null,
       url: href,
       price: null,
       termPrice: null,
       installmentText: null,
-      confidence: Math.round(Math.min(90, 60 + score * 28)),
+      confidence: Math.round(Math.min(94, 62 + score * 30)),
     });
   }
 
   return candidates;
 }
 
-function chooseCandidate(candidates: PriceCandidate[], modelo: string, loja: OnlineStoreTarget): PriceCandidate | null {
-  const valid = candidates
+function extractEmbeddedUrlCandidates(
+  html: string,
+  pageUrl: string,
+  modelo: string,
+  loja: OnlineStoreTarget,
+): PriceCandidate[] {
+  const candidates: PriceCandidate[] = [];
+  const patterns = [
+    /["'](?:permalink|canonical_url|product_url|url)["']\s*:\s*["'](https?:\\?\/\\?\/[^"']+)["']/gi,
+    /https?:\\?\/\\?\/(?:www\.)?(?:produto\.)?mercadolivre\.com\.br\/[A-Za-z0-9_?=&%./\-\\]+/gi,
+  ];
+
+  for (const pattern of patterns) {
+    let match: RegExpExecArray | null;
+    let seen = 0;
+    while ((match = pattern.exec(html)) !== null && seen < 2500) {
+      seen += 1;
+      const rawUrl = match[1] || match[0] || '';
+      const href = absolutizeUrl(rawUrl, pageUrl);
+      if (!href || !isAllowedStoreUrl(href, loja)) continue;
+
+      const start = Math.max(0, match.index - 3500);
+      const end = Math.min(html.length, pattern.lastIndex + 3500);
+      const context = decodeHtmlEntities(html.slice(start, end))
+        .replace(/\\u002F/gi, '/')
+        .replace(/\\\//g, '/')
+        .replace(/\\u00([0-9a-f]{2})/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+
+      const score = modelMatchScore(modelo, context);
+      if (score < 0.72) continue;
+
+      const titleMatch = context.match(/["'](?:title|name)["']\s*:\s*["']([^"']{3,240})["']/i);
+      candidates.push({
+        title: titleMatch?.[1] ? decodeHtmlEntities(titleMatch[1]) : null,
+        url: href,
+        price: null,
+        termPrice: null,
+        installmentText: null,
+        confidence: Math.round(Math.min(92, 60 + score * 30)),
+      });
+    }
+  }
+
+  return candidates;
+}
+
+function rankCandidates(
+  candidates: PriceCandidate[],
+  modelo: string,
+  loja: OnlineStoreTarget,
+): PriceCandidate[] {
+  const seen = new Set<string>();
+
+  return candidates
     .filter((candidate) => !candidate.url || isAllowedStoreUrl(candidate.url, loja))
     .map((candidate) => ({
       candidate,
       score: modelMatchScore(modelo, `${candidate.title || ''} ${candidate.url || ''}`),
     }))
-    .filter((item) => item.score >= 0.55)
+    .filter((item) => item.score >= 0.72)
     .sort((a, b) => {
       const aPrice = a.candidate.price ? 1 : 0;
       const bPrice = b.candidate.price ? 1 : 0;
       if (aPrice !== bPrice) return bPrice - aPrice;
       if (a.score !== b.score) return b.score - a.score;
       return b.candidate.confidence - a.candidate.confidence;
+    })
+    .map((item) => item.candidate)
+    .filter((candidate) => {
+      const key = candidate.url || `${candidate.title || ''}:${candidate.price || ''}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+function choosePricedCandidate(
+  candidates: PriceCandidate[],
+  modelo: string,
+  loja: OnlineStoreTarget,
+): PriceCandidate | null {
+  const ranked = rankCandidates(candidates, modelo, loja)
+    .filter((candidate) => candidate.price || candidate.termPrice)
+    .sort((a, b) => {
+      const priceA = a.price ?? a.termPrice ?? Number.MAX_SAFE_INTEGER;
+      const priceB = b.price ?? b.termPrice ?? Number.MAX_SAFE_INTEGER;
+      return priceA - priceB;
     });
 
-  return valid[0]?.candidate || null;
+  return ranked[0] || null;
+}
+
+function getStoreKey(loja: OnlineStoreTarget): string {
+  return normalizeProductText(loja.nome);
 }
 
 function buildSearchUrl(modelo: string, loja: OnlineStoreTarget): string | null {
-  const store = normalizeProductText(loja.nome);
+  const store = getStoreKey(loja);
   const query = modelo.trim();
   if (!query) return null;
 
   if (store.includes('MERCADO LIVRE')) {
-    const slug = encodeURIComponent(query).replace(/%20/g, '-');
-    return `https://lista.mercadolivre.com.br/${slug}`;
+    const slug = normalizeProductText(query).toLowerCase().replace(/\s+/g, '-');
+    return `https://lista.mercadolivre.com.br/${encodeURIComponent(slug).replace(/%2D/g, '-')}`;
+  }
+  if (store.includes('CARREFOUR')) {
+    // É o formato atualmente utilizado pela busca web do Carrefour.
+    return `https://www.carrefour.com.br/busca/${encodeURIComponent(query)}`;
   }
   if (store.includes('MAGALU') || store.includes('MAGAZINE LUIZA')) {
     return `https://www.magazineluiza.com.br/busca/${encodeURIComponent(query)}/`;
   }
   if (store.includes('AMAZON')) {
     return `https://www.amazon.com.br/s?k=${encodeURIComponent(query)}`;
-  }
-  if (store.includes('CARREFOUR')) {
-    return `https://www.carrefour.com.br/busca?q=${encodeURIComponent(query)}`;
   }
   if (store.includes('FAST SHOP') || store.includes('FASTSHOP')) {
     return `https://www.fastshop.com.br/web/q/${encodeURIComponent(query)}`;
@@ -404,61 +559,34 @@ function buildSearchUrl(modelo: string, loja: OnlineStoreTarget): string | null 
   return firstDomain ? `https://${firstDomain}/search?q=${encodeURIComponent(query)}` : null;
 }
 
-
-async function discoverWithGoogleCse(params: {
-  modelo: string;
-  loja: OnlineStoreTarget;
-}): Promise<{ url: string | null; httpRequests: number }> {
-  const apiKey = String(process.env.GOOGLE_CSE_API_KEY || '').trim();
-  const cx = String(process.env.GOOGLE_CSE_CX || '').trim();
-  if (!apiKey || !cx || params.loja.dominios.length === 0) {
-    return { url: null, httpRequests: 0 };
-  }
-
-  const domains = params.loja.dominios.map(normalizeDomain).filter(Boolean);
-  const siteQuery = domains.map((domain) => `site:${domain}`).join(' OR ');
-  const query = `"${params.modelo}" (${siteQuery})`;
-  const endpoint = new URL('https://www.googleapis.com/customsearch/v1');
-  endpoint.searchParams.set('key', apiKey);
-  endpoint.searchParams.set('cx', cx);
-  endpoint.searchParams.set('q', query);
-  endpoint.searchParams.set('num', '5');
-  endpoint.searchParams.set('gl', 'br');
-  endpoint.searchParams.set('hl', 'pt-BR');
-
+async function fetchJson(url: string, headers?: Record<string, string>): Promise<JsonFetchResult> {
+  const timeoutMs = Math.max(2000, envNumber('ONLINE_PRICES_HTTP_TIMEOUT_MS', DEFAULT_TIMEOUT_MS));
   const controller = new AbortController();
-  const timer = setTimeout(
-    () => controller.abort(),
-    Math.max(2000, envNumber('ONLINE_PRICES_HTTP_TIMEOUT_MS', DEFAULT_TIMEOUT_MS)),
-  );
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const response = await fetch(endpoint.toString(), {
+    const response = await fetch(url, {
+      method: 'GET',
+      redirect: 'follow',
       signal: controller.signal,
-      headers: { accept: 'application/json' },
+      headers: {
+        'user-agent': USER_AGENT,
+        accept: 'application/json,text/plain,*/*',
+        'accept-language': 'pt-BR,pt;q=0.9,en;q=0.7',
+        ...headers,
+      },
     });
-    if (!response.ok) return { url: null, httpRequests: 1 };
 
-    const payload: any = await response.json().catch(() => null);
-    const items = Array.isArray(payload?.items) ? payload.items : [];
-    const ranked = items
-      .map((item: any) => {
-        const link = String(item?.link || '').trim();
-        const text = `${item?.title || ''} ${item?.snippet || ''} ${link}`;
-        return { link, score: modelMatchScore(params.modelo, text) };
-      })
-      .filter((item: { link: string; score: number }) => item.score >= 0.62 && isAllowedStoreUrl(item.link, params.loja))
-      .sort((a: { score: number }, b: { score: number }) => b.score - a.score);
-
-    return { url: ranked[0]?.link || null, httpRequests: 1 };
+    const data = await response.json().catch(() => null);
+    return { data, status: response.status, ok: response.ok };
   } catch (_) {
-    return { url: null, httpRequests: 1 };
+    return { data: null, status: 0, ok: false };
   } finally {
     clearTimeout(timer);
   }
 }
 
-async function fetchHtml(url: string): Promise<string | null> {
+async function fetchHtml(url: string): Promise<HtmlFetchResult> {
   const timeoutMs = Math.max(2000, envNumber('ONLINE_PRICES_HTTP_TIMEOUT_MS', DEFAULT_TIMEOUT_MS));
   const maxChars = Math.max(100_000, envNumber('ONLINE_PRICES_MAX_HTML_CHARS', DEFAULT_MAX_HTML_CHARS));
   const controller = new AbortController();
@@ -474,19 +602,25 @@ async function fetchHtml(url: string): Promise<string | null> {
         accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'accept-language': 'pt-BR,pt;q=0.9,en;q=0.7',
         'cache-control': 'no-cache',
+        pragma: 'no-cache',
+        'upgrade-insecure-requests': '1',
       },
     });
 
-    if (!response.ok) return null;
+    if (!response.ok) return { html: null, status: response.status, finalUrl: response.url || url };
     const contentType = String(response.headers.get('content-type') || '').toLowerCase();
     if (contentType && !contentType.includes('text/html') && !contentType.includes('application/xhtml')) {
-      return null;
+      return { html: null, status: response.status, finalUrl: response.url || url };
     }
 
     const text = await response.text();
-    return text ? text.slice(0, maxChars) : null;
+    return {
+      html: text ? text.slice(0, maxChars) : null,
+      status: response.status,
+      finalUrl: response.url || url,
+    };
   } catch (_) {
-    return null;
+    return { html: null, status: 0, finalUrl: url };
   } finally {
     clearTimeout(timer);
   }
@@ -496,10 +630,10 @@ function resultFromCandidate(params: {
   modelo: string;
   loja: OnlineStoreTarget;
   candidate: PriceCandidate;
-  html: string;
+  html?: string | null;
   source: string;
 }): OnlinePriceResult | null {
-  const installment = extractInstallment(params.html);
+  const installment = params.html ? extractInstallment(params.html) : { total: null, text: null };
   const cash = toPrice(params.candidate.price);
   const term = toPrice(params.candidate.termPrice) || installment.total;
 
@@ -536,20 +670,16 @@ async function tryProductPage(params: {
 }): Promise<{ result: OnlinePriceResult | null; httpRequests: number }> {
   if (!isAllowedStoreUrl(params.url, params.loja)) return { result: null, httpRequests: 0 };
 
-  const html = await fetchHtml(params.url);
-  if (!html) return { result: null, httpRequests: 1 };
+  const page = await fetchHtml(params.url);
+  if (!page.html) return { result: null, httpRequests: 1 };
 
-  const candidate = chooseCandidate(
-    structuredCandidates(html, params.url, params.modelo),
-    params.modelo,
-    params.loja,
-  );
-
+  const candidates = structuredCandidates(page.html, page.finalUrl || params.url, params.modelo);
+  const candidate = choosePricedCandidate(candidates, params.modelo, params.loja);
   if (!candidate) return { result: null, httpRequests: 1 };
 
   const normalizedCandidate: PriceCandidate = {
     ...candidate,
-    url: candidate.url || params.url,
+    url: candidate.url || page.finalUrl || params.url,
   };
 
   return {
@@ -557,11 +687,289 @@ async function tryProductPage(params: {
       modelo: params.modelo,
       loja: params.loja,
       candidate: normalizedCandidate,
-      html,
+      html: page.html,
       source: params.source,
     }),
     httpRequests: 1,
   };
+}
+
+function vtexInstallment(offer: any): { total: number | null; text: string | null } {
+  const installments = Array.isArray(offer?.Installments)
+    ? offer.Installments
+    : Array.isArray(offer?.installments)
+      ? offer.installments
+      : [];
+
+  const twelve = installments
+    .filter((item: any) => Number(item?.NumberOfInstallments ?? item?.numberOfInstallments) === 12)
+    .map((item: any) => {
+      const quantity = Number(item?.NumberOfInstallments ?? item?.numberOfInstallments ?? 12);
+      const amount = toPrice(item?.Value ?? item?.value ?? item?.InterestRateValue);
+      const explicitTotal = toPrice(item?.TotalValuePlusInterestRate ?? item?.totalValuePlusInterestRate);
+      const total = explicitTotal || (amount ? Math.round(quantity * amount * 100) / 100 : null);
+      return { quantity, amount, total };
+    })
+    .filter((item: { total: number | null }) => !!item.total)
+    .sort((a: { total: number | null }, b: { total: number | null }) => (a.total || 0) - (b.total || 0))[0];
+
+  if (!twelve?.total) return { total: null, text: null };
+  return {
+    total: twelve.total,
+    text: twelve.amount ? `12x de R$ ${twelve.amount.toFixed(2).replace('.', ',')}` : '12x',
+  };
+}
+
+async function pesquisarCarrefourVtex(params: {
+  modelo: string;
+  loja: OnlineStoreTarget;
+}): Promise<{ result: OnlinePriceResult | null; httpRequests: number }> {
+  const endpoint = new URL('https://www.carrefour.com.br/api/catalog_system/pub/products/search');
+  endpoint.searchParams.set('ft', params.modelo);
+  endpoint.searchParams.set('_from', '0');
+  endpoint.searchParams.set('_to', '29');
+
+  const response = await fetchJson(endpoint.toString());
+  if (!response.ok || !Array.isArray(response.data)) {
+    return { result: null, httpRequests: 1 };
+  }
+
+  const candidates: PriceCandidate[] = [];
+
+  for (const product of response.data) {
+    const productName = String(product?.productName || product?.productTitle || product?.name || '').trim();
+    const productUrl =
+      absolutizeUrl(String(product?.link || ''), 'https://www.carrefour.com.br') ||
+      (product?.linkText
+        ? `https://www.carrefour.com.br/${String(product.linkText).replace(/^\/+/, '')}/p`
+        : null);
+
+    const items = Array.isArray(product?.items) ? product.items : [];
+    if (items.length === 0) {
+      const score = modelMatchScore(params.modelo, productName);
+      if (score >= 0.72 && productUrl) {
+        candidates.push({
+          title: productName || null,
+          url: productUrl,
+          price: null,
+          termPrice: null,
+          installmentText: null,
+          confidence: Math.round(72 + score * 24),
+        });
+      }
+      continue;
+    }
+
+    for (const item of items) {
+      const itemName = String(item?.nameComplete || item?.name || '').trim();
+      const title = [productName, itemName].filter(Boolean).join(' - ');
+      const score = modelMatchScore(params.modelo, title);
+      if (score < 0.72) continue;
+
+      const sellers = Array.isArray(item?.sellers) ? item.sellers : [];
+      for (const seller of sellers) {
+        const offer = seller?.commertialOffer || seller?.commercialOffer || {};
+        const available = Number(offer?.AvailableQuantity ?? offer?.availableQuantity ?? 1);
+        if (Number.isFinite(available) && available <= 0) continue;
+
+        const price =
+          toPrice(offer?.spotPrice) ||
+          toPrice(offer?.Price) ||
+          toPrice(offer?.price) ||
+          toPrice(offer?.PriceWithoutDiscount);
+        if (!price) continue;
+
+        const installment = vtexInstallment(offer);
+        candidates.push({
+          title: title || productName || null,
+          url: productUrl,
+          price,
+          termPrice: installment.total,
+          installmentText: installment.text,
+          confidence: Math.round(Math.min(99, 78 + score * 20)),
+        });
+      }
+    }
+  }
+
+  const candidate = choosePricedCandidate(candidates, params.modelo, params.loja);
+  if (!candidate) return { result: null, httpRequests: 1 };
+
+  return {
+    result: resultFromCandidate({
+      modelo: params.modelo,
+      loja: params.loja,
+      candidate,
+      source: 'carrefour_vtex_api',
+    }),
+    httpRequests: 1,
+  };
+}
+
+async function pesquisarMercadoLivreApi(params: {
+  modelo: string;
+  loja: OnlineStoreTarget;
+}): Promise<{ result: OnlinePriceResult | null; httpRequests: number }> {
+  const endpoint = new URL('https://api.mercadolibre.com/sites/MLB/search');
+  endpoint.searchParams.set('q', params.modelo);
+  endpoint.searchParams.set('limit', '50');
+
+  const accessToken = String(process.env.MERCADOLIVRE_ACCESS_TOKEN || '').trim();
+  const headers: Record<string, string> = {};
+  if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
+
+  const response = await fetchJson(endpoint.toString(), headers);
+  const items = Array.isArray(response.data?.results) ? response.data.results : [];
+  if (!response.ok || items.length === 0) {
+    return { result: null, httpRequests: 1 };
+  }
+
+  const candidates: PriceCandidate[] = [];
+  for (const item of items) {
+    const title = String(item?.title || '').trim();
+    const url = String(item?.permalink || '').trim() || null;
+    const score = modelMatchScore(params.modelo, title);
+    if (score < 0.72 || !url || !isAllowedStoreUrl(url, params.loja)) continue;
+
+    const price = toPrice(item?.price);
+    if (!price) continue;
+
+    const quantity = Number(item?.installments?.quantity || 0);
+    const installmentAmount = toPrice(item?.installments?.amount);
+    const termPrice = quantity === 12 && installmentAmount
+      ? Math.round(quantity * installmentAmount * 100) / 100
+      : null;
+
+    candidates.push({
+      title,
+      url,
+      price,
+      termPrice,
+      installmentText:
+        quantity === 12 && installmentAmount
+          ? `12x de R$ ${installmentAmount.toFixed(2).replace('.', ',')}`
+          : null,
+      confidence: Math.round(Math.min(99, 80 + score * 19)),
+    });
+  }
+
+  const candidate = choosePricedCandidate(candidates, params.modelo, params.loja);
+  if (!candidate) return { result: null, httpRequests: 1 };
+
+  return {
+    result: resultFromCandidate({
+      modelo: params.modelo,
+      loja: params.loja,
+      candidate,
+      source: 'mercadolivre_api',
+    }),
+    httpRequests: 1,
+  };
+}
+
+async function discoverWithGoogleCse(params: {
+  modelo: string;
+  loja: OnlineStoreTarget;
+}): Promise<{ url: string | null; httpRequests: number }> {
+  const apiKey = String(process.env.GOOGLE_CSE_API_KEY || '').trim();
+  const cx = String(process.env.GOOGLE_CSE_CX || '').trim();
+  if (!apiKey || !cx || params.loja.dominios.length === 0) {
+    return { url: null, httpRequests: 0 };
+  }
+
+  const domains = params.loja.dominios.map(normalizeDomain).filter(Boolean);
+  const siteQuery = domains.map((domain) => `site:${domain}`).join(' OR ');
+  const query = `"${params.modelo}" (${siteQuery})`;
+  const endpoint = new URL('https://www.googleapis.com/customsearch/v1');
+  endpoint.searchParams.set('key', apiKey);
+  endpoint.searchParams.set('cx', cx);
+  endpoint.searchParams.set('q', query);
+  endpoint.searchParams.set('num', '5');
+  endpoint.searchParams.set('gl', 'br');
+  endpoint.searchParams.set('hl', 'pt-BR');
+
+  const response = await fetchJson(endpoint.toString());
+  if (!response.ok) return { url: null, httpRequests: 1 };
+
+  const items = Array.isArray(response.data?.items) ? response.data.items : [];
+  const ranked = items
+    .map((item: any) => {
+      const link = String(item?.link || '').trim();
+      const text = `${item?.title || ''} ${item?.snippet || ''} ${link}`;
+      return { link, score: modelMatchScore(params.modelo, text) };
+    })
+    .filter(
+      (item: { link: string; score: number }) =>
+        item.score >= 0.72 && isAllowedStoreUrl(item.link, params.loja),
+    )
+    .sort((a: { score: number }, b: { score: number }) => b.score - a.score);
+
+  return { url: ranked[0]?.link || null, httpRequests: 1 };
+}
+
+async function pesquisarBuscaHtml(params: {
+  modelo: string;
+  loja: OnlineStoreTarget;
+}): Promise<{ result: OnlinePriceResult | null; httpRequests: number; discoveredUrl: boolean }> {
+  const searchUrl = buildSearchUrl(params.modelo, params.loja);
+  if (!searchUrl || !isAllowedStoreUrl(searchUrl, params.loja)) {
+    return { result: null, httpRequests: 0, discoveredUrl: false };
+  }
+
+  const searchPage = await fetchHtml(searchUrl);
+  let httpRequests = 1;
+  if (!searchPage.html) return { result: null, httpRequests, discoveredUrl: false };
+
+  const structured = structuredCandidates(searchPage.html, searchPage.finalUrl || searchUrl, params.modelo);
+  const directCandidate = choosePricedCandidate(structured, params.modelo, params.loja);
+  if (directCandidate?.price) {
+    const result = resultFromCandidate({
+      modelo: params.modelo,
+      loja: params.loja,
+      candidate: directCandidate,
+      html: searchPage.html,
+      source: 'http_search_structured',
+    });
+    if (result) return { result, httpRequests, discoveredUrl: !!result.url };
+  }
+
+  const hrefCandidates = extractHrefCandidatesWithContext(
+    searchPage.html,
+    searchPage.finalUrl || searchUrl,
+    params.modelo,
+    params.loja,
+  );
+  const embeddedCandidates = extractEmbeddedUrlCandidates(
+    searchPage.html,
+    searchPage.finalUrl || searchUrl,
+    params.modelo,
+    params.loja,
+  );
+
+  const ranked = rankCandidates(
+    [...structured, ...hrefCandidates, ...embeddedCandidates],
+    params.modelo,
+    params.loja,
+  ).filter((candidate) => candidate.url && candidate.url !== searchPage.finalUrl && candidate.url !== searchUrl);
+
+  const maxProductPages = Math.max(1, Math.min(8, envNumber('ONLINE_PRICES_MAX_PRODUCT_PAGES_PER_STORE', 5)));
+  let discoveredUrl = ranked.length > 0;
+
+  for (const candidate of ranked.slice(0, maxProductPages)) {
+    if (!candidate.url) continue;
+    const productAttempt = await tryProductPage({
+      modelo: params.modelo,
+      loja: params.loja,
+      url: candidate.url,
+      source: 'http_store_search',
+    });
+    httpRequests += productAttempt.httpRequests;
+    if (productAttempt.result) {
+      return { result: productAttempt.result, httpRequests, discoveredUrl: true };
+    }
+  }
+
+  return { result: null, httpRequests, discoveredUrl };
 }
 
 export async function pesquisarPrecoSemIa(params: {
@@ -589,6 +997,29 @@ export async function pesquisarPrecoSemIa(params: {
     if (cachedUrlAttempt.result) return { result: cachedUrlAttempt.result, stats };
   }
 
+  const store = getStoreKey(params.loja);
+
+  // Carrefour usa VTEX. Consultar o catálogo JSON evita HTML/JS e é muito mais barato e estável.
+  if (store.includes('CARREFOUR')) {
+    const vtex = await pesquisarCarrefourVtex({ modelo: params.modelo, loja: params.loja });
+    stats.httpRequests += vtex.httpRequests;
+    if (vtex.result) {
+      stats.discoveredUrl = !!vtex.result.url;
+      return { result: vtex.result, stats };
+    }
+  }
+
+  // Mercado Livre: tenta a API oficial primeiro. Se o endpoint não estiver liberado para a aplicação,
+  // cai automaticamente para a página pública de busca, sem consumir tokens de IA.
+  if (store.includes('MERCADO LIVRE')) {
+    const mercadoLivre = await pesquisarMercadoLivreApi({ modelo: params.modelo, loja: params.loja });
+    stats.httpRequests += mercadoLivre.httpRequests;
+    if (mercadoLivre.result) {
+      stats.discoveredUrl = !!mercadoLivre.result.url;
+      return { result: mercadoLivre.result, stats };
+    }
+  }
+
   const googleDiscovery = await discoverWithGoogleCse({ modelo: params.modelo, loja: params.loja });
   stats.httpRequests += googleDiscovery.httpRequests;
   if (googleDiscovery.url) {
@@ -603,41 +1034,10 @@ export async function pesquisarPrecoSemIa(params: {
     if (googleProductAttempt.result) return { result: googleProductAttempt.result, stats };
   }
 
-  const searchUrl = buildSearchUrl(params.modelo, params.loja);
-  if (!searchUrl || !isAllowedStoreUrl(searchUrl, params.loja)) return { result: null, stats };
+  const htmlSearch = await pesquisarBuscaHtml({ modelo: params.modelo, loja: params.loja });
+  stats.httpRequests += htmlSearch.httpRequests;
+  stats.discoveredUrl = stats.discoveredUrl || htmlSearch.discoveredUrl;
+  if (htmlSearch.result) return { result: htmlSearch.result, stats };
 
-  const searchHtml = await fetchHtml(searchUrl);
-  stats.httpRequests += 1;
-  if (!searchHtml) return { result: null, stats };
-
-  const structured = structuredCandidates(searchHtml, searchUrl, params.modelo);
-  const directCandidate = chooseCandidate(structured, params.modelo, params.loja);
-  if (directCandidate?.price) {
-    const result = resultFromCandidate({
-      modelo: params.modelo,
-      loja: params.loja,
-      candidate: directCandidate,
-      html: searchHtml,
-      source: 'http_search_structured',
-    });
-    if (result) {
-      stats.discoveredUrl = !!result.url;
-      return { result, stats };
-    }
-  }
-
-  const links = anchorCandidates(searchHtml, searchUrl, params.modelo, params.loja);
-  const candidate = chooseCandidate([...structured, ...links], params.modelo, params.loja);
-  if (!candidate?.url || candidate.url === searchUrl) return { result: null, stats };
-
-  stats.discoveredUrl = true;
-  const productAttempt = await tryProductPage({
-    modelo: params.modelo,
-    loja: params.loja,
-    url: candidate.url,
-    source: 'http_store_search',
-  });
-  stats.httpRequests += productAttempt.httpRequests;
-
-  return { result: productAttempt.result, stats };
+  return { result: null, stats };
 }
