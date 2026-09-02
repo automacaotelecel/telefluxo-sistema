@@ -3,6 +3,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { gerarRelatorioOnlinePricesExcel, parseOnlinePricesWorkbook } from './onlinePricesExcel.service';
 import { pesquisarModeloEmLojasClaude } from './onlinePricesClaude.service';
+import { pesquisarPrecoSemIa } from './onlinePricesScraper.service';
 import {
   OnlinePriceAnalysisSummary,
   OnlinePriceAnalyzeOptions,
@@ -28,24 +29,35 @@ function envBoolean(name: string, fallback: boolean): boolean {
 }
 
 function getDefaultMaxModels(): number {
-  return envNumber('ONLINE_PRICES_DEFAULT_MAX_MODELS', 0); // 0 = todos
+  return envNumber('ONLINE_PRICES_DEFAULT_MAX_MODELS', 0);
 }
 
 function getDefaultMaxStores(): number {
-  return envNumber('ONLINE_PRICES_DEFAULT_MAX_STORES', 0); // 0 = todas
+  return envNumber('ONLINE_PRICES_DEFAULT_MAX_STORES', 0);
 }
 
 function getDefaultMaxSearchUsesPerModel(): number {
-  // Antes o padrão era 8. Para o volume real do usuário, 3 reduz muito custo.
-  return envNumber('ONLINE_PRICES_MAX_WEB_SEARCH_PER_MODEL', 3);
+  return Math.max(1, envNumber('ONLINE_PRICES_MAX_WEB_SEARCH_PER_MODEL', 2));
 }
 
 function getCacheTtlDays(): number {
   return Math.max(1, envNumber('ONLINE_PRICES_CACHE_TTL_DAYS', 7));
 }
 
+function getNegativeCacheTtlHours(): number {
+  return Math.max(1, envNumber('ONLINE_PRICES_NEGATIVE_CACHE_TTL_HOURS', 12));
+}
+
+function getStaleUrlRetentionDays(): number {
+  return Math.max(getCacheTtlDays(), envNumber('ONLINE_PRICES_STALE_URL_RETENTION_DAYS', 45));
+}
+
 function isCacheEnabled(): boolean {
   return envBoolean('ONLINE_PRICES_CACHE_ENABLED', true);
+}
+
+function isDirectScrapeEnabled(): boolean {
+  return envBoolean('ONLINE_PRICES_DIRECT_SCRAPE_ENABLED', true);
 }
 
 function getWebSearchUnitPriceUsd(): number {
@@ -93,6 +105,11 @@ function montarResumo(params: {
   cacheHits: number;
   cacheMisses: number;
   modelosPesquisadosNaApi: number;
+  httpRequests: number;
+  resolvidosSemIa: number;
+  fallbacksIa: number;
+  urlsReutilizadas: number;
+  urlsDescobertas: number;
 }): OnlinePriceAnalysisSummary {
   const encontrados = params.results.filter((r) => r.disponibilidade === 'encontrado').length;
   const indisponiveis = params.results.filter((r) => r.disponibilidade === 'indisponivel').length;
@@ -116,6 +133,11 @@ function montarResumo(params: {
     cacheMisses: params.cacheMisses,
     modelosPesquisadosNaApi: params.modelosPesquisadosNaApi,
     cacheTtlDias: getCacheTtlDays(),
+    httpRequests: params.httpRequests,
+    resolvidosSemIa: params.resolvidosSemIa,
+    fallbacksIa: params.fallbacksIa,
+    urlsReutilizadas: params.urlsReutilizadas,
+    urlsDescobertas: params.urlsDescobertas,
   };
 }
 
@@ -149,6 +171,7 @@ function normalizar(value: unknown): string {
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .toUpperCase()
+    .replace(/(\d+)\s*(GB|TB)\b/g, '$1$2')
     .replace(/[^A-Z0-9]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -201,10 +224,11 @@ function loadCache(): CacheStore {
     entries: {},
   });
 
-  if (!cache || cache.version !== CACHE_SCHEMA_VERSION || !cache.entries) {
+  if (!cache || !cache.entries || typeof cache.entries !== 'object') {
     return { version: CACHE_SCHEMA_VERSION, updatedAt: new Date().toISOString(), entries: {} };
   }
 
+  cache.version = CACHE_SCHEMA_VERSION;
   return cache;
 }
 
@@ -219,15 +243,29 @@ function isFreshCache(entry: CacheEntry | undefined): entry is CacheEntry {
   return Number.isFinite(expires) && expires > Date.now();
 }
 
-function pruneExpiredCache(cache: CacheStore) {
+function isStaleUrlReusable(entry: CacheEntry | undefined): entry is CacheEntry {
+  if (!entry?.result?.url) return false;
+  const createdAt = new Date(entry.createdAt).getTime();
+  if (!Number.isFinite(createdAt)) return false;
+  const maxAge = getStaleUrlRetentionDays() * 24 * 60 * 60 * 1000;
+  return createdAt + maxAge > Date.now();
+}
+
+function pruneDeadCache(cache: CacheStore) {
+  const maxAge = getStaleUrlRetentionDays() * 24 * 60 * 60 * 1000;
   Object.keys(cache.entries).forEach((key) => {
-    if (!isFreshCache(cache.entries[key])) {
+    const entry = cache.entries[key];
+    const createdAt = new Date(entry?.createdAt || 0).getTime();
+    if (!Number.isFinite(createdAt) || createdAt + maxAge <= Date.now()) {
       delete cache.entries[key];
     }
   });
 }
 
-function getPlanilhaPoint(produto: { valoresPlanilhaPorLoja: Record<string, { planilhaAvista?: number | null; planilhaPrazo12x?: number | null }> }, loja: OnlineStoreTarget) {
+function getPlanilhaPoint(
+  produto: { valoresPlanilhaPorLoja: Record<string, { planilhaAvista?: number | null; planilhaPrazo12x?: number | null }> },
+  loja: OnlineStoreTarget,
+) {
   return produto.valoresPlanilhaPorLoja[loja.nomeNormalizado] || {};
 }
 
@@ -253,8 +291,10 @@ function aplicarValoresPlanilha(params: {
 }): OnlinePriceResult {
   const precoAvistaPlanilha = toPositiveNumber(params.planilha.planilhaAvista ?? null);
   const precoPrazo12xPlanilha = toPositiveNumber(params.planilha.planilhaPrazo12x ?? null);
-  const precoAvistaOnline = params.result.disponibilidade === 'encontrado' ? toPositiveNumber(params.result.precoAvistaOnline) : null;
-  const precoPrazo12xOnline = params.result.disponibilidade === 'encontrado' ? toPositiveNumber(params.result.precoPrazo12xOnline) : null;
+  const precoAvistaOnline =
+    params.result.disponibilidade === 'encontrado' ? toPositiveNumber(params.result.precoAvistaOnline) : null;
+  const precoPrazo12xOnline =
+    params.result.disponibilidade === 'encontrado' ? toPositiveNumber(params.result.precoPrazo12xOnline) : null;
   const diffAvista = calcularDiferenca(precoAvistaOnline, precoAvistaPlanilha);
   const diffPrazo = calcularDiferenca(precoPrazo12xOnline, precoPrazo12xPlanilha);
 
@@ -270,16 +310,10 @@ function aplicarValoresPlanilha(params: {
     diferencaAvistaPercentual: diffAvista.diffPct,
     diferencaPrazo12x: diffPrazo.diff,
     diferencaPrazo12xPercentual: diffPrazo.diffPct,
-    titulo: null,
-    url: null,
-    fonte: null,
     observacao: params.result.disponibilidade === 'encontrado' ? null : 'INDISPONÍVEL',
   };
 
-  if (typeof params.cacheHit === 'boolean') {
-    finalResult.cacheHit = params.cacheHit;
-  }
-
+  if (typeof params.cacheHit === 'boolean') finalResult.cacheHit = params.cacheHit;
   return finalResult;
 }
 
@@ -327,7 +361,11 @@ function cacheResult(params: {
 }) {
   const key = cacheKey(params.modelo, params.loja);
   const now = new Date();
-  const expiresAt = new Date(now.getTime() + getCacheTtlDays() * 24 * 60 * 60 * 1000);
+  const ttlMs =
+    params.result.disponibilidade === 'encontrado'
+      ? getCacheTtlDays() * 24 * 60 * 60 * 1000
+      : getNegativeCacheTtlHours() * 60 * 60 * 1000;
+  const expiresAt = new Date(now.getTime() + ttlMs);
 
   const stored: OnlinePriceResult = {
     ...params.result,
@@ -337,10 +375,6 @@ function cacheResult(params: {
     diferencaAvistaPercentual: null,
     diferencaPrazo12x: null,
     diferencaPrazo12xPercentual: null,
-    titulo: null,
-    url: null,
-    fonte: null,
-    observacao: params.result.disponibilidade === 'encontrado' ? null : 'INDISPONÍVEL',
     cacheHit: false,
   };
 
@@ -399,45 +433,100 @@ export async function analisarPrecosOnline(params: OnlinePriceAnalyzeOptions): P
   const consultasPlanejadas = produtos.length * lojas.length;
 
   const cache = loadCache();
-  pruneExpiredCache(cache);
+  pruneDeadCache(cache);
 
   const cacheEnabled = isCacheEnabled() && !params.bypassCache;
+  const directEnabled = isDirectScrapeEnabled();
   const allResults: OnlinePriceResult[] = [];
   const usages: OnlinePriceClaudeUsage[] = [];
   let cacheHits = 0;
   let cacheMisses = 0;
   let modelosPesquisadosNaApi = 0;
+  let httpRequests = 0;
+  let resolvidosSemIa = 0;
+  let fallbacksIa = 0;
+  let urlsReutilizadas = 0;
+  let urlsDescobertas = 0;
 
   for (const produto of produtos) {
-    const missingStores: OnlineStoreTarget[] = [];
+    const unresolvedForAi: OnlineStoreTarget[] = [];
+    const directCandidates: Array<{
+      loja: OnlineStoreTarget;
+      planilha: { planilhaAvista?: number | null; planilhaPrazo12x?: number | null };
+      cached: CacheEntry | undefined;
+    }> = [];
 
     for (const loja of lojas) {
       const planilha = getPlanilhaPoint(produto, loja);
       const key = cacheKey(produto.modelo, loja);
-      const cached = cacheEnabled ? cache.entries[key] : undefined;
+      const cached = cache.entries[key];
 
-      if (isFreshCache(cached)) {
+      if (cacheEnabled && isFreshCache(cached)) {
         cacheHits += 1;
-        allResults.push(aplicarValoresPlanilha({
-          result: cached.result,
-          loja,
-          planilha,
-          cacheHit: true,
-        }));
-      } else {
-        cacheMisses += 1;
-        missingStores.push(loja);
+        allResults.push(
+          aplicarValoresPlanilha({
+            result: cached.result,
+            loja,
+            planilha,
+            cacheHit: true,
+          }),
+        );
+        continue;
       }
+
+      cacheMisses += 1;
+      directCandidates.push({ loja, planilha, cached });
     }
 
-    if (missingStores.length === 0) continue;
+    if (directEnabled && directCandidates.length > 0) {
+      const directResults = await Promise.all(
+        directCandidates.map(async ({ loja, planilha, cached }) => {
+          const preferredUrl = cacheEnabled && isStaleUrlReusable(cached) ? cached.result.url : null;
+          const direct = await pesquisarPrecoSemIa({
+            modelo: produto.modelo,
+            loja,
+            preferredUrl,
+          });
+          return { loja, planilha, direct };
+        }),
+      );
+
+      directResults.forEach(({ loja, planilha, direct }) => {
+        httpRequests += direct.stats.httpRequests;
+        if (direct.stats.reusedUrl) urlsReutilizadas += 1;
+        if (direct.stats.discoveredUrl) urlsDescobertas += 1;
+
+        if (direct.result) {
+          const finalResult = aplicarValoresPlanilha({
+            result: direct.result,
+            loja,
+            planilha,
+            cacheHit: false,
+          });
+          allResults.push(finalResult);
+          resolvidosSemIa += 1;
+          if (cacheEnabled) cacheResult({ cache, modelo: produto.modelo, loja, result: finalResult });
+        } else {
+          unresolvedForAi.push(loja);
+        }
+      });
+    } else {
+      directCandidates.forEach(({ loja }) => unresolvedForAi.push(loja));
+    }
+
+    if (unresolvedForAi.length === 0) continue;
+
+    fallbacksIa += unresolvedForAi.length;
 
     try {
       modelosPesquisadosNaApi += 1;
-      const maxSearchUses = Math.max(1, Math.min(getDefaultMaxSearchUsesPerModel(), Math.max(1, missingStores.length)));
+      const maxSearchUses = Math.max(
+        1,
+        Math.min(getDefaultMaxSearchUsesPerModel(), Math.max(1, unresolvedForAi.length)),
+      );
       const { results, usage } = await pesquisarModeloEmLojasClaude({
         modelo: produto.modelo,
-        lojas: missingStores,
+        lojas: unresolvedForAi,
         valoresPlanilhaPorLoja: produto.valoresPlanilhaPorLoja,
         maxSearchUses,
       });
@@ -445,11 +534,9 @@ export async function analisarPrecosOnline(params: OnlinePriceAnalyzeOptions): P
       usages.push(usage);
 
       const resultsByStore = new Map<string, OnlinePriceResult>();
-      results.forEach((result) => {
-        resultsByStore.set(normalizar(result.loja), result);
-      });
+      results.forEach((result) => resultsByStore.set(normalizar(result.loja), result));
 
-      missingStores.forEach((loja) => {
+      unresolvedForAi.forEach((loja) => {
         const found = resultsByStore.get(normalizar(loja.nome)) || null;
         const planilha = getPlanilhaPoint(produto, loja);
         const finalResult = found
@@ -457,18 +544,13 @@ export async function analisarPrecosOnline(params: OnlinePriceAnalyzeOptions): P
           : criarResultadoIndisponivel({ modelo: produto.modelo, loja, planilha });
 
         allResults.push(finalResult);
-        if (cacheEnabled) {
-          cacheResult({ cache, modelo: produto.modelo, loja, result: finalResult });
-        }
+        if (cacheEnabled) cacheResult({ cache, modelo: produto.modelo, loja, result: finalResult });
       });
     } catch (error: any) {
       const mensagem = error?.message || 'Erro desconhecido ao pesquisar preços online.';
+      if (isProviderFatalError(mensagem)) throw new Error(mensagem);
 
-      if (isProviderFatalError(mensagem)) {
-        throw new Error(mensagem);
-      }
-
-      missingStores.forEach((loja) => {
+      unresolvedForAi.forEach((loja) => {
         const planilha = getPlanilhaPoint(produto, loja);
         const finalResult = criarResultadoIndisponivel({
           modelo: produto.modelo,
@@ -477,18 +559,13 @@ export async function analisarPrecosOnline(params: OnlinePriceAnalyzeOptions): P
           mensagem: 'INDISPONÍVEL',
         });
         allResults.push(finalResult);
-        if (cacheEnabled) {
-          cacheResult({ cache, modelo: produto.modelo, loja, result: finalResult });
-        }
+        if (cacheEnabled) cacheResult({ cache, modelo: produto.modelo, loja, result: finalResult });
       });
     }
   }
 
-  if (cacheEnabled) {
-    saveCache(cache);
-  }
+  if (cacheEnabled) saveCache(cache);
 
-  // Garante a ordem original: modelo da planilha e loja da planilha.
   const resultMap = new Map<string, OnlinePriceResult>();
   allResults.forEach((result) => {
     resultMap.set(`${normalizar(result.modelo)}::${normalizar(result.loja)}`, result);
@@ -501,11 +578,13 @@ export async function analisarPrecosOnline(params: OnlinePriceAnalyzeOptions): P
       if (existing) {
         orderedResults.push(existing);
       } else {
-        orderedResults.push(criarResultadoIndisponivel({
-          modelo: produto.modelo,
-          loja,
-          planilha: getPlanilhaPoint(produto, loja),
-        }));
+        orderedResults.push(
+          criarResultadoIndisponivel({
+            modelo: produto.modelo,
+            loja,
+            planilha: getPlanilhaPoint(produto, loja),
+          }),
+        );
       }
     });
   });
@@ -520,6 +599,11 @@ export async function analisarPrecosOnline(params: OnlinePriceAnalyzeOptions): P
     cacheHits,
     cacheMisses,
     modelosPesquisadosNaApi,
+    httpRequests,
+    resolvidosSemIa,
+    fallbacksIa,
+    urlsReutilizadas,
+    urlsDescobertas,
   });
 
   const report = await gerarRelatorioOnlinePricesExcel({
@@ -563,7 +647,7 @@ export async function analisarPrecosOnline(params: OnlinePriceAnalyzeOptions): P
   return {
     ok: true,
     agent: 'precos_online',
-    message: `Pesquisa concluída: ${resumo.consultasExecutadas} consultas em ${produtos.length} modelos e ${lojas.length} lojas. Cache: ${cacheHits} reutilizadas, ${cacheMisses} novas.`,
+    message: `Pesquisa concluída: ${resumo.consultasExecutadas} combinações. Cache ${cacheHits}, sem IA ${resolvidosSemIa}, fallback IA ${fallbacksIa}.`,
     planilha: {
       nomeArquivo: input.originalName,
       aba: input.sheetName,

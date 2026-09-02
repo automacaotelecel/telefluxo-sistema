@@ -78,6 +78,11 @@ export type OnlinePriceAnalysisSummary = {
   cacheMisses?: number;
   modelosPesquisadosNaApi?: number;
   cacheTtlDias?: number;
+  httpRequests?: number;
+  resolvidosSemIa?: number;
+  fallbacksIa?: number;
+  urlsReutilizadas?: number;
+  urlsDescobertas?: number;
 };
 
 export type OnlinePriceAnalyzeOptions = {
