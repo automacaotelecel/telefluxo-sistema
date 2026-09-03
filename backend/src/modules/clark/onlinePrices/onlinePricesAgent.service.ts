@@ -15,7 +15,7 @@ import {
 } from './onlinePrices.types';
 
 const ROOT_DIR = process.cwd();
-const ENGINE_VERSION = '4.2.0';
+const ENGINE_VERSION = '4.3.0';
 const CACHE_SCHEMA_VERSION = 11;
 
 function envNumber(name: string, fallback: number): number {
@@ -279,7 +279,14 @@ function isFreshCache(entry: CacheEntry | undefined): entry is CacheEntry {
 
 
 function isCachedResultCommerciallyReliable(result: OnlinePriceResult): boolean {
-  if (result.disponibilidade !== 'encontrado' || !result.ofertaCompleta) return true;
+  if (result.disponibilidade !== 'encontrado') return true;
+
+  // Parciais produzidos por versões anteriores precisam passar uma vez pela
+  // lógica V4.3, que continua a segunda busca quando ainda falta 12x. Depois
+  // disso continuam respeitando o TTL curto de resultado parcial.
+  if (!result.ofertaCompleta) {
+    return result.engineVersion === ENGINE_VERSION;
+  }
 
   const cash = toPositiveNumber(result.precoAvistaOnline);
   const term = toPositiveNumber(result.precoPrazo12xOnline);
@@ -288,10 +295,13 @@ function isCachedResultCommerciallyReliable(result: OnlinePriceResult): boolean 
 
   if (count === 12 && installmentValue && term) {
     const calculated = Math.round(installmentValue * 12 * 100) / 100;
-    if (Math.abs(term - calculated) > Math.max(1, calculated * 0.005)) return false;
+    if (Math.abs(term - calculated) > 0.05) return false;
   }
 
-  if (cash && term && term < cash * 0.95) return false;
+  if (cash && term) {
+    const minCashToTermRatio = Math.max(0.4, Math.min(0.9, envNumber('ONLINE_PRICES_MIN_CASH_TO_12X_RATIO', 0.65)));
+    if (term < cash * 0.95 || cash < term * minCashToTermRatio) return false;
+  }
 
   return true;
 }
