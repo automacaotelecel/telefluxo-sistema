@@ -15,8 +15,8 @@ import {
 } from './onlinePrices.types';
 
 const ROOT_DIR = process.cwd();
-const ENGINE_VERSION = '8.0.0';
-const CACHE_SCHEMA_VERSION = 13;
+const ENGINE_VERSION = '9.0.0';
+const CACHE_SCHEMA_VERSION = 14;
 
 function envNumber(name: string, fallback: number): number {
   const parsed = Number(process.env[name]);
@@ -38,7 +38,7 @@ function getDefaultMaxStores(): number {
 }
 
 function getDefaultMaxSearchUsesPerModel(): number {
-  return Math.max(1, envNumber('ONLINE_PRICES_MAX_WEB_SEARCH_PER_MODEL', 2));
+  return Math.max(1, Math.min(6, envNumber('ONLINE_PRICES_MAX_WEB_SEARCH_PER_MODEL', 6)));
 }
 
 function getCacheTtlDays(): number {
@@ -77,13 +77,17 @@ function isAiFallbackEnabled(): boolean {
   return envBoolean('ONLINE_PRICES_AI_FALLBACK_ENABLED', true);
 }
 
+function isAiDiscoveryEnabled(): boolean {
+  return envBoolean('ONLINE_PRICES_AI_DISCOVERY_ENABLED', true);
+}
+
 function getAiMaxFallbacksPerRun(): number {
-  const value = Math.floor(envNumber('ONLINE_PRICES_AI_MAX_FALLBACKS_PER_RUN', 2));
-  return Math.max(0, Math.min(20, value));
+  const value = Math.floor(envNumber('ONLINE_PRICES_AI_MAX_FALLBACKS_PER_RUN', 24));
+  return Math.max(0, Math.min(60, value));
 }
 
 function getAiFallbackScopes(): Set<string> {
-  const raw = String(process.env.ONLINE_PRICES_AI_FALLBACK_ONLY_FOR || 'partial,seller');
+  const raw = String(process.env.ONLINE_PRICES_AI_FALLBACK_ONLY_FOR || 'estimated,partial,seller,error');
   const scopes = raw
     .split(',')
     .map((item) => normalizar(item).replace(/ /g, '_'))
@@ -113,11 +117,30 @@ function hasSuspiciousSeller(result: OnlinePriceResult): boolean {
 function shouldUseAiFallback(result: OnlinePriceResult): boolean {
   const scopes = getAiFallbackScopes();
   const hasKnownUrl = !!String(result.url || '').trim();
+  const rawSource = String(result.fonte || '').toLowerCase();
 
-  // V6: Claude não faz mais busca aberta na internet. Ele só interpreta a
-  // página/oferta exata que o motor determinístico já localizou. Sem URL
-  // conhecida não há evidência segura para enviar ao modelo.
-  if (!hasKnownUrl) return false;
+  // Se este cache já passou pelo parser/discovery de IA na mesma versão, não
+  // repetimos a chamada durante o TTL. Resultados que nunca chegaram à IA (por
+  // orçamento esgotado ou IA desligada) continuam elegíveis no próximo run.
+  if (result.cacheHit && rawSource.includes('claude_page_parser')) return false;
+
+  // V9 separa duas responsabilidades:
+  // 1) sem URL: Claude pode fazer SOMENTE descoberta de URL, limitada ao domínio
+  //    da loja e ao orçamento de web search;
+  // 2) com URL: Claude continua sendo apenas parser de evidência daquela página.
+  // Preço vindo do web search nunca é aceito como preço final.
+  if (!hasKnownUrl) {
+    if (!isAiDiscoveryEnabled()) return false;
+    if (result.cacheHit && rawSource.includes('claude_web_discovery_sem_resultado')) return false;
+    return result.disponibilidade === 'nao_encontrado' || result.disponibilidade === 'erro';
+  }
+
+  // Uma estimativa +10% é um fallback comercial válido, mas NÃO significa que
+  // o 12x real deixou de existir. Quando já temos a URL, damos uma chance ao
+  // parser de localizar o parcelamento real antes de manter a estimativa.
+  if (result.prazoEstimado || result.pesquisaStatus === 'oferta_estimada') {
+    return true;
+  }
 
   if (
     result.disponibilidade === 'encontrado' &&
@@ -135,8 +158,7 @@ function shouldUseAiFallback(result: OnlinePriceResult): boolean {
     return scopes.has('PARTIAL') || scopes.has('PARCIAL') || scopes.has('OFERTA_PARCIAL');
   }
 
-  // Não usamos IA para transformar "não encontrado" em "encontrado". Isso
-  // elimina pesquisa aberta, falso positivo e custo desnecessário.
+  // Indisponibilidade comprovada não é rebaixada/revertida por IA.
   return false;
 }
 
@@ -650,6 +672,16 @@ function chooseAiOrDirectResult(params: {
   if (!claudeResult) return directFallback;
   if (!directFallback) return claudeResult;
 
+  const claudeSource = String(claudeResult.fonte || '').toLowerCase();
+  if (
+    claudeSource.includes('claude_web_discovery_sem_resultado') &&
+    claudeResult.disponibilidade === directFallback.disponibilidade
+  ) {
+    // Mesmo estado comercial, mas agora sabemos que a busca web restrita já foi
+    // tentada. Preservar o marcador evita pagar a mesma busca em todo cache hit.
+    return claudeResult;
+  }
+
   // O Claude V6 só pode ENRIQUECER a oferta determinística da mesma URL. Uma
   // resposta negativa da IA nunca rebaixa um resultado real encontrado.
   if (claudeResult.disponibilidade !== 'encontrado') return directFallback;
@@ -677,7 +709,7 @@ function chooseAiOrDirectResult(params: {
 export async function analisarPrecosOnline(params: OnlinePriceAnalyzeOptions): Promise<OnlinePriceAnalyzeResponse> {
   ensureReportDir();
   console.log(
-    `[Preços Online ${ENGINE_VERSION}] início da análise; cache schema=${CACHE_SCHEMA_VERSION}; IA=${isAiFallbackEnabled() ? 'ON' : 'OFF'}; limite IA=${getAiMaxFallbacksPerRun()}; escopo=${Array.from(getAiFallbackScopes()).join(',')}; modoIA=parser_url; arquitetura=adapters_por_loja; prazoFallback=avista+10%`,
+    `[Preços Online ${ENGINE_VERSION}] início da análise; cache schema=${CACHE_SCHEMA_VERSION}; IA=${isAiFallbackEnabled() ? 'ON' : 'OFF'}; discoveryIA=${isAiDiscoveryEnabled() ? 'ON' : 'OFF'}; limite IA=${getAiMaxFallbacksPerRun()}; maxWebSearch/modelo=${getDefaultMaxSearchUsesPerModel()}; escopo=${Array.from(getAiFallbackScopes()).join(',')}; modoIA=discovery_url_restrito+parser_pagina; arquitetura=adapters_por_loja; prazoFallback=avista+10%`,
   );
 
   const input = parseOnlinePricesWorkbook({
@@ -808,6 +840,9 @@ export async function analisarPrecosOnline(params: OnlinePriceAnalyzeOptions): P
           shouldUseAiFallback(directResult);
 
         if (needsAi) {
+          // Guardamos SEMPRE a resposta determinística como fallback, inclusive
+          // quando ela ainda não possui URL. Assim, se a descoberta do Claude
+          // falhar, nunca transformamos "não localizado" em "indisponível".
           directFallbackByStore.set(normalizar(loja.nome), directResult);
           unresolvedForAi.push(loja);
           aiFallbackBudgetRemaining -= 1;
@@ -885,7 +920,12 @@ export async function analisarPrecosOnline(params: OnlinePriceAnalyzeOptions): P
         const chosen = chooseAiOrDirectResult({ claudeResult, directFallback });
         const finalResult =
           chosen ||
-          criarResultadoIndisponivel({ modelo: produto.modelo, loja, planilha });
+          criarResultadoErro({
+            modelo: produto.modelo,
+            loja,
+            planilha,
+            mensagem: 'FALLBACK DE IA NÃO RETORNOU EVIDÊNCIA SUFICIENTE; NÃO FOI POSSÍVEL CONFIRMAR DISPONIBILIDADE',
+          });
 
         allResults.push(finalResult);
         if (cacheEnabled) cacheResult({ cache, modelo: produto.modelo, loja, result: finalResult });

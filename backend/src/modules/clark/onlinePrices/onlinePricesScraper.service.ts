@@ -82,7 +82,7 @@ const DEFAULT_TIMEOUT_MS = 9000;
 const DEFAULT_MAX_HTML_CHARS = 2_000_000;
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36';
-const SCRAPER_ENGINE_VERSION = '8.0.0';
+const SCRAPER_ENGINE_VERSION = '9.0.0';
 
 const ACCESSORY_TERMS = [
   'CARTAO DE MEMORIA',
@@ -564,6 +564,24 @@ function evaluateIdentity(modelo: string, title: string, url: string): { valid: 
   // de host/canonicalização; ele deliberadamente NÃO participa da identidade.
   void url;
   return { valid: true, score: Math.min(1, score) };
+}
+
+export function validarCandidatoProdutoDescoberto(params: {
+  modelo: string;
+  loja: OnlineStoreTarget;
+  titulo: string;
+  url: string;
+}): boolean {
+  if (!isAllowedStoreUrl(params.url, params.loja)) return false;
+  if (!isLikelyProductDetailUrl(params.url, params.loja)) return false;
+  return evaluateIdentity(params.modelo, params.titulo, params.url).valid;
+}
+
+export function validarPrecoPlausivelPorModelo(modelo: string, value: number | null): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null;
+  const rounded = Math.round(value * 100) / 100;
+  if (rounded < minimumPlausiblePrice(modelo) || rounded > 100_000) return null;
+  return rounded;
 }
 
 function isLikelyLiteralProductTitle(title: string): boolean {
@@ -1451,10 +1469,15 @@ async function tavilySearch(
         `[Preços Online ${SCRAPER_ENGINE_VERSION}][Tavily] ${loja.nome}/${modelo}: query="${query}" resultados=${items.length} exatos=${exactInThisQuery} paginasProduto=${detailInThisQuery}`,
       );
 
-      // Só encerramos cedo quando já existe ao menos uma URL de PRODUTO exata.
-      // Resultado de /busca/, /lista/ ou categoria nunca mais bloqueia a segunda
-      // consulta de descoberta.
-      if (detailInThisQuery > 0) break;
+      // Um único candidato pode ser uma página bloqueada, redirecionada ou sem
+      // dados comerciais. A V9 só encerra cedo quando já há diversidade mínima
+      // de páginas de produto. Isso custa no máximo a segunda busca configurada,
+      // mas evita que um único candidato ruim mate a cobertura da loja.
+      const minDetailCandidates = Math.max(
+        1,
+        Math.min(3, envNumber('ONLINE_PRICES_TAVILY_MIN_DETAIL_CANDIDATES', 2)),
+      );
+      if (exactItems.size >= minDetailCandidates) break;
     } catch (error: any) {
       state.httpRequests += 1;
       state.searchRequests += 1;

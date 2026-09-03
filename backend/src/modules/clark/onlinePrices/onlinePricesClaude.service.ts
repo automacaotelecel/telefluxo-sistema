@@ -1,7 +1,12 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { OnlinePriceClaudeUsage, OnlinePriceResult, OnlineStoreTarget } from './onlinePrices.types';
+import {
+  validarCandidatoProdutoDescoberto,
+  validarPrecoPlausivelPorModelo,
+} from './onlinePricesScraper.service';
 
 const DEFAULT_CLAUDE_ONLINE_PRICES_MODEL = 'claude-sonnet-5';
+const ENGINE_VERSION = '9.0.0';
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36';
 
@@ -316,8 +321,109 @@ function usageFromResponse(response: any): OnlinePriceClaudeUsage {
   return {
     inputTokens: Number(usage.input_tokens || 0),
     outputTokens: Number(usage.output_tokens || 0),
-    webSearchRequests: 0,
+    webSearchRequests: Number(usage?.server_tool_use?.web_search_requests || 0),
   };
+}
+
+function sumUsage(usages: OnlinePriceClaudeUsage[]): OnlinePriceClaudeUsage {
+  return usages.reduce(
+    (acc, current) => ({
+      inputTokens: acc.inputTokens + current.inputTokens,
+      outputTokens: acc.outputTokens + current.outputTokens,
+      webSearchRequests: acc.webSearchRequests + current.webSearchRequests,
+    }),
+    { inputTokens: 0, outputTokens: 0, webSearchRequests: 0 },
+  );
+}
+
+type ClaudeUrlDiscovery = {
+  url: string;
+  title: string;
+};
+
+async function discoverExactProductUrl(params: {
+  anthropic: Anthropic;
+  model: string;
+  modelo: string;
+  loja: OnlineStoreTarget;
+}): Promise<{ candidate: ClaudeUrlDiscovery | null; usage: OnlinePriceClaudeUsage }> {
+  const allowedDomains = params.loja.dominios
+    .map((domain) => normalizeDomain(domain))
+    .filter((domain): domain is string => !!domain);
+
+  if (allowedDomains.length === 0) {
+    return {
+      candidate: null,
+      usage: { inputTokens: 0, outputTokens: 0, webSearchRequests: 0 },
+    };
+  }
+
+  const prompt = [
+    `MODELO_ALVO=${params.modelo}`,
+    `LOJA_ALVO=${params.loja.nome}`,
+    'Use obrigatoriamente a ferramenta web_search uma única vez para localizar uma PÁGINA DE PRODUTO EXATA dentro dos domínios permitidos.',
+    'Sua função aqui é SOMENTE descobrir URL e título. Não extraia, não estime e não devolva preço.',
+    'Rejeite página de busca, categoria, lista, acessório, kit, combo, usado, seminovo, outlet, recondicionado e variante diferente.',
+    'Memória, rede 4G/5G e qualificadores Ultra/Plus/FE/Fold/Flip precisam corresponder exatamente ao modelo alvo.',
+    'Retorne somente JSON array compacto. Se não houver página de produto exata, retorne [].',
+    'Formato: [{"u":"https://...","t":"título exato da oferta"}]',
+  ].join('\n');
+
+  try {
+    const response = await createClaudeMessageWithRetry(
+      params.anthropic,
+      {
+        model: params.model,
+        max_tokens: 220,
+        system:
+          'Atue como descobridor de URL de e-commerce. Use a busca apenas para achar a página exata; nunca use preço de snippet como dado comercial.',
+        messages: [{ role: 'user', content: prompt }],
+        tools: [
+          {
+            type: 'web_search_20250305',
+            name: 'web_search',
+            max_uses: 1,
+            allowed_domains: allowedDomains,
+          },
+        ],
+      } as any,
+      params.model,
+    );
+
+    const usage = usageFromResponse(response);
+    if (usage.webSearchRequests < 1) {
+      return { candidate: null, usage };
+    }
+    const parsed = extractJsonArray(extractText(response));
+
+    for (const item of parsed) {
+      const url = safeUrl(item?.u ?? item?.url, params.loja);
+      const title = sanitizeText(item?.t ?? item?.titulo ?? item?.title, 360);
+      if (!url || !title) continue;
+      if (
+        !validarCandidatoProdutoDescoberto({
+          modelo: params.modelo,
+          loja: params.loja,
+          titulo: title,
+          url,
+        })
+      ) {
+        continue;
+      }
+
+      return { candidate: { url, title }, usage };
+    }
+
+    return { candidate: null, usage };
+  } catch (error: any) {
+    console.warn(
+      `[Preços Online ${ENGINE_VERSION}][Claude discovery] ${params.loja.nome}/${params.modelo}: ${String(error?.message || error)}`,
+    );
+    return {
+      candidate: null,
+      usage: { inputTokens: 0, outputTokens: 0, webSearchRequests: 0 },
+    };
+  }
 }
 
 function calcularDiferenca(online: number | null, planilha: number | null): { diff: number | null; diffPct: number | null } {
@@ -405,7 +511,7 @@ function buildAnthropicFriendlyError(error: any, model: string): Error {
     hints.push(`Modelo configurado: ${model}. Ajuste CLAUDE_ONLINE_PRICES_MODEL no backend.`);
   }
   if (status === 529 || lower.includes('overloaded')) {
-    hints.push('A Anthropic está sobrecarregada; a V6 preserva o resultado determinístico após as tentativas automáticas.');
+    hints.push('A Anthropic está sobrecarregada; a V9 preserva o resultado determinístico após as tentativas automáticas.');
   }
 
   const prefix = status ? `Claude API ${status}: ` : 'Claude API: ';
@@ -441,19 +547,105 @@ export async function pesquisarModeloEmLojasClaude(params: {
   const claudeModel = getClaudeModel();
   const baseMap = params.resultadosBasePorLoja || {};
 
-  const evidenceRows = await Promise.all(
-    params.lojas.map(async (loja) => {
-      const base = baseMap[normalizeStoreName(loja.nome)] || null;
-      if (!base?.url) return null;
-      return fetchPageEvidence(loja, base);
-    }),
-  );
+  const discoveryUsages: OnlinePriceClaudeUsage[] = [];
+  const discoveryFallbackResults: OnlinePriceResult[] = [];
+  let remainingSearchUses = Math.max(0, Math.floor(params.maxSearchUses || 0));
+
+  const evidenceRows: Array<PageEvidence | null> = [];
+  for (const loja of params.lojas) {
+    let base = baseMap[normalizeStoreName(loja.nome)] || null;
+    let discoveryAttempted = false;
+    if (!base) {
+      evidenceRows.push(null);
+      continue;
+    }
+
+    if (!base.url && remainingSearchUses > 0) {
+      const discovery = await discoverExactProductUrl({
+        anthropic,
+        model: claudeModel,
+        modelo: params.modelo,
+        loja,
+      });
+      discoveryUsages.push(discovery.usage);
+      discoveryAttempted = discovery.usage.webSearchRequests > 0;
+      remainingSearchUses = Math.max(0, remainingSearchUses - discovery.usage.webSearchRequests);
+
+      if (discovery.candidate) {
+        base = {
+          ...base,
+          url: discovery.candidate.url,
+          titulo: discovery.candidate.title,
+          fonte: `${base.fonte ? `${base.fonte}+` : ''}claude_web_discovery_url`,
+          offerId: `${discovery.candidate.url}::`,
+          observacao:
+            'URL EXATA DESCOBERTA VIA CLAUDE WEB SEARCH; PREÇO AINDA PRECISA SER COMPROVADO NA PÁGINA DA LOJA',
+        };
+      }
+    }
+
+    if (!base.url) {
+      if (discoveryAttempted) {
+        discoveryFallbackResults.push({
+          ...base,
+          engineVersion: ENGINE_VERSION,
+          fonte: `${base.fonte ? `${base.fonte}+` : ''}claude_web_discovery_sem_resultado`,
+          observacao:
+            'NÃO LOCALIZADO APÓS BUSCA WEB RESTRITA AO DOMÍNIO DA LOJA; NÃO SIGNIFICA QUE O PRODUTO NÃO EXISTA',
+          cacheHit: false,
+        });
+      }
+      evidenceRows.push(null);
+      continue;
+    }
+
+    const evidence = await fetchPageEvidence(loja, base);
+    if (!evidence?.evidence) {
+      evidenceRows.push(null);
+      continue;
+    }
+
+    const identityTitle = base.titulo || evidence.pageTitle || '';
+    if (
+      !identityTitle ||
+      !validarCandidatoProdutoDescoberto({
+        modelo: params.modelo,
+        loja,
+        titulo: identityTitle,
+        url: evidence.url,
+      })
+    ) {
+      console.warn(
+        `[Preços Online ${ENGINE_VERSION}][Claude parser] candidato rejeitado por identidade/URL: ${loja.nome}/${params.modelo} -> ${evidence.url}`,
+      );
+      evidenceRows.push(null);
+      continue;
+    }
+
+    if (
+      evidence.pageTitle &&
+      !validarCandidatoProdutoDescoberto({
+        modelo: params.modelo,
+        loja,
+        titulo: evidence.pageTitle,
+        url: evidence.url,
+      })
+    ) {
+      console.warn(
+        `[Preços Online ${ENGINE_VERSION}][Claude parser] título real da página diverge do modelo: ${loja.nome}/${params.modelo} -> ${evidence.pageTitle}`,
+      );
+      evidenceRows.push(null);
+      continue;
+    }
+
+    evidenceRows.push(evidence);
+  }
 
   const usableEvidence = evidenceRows.filter((item): item is PageEvidence => !!item && !!item.evidence);
   if (usableEvidence.length === 0) {
     return {
-      results: [],
-      usage: { inputTokens: 0, outputTokens: 0, webSearchRequests: 0 },
+      results: discoveryFallbackResults,
+      usage: sumUsage(discoveryUsages),
       rawText: '',
     };
   }
@@ -479,12 +671,12 @@ export async function pesquisarModeloEmLojasClaude(params: {
   const prompt = [
     `MODELO_ALVO=${params.modelo}`,
     'Você NÃO pode navegar na web e NÃO pode usar conhecimento externo.',
-    'Sua única fonte é a evidência de HTML abaixo, coletada da URL exata que o motor determinístico já validou.',
+    'Sua única fonte é a evidência de HTML abaixo, coletada de uma URL fixa que já foi validada por domínio, formato de página e identidade do produto.',
     'Objetivo: completar a MESMA oferta/URL, nunca trocar de anúncio, seller ou produto.',
     'Se o campo ausente não estiver comprovado na evidência, devolva null. Nunca estime e nunca invente.',
     'Aceite somente preço à vista/Pix e parcelamento EXATAMENTE em 12x. Para 12x, devolva n=12 e i=valor da parcela quando visível.',
     'Se houver mais de um seller/oferta na página e não for possível vincular os valores ao SELLER_BASE, não complete os campos.',
-    'Não altere URL_FIXA. Não transforme não-encontrado em encontrado. Este passo apenas enriquece ofertas já encontradas.',
+    'Não altere URL_FIXA. Só marque dados comerciais quando a evidência da própria página comprovar os valores.',
     'Retorne somente JSON array compacto, um item por evidência.',
     'Chaves: l=loja,a=avista,p=total12x,x=texto12x,n=numeroParcelas,i=valorParcela,v=seller,t=titulo.',
     'Campos não comprovados=null.',
@@ -504,7 +696,7 @@ export async function pesquisarModeloEmLojasClaude(params: {
 
   const rawText = extractText(response);
   const parsed = extractJsonArray(rawText);
-  const usage = usageFromResponse(response);
+  const usage = sumUsage([...discoveryUsages, usageFromResponse(response)]);
   const pesquisadoEm = new Date().toISOString();
   const byStore = new Map<string, any>();
   parsed.forEach((item) => {
@@ -517,24 +709,55 @@ export async function pesquisarModeloEmLojasClaude(params: {
     const base = evidence.base;
     const found = byStore.get(normalizeStoreName(loja.nome)) || null;
 
-    const aiCash = toNumber(found?.a ?? found?.preco_avista ?? found?.precoAvista ?? null);
-    const aiTerm = toNumber(found?.p ?? found?.preco_prazo_12x ?? found?.precoPrazo12x ?? null);
+    const aiCash = validarPrecoPlausivelPorModelo(
+      params.modelo,
+      toNumber(found?.a ?? found?.preco_avista ?? found?.precoAvista ?? null),
+    );
+    const aiTerm = validarPrecoPlausivelPorModelo(
+      params.modelo,
+      toNumber(found?.p ?? found?.preco_prazo_12x ?? found?.precoPrazo12x ?? null),
+    );
     const aiCountRaw = Number(found?.n ?? found?.numeroParcelas ?? found?.parcelas ?? 0);
     const aiCount = Number.isFinite(aiCountRaw) && aiCountRaw > 0 ? Math.floor(aiCountRaw) : null;
     const aiInstallmentValue = toNumber(found?.i ?? found?.valorParcela ?? found?.installmentValue ?? null);
     const aiInstallmentText = sanitizeText(found?.x ?? found?.parcelas_texto ?? found?.parcelasTexto, 120);
+    const aiTextHasTwelve = /(?:^|\D)12\s*x(?:\D|$)|12\s*parcelas?/i.test(aiInstallmentText || '');
+    const aiHasRealTwelve =
+      !!aiTerm || ((aiCount === 12 || aiTextHasTwelve) && !!aiInstallmentValue);
 
     // Mescla somente porque a URL é fixa e é exatamente a mesma oferta base.
     const commercial = normalizeCommercialValues({
       cash: aiCash ?? toNumber(base.precoAvistaOnline),
       term: aiTerm ?? toNumber(base.precoPrazo12xOnline),
-      installmentCount: aiCount ?? (base.numeroParcelas || null),
+      installmentCount: aiHasRealTwelve ? 12 : aiCount ?? (base.numeroParcelas || null),
       installmentValue: aiInstallmentValue ?? toNumber(base.valorParcela),
       installmentText: aiInstallmentText || base.parcelasTexto || null,
     });
 
-    const precoAvistaOnline = commercial.cash;
-    const precoPrazo12xOnline = commercial.term;
+    let precoAvistaOnline = validarPrecoPlausivelPorModelo(params.modelo, commercial.cash);
+    let precoPrazo12xOnline = validarPrecoPlausivelPorModelo(params.modelo, commercial.term);
+    let numeroParcelas = precoPrazo12xOnline ? commercial.installmentCount || 12 : null;
+    let valorParcela = precoPrazo12xOnline
+      ? commercial.installmentValue || round2(precoPrazo12xOnline / 12)
+      : null;
+    let parcelasTexto = precoPrazo12xOnline
+      ? aiHasRealTwelve
+        ? aiInstallmentText || (valorParcela ? `12x de R$ ${valorParcela.toFixed(2).replace('.', ',')}` : null)
+        : aiInstallmentText || base.parcelasTexto || (valorParcela ? `12x de R$ ${valorParcela.toFixed(2).replace('.', ',')}` : null)
+      : null;
+    let prazoEstimado = !!base.prazoEstimado && !aiHasRealTwelve && !!precoPrazo12xOnline;
+
+    // Se a URL foi descoberta pela IA e a página comprova apenas o valor à
+    // vista, aplicamos a regra de negócio definitiva: +10%, marcado ESTIMADO.
+    if (precoAvistaOnline && (!precoPrazo12xOnline || (!!base.prazoEstimado && !aiHasRealTwelve))) {
+      const markupPct = Math.max(0, Math.min(1, envNumber('ONLINE_PRICES_ESTIMATED_TERM_MARKUP_PCT', 10) / 100));
+      precoPrazo12xOnline = round2(precoAvistaOnline * (1 + markupPct));
+      numeroParcelas = 12;
+      valorParcela = round2(precoPrazo12xOnline / 12);
+      parcelasTexto = `ESTIMADO: 12x de R$ ${valorParcela.toFixed(2).replace('.', ',')} (+10% sobre à vista)`;
+      prazoEstimado = true;
+    }
+
     const planilha = params.valoresPlanilhaPorLoja[loja.nomeNormalizado] || {};
     const precoAvistaPlanilha = toNumber(planilha.planilhaAvista ?? null);
     const precoPrazo12xPlanilha = toNumber(planilha.planilhaPrazo12x ?? null);
@@ -558,16 +781,14 @@ export async function pesquisarModeloEmLojasClaude(params: {
 
     return {
       ...base,
-      engineVersion: '7.0.0',
+      engineVersion: ENGINE_VERSION,
       modelo: params.modelo,
       loja: loja.nome,
       dominios: loja.dominios,
       disponibilidade: hasCommercialValue ? 'encontrado' : base.disponibilidade,
       precoAvistaOnline,
       precoPrazo12xOnline,
-      parcelasTexto: precoPrazo12xOnline
-        ? aiInstallmentText || base.parcelasTexto || (commercial.installmentValue ? `12x de R$ ${commercial.installmentValue.toFixed(2).replace('.', ',')}` : null)
-        : null,
+      parcelasTexto,
       precoAvistaPlanilha,
       precoPrazo12xPlanilha,
       diferencaAvista: precoAvistaOnline ? diffAvista.diff : null,
@@ -577,11 +798,13 @@ export async function pesquisarModeloEmLojasClaude(params: {
       titulo,
       url: evidence.url,
       fonte: hasCommercialValue
-        ? `${base.fonte || 'deterministico'}+claude_page_parser`
+        ? `${base.fonte || 'deterministico'}+claude_page_parser${prazoEstimado ? '+estimativa_12x_10pct' : aiHasRealTwelve ? '+12x_real' : ''}`
         : base.fonte,
       confianca: hasCommercialValue ? Math.max(90, Number(base.confianca || 0)) : base.confianca,
-      observacao: ofertaCompleta
-        ? null
+      observacao: prazoEstimado
+        ? '12X ESTIMADO: preço à vista + 10% porque o 12x real não foi localizado na mesma oferta'
+        : ofertaCompleta
+          ? null
         : precoAvistaOnline && !precoPrazo12xOnline
           ? 'OFERTA ENCONTRADA; 12X NÃO LOCALIZADO NA MESMA OFERTA'
           : !precoAvistaOnline && precoPrazo12xOnline
@@ -589,16 +812,22 @@ export async function pesquisarModeloEmLojasClaude(params: {
             : base.observacao,
       pesquisadoEm,
       seller,
-      numeroParcelas: precoPrazo12xOnline ? commercial.installmentCount || 12 : null,
-      valorParcela: precoPrazo12xOnline
-        ? commercial.installmentValue || round2(precoPrazo12xOnline / 12)
-        : null,
+      numeroParcelas,
+      valorParcela,
       ofertaCompleta,
-      pesquisaStatus: ofertaCompleta ? 'oferta_valida' : hasCommercialValue ? 'oferta_parcial' : baseSearchStatus,
+      pesquisaStatus: prazoEstimado
+        ? 'oferta_estimada'
+        : ofertaCompleta
+          ? 'oferta_valida'
+          : hasCommercialValue
+            ? 'oferta_parcial'
+            : baseSearchStatus,
       offerId: `${evidence.url}::${normalizeStoreName(seller || '')}`,
       cacheHit: false,
+      prazoEstimado,
+      regraEstimativa: prazoEstimado ? 'avista_mais_10_pct' : null,
     };
   });
 
-  return { results, usage, rawText };
+  return { results: [...results, ...discoveryFallbackResults], usage, rawText };
 }
