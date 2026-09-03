@@ -273,6 +273,22 @@ export async function gerarRelatorioOnlinePricesExcel(params: {
     sheet.addRow(rowValues);
   });
 
+
+  // V7: o valor estimado continua numérico para permitir comparação/fórmulas,
+  // mas a célula recebe uma nota explícita. Assim ninguém confunde estimativa
+  // operacional com parcelamento publicado pela loja.
+  params.input.produtos.forEach((produto, productIndex) => {
+    const rowNumber = 3 + productIndex;
+    params.input.lojas.forEach((loja, storeIndex) => {
+      const result = byModelStore.get(`${produto.modelo}::${loja.nome}`);
+      if (!result?.prazoEstimado) return;
+      const termColumn = 3 + storeIndex * 2;
+      const cell = sheet.getCell(rowNumber, termColumn);
+      cell.note = 'ESTIMADO: 12x calculado como preço à vista + 10%. O 12x real não foi localizado na mesma oferta.';
+      cell.font = { ...(cell.font || {}), italic: true };
+    });
+  });
+
   // Estilo do cabeçalho igual a uma planilha de levantamento comercial.
   const modelHeader = sheet.getCell('A1');
   modelHeader.value = 'MODELO';

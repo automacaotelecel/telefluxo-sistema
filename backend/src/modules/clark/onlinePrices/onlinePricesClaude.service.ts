@@ -558,7 +558,7 @@ export async function pesquisarModeloEmLojasClaude(params: {
 
     return {
       ...base,
-      engineVersion: '6.0.0',
+      engineVersion: '7.0.0',
       modelo: params.modelo,
       loja: loja.nome,
       dominios: loja.dominios,

@@ -15,8 +15,8 @@ import {
 } from './onlinePrices.types';
 
 const ROOT_DIR = process.cwd();
-const ENGINE_VERSION = '6.0.0';
-const CACHE_SCHEMA_VERSION = 11;
+const ENGINE_VERSION = '7.0.0';
+const CACHE_SCHEMA_VERSION = 12;
 
 function envNumber(name: string, fallback: number): number {
   const parsed = Number(process.env[name]);
@@ -231,6 +231,7 @@ function montarResumo(params: {
     ofertasDescobertas: params.ofertasDescobertas,
     ofertasValidas: params.ofertasValidas,
     falhasPesquisa: params.falhasPesquisa,
+    prazosEstimados: params.results.filter((r) => r.prazoEstimado === true).length,
   };
 }
 
@@ -676,7 +677,7 @@ function chooseAiOrDirectResult(params: {
 export async function analisarPrecosOnline(params: OnlinePriceAnalyzeOptions): Promise<OnlinePriceAnalyzeResponse> {
   ensureReportDir();
   console.log(
-    `[Preços Online ${ENGINE_VERSION}] início da análise; cache schema=${CACHE_SCHEMA_VERSION}; IA=${isAiFallbackEnabled() ? 'ON' : 'OFF'}; limite IA=${getAiMaxFallbacksPerRun()}; escopo=${Array.from(getAiFallbackScopes()).join(',')}; modoIA=parser_url`,
+    `[Preços Online ${ENGINE_VERSION}] início da análise; cache schema=${CACHE_SCHEMA_VERSION}; IA=${isAiFallbackEnabled() ? 'ON' : 'OFF'}; limite IA=${getAiMaxFallbacksPerRun()}; escopo=${Array.from(getAiFallbackScopes()).join(',')}; modoIA=parser_url; arquitetura=adapters_por_loja; prazoFallback=avista+10%`,
   );
 
   const input = parseOnlinePricesWorkbook({

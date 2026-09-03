@@ -9,6 +9,8 @@ export type OnlinePriceSearchStatus =
   | 'oferta_parcial'
   | 'produto_indisponivel'
   | 'nao_encontrado_confirmado'
+  | 'nao_localizado'
+  | 'oferta_estimada'
   | 'falha_pesquisa';
 
 export type OnlinePricePoint = {
@@ -67,6 +69,8 @@ export type OnlinePriceResult = {
   ofertaCompleta?: boolean;
   pesquisaStatus?: OnlinePriceSearchStatus;
   offerId?: string | null;
+  prazoEstimado?: boolean;
+  regraEstimativa?: 'avista_mais_10_pct' | null;
 };
 
 export type OnlinePriceClaudeUsage = {
@@ -104,6 +108,7 @@ export type OnlinePriceAnalysisSummary = {
   ofertasDescobertas?: number;
   ofertasValidas?: number;
   falhasPesquisa?: number;
+  prazosEstimados?: number;
 };
 
 export type OnlinePriceAnalyzeOptions = {

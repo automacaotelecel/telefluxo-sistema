@@ -1,4 +1,5 @@
 import { getBaseModelFamily, extractStorage } from '../../productDictionary/productDictionary.utils';
+import { pesquisarComAdapterDaLoja } from './onlinePricesStoreAdapters.service';
 import {
   OnlinePriceResult,
   OnlinePriceSearchStatus,
@@ -57,11 +58,7 @@ type HttpPage = {
   finalUrl: string;
 };
 
-type JsonResponse = {
-  data: any;
-  status: number;
-  ok: boolean;
-};
+
 
 type TavilySearchItem = {
   title?: string | null;
@@ -85,7 +82,7 @@ const DEFAULT_TIMEOUT_MS = 9000;
 const DEFAULT_MAX_HTML_CHARS = 2_000_000;
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36';
-const SCRAPER_ENGINE_VERSION = '6.0.0';
+const SCRAPER_ENGINE_VERSION = '7.0.0';
 
 const ACCESSORY_TERMS = [
   'CARTAO DE MEMORIA',
@@ -261,14 +258,15 @@ function parseCompactPriceToken(raw: string, followingText: string): number | nu
 
 function minimumPlausiblePrice(modelo: string): number {
   const normalized = normalizeText(modelo);
-  if (
-    normalized.includes('GALAXY') ||
-    normalized.includes('IPHONE') ||
-    normalized.includes('SMARTPHONE') ||
-    /\b[A-Z]\d{2,3}\b/.test(normalized)
-  ) {
-    return 250;
-  }
+
+  // Piso de sanidade por família, não preço de mercado hardcoded. Serve apenas
+  // para impedir que preço de capa/parcela/recomendação seja aceito como celular.
+  if (/\bGALAXY S\d{2,3}\b/.test(normalized) && normalized.includes('ULTRA')) return 2500;
+  if (/\bGALAXY S\d{2,3}\b/.test(normalized)) return 1500;
+  if (/\bGALAXY Z\b/.test(normalized) || normalized.includes('FOLD') || normalized.includes('FLIP')) return 1800;
+  if (/\bGALAXY [AMF]\d{2,3}\b/.test(normalized)) return 250;
+  if (normalized.includes('IPHONE')) return 800;
+  if (normalized.includes('SMARTPHONE')) return 250;
   return 20;
 }
 
@@ -1047,9 +1045,45 @@ function chooseUnavailableOffer(offers: OfferCandidate[]): OfferCandidate | null
   return rankOffers(offers.filter((offer) => offer.availability === 'indisponivel'))[0] || null;
 }
 
+function estimateTermFromCash(cashPrice: number): {
+  total: number;
+  installmentValue: number;
+  installmentText: string;
+} {
+  const markupPct = Math.max(0, Math.min(1, envNumber('ONLINE_PRICES_ESTIMATED_TERM_MARKUP_PCT', 10) / 100));
+  const total = Math.round(cashPrice * (1 + markupPct) * 100) / 100;
+  const installmentValue = Math.round((total / 12) * 100) / 100;
+  return {
+    total,
+    installmentValue,
+    installmentText: `ESTIMADO: 12x de R$ ${installmentValue.toFixed(2).replace('.', ',')} (+10% sobre à vista)`,
+  };
+}
+
 function resultFromOffer(modelo: string, loja: OnlineStoreTarget, offer: OfferCandidate): OnlinePriceResult {
-  const complete = hasComplete12xOffer(offer);
-  const searchStatus: OnlinePriceSearchStatus = complete ? 'oferta_valida' : 'oferta_parcial';
+  let termTotal = offer.termTotal;
+  let installmentCount = offer.installmentCount;
+  let installmentValue = offer.installmentValue;
+  let installmentText = offer.installmentText;
+  let estimated = false;
+
+  // Regra comercial definida: se o 12x REAL não foi localizado, usa-se
+  // exatamente preço à vista + 10%, deixando explícito que é estimado.
+  if (offer.cashPrice && !termTotal) {
+    const estimation = estimateTermFromCash(offer.cashPrice);
+    termTotal = estimation.total;
+    installmentCount = 12;
+    installmentValue = estimation.installmentValue;
+    installmentText = estimation.installmentText;
+    estimated = true;
+  }
+
+  const complete = !!offer.cashPrice && !!termTotal;
+  const searchStatus: OnlinePriceSearchStatus = estimated
+    ? 'oferta_estimada'
+    : complete
+      ? 'oferta_valida'
+      : 'oferta_parcial';
 
   return {
     engineVersion: SCRAPER_ENGINE_VERSION,
@@ -1058,8 +1092,8 @@ function resultFromOffer(modelo: string, loja: OnlineStoreTarget, offer: OfferCa
     dominios: loja.dominios,
     disponibilidade: 'encontrado',
     precoAvistaOnline: offer.cashPrice,
-    precoPrazo12xOnline: offer.termTotal,
-    parcelasTexto: offer.installmentText,
+    precoPrazo12xOnline: termTotal,
+    parcelasTexto: installmentText,
     precoAvistaPlanilha: null,
     precoPrazo12xPlanilha: null,
     diferencaAvista: null,
@@ -1068,20 +1102,22 @@ function resultFromOffer(modelo: string, loja: OnlineStoreTarget, offer: OfferCa
     diferencaPrazo12xPercentual: null,
     titulo: offer.title,
     url: offer.url,
-    fonte: offer.source,
-    confianca: offer.confidence,
-    observacao: complete
-      ? null
-      : offer.termTotal
-        ? 'OFERTA ENCONTRADA; PREÇO À VISTA NÃO LOCALIZADO NA MESMA OFERTA'
-        : 'OFERTA ENCONTRADA; 12X NÃO LOCALIZADO NA MESMA OFERTA',
+    fonte: estimated ? `${offer.source}+estimativa_12x_10pct` : offer.source,
+    confianca: estimated ? Math.min(94, offer.confidence) : offer.confidence,
+    observacao: estimated
+      ? '12X ESTIMADO: preço à vista + 10% porque o 12x real não foi localizado na mesma oferta'
+      : complete
+        ? null
+        : 'OFERTA ENCONTRADA; PREÇO À VISTA NÃO LOCALIZADO NA MESMA OFERTA',
     pesquisadoEm: new Date().toISOString(),
     seller: offer.seller,
-    numeroParcelas: offer.installmentCount,
-    valorParcela: offer.installmentValue,
+    numeroParcelas: installmentCount,
+    valorParcela: installmentValue,
     ofertaCompleta: complete,
     pesquisaStatus: searchStatus,
     offerId: offer.offerId,
+    prazoEstimado: estimated,
+    regraEstimativa: estimated ? 'avista_mais_10_pct' : null,
   };
 }
 
@@ -1136,13 +1172,13 @@ function notFoundResult(modelo: string, loja: OnlineStoreTarget): OnlinePriceRes
     url: null,
     fonte: 'busca_deterministica',
     confianca: 0,
-    observacao: 'NÃO ENCONTRADO CONFIRMADO NAS FONTES CONSULTADAS',
+    observacao: 'NÃO LOCALIZADO NAS FONTES CONSULTADAS; NÃO SIGNIFICA QUE O PRODUTO NÃO EXISTA',
     pesquisadoEm: new Date().toISOString(),
     seller: null,
     numeroParcelas: null,
     valorParcela: null,
     ofertaCompleta: false,
-    pesquisaStatus: 'nao_encontrado_confirmado',
+    pesquisaStatus: 'nao_localizado',
     offerId: null,
   };
 }
@@ -1176,29 +1212,6 @@ function failureResult(modelo: string, loja: OnlineStoreTarget, message: string)
     pesquisaStatus: 'falha_pesquisa',
     offerId: null,
   };
-}
-
-async function fetchJson(url: string, headers?: Record<string, string>): Promise<JsonResponse> {
-  const controller = new AbortController();
-  const timeoutMs = Math.max(2000, envNumber('ONLINE_PRICES_HTTP_TIMEOUT_MS', DEFAULT_TIMEOUT_MS));
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-  try {
-    const response = await fetch(url, {
-      signal: controller.signal,
-      headers: {
-        Accept: 'application/json',
-        'User-Agent': USER_AGENT,
-        ...(headers || {}),
-      },
-    });
-    const data = await response.json().catch(() => null);
-    return { data, status: response.status, ok: response.ok };
-  } catch (_) {
-    return { data: null, status: 0, ok: false };
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 async function fetchHtml(url: string): Promise<HttpPage> {
@@ -1283,171 +1296,6 @@ async function collectPreferredUrlOffer(params: {
     httpRequests: 1,
     reused: true,
   };
-}
-
-function vtexTwelveInstallment(offer: any): {
-  count: number | null;
-  value: number | null;
-  total: number | null;
-  text: string | null;
-} {
-  const installments = Array.isArray(offer?.Installments)
-    ? offer.Installments
-    : Array.isArray(offer?.installments)
-      ? offer.installments
-      : [];
-
-  const candidates = installments
-    .filter((item: any) => Number(item?.NumberOfInstallments ?? item?.numberOfInstallments) === 12)
-    .map((item: any) => {
-      const value = toPrice(item?.Value ?? item?.value ?? item?.installmentValue);
-      const explicitTotal = toPrice(item?.TotalValuePlusInterestRate ?? item?.totalValuePlusInterestRate);
-      const total = explicitTotal || (value ? Math.round(value * 12 * 100) / 100 : null);
-      return { value, total };
-    })
-    .filter((item: { total: number | null }) => !!item.total)
-    .sort((a: { total: number | null }, b: { total: number | null }) => (a.total || 0) - (b.total || 0));
-
-  const best = candidates[0];
-  if (!best?.total) return { count: null, value: null, total: null, text: null };
-  return {
-    count: 12,
-    value: best.value,
-    total: best.total,
-    text: best.value ? `12x de R$ ${best.value.toFixed(2).replace('.', ',')}` : '12x',
-  };
-}
-
-async function collectCarrefourOffers(
-  modelo: string,
-  loja: OnlineStoreTarget,
-): Promise<{ offers: OfferCandidate[]; httpRequests: number; succeeded: boolean }> {
-  if (!normalizeText(loja.nome).includes('CARREFOUR')) {
-    return { offers: [], httpRequests: 0, succeeded: false };
-  }
-
-  const endpoint = new URL('https://www.carrefour.com.br/api/catalog_system/pub/products/search');
-  endpoint.searchParams.set('ft', modelo);
-  endpoint.searchParams.set('_from', '0');
-  endpoint.searchParams.set('_to', '29');
-
-  const response = await fetchJson(endpoint.toString());
-  if (!response.ok || !Array.isArray(response.data)) {
-    return { offers: [], httpRequests: 1, succeeded: false };
-  }
-
-  const offers: OfferCandidate[] = [];
-  for (const product of response.data) {
-    const productName = cleanText(product?.productName || product?.productTitle || product?.name || '');
-    const productUrl =
-      absolutizeUrl(String(product?.link || ''), 'https://www.carrefour.com.br') ||
-      (product?.linkText
-        ? `https://www.carrefour.com.br/${String(product.linkText).replace(/^\/+/, '')}/p`
-        : '');
-    if (!productName || !productUrl) continue;
-
-    const items = Array.isArray(product?.items) ? product.items : [];
-    for (const item of items) {
-      const itemName = cleanText(item?.nameComplete || item?.name || '');
-      const title = [productName, itemName].filter(Boolean).join(' - ');
-      if (!evaluateIdentity(modelo, title, productUrl).valid) continue;
-
-      const sellers = Array.isArray(item?.sellers) ? item.sellers : [];
-      for (const seller of sellers) {
-        const commercial = seller?.commertialOffer || seller?.commercialOffer || {};
-        const availableQuantity = Number(commercial?.AvailableQuantity ?? commercial?.availableQuantity ?? 0);
-        const availability: OfferAvailability = availableQuantity > 0 ? 'disponivel' : 'indisponivel';
-        const cashPrice =
-          toPrice(commercial?.spotPrice) ||
-          toPrice(commercial?.Price) ||
-          toPrice(commercial?.price) ||
-          toPrice(commercial?.PriceWithoutDiscount);
-        const installment = vtexTwelveInstallment(commercial);
-        const sellerName = cleanText(seller?.sellerName || seller?.sellerId || '') || null;
-
-        const offer = makeOffer({
-          modelo,
-          loja,
-          title,
-          url: productUrl,
-          seller: sellerName,
-          cashPrice,
-          installmentCount: installment.count,
-          installmentValue: installment.value,
-          termTotal: installment.total,
-          installmentText: installment.text,
-          availability,
-          condition: 'novo',
-          source: 'carrefour_vtex_api',
-          confidence: 99,
-        });
-        if (offer) offers.push(offer);
-      }
-    }
-  }
-
-  return { offers, httpRequests: 1, succeeded: true };
-}
-
-async function collectMercadoLivreOffers(
-  modelo: string,
-  loja: OnlineStoreTarget,
-): Promise<{ offers: OfferCandidate[]; httpRequests: number; succeeded: boolean }> {
-  if (!normalizeText(loja.nome).includes('MERCADO LIVRE')) {
-    return { offers: [], httpRequests: 0, succeeded: false };
-  }
-
-  const endpoint = new URL('https://api.mercadolibre.com/sites/MLB/search');
-  endpoint.searchParams.set('q', modelo);
-  endpoint.searchParams.set('limit', '30');
-
-  const headers: Record<string, string> = {};
-  const accessToken = String(process.env.MERCADOLIVRE_ACCESS_TOKEN || '').trim();
-  if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
-
-  const response = await fetchJson(endpoint.toString(), headers);
-  const items = Array.isArray(response.data?.results) ? response.data.results : [];
-  if (!response.ok) return { offers: [], httpRequests: 1, succeeded: false };
-
-  const offers: OfferCandidate[] = [];
-  for (const item of items) {
-    const condition = String(item?.condition || '').toLowerCase();
-    if (condition && condition !== 'new') continue;
-
-    const title = cleanText(item?.title || '');
-    const url = cleanText(item?.permalink || '');
-    if (!title || !url || !evaluateIdentity(modelo, title, url).valid) continue;
-
-    const quantity = Number(item?.installments?.quantity || 0);
-    const installmentValue = toPrice(item?.installments?.amount);
-    const termTotal = quantity === 12 && installmentValue
-      ? Math.round(installmentValue * 12 * 100) / 100
-      : null;
-    const sellerName = cleanText(item?.seller?.nickname || item?.seller?.id || '') || null;
-
-    const offer = makeOffer({
-      modelo,
-      loja,
-      title,
-      url,
-      seller: sellerName,
-      cashPrice: toPrice(item?.price),
-      installmentCount: termTotal ? 12 : null,
-      installmentValue: termTotal ? installmentValue : null,
-      termTotal,
-      installmentText:
-        termTotal && installmentValue
-          ? `12x de R$ ${installmentValue.toFixed(2).replace('.', ',')}`
-          : null,
-      availability: 'disponivel',
-      condition: 'novo',
-      source: 'mercadolivre_api',
-      confidence: 99,
-    });
-    if (offer) offers.push(offer);
-  }
-
-  return { offers, httpRequests: 1, succeeded: true };
 }
 
 function tavilyDomains(loja: OnlineStoreTarget): string[] {
@@ -1585,23 +1433,12 @@ async function tavilySearch(
         const existing = exactItems.get(url);
         if (!existing || Number(item?.score || 0) > Number(existing?.score || 0)) exactItems.set(url, item);
 
+        // V7: Tavily Search serve apenas para DESCOBRIR URL/título. Preço de
+        // snippet nunca é aceito como preço final, pois snippets misturam
+        // recomendações, parcelas e produtos laterais.
         if (isLikelyProductDetailUrl(url, loja)) {
-          const snippetOffer = makeOffer({
-            modelo,
-            loja,
-            title,
-            url,
-            content,
-            availability: determineAvailability(`${title} ${content}`),
-            condition: determineCondition(title, content, url),
-            source: 'tavily_search',
-            confidence: Math.round(Math.min(98, 86 + identity.score * 10 + Number(item?.score || 0) * 2)),
-          });
-          if (snippetOffer) {
-            state.offers.push(snippetOffer);
-            if (snippetOffer.cashPrice || snippetOffer.termTotal) pricedInThisQuery += 1;
-            if (hasComplete12xOffer(snippetOffer)) complete12xInThisQuery += 1;
-          }
+          pricedInThisQuery += 0;
+          complete12xInThisQuery += 0;
         }
       }
 
@@ -1612,7 +1449,7 @@ async function tavilySearch(
       // Preço à vista sozinho não encerra mais a descoberta. Como o 12x é um
       // requisito central, usamos a segunda consulta quando a primeira só trouxe
       // oferta parcial. Se já temos à vista + 12x na mesma oferta, paramos cedo.
-      if (complete12xInThisQuery > 0) break;
+      if (validInThisQuery > 0) break;
     } catch (error: any) {
       state.httpRequests += 1;
       state.searchRequests += 1;
@@ -1646,7 +1483,7 @@ async function tavilySearch(
   state.offers.forEach((offer) => addOffer(offerMap, offer));
   state.offers = Array.from(offerMap.values());
 
-  if (state.offers.some(hasComplete12xOffer)) return state;
+  if (state.offers.some((offer) => !!offer.cashPrice || !!offer.termTotal)) return state;
   if (!envBoolean('ONLINE_PRICES_TAVILY_EXTRACT_ENABLED', true)) return state;
 
   const urlsForExtract = detailItems
@@ -1752,6 +1589,18 @@ export async function pesquisarPrecoSemIa(params: {
     searchFailures: 0,
   };
 
+
+  // V7: cada loja tenta primeiro o seu adapter dedicado. O scraper genérico e
+  // Tavily ficam como camada de descoberta/fallback, não como fonte primária.
+  const adapter = await pesquisarComAdapterDaLoja({ modelo: params.modelo, loja: params.loja });
+  stats.httpRequests += adapter.stats.httpRequests;
+  stats.offersDiscovered += adapter.stats.candidatesFound;
+  if (adapter.result) {
+    stats.offersValid += adapter.result.disponibilidade === 'encontrado' ? 1 : 0;
+    stats.discoveredUrl = !!adapter.result.url;
+    return { result: adapter.result, stats };
+  }
+
   if (!params.loja.dominios.length) {
     stats.searchFailures += 1;
     return {
@@ -1775,15 +1624,8 @@ export async function pesquisarPrecoSemIa(params: {
     stats.discoveredUrl = true;
   }
 
-  const carrefour = await collectCarrefourOffers(params.modelo, params.loja);
-  stats.httpRequests += carrefour.httpRequests;
-  if (carrefour.succeeded) atLeastOneSearchSourceSucceeded = true;
-  carrefour.offers.forEach((offer) => addOffer(offers, offer));
-
-  const mercadoLivre = await collectMercadoLivreOffers(params.modelo, params.loja);
-  stats.httpRequests += mercadoLivre.httpRequests;
-  if (mercadoLivre.succeeded) atLeastOneSearchSourceSucceeded = true;
-  mercadoLivre.offers.forEach((offer) => addOffer(offers, offer));
+  // Os adapters dedicados já executaram as integrações diretas de loja.
+  // Daqui em diante usamos apenas URL reaproveitada + discovery Tavily.
 
   const earlyWinner = chooseWinningOffer(Array.from(offers.values()));
   if (earlyWinner && hasComplete12xOffer(earlyWinner)) {
