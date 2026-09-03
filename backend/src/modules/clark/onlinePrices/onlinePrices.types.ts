@@ -40,6 +40,7 @@ export type OnlineInputWorkbook = {
 };
 
 export type OnlinePriceResult = {
+  engineVersion?: string;
   modelo: string;
   loja: string;
   dominios: string[];

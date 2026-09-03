@@ -85,6 +85,7 @@ const DEFAULT_TIMEOUT_MS = 9000;
 const DEFAULT_MAX_HTML_CHARS = 2_000_000;
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36';
+const SCRAPER_ENGINE_VERSION = '4.3.0';
 
 const ACCESSORY_TERMS = [
   'CARTAO DE MEMORIA',
@@ -408,6 +409,33 @@ function hasToken(haystack: string, token: string): boolean {
 function isAccessoryTitle(title: string): boolean {
   const normalized = normalizeText(title);
   return ACCESSORY_TERMS.some((term) => normalized.includes(normalizeText(term)));
+}
+
+function isBundleOrComboOffer(title: string, url: string): boolean {
+  const normalizedTitle = normalizeText(title);
+  const normalizedUrl = normalizeText(decodeURIComponentSafe(url).replace(/[+_\-]+/g, ' '));
+  const combined = `${normalizedTitle} ${normalizedUrl}`;
+
+  // Para comparação de preço do aparelho, ofertas que embutem outro produto
+  // relevante (watch, buds, fone, kit/combo) não são equivalentes ao aparelho
+  // sozinho. A URL ajuda somente a detectar o pacote; ela não participa da
+  // identidade do modelo.
+  const bundleSignals = [
+    'SMARTWATCH',
+    'GALAXY WATCH',
+    'WATCH8',
+    'WATCH7',
+    'GALAXY BUDS',
+    'BUDS',
+    'FONE',
+    'HEADPHONE',
+    'EARBUD',
+    'KIT ',
+    'COMBO',
+    'PACOTE',
+  ];
+
+  return bundleSignals.some((signal) => combined.includes(signal));
 }
 
 function determineCondition(title: string, content = '', url = ''): OfferCondition {
@@ -837,6 +865,7 @@ function makeOffer(params: {
 
   const identity = evaluateIdentity(params.modelo, title, url);
   if (!identity.valid) return null;
+  if (isBundleOrComboOffer(title, url)) return null;
 
   const content = cleanText(params.content || '');
   const condition = params.condition || determineCondition(title, content, url);
@@ -850,17 +879,19 @@ function makeOffer(params: {
   const installmentText = params.installmentText ?? extracted.installmentText;
 
   if (installmentCount === 12 && installmentValue) {
-    const calculatedTermTotal = Math.round(installmentValue * 12 * 100) / 100;
-    if (
-      !termTotal ||
-      Math.abs(termTotal - calculatedTermTotal) > Math.max(1, calculatedTermTotal * 0.005)
-    ) {
-      termTotal = calculatedTermTotal;
-    }
+    // O campo de comparação é o TOTAL das 12 parcelas. Se a oferta informa
+    // "12x de R$ X", o total precisa ser matematicamente X * 12. Isso evita
+    // cachear totais arredondados ou outro preço capturado na mesma página.
+    termTotal = Math.round(installmentValue * 12 * 100) / 100;
   }
 
-  if (cashPrice && termTotal && termTotal < cashPrice * 0.95) {
-    cashPrice = null;
+  if (cashPrice && termTotal) {
+    // Descontos à vista existem, mas uma diferença extrema (ex.: R$ 1.199 à
+    // vista contra ~R$ 6.953 em 12x) indica preço de outro bloco/produto.
+    const minCashToTermRatio = Math.max(0.4, Math.min(0.9, envNumber('ONLINE_PRICES_MIN_CASH_TO_12X_RATIO', 0.65)));
+    if (termTotal < cashPrice * 0.95 || cashPrice < termTotal * minCashToTermRatio) {
+      cashPrice = null;
+    }
   }
 
   const inferredAvailability = params.availability || determineAvailability(`${title} ${content}`);
@@ -1021,6 +1052,7 @@ function resultFromOffer(modelo: string, loja: OnlineStoreTarget, offer: OfferCa
   const searchStatus: OnlinePriceSearchStatus = complete ? 'oferta_valida' : 'oferta_parcial';
 
   return {
+    engineVersion: SCRAPER_ENGINE_VERSION,
     modelo,
     loja: loja.nome,
     dominios: loja.dominios,
@@ -1055,6 +1087,7 @@ function resultFromOffer(modelo: string, loja: OnlineStoreTarget, offer: OfferCa
 
 function unavailableResult(modelo: string, loja: OnlineStoreTarget, offer: OfferCandidate): OnlinePriceResult {
   return {
+    engineVersion: SCRAPER_ENGINE_VERSION,
     modelo,
     loja: loja.nome,
     dominios: loja.dominios,
@@ -1085,6 +1118,7 @@ function unavailableResult(modelo: string, loja: OnlineStoreTarget, offer: Offer
 
 function notFoundResult(modelo: string, loja: OnlineStoreTarget): OnlinePriceResult {
   return {
+    engineVersion: SCRAPER_ENGINE_VERSION,
     modelo,
     loja: loja.nome,
     dominios: loja.dominios,
@@ -1115,6 +1149,7 @@ function notFoundResult(modelo: string, loja: OnlineStoreTarget): OnlinePriceRes
 
 function failureResult(modelo: string, loja: OnlineStoreTarget, message: string): OnlinePriceResult {
   return {
+    engineVersion: SCRAPER_ENGINE_VERSION,
     modelo,
     loja: loja.nome,
     dominios: loja.dominios,
@@ -1524,7 +1559,7 @@ async function tavilySearch(
 
       if (!response.ok) {
         state.providerFailed = true;
-        console.warn(`[Preços Online V4.2][Tavily] ${loja.nome}/${modelo}: HTTP ${response.status}`);
+        console.warn(`[Preços Online V4.3][Tavily] ${loja.nome}/${modelo}: HTTP ${response.status}`);
         continue;
       }
 
@@ -1532,6 +1567,7 @@ async function tavilySearch(
       const items: TavilySearchItem[] = Array.isArray(payload?.results) ? payload.results : [];
       let validInThisQuery = 0;
       let pricedInThisQuery = 0;
+      let complete12xInThisQuery = 0;
 
       for (const item of items) {
         const rawUrl = cleanText(item?.url || '');
@@ -1564,20 +1600,24 @@ async function tavilySearch(
           if (snippetOffer) {
             state.offers.push(snippetOffer);
             if (snippetOffer.cashPrice || snippetOffer.termTotal) pricedInThisQuery += 1;
+            if (hasComplete12xOffer(snippetOffer)) complete12xInThisQuery += 1;
           }
         }
       }
 
       console.log(
-        `[Preços Online V4.2][Tavily] ${loja.nome}/${modelo}: query="${query}" resultados=${items.length} exatos=${validInThisQuery} comPreco=${pricedInThisQuery}`,
+        `[Preços Online V4.3][Tavily] ${loja.nome}/${modelo}: query="${query}" resultados=${items.length} exatos=${validInThisQuery} comPreco=${pricedInThisQuery} completos12x=${complete12xInThisQuery}`,
       );
 
-      if (validInThisQuery > 0 && pricedInThisQuery > 0) break;
+      // Preço à vista sozinho não encerra mais a descoberta. Como o 12x é um
+      // requisito central, usamos a segunda consulta quando a primeira só trouxe
+      // oferta parcial. Se já temos à vista + 12x na mesma oferta, paramos cedo.
+      if (complete12xInThisQuery > 0) break;
     } catch (error: any) {
       state.httpRequests += 1;
       state.searchRequests += 1;
       state.providerFailed = true;
-      console.warn(`[Preços Online V4.2][Tavily] ${loja.nome}/${modelo}: ${String(error?.message || error)}`);
+      console.warn(`[Preços Online V4.3][Tavily] ${loja.nome}/${modelo}: ${String(error?.message || error)}`);
     } finally {
       clearTimeout(timer);
     }
@@ -1652,7 +1692,7 @@ async function tavilySearch(
 
     if (!response.ok) {
       state.providerFailed = true;
-      console.warn(`[Preços Online V4.2][Tavily Extract] ${loja.nome}/${modelo}: HTTP ${response.status}`);
+      console.warn(`[Preços Online V4.3][Tavily Extract] ${loja.nome}/${modelo}: HTTP ${response.status}`);
       return state;
     }
 
@@ -1684,7 +1724,7 @@ async function tavilySearch(
     state.httpRequests += 1;
     state.extractRequests += 1;
     state.providerFailed = true;
-    console.warn(`[Preços Online V4.2][Tavily Extract] ${loja.nome}/${modelo}: ${String(error?.message || error)}`);
+    console.warn(`[Preços Online V4.3][Tavily Extract] ${loja.nome}/${modelo}: ${String(error?.message || error)}`);
   } finally {
     clearTimeout(extractTimer);
   }
