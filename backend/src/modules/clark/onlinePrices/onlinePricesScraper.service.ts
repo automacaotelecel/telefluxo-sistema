@@ -82,7 +82,7 @@ const DEFAULT_TIMEOUT_MS = 9000;
 const DEFAULT_MAX_HTML_CHARS = 2_000_000;
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36';
-const SCRAPER_ENGINE_VERSION = '7.0.0';
+const SCRAPER_ENGINE_VERSION = '8.0.0';
 
 const ACCESSORY_TERMS = [
   'CARTAO DE MEMORIA',
@@ -1336,6 +1336,13 @@ function tavilyQueries(modelo: string, loja: OnlineStoreTarget): string[] {
     variants.add(`${family} ${storage} ${network}`.replace(/\s+/g, ' ').trim());
   }
 
+  // V8: a segunda consulta privilegia páginas de produto, não listagens.
+  // Aspas aumentam a chance de o provedor devolver o SKU exato quando a busca
+  // principal retorna apenas /busca/, /lista/ ou páginas de categoria.
+  if (family && storage) {
+    variants.add(`"${family}" "${storage}" ${network || ''}`.replace(/\s+/g, ' ').trim());
+  }
+
   return Array.from(variants).filter(Boolean);
 }
 
@@ -1413,9 +1420,8 @@ async function tavilySearch(
 
       state.searchSucceeded = true;
       const items: TavilySearchItem[] = Array.isArray(payload?.results) ? payload.results : [];
-      let validInThisQuery = 0;
-      let pricedInThisQuery = 0;
-      let complete12xInThisQuery = 0;
+      let exactInThisQuery = 0;
+      let detailInThisQuery = 0;
 
       for (const item of items) {
         const rawUrl = cleanText(item?.url || '');
@@ -1428,28 +1434,27 @@ async function tavilySearch(
         if (!identity.valid) continue;
         if (determineCondition(title, content, url) === 'indesejado') continue;
 
-        validInThisQuery += 1;
+        exactInThisQuery += 1;
+
+        // V8: uma página de busca/listagem pode ter exatamente o nome do modelo,
+        // mas NÃO é uma oferta. Na V7 isso encerrava a pesquisa cedo e deixava
+        // Magalu/Mercado Livre como "não localizado" mesmo com produtos reais.
+        if (!isLikelyProductDetailUrl(url, loja)) continue;
+
+        detailInThisQuery += 1;
         state.exactCandidatesFound += 1;
         const existing = exactItems.get(url);
         if (!existing || Number(item?.score || 0) > Number(existing?.score || 0)) exactItems.set(url, item);
-
-        // V7: Tavily Search serve apenas para DESCOBRIR URL/título. Preço de
-        // snippet nunca é aceito como preço final, pois snippets misturam
-        // recomendações, parcelas e produtos laterais.
-        if (isLikelyProductDetailUrl(url, loja)) {
-          pricedInThisQuery += 0;
-          complete12xInThisQuery += 0;
-        }
       }
 
       console.log(
-        `[Preços Online ${SCRAPER_ENGINE_VERSION}][Tavily] ${loja.nome}/${modelo}: query="${query}" resultados=${items.length} exatos=${validInThisQuery} comPreco=${pricedInThisQuery} completos12x=${complete12xInThisQuery}`,
+        `[Preços Online ${SCRAPER_ENGINE_VERSION}][Tavily] ${loja.nome}/${modelo}: query="${query}" resultados=${items.length} exatos=${exactInThisQuery} paginasProduto=${detailInThisQuery}`,
       );
 
-      // Preço à vista sozinho não encerra mais a descoberta. Como o 12x é um
-      // requisito central, usamos a segunda consulta quando a primeira só trouxe
-      // oferta parcial. Se já temos à vista + 12x na mesma oferta, paramos cedo.
-      if (validInThisQuery > 0) break;
+      // Só encerramos cedo quando já existe ao menos uma URL de PRODUTO exata.
+      // Resultado de /busca/, /lista/ ou categoria nunca mais bloqueia a segunda
+      // consulta de descoberta.
+      if (detailInThisQuery > 0) break;
     } catch (error: any) {
       state.httpRequests += 1;
       state.searchRequests += 1;

@@ -15,8 +15,8 @@ import {
 } from './onlinePrices.types';
 
 const ROOT_DIR = process.cwd();
-const ENGINE_VERSION = '7.0.0';
-const CACHE_SCHEMA_VERSION = 12;
+const ENGINE_VERSION = '8.0.0';
+const CACHE_SCHEMA_VERSION = 13;
 
 function envNumber(name: string, fallback: number): number {
   const parsed = Number(process.env[name]);

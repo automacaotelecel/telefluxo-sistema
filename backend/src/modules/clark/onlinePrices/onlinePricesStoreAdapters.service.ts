@@ -424,10 +424,36 @@ function sellerFromText(text: string, storeName: string): string | null {
 
 function availabilityFromText(text: string): AdapterAvailability {
   const normalized = normalizeText(text);
-  const bad = ['INDISPONIVEL', 'FORA DE ESTOQUE', 'ESGOTADO', 'PRODUTO INDISPONIVEL', 'SEM ESTOQUE'];
-  if (bad.some((term) => normalized.includes(term))) return 'indisponivel';
-  const good = ['COMPRAR AGORA', 'ADICIONAR A SACOLA', 'ADICIONAR AO CARRINHO', 'EM ESTOQUE', 'COMPRAR'];
+  if (!normalized) return 'desconhecido';
+
+  // V8: páginas de varejo trazem "indisponível" em carrosséis, variações e
+  // recomendações. Isso NÃO pode derrubar o produto principal. Texto solto só
+  // confirma disponibilidade positiva; indisponibilidade exige dado estruturado.
+  const good = ['COMPRAR AGORA', 'ADICIONAR A SACOLA', 'ADICIONAR AO CARRINHO', 'EM ESTOQUE'];
   if (good.some((term) => normalized.includes(term))) return 'disponivel';
+  return 'desconhecido';
+}
+
+function structuredAvailability(html: string): AdapterAvailability {
+  const values: string[] = [];
+
+  for (const attr of ['product:availability', 'availability']) {
+    const property = extractMeta(html, 'property', attr);
+    const itemprop = extractMeta(html, 'itemprop', attr);
+    if (property) values.push(property);
+    if (itemprop) values.push(itemprop);
+  }
+
+  for (const match of html.matchAll(/"availability"\s*:\s*"([^"]+)"/gi)) {
+    if (match[1]) values.push(match[1]);
+  }
+
+  const normalized = normalizeText(values.join(' '));
+  if (!normalized) return 'desconhecido';
+  if (normalized.includes('INSTOCK') || normalized.includes('LIMITEDAVAILABILITY')) return 'disponivel';
+  if (normalized.includes('OUTOFSTOCK') || normalized.includes('SOLDOUT') || normalized.includes('DISCONTINUED')) {
+    return 'indisponivel';
+  }
   return 'desconhecido';
 }
 
@@ -800,18 +826,26 @@ function parseOfferPage(modelo: string, loja: OnlineStoreTarget, url: string, ht
   const title = extractPageTitle(html);
   if (!title || !exactIdentity(modelo, title)) return null;
   const plain = stripHtml(html).slice(0, 900_000);
-  const structured = validPriceForModel(modelo, structuredPrice(html));
+  const structuredCash = validPriceForModel(modelo, structuredPrice(html));
   const labeledCash = cashFromText(modelo, plain, loja.nome);
   const twelve = parseTwelveFromText(modelo, plain);
-  let cash = labeledCash || structured;
+  let cash = labeledCash || structuredCash;
 
   if (cash && twelve.total && (twelve.total < cash * 0.85 || cash < twelve.total * 0.55)) {
     // Se o texto da página mistura produtos/recomendações, o 12x é descartado;
     // o valor à vista só é mantido se veio de meta/JSON-LD ou rótulo Pix/à vista.
-    if (!structured && !labeledCash) cash = null;
+    if (!structuredCash && !labeledCash) cash = null;
   }
 
-  const availability = availabilityFromText(plain);
+  const structuredStock = structuredAvailability(html);
+  const textual = availabilityFromText(plain);
+  const availability: AdapterAvailability =
+    structuredStock !== 'desconhecido'
+      ? structuredStock
+      : cash || twelve.total
+        ? 'disponivel'
+        : textual;
+
   return {
     title,
     url,
@@ -821,7 +855,7 @@ function parseOfferPage(modelo: string, loja: OnlineStoreTarget, url: string, ht
     installmentValue: twelve.value,
     termTotal: twelve.total,
     installmentText: twelve.text,
-    availability: availability === 'desconhecido' && (cash || twelve.total) ? 'disponivel' : availability,
+    availability,
     source,
     confidence: 98,
     realTwelve: !!twelve.total,
@@ -898,18 +932,40 @@ async function amazonAdapter(modelo: string, loja: OnlineStoreTarget): Promise<S
 }
 
 async function fastShopAdapter(modelo: string, loja: OnlineStoreTarget): Promise<StoreAdapterResponse> {
-  const slug = querySlug(modelo);
-  return searchPageAdapter({
+  // Fast Shop usa infraestrutura compatível com catálogo VTEX em parte da loja.
+  // Tentamos o catálogo estruturado antes do HTML; se o endpoint não responder,
+  // caímos para a descoberta tradicional sem transformar isso em erro.
+  const vtex = await vtexAdapter({
     modelo,
     loja,
-    adapterName: 'fastshop',
+    endpointBase: 'https://site.fastshop.com.br',
+    source: 'fastshop_vtex_adapter',
+    adapterName: 'fastshop_vtex',
+  });
+  if (vtex.result) return vtex;
+
+  const slug = querySlug(modelo);
+  const html = await searchPageAdapter({
+    modelo,
+    loja,
+    adapterName: 'fastshop_html',
     searchUrls: [
       `https://site.fastshop.com.br/web/q/${encodeURIComponent(slug)}`,
       `https://site.fastshop.com.br/busca?q=${encodeURIComponent(modelo)}`,
       `https://site.fastshop.com.br/search?q=${encodeURIComponent(modelo)}`,
+      `https://secure3.fastshop.com.br/celular-tablet-e-smartwatch/celular-e-smartphone`,
     ],
     linkMatcher: (url) => /fastshop\.com\.br\/[^?#]+\/p(?:\?|#|$)/i.test(url),
   });
+
+  return {
+    result: html.result,
+    stats: {
+      httpRequests: vtex.stats.httpRequests + html.stats.httpRequests,
+      adapter: 'fastshop_vtex+html',
+      candidatesFound: vtex.stats.candidatesFound + html.stats.candidatesFound,
+    },
+  };
 }
 
 export async function pesquisarComAdapterDaLoja(params: {
