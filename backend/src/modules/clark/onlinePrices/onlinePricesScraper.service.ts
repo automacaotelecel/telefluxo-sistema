@@ -1,6 +1,15 @@
 import { getBaseModelFamily, extractStorage } from '../../productDictionary/productDictionary.utils';
 import { pesquisarComAdapterDaLoja } from './onlinePricesStoreAdapters.service';
 import {
+  compararIdentidadeProduto,
+  criarIdentidadeProduto,
+  pareceUrlDetalheProduto,
+  precoMinimoPlausivel,
+  urlPertenceALoja,
+  validarCandidatoProduto,
+  validarPrecoPlausivel,
+} from './onlinePricesProductIdentity.service';
+import {
   OnlinePriceResult,
   OnlinePriceSearchStatus,
   OnlineStoreTarget,
@@ -82,7 +91,7 @@ const DEFAULT_TIMEOUT_MS = 9000;
 const DEFAULT_MAX_HTML_CHARS = 2_000_000;
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36';
-const SCRAPER_ENGINE_VERSION = '9.0.0';
+const SCRAPER_ENGINE_VERSION = '10.0.0';
 
 const ACCESSORY_TERMS = [
   'CARTAO DE MEMORIA',
@@ -257,17 +266,7 @@ function parseCompactPriceToken(raw: string, followingText: string): number | nu
 }
 
 function minimumPlausiblePrice(modelo: string): number {
-  const normalized = normalizeText(modelo);
-
-  // Piso de sanidade por família, não preço de mercado hardcoded. Serve apenas
-  // para impedir que preço de capa/parcela/recomendação seja aceito como celular.
-  if (/\bGALAXY S\d{2,3}\b/.test(normalized) && normalized.includes('ULTRA')) return 2500;
-  if (/\bGALAXY S\d{2,3}\b/.test(normalized)) return 1500;
-  if (/\bGALAXY Z\b/.test(normalized) || normalized.includes('FOLD') || normalized.includes('FLIP')) return 1800;
-  if (/\bGALAXY [AMF]\d{2,3}\b/.test(normalized)) return 250;
-  if (normalized.includes('IPHONE')) return 800;
-  if (normalized.includes('SMARTPHONE')) return 250;
-  return 20;
+  return precoMinimoPlausivel(modelo);
 }
 
 function getUrlHost(value: string | null): string {
@@ -280,14 +279,7 @@ function getUrlHost(value: string | null): string {
 }
 
 function isAllowedStoreUrl(value: string | null, loja: OnlineStoreTarget): boolean {
-  if (!value) return false;
-  const host = getUrlHost(value);
-  if (!host) return false;
-
-  return loja.dominios.some((domain) => {
-    const allowed = normalizeDomain(domain);
-    return !!allowed && (host === allowed || host.endsWith(`.${allowed}`));
-  });
+  return urlPertenceALoja(value, loja);
 }
 
 function absolutizeUrl(href: string, baseUrl: string): string | null {
@@ -343,26 +335,7 @@ function canonicalizeStoreUrl(rawUrl: string, loja: OnlineStoreTarget): string {
 }
 
 function isLikelyProductDetailUrl(url: string, loja: OnlineStoreTarget): boolean {
-  const store = normalizeText(loja.nome);
-  const lower = String(url || '').toLowerCase();
-
-  if (store.includes('MERCADO LIVRE')) {
-    return (
-      lower.includes('/p/mlb') ||
-      lower.includes('/up/mlbu') ||
-      lower.includes('produto.mercadolivre.com.br/mlb-')
-    );
-  }
-  if (store.includes('CARREFOUR')) return lower.includes('/produto/') || /-\d{6,}/.test(lower);
-  if (store.includes('MAGALU') || store.includes('MAGAZINE LUIZA')) {
-    return /\/p(?:\/|\?|#|$)/i.test(lower) || /\/te\//i.test(lower);
-  }
-  if (store.includes('AMAZON')) return lower.includes('/dp/') || lower.includes('/gp/product/');
-  if (store.includes('FAST SHOP') || store.includes('FASTSHOP')) {
-    return /\/p(?:\/|\?|#|$)/i.test(lower) || lower.includes('/produto/');
-  }
-  if (store.includes('SAMSUNG')) return /\/p(?:\/|\?|#|$)/i.test(lower) || lower.includes('/smartphones/');
-  return true;
+  return pareceUrlDetalheProduto(url, loja);
 }
 
 function extractNetwork(value: unknown): '4G' | '5G' | null {
@@ -409,31 +382,16 @@ function isAccessoryTitle(title: string): boolean {
   return ACCESSORY_TERMS.some((term) => normalized.includes(normalizeText(term)));
 }
 
-function isBundleOrComboOffer(title: string, url: string): boolean {
-  const normalizedTitle = normalizeText(title);
-  const normalizedUrl = normalizeText(decodeURIComponentSafe(url).replace(/[+_\-]+/g, ' '));
-  const combined = `${normalizedTitle} ${normalizedUrl}`;
+function isBundleOrComboOffer(modelo: string, title: string, url: string): boolean {
+  const target = criarIdentidadeProduto(modelo);
+  const combined = normalizeText(`${title} ${decodeURIComponentSafe(url).replace(/[+_\-]+/g, ' ')}`);
+  if (/\b(?:KIT|COMBO|PACOTE)\b/.test(combined)) return true;
 
-  // Para comparação de preço do aparelho, ofertas que embutem outro produto
-  // relevante (watch, buds, fone, kit/combo) não são equivalentes ao aparelho
-  // sozinho. A URL ajuda somente a detectar o pacote; ela não participa da
-  // identidade do modelo.
-  const bundleSignals = [
-    'SMARTWATCH',
-    'GALAXY WATCH',
-    'WATCH8',
-    'WATCH7',
-    'GALAXY BUDS',
-    'BUDS',
-    'FONE',
-    'HEADPHONE',
-    'EARBUD',
-    'KIT ',
-    'COMBO',
-    'PACOTE',
-  ];
+  if (['smartphone', 'tablet', 'notebook'].includes(target.category)) {
+    return /\b(?:GALAXY WATCH|SMARTWATCH|GALAXY BUDS|BUDS|EARBUDS?|FONE|HEADPHONE)\b/.test(combined);
+  }
 
-  return bundleSignals.some((signal) => combined.includes(signal));
+  return false;
 }
 
 function determineCondition(title: string, content = '', url = ''): OfferCondition {
@@ -490,80 +448,9 @@ function looksLikeAccessoryRelation(title: string): boolean {
 }
 
 function evaluateIdentity(modelo: string, title: string, url: string): { valid: boolean; score: number } {
-  const target = buildProductSignature(modelo);
-  const titleText = normalizeText(title);
-  if (!titleText || !title.trim()) return { valid: false, score: 0 };
-
-  // A identidade do produto é decidida pelo TÍTULO da oferta. A URL pode ajudar a
-  // localizar a página, mas não pode transformar S25/A15/fone em A07/A06/S26 Ultra.
-  if (isAccessoryTitle(title) || looksLikeAccessoryRelation(title)) {
-    return { valid: false, score: 0 };
-  }
-
-  const candidate = buildProductSignature(titleText);
-
-  if (target.coreToken) {
-    if (candidate.coreToken !== target.coreToken) return { valid: false, score: 0 };
-
-    const modelTokens = extractSamsungModelTokens(titleText);
-    if (modelTokens.some((token) => token !== target.coreToken)) {
-      return { valid: false, score: 0 };
-    }
-  }
-
-  if (target.family) {
-    if (!candidate.family || candidate.family !== target.family) {
-      return { valid: false, score: 0 };
-    }
-  }
-
-  // Memória precisa pertencer ao próprio título da oferta. Não aceitamos 128GB
-  // encontrado apenas na URL/snippet de uma página de busca.
-  if (target.storage && candidate.storage !== target.storage) {
-    return { valid: false, score: 0 };
-  }
-
-  // Se a planilha pede 5G, 4G ou ausência da rede não é equivalente.
-  if (target.network === '5G' && candidate.network !== '5G') return { valid: false, score: 0 };
-  if (target.network === '4G' && candidate.network === '5G') return { valid: false, score: 0 };
-
-  // Modelos A/M/F sem rede explícita na planilha representam a variante comum/4G.
-  if (
-    !target.network &&
-    target.family?.match(/^GALAXY [AMF]\d{2,3}$/) &&
-    candidate.network === '5G'
-  ) {
-    return { valid: false, score: 0 };
-  }
-
-  const qualifiers = ['ULTRA', 'PLUS', 'PRO', 'FE', 'FOLD', 'FLIP'];
-  for (const qualifier of qualifiers) {
-    const targetHas = hasToken(target.normalized, qualifier);
-    const candidateHas = hasToken(titleText, qualifier);
-    if (targetHas !== candidateHas && (targetHas || target.family?.startsWith('GALAXY S'))) {
-      return { valid: false, score: 0 };
-    }
-  }
-
-  let score = 0.68;
-  if (target.family && candidate.family === target.family) score += 0.14;
-  if (target.storage && candidate.storage === target.storage) score += 0.10;
-  if (target.network && candidate.network === target.network) score += 0.05;
-  if (isLikelyLiteralProductTitle(title)) score += 0.02;
-
-  const importantTokens = target.normalized
-    .split(' ')
-    .filter(Boolean)
-    .filter((token) => !['SAMSUNG', 'GALAXY', 'SMARTPHONE', 'CELULAR', 'APARELHO'].includes(token));
-  if (importantTokens.length > 0) {
-    const matched = importantTokens.filter((token) => hasToken(titleText, token)).length;
-    score += (matched / importantTokens.length) * 0.01;
-  }
-
-  // Mantemos o parâmetro URL para compatibilidade da assinatura e futuras regras
-  // de host/canonicalização; ele deliberadamente NÃO participa da identidade.
   void url;
-  return { valid: true, score: Math.min(1, score) };
+  const match = compararIdentidadeProduto(modelo, title);
+  return { valid: match.valid, score: match.score };
 }
 
 export function validarCandidatoProdutoDescoberto(params: {
@@ -572,16 +459,21 @@ export function validarCandidatoProdutoDescoberto(params: {
   titulo: string;
   url: string;
 }): boolean {
-  if (!isAllowedStoreUrl(params.url, params.loja)) return false;
-  if (!isLikelyProductDetailUrl(params.url, params.loja)) return false;
-  return evaluateIdentity(params.modelo, params.titulo, params.url).valid;
+  return validarCandidatoProduto({ ...params, allowIncomplete: true }).valid;
 }
 
+export function validarPaginaProdutoDescoberta(params: {
+  modelo: string;
+  loja: OnlineStoreTarget;
+  titulo: string;
+  url: string;
+}): boolean {
+  return validarCandidatoProduto(params).valid;
+}
+
+
 export function validarPrecoPlausivelPorModelo(modelo: string, value: number | null): number | null {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null;
-  const rounded = Math.round(value * 100) / 100;
-  if (rounded < minimumPlausiblePrice(modelo) || rounded > 100_000) return null;
-  return rounded;
+  return validarPrecoPlausivel(modelo, value);
 }
 
 function isLikelyLiteralProductTitle(title: string): boolean {
@@ -881,7 +773,7 @@ function makeOffer(params: {
 
   const identity = evaluateIdentity(params.modelo, title, url);
   if (!identity.valid) return null;
-  if (isBundleOrComboOffer(title, url)) return null;
+  if (isBundleOrComboOffer(params.modelo, title, url)) return null;
 
   const content = cleanText(params.content || '');
   const condition = params.condition || determineCondition(title, content, url);
@@ -1297,6 +1189,29 @@ function offerFromHtml(modelo: string, loja: OnlineStoreTarget, url: string, htm
   });
 }
 
+
+export function extrairResultadoDeHtmlProduto(params: {
+  modelo: string;
+  loja: OnlineStoreTarget;
+  url: string;
+  html: string;
+  source?: string;
+}): OnlinePriceResult | null {
+  const offer = offerFromHtml(
+    params.modelo,
+    params.loja,
+    params.url,
+    params.html,
+    params.source || 'v10_structured_html',
+  );
+  if (!offer) return null;
+  if (offer.availability === 'indisponivel' && !offer.cashPrice && !offer.termTotal) {
+    return unavailableResult(params.modelo, params.loja, offer);
+  }
+  if (!offer.cashPrice && !offer.termTotal) return null;
+  return resultFromOffer(params.modelo, params.loja, offer);
+}
+
 async function collectPreferredUrlOffer(params: {
   modelo: string;
   loja: OnlineStoreTarget;
@@ -1663,7 +1578,19 @@ export async function pesquisarPrecoSemIa(params: {
     return { result: resultFromOffer(params.modelo, params.loja, earlyWinner), stats };
   }
 
-  const tavily = await tavilySearch(params.modelo, params.loja);
+  const tavilyEnabled = envBoolean('ONLINE_PRICES_V10_TAVILY_FALLBACK_ENABLED', false);
+  const tavily = tavilyEnabled
+    ? await tavilySearch(params.modelo, params.loja)
+    : {
+        searchSucceeded: false,
+        providerFailed: false,
+        searchRequests: 0,
+        extractRequests: 0,
+        credits: 0,
+        httpRequests: 0,
+        offers: [] as OfferCandidate[],
+        exactCandidatesFound: 0,
+      };
   stats.httpRequests += tavily.httpRequests;
   stats.tavilySearchRequests += tavily.searchRequests;
   stats.tavilyExtractRequests += tavily.extractRequests;

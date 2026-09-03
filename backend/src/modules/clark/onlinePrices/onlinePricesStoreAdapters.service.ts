@@ -4,6 +4,7 @@ import {
   OnlinePriceSearchStatus,
   OnlineStoreTarget,
 } from './onlinePrices.types';
+import { compararIdentidadeProduto, precoMinimoPlausivel } from './onlinePricesProductIdentity.service';
 
 export type StoreAdapterStats = {
   httpRequests: number;
@@ -54,7 +55,7 @@ type JsonResponse = {
   status: number;
 };
 
-const ENGINE_VERSION = '9.0.0';
+const ENGINE_VERSION = '10.0.0';
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36';
 const DEFAULT_TIMEOUT_MS = 9000;
@@ -218,43 +219,11 @@ function hasToken(haystack: string, token: string): boolean {
 }
 
 function exactIdentity(modelo: string, title: string): boolean {
-  const target = buildSignature(modelo);
-  const candidate = buildSignature(title);
-  const normalizedTitle = candidate.normalized;
-  if (!normalizedTitle) return false;
-
-  if (ACCESSORY_TERMS.some((term) => normalizedTitle.includes(normalizeText(term)))) return false;
-  if (BAD_CONDITION_TERMS.some((term) => normalizedTitle.includes(normalizeText(term)))) return false;
-  if (/\bPARA\s+(?:SAMSUNG\s+)?GALAXY\b/.test(normalizedTitle)) return false;
-  if (/\bCOMPATIVEL\s+COM\s+(?:SAMSUNG\s+)?GALAXY\b/.test(normalizedTitle)) return false;
-
-  if (target.coreToken && candidate.coreToken !== target.coreToken) return false;
-  if (target.family && candidate.family !== target.family) return false;
-  if (target.storage && candidate.storage !== target.storage) return false;
-
-  if (target.network === '5G' && candidate.network !== '5G') return false;
-  if (target.network === '4G' && candidate.network === '5G') return false;
-  if (!target.network && target.family?.match(/^GALAXY [AMF]\d{2,3}$/) && candidate.network === '5G') {
-    return false;
-  }
-
-  for (const qualifier of ['ULTRA', 'PLUS', 'PRO', 'FE', 'FOLD', 'FLIP']) {
-    const targetHas = hasToken(target.normalized, qualifier);
-    const candidateHas = hasToken(candidate.normalized, qualifier);
-    if (targetHas !== candidateHas && (targetHas || target.family?.startsWith('GALAXY S'))) return false;
-  }
-
-  return true;
+  return compararIdentidadeProduto(modelo, title).valid;
 }
 
 function minimumPlausiblePrice(modelo: string): number {
-  const normalized = normalizeText(modelo);
-  if (/\bGALAXY S\d{2,3}\b/.test(normalized) && normalized.includes('ULTRA')) return 2500;
-  if (/\bGALAXY S\d{2,3}\b/.test(normalized)) return 1500;
-  if (/\bGALAXY Z\b/.test(normalized) || normalized.includes('FOLD') || normalized.includes('FLIP')) return 1800;
-  if (/\bGALAXY [AMF]\d{2,3}\b/.test(normalized)) return 250;
-  if (normalized.includes('IPHONE')) return 800;
-  return 100;
+  return precoMinimoPlausivel(modelo);
 }
 
 function validPriceForModel(modelo: string, price: number | null): number | null {

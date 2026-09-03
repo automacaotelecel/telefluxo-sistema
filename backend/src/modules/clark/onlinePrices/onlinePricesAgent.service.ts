@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import { gerarRelatorioOnlinePricesExcel, parseOnlinePricesWorkbook } from './onlinePricesExcel.service';
 import { pesquisarModeloEmLojasClaude } from './onlinePricesClaude.service';
 import { pesquisarPrecoSemIa } from './onlinePricesScraper.service';
+import { criarIdentidadeProduto } from './onlinePricesProductIdentity.service';
 import {
   OnlinePriceAnalysisSummary,
   OnlinePriceAnalyzeOptions,
@@ -15,8 +16,8 @@ import {
 } from './onlinePrices.types';
 
 const ROOT_DIR = process.cwd();
-const ENGINE_VERSION = '9.0.0';
-const CACHE_SCHEMA_VERSION = 14;
+const ENGINE_VERSION = '10.0.0';
+const CACHE_SCHEMA_VERSION = 15;
 
 function envNumber(name: string, fallback: number): number {
   const parsed = Number(process.env[name]);
@@ -39,6 +40,11 @@ function getDefaultMaxStores(): number {
 
 function getDefaultMaxSearchUsesPerModel(): number {
   return Math.max(1, Math.min(6, envNumber('ONLINE_PRICES_MAX_WEB_SEARCH_PER_MODEL', 6)));
+}
+
+function getMaxWebSearchesPerRun(): number {
+  const value = Math.floor(envNumber('ONLINE_PRICES_MAX_WEB_SEARCHES_PER_RUN', 1000));
+  return Math.max(0, Math.min(2000, value));
 }
 
 function getCacheTtlDays(): number {
@@ -82,12 +88,12 @@ function isAiDiscoveryEnabled(): boolean {
 }
 
 function getAiMaxFallbacksPerRun(): number {
-  const value = Math.floor(envNumber('ONLINE_PRICES_AI_MAX_FALLBACKS_PER_RUN', 24));
-  return Math.max(0, Math.min(60, value));
+  const value = Math.floor(envNumber('ONLINE_PRICES_AI_MAX_FALLBACKS_PER_RUN', 1000));
+  return Math.max(0, Math.min(1000, value));
 }
 
 function getAiFallbackScopes(): Set<string> {
-  const raw = String(process.env.ONLINE_PRICES_AI_FALLBACK_ONLY_FOR || 'estimated,partial,seller,error');
+  const raw = String(process.env.ONLINE_PRICES_AI_FALLBACK_ONLY_FOR || 'estimated,partial,seller,availability,error');
   const scopes = raw
     .split(',')
     .map((item) => normalizar(item).replace(/ /g, '_'))
@@ -111,7 +117,22 @@ function hasSuspiciousSeller(result: OnlinePriceResult): boolean {
     'COMPATIVEL COM',
     'PARA SAMSUNG GALAXY',
   ];
-  return suspicious.some((term) => seller.includes(normalizar(term)));
+  if (suspicious.some((term) => seller.includes(normalizar(term)))) return true;
+
+  // Sellers capturados junto com rótulos/rodapé (ex.: "Vendido por ... Devolução")
+  // são evidência de que o seletor pegou texto vizinho demais.
+  if (seller.length > 80) return true;
+  if (/\bVENDIDO POR\b|\bDEVOLUCAO\b|\bDEVOLVER\b|\bENTREGA\b/.test(seller)) return true;
+
+  const words = seller.split(' ').filter(Boolean);
+  if (words.length >= 4) {
+    const half = Math.floor(words.length / 2);
+    const left = words.slice(0, half).join(' ');
+    const right = words.slice(half, half * 2).join(' ');
+    if (left && left === right) return true;
+  }
+
+  return false;
 }
 
 function shouldUseAiFallback(result: OnlinePriceResult): boolean {
@@ -131,7 +152,11 @@ function shouldUseAiFallback(result: OnlinePriceResult): boolean {
   // Preço vindo do web search nunca é aceito como preço final.
   if (!hasKnownUrl) {
     if (!isAiDiscoveryEnabled()) return false;
-    if (result.cacheHit && rawSource.includes('claude_web_discovery_sem_resultado')) return false;
+    if (
+      result.cacheHit &&
+      (rawSource.includes('claude_web_discovery_sem_resultado') ||
+        rawSource.includes('claude_web_discovery_sem_evidencia'))
+    ) return false;
     return result.disponibilidade === 'nao_encontrado' || result.disponibilidade === 'erro';
   }
 
@@ -158,7 +183,12 @@ function shouldUseAiFallback(result: OnlinePriceResult): boolean {
     return scopes.has('PARTIAL') || scopes.has('PARCIAL') || scopes.has('OFERTA_PARCIAL');
   }
 
-  // Indisponibilidade comprovada não é rebaixada/revertida por IA.
+  // V10 confirma indisponibilidade na URL exata. Foi justamente uma fonte de
+  // falso positivo nas versões anteriores (carrossel/variante/rodapé).
+  if (result.disponibilidade === 'indisponivel') {
+    return hasKnownUrl && (scopes.has('AVAILABILITY') || scopes.has('DISPONIBILIDADE'));
+  }
+
   return false;
 }
 
@@ -193,8 +223,22 @@ function sumUsage(usages: OnlinePriceClaudeUsage[]): OnlinePriceClaudeUsage {
       inputTokens: acc.inputTokens + item.inputTokens,
       outputTokens: acc.outputTokens + item.outputTokens,
       webSearchRequests: acc.webSearchRequests + item.webSearchRequests,
+      webFetchRequests: (acc.webFetchRequests || 0) + (item.webFetchRequests || 0),
+      browserRequests: (acc.browserRequests || 0) + (item.browserRequests || 0),
+      evidenceHttpRequests: (acc.evidenceHttpRequests || 0) + (item.evidenceHttpRequests || 0),
+      candidatesConsidered: (acc.candidatesConsidered || 0) + (item.candidatesConsidered || 0),
+      candidatesRejected: (acc.candidatesRejected || 0) + (item.candidatesRejected || 0),
     }),
-    { inputTokens: 0, outputTokens: 0, webSearchRequests: 0 },
+    {
+      inputTokens: 0,
+      outputTokens: 0,
+      webSearchRequests: 0,
+      webFetchRequests: 0,
+      browserRequests: 0,
+      evidenceHttpRequests: 0,
+      candidatesConsidered: 0,
+      candidatesRejected: 0,
+    },
   );
 }
 
@@ -254,6 +298,11 @@ function montarResumo(params: {
     ofertasValidas: params.ofertasValidas,
     falhasPesquisa: params.falhasPesquisa,
     prazosEstimados: params.results.filter((r) => r.prazoEstimado === true).length,
+    webFetchRequests: params.usage.webFetchRequests || 0,
+    browserRequests: params.usage.browserRequests || 0,
+    evidenceHttpRequests: params.usage.evidenceHttpRequests || 0,
+    candidatesConsidered: params.usage.candidatesConsidered || 0,
+    candidatesRejected: params.usage.candidatesRejected || 0,
   };
 }
 
@@ -468,6 +517,15 @@ function aplicarValoresPlanilha(params: {
     params.result.disponibilidade === 'encontrado' ? toPositiveNumber(params.result.precoPrazo12xOnline) : null;
   const diffAvista = calcularDiferenca(precoAvistaOnline, precoAvistaPlanilha);
   const diffPrazo = calcularDiferenca(precoPrazo12xOnline, precoPrazo12xPlanilha);
+  const capturedAt = params.result.pesquisadoEm || new Date().toISOString();
+  const evidenceSource = params.result.fonte || 'deterministico';
+  const evidence = params.result.evidence || [
+    ...(params.result.url ? [{ field: 'url' as const, source: evidenceSource, url: params.result.url, value: params.result.url, capturedAt }] : []),
+    ...(params.result.titulo ? [{ field: 'identity' as const, source: evidenceSource, url: params.result.url || null, value: params.result.titulo, capturedAt }] : []),
+    ...(precoAvistaOnline ? [{ field: 'cash_price' as const, source: evidenceSource, url: params.result.url || null, value: precoAvistaOnline, capturedAt }] : []),
+    ...(precoPrazo12xOnline ? [{ field: 'installments_12x' as const, source: params.result.prazoEstimado ? 'regra_avista_mais_10_pct' : evidenceSource, url: params.result.url || null, value: params.result.parcelasTexto || precoPrazo12xOnline, capturedAt }] : []),
+    ...(params.result.seller ? [{ field: 'seller' as const, source: evidenceSource, url: params.result.url || null, value: params.result.seller, capturedAt }] : []),
+  ];
 
   const finalResult: OnlinePriceResult = {
     ...params.result,
@@ -482,6 +540,8 @@ function aplicarValoresPlanilha(params: {
     diferencaAvistaPercentual: diffAvista.diffPct,
     diferencaPrazo12x: diffPrazo.diff,
     diferencaPrazo12xPercentual: diffPrazo.diffPct,
+    evidence,
+    productCategory: params.result.productCategory || criarIdentidadeProduto(params.result.modelo).category,
     observacao:
       params.result.observacao ||
       (params.result.disponibilidade === 'encontrado'
@@ -674,7 +734,8 @@ function chooseAiOrDirectResult(params: {
 
   const claudeSource = String(claudeResult.fonte || '').toLowerCase();
   if (
-    claudeSource.includes('claude_web_discovery_sem_resultado') &&
+    (claudeSource.includes('claude_web_discovery_sem_resultado') ||
+      claudeSource.includes('claude_web_discovery_sem_evidencia')) &&
     claudeResult.disponibilidade === directFallback.disponibilidade
   ) {
     // Mesmo estado comercial, mas agora sabemos que a busca web restrita já foi
@@ -682,7 +743,7 @@ function chooseAiOrDirectResult(params: {
     return claudeResult;
   }
 
-  // O Claude V6 só pode ENRIQUECER a oferta determinística da mesma URL. Uma
+  // O Claude V10 só pode ENRIQUECER a oferta determinística da mesma URL. Uma
   // resposta negativa da IA nunca rebaixa um resultado real encontrado.
   if (claudeResult.disponibilidade !== 'encontrado') return directFallback;
 
@@ -709,7 +770,7 @@ function chooseAiOrDirectResult(params: {
 export async function analisarPrecosOnline(params: OnlinePriceAnalyzeOptions): Promise<OnlinePriceAnalyzeResponse> {
   ensureReportDir();
   console.log(
-    `[Preços Online ${ENGINE_VERSION}] início da análise; cache schema=${CACHE_SCHEMA_VERSION}; IA=${isAiFallbackEnabled() ? 'ON' : 'OFF'}; discoveryIA=${isAiDiscoveryEnabled() ? 'ON' : 'OFF'}; limite IA=${getAiMaxFallbacksPerRun()}; maxWebSearch/modelo=${getDefaultMaxSearchUsesPerModel()}; escopo=${Array.from(getAiFallbackScopes()).join(',')}; modoIA=discovery_url_restrito+parser_pagina; arquitetura=adapters_por_loja; prazoFallback=avista+10%`,
+    `[Preços Online ${ENGINE_VERSION}] início da análise; cache schema=${CACHE_SCHEMA_VERSION}; IA=${isAiFallbackEnabled() ? 'ON' : 'OFF'}; discoveryIA=${isAiDiscoveryEnabled() ? 'ON' : 'OFF'}; limite IA=${getAiMaxFallbacksPerRun()}; maxWebSearch/modelo=${getDefaultMaxSearchUsesPerModel()}; maxWebSearch/run=${getMaxWebSearchesPerRun()}; escopo=${Array.from(getAiFallbackScopes()).join(',')}; modoIA=search_planner+web_fetch+parser_evidencia; arquitetura=product_identity+url_cache+store_search+claude_search+playwright+evidence_validator; prazoFallback=avista+10%`,
   );
 
   const input = parseOnlinePricesWorkbook({
@@ -736,6 +797,7 @@ export async function analisarPrecosOnline(params: OnlinePriceAnalyzeOptions): P
   const aiEnabled = isAiFallbackEnabled();
   const aiMaxFallbacksPerRun = aiEnabled ? getAiMaxFallbacksPerRun() : 0;
   let aiFallbackBudgetRemaining = aiMaxFallbacksPerRun;
+  let webSearchBudgetRemaining = aiEnabled ? getMaxWebSearchesPerRun() : 0;
   const allResults: OnlinePriceResult[] = [];
   const usages: OnlinePriceClaudeUsage[] = [];
   let cacheHits = 0;
@@ -860,7 +922,7 @@ export async function analisarPrecosOnline(params: OnlinePriceAnalyzeOptions): P
     if (unresolvedForAi.length === 0) continue;
 
     if (!aiEnabled) {
-      // Com o motor V4, a pesquisa sem IA sempre retorna um estado explícito
+      // Com o motor V10, a pesquisa sem IA sempre retorna um estado explícito
       // (encontrado, indisponível, não encontrado confirmado ou erro técnico).
       // Este bloco só existe como proteção para um caminho inesperado.
       unresolvedForAi.forEach((loja) => {
@@ -887,8 +949,12 @@ export async function analisarPrecosOnline(params: OnlinePriceAnalyzeOptions): P
     try {
       modelosPesquisadosNaApi += 1;
       const maxSearchUses = Math.max(
-        1,
-        Math.min(getDefaultMaxSearchUsesPerModel(), Math.max(1, unresolvedForAi.length)),
+        0,
+        Math.min(
+          getDefaultMaxSearchUsesPerModel(),
+          Math.max(0, unresolvedForAi.length),
+          webSearchBudgetRemaining,
+        ),
       );
       const resultadosBasePorLoja: Record<string, OnlinePriceResult> = {};
       unresolvedForAi.forEach((loja) => {
@@ -905,6 +971,7 @@ export async function analisarPrecosOnline(params: OnlinePriceAnalyzeOptions): P
       });
 
       usages.push(usage);
+      webSearchBudgetRemaining = Math.max(0, webSearchBudgetRemaining - usage.webSearchRequests);
 
       const resultsByStore = new Map<string, OnlinePriceResult>();
       results.forEach((result) => resultsByStore.set(normalizar(result.loja), result));

@@ -41,6 +41,15 @@ export type OnlineInputWorkbook = {
   originalName: string;
 };
 
+
+export type OnlinePriceEvidence = {
+  field: 'identity' | 'availability' | 'cash_price' | 'installments_12x' | 'seller' | 'url';
+  source: string;
+  url: string | null;
+  value: string | number | boolean | null;
+  capturedAt: string;
+};
+
 export type OnlinePriceResult = {
   engineVersion?: string;
   modelo: string;
@@ -71,12 +80,19 @@ export type OnlinePriceResult = {
   offerId?: string | null;
   prazoEstimado?: boolean;
   regraEstimativa?: 'avista_mais_10_pct' | null;
+  evidence?: OnlinePriceEvidence[];
+  productCategory?: string | null;
 };
 
 export type OnlinePriceClaudeUsage = {
   inputTokens: number;
   outputTokens: number;
   webSearchRequests: number;
+  webFetchRequests?: number;
+  browserRequests?: number;
+  evidenceHttpRequests?: number;
+  candidatesConsidered?: number;
+  candidatesRejected?: number;
 };
 
 export type OnlinePriceAnalysisSummary = {
@@ -109,6 +125,11 @@ export type OnlinePriceAnalysisSummary = {
   ofertasValidas?: number;
   falhasPesquisa?: number;
   prazosEstimados?: number;
+  webFetchRequests?: number;
+  browserRequests?: number;
+  evidenceHttpRequests?: number;
+  candidatesConsidered?: number;
+  candidatesRejected?: number;
 };
 
 export type OnlinePriceAnalyzeOptions = {
