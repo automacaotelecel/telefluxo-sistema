@@ -15,7 +15,7 @@ import {
 } from './onlinePrices.types';
 
 const ROOT_DIR = process.cwd();
-const ENGINE_VERSION = '4.3.0';
+const ENGINE_VERSION = '5.0.0';
 const CACHE_SCHEMA_VERSION = 11;
 
 function envNumber(name: string, fallback: number): number {
@@ -75,6 +75,69 @@ function isDirectScrapeEnabled(): boolean {
 
 function isAiFallbackEnabled(): boolean {
   return envBoolean('ONLINE_PRICES_AI_FALLBACK_ENABLED', true);
+}
+
+function getAiMaxFallbacksPerRun(): number {
+  const value = Math.floor(envNumber('ONLINE_PRICES_AI_MAX_FALLBACKS_PER_RUN', 4));
+  return Math.max(0, Math.min(20, value));
+}
+
+function getAiFallbackScopes(): Set<string> {
+  const raw = String(process.env.ONLINE_PRICES_AI_FALLBACK_ONLY_FOR || 'partial,error,seller');
+  const scopes = raw
+    .split(',')
+    .map((item) => normalizar(item).replace(/ /g, '_'))
+    .filter(Boolean);
+  return new Set(scopes);
+}
+
+function hasSuspiciousSeller(result: OnlinePriceResult): boolean {
+  const seller = normalizar(result.seller || '');
+  if (!seller) return false;
+
+  const suspicious = [
+    'CAPA',
+    'PELICULA',
+    'CARREGADOR',
+    'CABO',
+    'FONE',
+    'HEADPHONE',
+    'EARBUD',
+    'SMARTWATCH',
+    'COMPATIVEL COM',
+    'PARA SAMSUNG GALAXY',
+  ];
+  return suspicious.some((term) => seller.includes(normalizar(term)));
+}
+
+function shouldUseAiFallback(result: OnlinePriceResult): boolean {
+  const scopes = getAiFallbackScopes();
+
+  if (
+    result.disponibilidade === 'encontrado' &&
+    result.ofertaCompleta &&
+    hasSuspiciousSeller(result)
+  ) {
+    return scopes.has('SELLER') || scopes.has('VENDEDOR');
+  }
+
+  if (result.disponibilidade === 'erro') {
+    return scopes.has('ERROR') || scopes.has('ERRO') || scopes.has('FALHA_PESQUISA');
+  }
+
+  if (result.disponibilidade === 'encontrado' && !isCompleteFoundPriceResult(result)) {
+    return scopes.has('PARTIAL') || scopes.has('PARCIAL') || scopes.has('OFERTA_PARCIAL');
+  }
+
+  if (result.disponibilidade === 'nao_encontrado') {
+    return scopes.has('NOT_FOUND') || scopes.has('NAO_ENCONTRADO');
+  }
+
+  if (result.disponibilidade === 'indisponivel') {
+    return scopes.has('UNAVAILABLE') || scopes.has('INDISPONIVEL');
+  }
+
+  return false;
 }
 
 function getWebSearchUnitPriceUsd(): number {
@@ -281,12 +344,10 @@ function isFreshCache(entry: CacheEntry | undefined): entry is CacheEntry {
 function isCachedResultCommerciallyReliable(result: OnlinePriceResult): boolean {
   if (result.disponibilidade !== 'encontrado') return true;
 
-  // Parciais produzidos por versões anteriores precisam passar uma vez pela
-  // lógica V4.3, que continua a segunda busca quando ainda falta 12x. Depois
-  // disso continuam respeitando o TTL curto de resultado parcial.
-  if (!result.ofertaCompleta) {
-    return result.engineVersion === ENGINE_VERSION;
-  }
+  // Resultado parcial pode ser reaproveitado como fallback seguro. Quando a IA
+  // estiver habilitada, o V5 usa esse cache como ponto de partida e tenta apenas
+  // completar os campos faltantes, sem refazer Tavily/HTTP desnecessariamente.
+  if (!result.ofertaCompleta) return true;
 
   const cash = toPositiveNumber(result.precoAvistaOnline);
   const term = toPositiveNumber(result.precoPrazo12xOnline);
@@ -363,6 +424,7 @@ function aplicarValoresPlanilha(params: {
 
   const finalResult: OnlinePriceResult = {
     ...params.result,
+    engineVersion: ENGINE_VERSION,
     loja: params.loja.nome,
     dominios: params.loja.dominios,
     precoAvistaOnline,
@@ -538,9 +600,56 @@ export function obterUltimaConsultaPrecosOnline(): OnlinePriceHistoryEntry | nul
   return carregarHistorico()[0] || null;
 }
 
+function resultInformationScore(result: OnlinePriceResult | null): number {
+  if (!result) return -1;
+  if (result.disponibilidade === 'encontrado') {
+    let score = 10;
+    if (result.precoAvistaOnline) score += 3;
+    if (result.precoPrazo12xOnline) score += 4;
+    if (result.numeroParcelas === 12) score += 1;
+    if (result.valorParcela) score += 1;
+    if (result.url) score += 1;
+    if (result.ofertaCompleta) score += 5;
+    return score;
+  }
+  if (result.disponibilidade === 'indisponivel') return 3;
+  if (result.disponibilidade === 'nao_encontrado') return 2;
+  return 0;
+}
+
+function chooseAiOrDirectResult(params: {
+  claudeResult: OnlinePriceResult | null;
+  directFallback: OnlinePriceResult | null;
+}): OnlinePriceResult | null {
+  const { claudeResult, directFallback } = params;
+  if (!claudeResult) return directFallback;
+  if (!directFallback) return claudeResult;
+
+  // Nunca misturamos campos de duas ofertas. Escolhemos um resultado inteiro.
+  const claudeScore = resultInformationScore(claudeResult);
+  const directScore = resultInformationScore(directFallback);
+
+  if (claudeScore > directScore) return claudeResult;
+  if (directScore > claudeScore) return directFallback;
+
+  // Em empate entre duas ofertas completas, preferimos o menor total em 12x.
+  if (claudeResult.ofertaCompleta && directFallback.ofertaCompleta) {
+    const claudeTerm = toPositiveNumber(claudeResult.precoPrazo12xOnline);
+    const directTerm = toPositiveNumber(directFallback.precoPrazo12xOnline);
+    if (claudeTerm && directTerm && claudeTerm !== directTerm) {
+      return claudeTerm < directTerm ? claudeResult : directFallback;
+    }
+  }
+
+  // Em empate de informação, preservamos o resultado determinístico.
+  return directFallback;
+}
+
 export async function analisarPrecosOnline(params: OnlinePriceAnalyzeOptions): Promise<OnlinePriceAnalyzeResponse> {
   ensureReportDir();
-  console.log(`[Preços Online ${ENGINE_VERSION}] início da análise; cache schema=${CACHE_SCHEMA_VERSION}; IA=${isAiFallbackEnabled() ? 'ON' : 'OFF'}`);
+  console.log(
+    `[Preços Online ${ENGINE_VERSION}] início da análise; cache schema=${CACHE_SCHEMA_VERSION}; IA=${isAiFallbackEnabled() ? 'ON' : 'OFF'}; limite IA=${getAiMaxFallbacksPerRun()}; escopo=${Array.from(getAiFallbackScopes()).join(',')}`,
+  );
 
   const input = parseOnlinePricesWorkbook({
     fileBuffer: params.fileBuffer,
@@ -563,6 +672,9 @@ export async function analisarPrecosOnline(params: OnlinePriceAnalyzeOptions): P
 
   const cacheEnabled = isCacheEnabled() && !params.bypassCache;
   const directEnabled = isDirectScrapeEnabled();
+  const aiEnabled = isAiFallbackEnabled();
+  const aiMaxFallbacksPerRun = aiEnabled ? getAiMaxFallbacksPerRun() : 0;
+  let aiFallbackBudgetRemaining = aiMaxFallbacksPerRun;
   const allResults: OnlinePriceResult[] = [];
   const usages: OnlinePriceClaudeUsage[] = [];
   let cacheHits = 0;
@@ -596,14 +708,26 @@ export async function analisarPrecosOnline(params: OnlinePriceAnalyzeOptions): P
 
       if (cacheEnabled && isFreshCache(cached) && isCachedResultCommerciallyReliable(cached.result)) {
         cacheHits += 1;
-        allResults.push(
-          aplicarValoresPlanilha({
-            result: cached.result,
-            loja,
-            planilha,
-            cacheHit: true,
-          }),
-        );
+        const cachedResult = aplicarValoresPlanilha({
+          result: cached.result,
+          loja,
+          planilha,
+          cacheHit: true,
+        });
+
+        // O V5 consegue enriquecer um cache parcial diretamente com Claude. Isso
+        // evita gastar Tavily novamente só porque falta à vista ou 12x.
+        if (
+          aiEnabled &&
+          aiFallbackBudgetRemaining > 0 &&
+          shouldUseAiFallback(cachedResult)
+        ) {
+          directFallbackByStore.set(normalizar(loja.nome), cachedResult);
+          unresolvedForAi.push(loja);
+          aiFallbackBudgetRemaining -= 1;
+        } else {
+          allResults.push(cachedResult);
+        }
         continue;
       }
 
@@ -650,16 +774,14 @@ export async function analisarPrecosOnline(params: OnlinePriceAnalyzeOptions): P
         });
 
         const needsAi =
-          isAiFallbackEnabled() &&
-          (
-            directResult.disponibilidade === 'erro' ||
-            directResult.disponibilidade === 'nao_encontrado' ||
-            (directResult.disponibilidade === 'encontrado' && !isCompleteFoundPriceResult(directResult))
-          );
+          aiEnabled &&
+          aiFallbackBudgetRemaining > 0 &&
+          shouldUseAiFallback(directResult);
 
         if (needsAi) {
           directFallbackByStore.set(normalizar(loja.nome), directResult);
           unresolvedForAi.push(loja);
+          aiFallbackBudgetRemaining -= 1;
           return;
         }
 
@@ -673,7 +795,7 @@ export async function analisarPrecosOnline(params: OnlinePriceAnalyzeOptions): P
 
     if (unresolvedForAi.length === 0) continue;
 
-    if (!isAiFallbackEnabled()) {
+    if (!aiEnabled) {
       // Com o motor V4, a pesquisa sem IA sempre retorna um estado explícito
       // (encontrado, indisponível, não encontrado confirmado ou erro técnico).
       // Este bloco só existe como proteção para um caminho inesperado.
@@ -724,19 +846,10 @@ export async function analisarPrecosOnline(params: OnlinePriceAnalyzeOptions): P
           ? aplicarValoresPlanilha({ result: found, loja, planilha, cacheHit: false })
           : null;
 
-        let finalResult: OnlinePriceResult;
-        if (claudeResult?.disponibilidade === 'encontrado') {
-          finalResult = claudeResult;
-        } else if (directFallback?.disponibilidade === 'encontrado') {
-          // Nunca trocamos uma oferta parcial real por um status negativo da IA.
-          finalResult = directFallback;
-        } else if (claudeResult) {
-          finalResult = claudeResult;
-        } else if (directFallback) {
-          finalResult = directFallback;
-        } else {
-          finalResult = criarResultadoIndisponivel({ modelo: produto.modelo, loja, planilha });
-        }
+        const chosen = chooseAiOrDirectResult({ claudeResult, directFallback });
+        const finalResult =
+          chosen ||
+          criarResultadoIndisponivel({ modelo: produto.modelo, loja, planilha });
 
         allResults.push(finalResult);
         if (cacheEnabled) cacheResult({ cache, modelo: produto.modelo, loja, result: finalResult });

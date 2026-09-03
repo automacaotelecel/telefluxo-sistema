@@ -151,8 +151,54 @@ function normalizeStoreName(value: unknown): string {
 function normalizeStatus(value: unknown): OnlinePriceResult['disponibilidade'] {
   const text = String(value ?? '').trim().toLowerCase();
   if (value === 1 || text === '1' || text === 'ok' || text === 'encontrado' || text === 'found') return 'encontrado';
-  if (text.includes('erro')) return 'erro';
-  return 'indisponivel';
+  if (text.includes('erro') || text.includes('error')) return 'erro';
+  if (text.includes('indispon') || text.includes('unavailable') || text.includes('out_of_stock')) return 'indisponivel';
+  if (value === 0 || text === '0' || text.includes('nao_encontrado') || text.includes('não_encontrado') || text.includes('not_found')) {
+    return 'nao_encontrado';
+  }
+  return 'nao_encontrado';
+}
+
+function round2(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+function normalizeCommercialValues(params: {
+  cash: number | null;
+  term: number | null;
+  installmentCount: number | null;
+  installmentValue: number | null;
+  installmentText: string | null;
+}): { cash: number | null; term: number | null; installmentCount: number | null; installmentValue: number | null } {
+  let cash = params.cash;
+  let term = params.term;
+  let installmentCount = params.installmentCount;
+  let installmentValue = params.installmentValue;
+  const text = String(params.installmentText || '').toLowerCase();
+
+  const textSays12x = /(?:^|\D)12\s*x(?:\D|$)/i.test(text);
+  if (!installmentCount && textSays12x) installmentCount = 12;
+
+  // O campo parcelado só é válido para o requisito desta rotina quando for 12x.
+  if (installmentCount && installmentCount !== 12) {
+    term = null;
+    installmentValue = null;
+  }
+
+  if (installmentCount === 12 && installmentValue) {
+    const calculated = round2(installmentValue * 12);
+    if (!term || Math.abs(term - calculated) > Math.max(0.05, calculated * 0.015)) {
+      term = calculated;
+    }
+  }
+
+  if (cash && term) {
+    const minCashToTermRatio = 0.65;
+    // À vista muito abaixo do parcelado costuma ser outro preço capturado da página.
+    if (cash < term * minCashToTermRatio || term < cash * 0.95) cash = null;
+  }
+
+  return { cash, term, installmentCount, installmentValue };
 }
 
 function safeUrl(value: unknown, loja: OnlineStoreTarget): string | null {
@@ -229,9 +275,14 @@ export async function pesquisarModeloEmLojasClaude(params: {
     'Pesquise preço atual no Brasil SOMENTE nas lojas abaixo.',
     storeLines,
     'Retorne 1 item por loja, só JSON array, sem markdown.',
-    'Chaves: l=loja,s=1 achou/0 não achou,a=à vista,p=total em 12x,x=texto 12x,u=URL do produto.',
-    'Preço ausente=null. Nunca invente. URL deve ser do domínio da loja.',
-    'Ex: [{"l":"MAGALU","s":1,"a":1999.9,"p":2199.9,"x":"12x de R$ 183,33","u":"https://..."}]',
+    'REGRA CRÍTICA: à vista/Pix e 12x DEVEM pertencer à MESMA oferta, MESMO vendedor e MESMA URL. Nunca combine ofertas.',
+    'Aceite somente produto NOVO e exatamente o modelo/armazenamento/rede pedidos. Rejeite acessórios, kits, combos, usado, seminovo, recondicionado, outlet e mostruário.',
+    'Priorize oferta disponível que possua à vista + exatamente 12x. Entre várias, escolha menor TOTAL em 12x; desempate pelo menor à vista.',
+    's deve ser exatamente: encontrado, indisponivel ou nao_encontrado.',
+    'Chaves: l=loja,s=status,t=título exato da oferta,a=à vista/pix,p=total em 12x,x=texto 12x,n=nº parcelas,i=valor parcela,v=vendedor,u=URL da oferta.',
+    'Preço/campo ausente=null. Nunca invente. Se não houver exatamente 12x, p/x/n/i devem ser null.',
+    'URL deve ser do domínio da loja e apontar para a própria oferta usada nos preços.',
+    'Ex: [{"l":"MAGALU","s":"encontrado","t":"Samsung Galaxy ...","a":1999.9,"p":2199.96,"x":"12x de R$ 183,33","n":12,"i":183.33,"v":"Loja X","u":"https://..."}]',
   ].join('\n');
 
   const maxUses = Math.max(1, Math.min(Math.floor(params.maxSearchUses || 1), 12));
@@ -283,8 +334,28 @@ export async function pesquisarModeloEmLojasClaude(params: {
       }) ||
       null;
 
-    const precoAvistaOnline = toNumber(found?.a ?? found?.preco_avista ?? found?.precoAvista ?? null);
-    const precoPrazo12xOnline = toNumber(found?.p ?? found?.preco_prazo_12x ?? found?.precoPrazo12x ?? null);
+    const rawCash = toNumber(found?.a ?? found?.preco_avista ?? found?.precoAvista ?? null);
+    const rawTerm = toNumber(found?.p ?? found?.preco_prazo_12x ?? found?.precoPrazo12x ?? null);
+    const numeroParcelasRaw = Number(found?.n ?? found?.numeroParcelas ?? found?.parcelas ?? 0);
+    const rawNumeroParcelas = Number.isFinite(numeroParcelasRaw) && numeroParcelasRaw > 0
+      ? Math.floor(numeroParcelasRaw)
+      : null;
+    const rawValorParcela = toNumber(found?.i ?? found?.valorParcela ?? found?.installmentValue ?? null);
+    const parcelasTexto = sanitizeText(found?.x ?? found?.parcelas_texto ?? found?.parcelasTexto, 120);
+    const commercial = normalizeCommercialValues({
+      cash: rawCash,
+      term: rawTerm,
+      installmentCount: rawNumeroParcelas,
+      installmentValue: rawValorParcela,
+      installmentText: parcelasTexto,
+    });
+    const precoAvistaOnline = commercial.cash;
+    const precoPrazo12xOnline = commercial.term;
+    const numeroParcelas = commercial.installmentCount;
+    const valorParcela = commercial.installmentValue;
+    const seller = sanitizeText(found?.v ?? found?.seller ?? found?.vendedor, 120);
+    const titulo = sanitizeText(found?.t ?? found?.titulo ?? found?.title, 260);
+    const offerUrl = safeUrl(found?.u ?? found?.url, loja);
     const planilha = params.valoresPlanilhaPorLoja[loja.nomeNormalizado] || {};
     const precoAvistaPlanilha = toNumber(planilha.planilhaAvista ?? null);
     const precoPrazo12xPlanilha = toNumber(planilha.planilhaPrazo12x ?? null);
@@ -293,11 +364,11 @@ export async function pesquisarModeloEmLojasClaude(params: {
 
     const disponibilidadeBase = normalizeStatus(found?.s ?? found?.disponibilidade ?? found?.status);
     const disponibilidade =
-      disponibilidadeBase === 'encontrado' && (precoAvistaOnline || precoPrazo12xOnline)
+      disponibilidadeBase === 'encontrado' &&
+      !!offerUrl &&
+      (precoAvistaOnline || precoPrazo12xOnline)
         ? 'encontrado'
-        : disponibilidadeBase === 'erro'
-          ? 'erro'
-          : 'indisponivel';
+        : disponibilidadeBase;
 
     return {
       modelo: params.modelo,
@@ -306,22 +377,53 @@ export async function pesquisarModeloEmLojasClaude(params: {
       disponibilidade,
       precoAvistaOnline: disponibilidade === 'encontrado' ? precoAvistaOnline : null,
       precoPrazo12xOnline: disponibilidade === 'encontrado' ? precoPrazo12xOnline : null,
-      parcelasTexto:
-        disponibilidade === 'encontrado'
-          ? sanitizeText(found?.x ?? found?.parcelas_texto ?? found?.parcelasTexto, 120)
-          : null,
+      parcelasTexto: disponibilidade === 'encontrado' && precoPrazo12xOnline ? parcelasTexto : null,
       precoAvistaPlanilha,
       precoPrazo12xPlanilha,
       diferencaAvista: disponibilidade === 'encontrado' ? diffAvista.diff : null,
       diferencaAvistaPercentual: disponibilidade === 'encontrado' ? diffAvista.diffPct : null,
       diferencaPrazo12x: disponibilidade === 'encontrado' ? diffPrazo.diff : null,
       diferencaPrazo12xPercentual: disponibilidade === 'encontrado' ? diffPrazo.diffPct : null,
-      titulo: null,
-      url: disponibilidade === 'encontrado' ? safeUrl(found?.u ?? found?.url, loja) : null,
+      titulo: disponibilidade === 'encontrado' ? titulo : null,
+      url: disponibilidade === 'encontrado' ? offerUrl : null,
       fonte: disponibilidade === 'encontrado' ? 'claude_web_search' : null,
       confianca: disponibilidade === 'encontrado' ? 85 : 0,
-      observacao: disponibilidade === 'encontrado' ? null : 'INDISPONÍVEL',
+      observacao:
+        disponibilidade === 'encontrado'
+          ? null
+          : disponibilidade === 'nao_encontrado'
+            ? 'NÃO ENCONTRADO PELA IA'
+            : disponibilidade === 'erro'
+              ? 'FALHA DE PESQUISA NA IA'
+              : 'INDISPONÍVEL',
       pesquisadoEm,
+      seller,
+      numeroParcelas:
+        disponibilidade === 'encontrado' && precoPrazo12xOnline
+          ? numeroParcelas || 12
+          : null,
+      valorParcela:
+        disponibilidade === 'encontrado' && precoPrazo12xOnline
+          ? valorParcela || round2(precoPrazo12xOnline / 12)
+          : null,
+      ofertaCompleta:
+        disponibilidade === 'encontrado' &&
+        !!precoAvistaOnline &&
+        !!precoPrazo12xOnline,
+      pesquisaStatus:
+        disponibilidade === 'encontrado'
+          ? precoAvistaOnline && precoPrazo12xOnline
+            ? 'oferta_valida'
+            : 'oferta_parcial'
+          : disponibilidade === 'nao_encontrado'
+            ? 'nao_encontrado_confirmado'
+            : disponibilidade === 'erro'
+              ? 'falha_pesquisa'
+              : 'produto_indisponivel',
+      offerId:
+        disponibilidade === 'encontrado' && offerUrl
+          ? `${offerUrl}::${normalizeStoreName(seller || '')}`
+          : null,
     };
   });
 
