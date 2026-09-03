@@ -85,7 +85,7 @@ const DEFAULT_TIMEOUT_MS = 9000;
 const DEFAULT_MAX_HTML_CHARS = 2_000_000;
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36';
-const SCRAPER_ENGINE_VERSION = '4.3.0';
+const SCRAPER_ENGINE_VERSION = '6.0.0';
 
 const ACCESSORY_TERMS = [
   'CARTAO DE MEMORIA',
@@ -1559,7 +1559,7 @@ async function tavilySearch(
 
       if (!response.ok) {
         state.providerFailed = true;
-        console.warn(`[Preços Online V4.3][Tavily] ${loja.nome}/${modelo}: HTTP ${response.status}`);
+        console.warn(`[Preços Online ${SCRAPER_ENGINE_VERSION}][Tavily] ${loja.nome}/${modelo}: HTTP ${response.status}`);
         continue;
       }
 
@@ -1606,7 +1606,7 @@ async function tavilySearch(
       }
 
       console.log(
-        `[Preços Online V4.3][Tavily] ${loja.nome}/${modelo}: query="${query}" resultados=${items.length} exatos=${validInThisQuery} comPreco=${pricedInThisQuery} completos12x=${complete12xInThisQuery}`,
+        `[Preços Online ${SCRAPER_ENGINE_VERSION}][Tavily] ${loja.nome}/${modelo}: query="${query}" resultados=${items.length} exatos=${validInThisQuery} comPreco=${pricedInThisQuery} completos12x=${complete12xInThisQuery}`,
       );
 
       // Preço à vista sozinho não encerra mais a descoberta. Como o 12x é um
@@ -1617,7 +1617,7 @@ async function tavilySearch(
       state.httpRequests += 1;
       state.searchRequests += 1;
       state.providerFailed = true;
-      console.warn(`[Preços Online V4.3][Tavily] ${loja.nome}/${modelo}: ${String(error?.message || error)}`);
+      console.warn(`[Preços Online ${SCRAPER_ENGINE_VERSION}][Tavily] ${loja.nome}/${modelo}: ${String(error?.message || error)}`);
     } finally {
       clearTimeout(timer);
     }
@@ -1692,7 +1692,7 @@ async function tavilySearch(
 
     if (!response.ok) {
       state.providerFailed = true;
-      console.warn(`[Preços Online V4.3][Tavily Extract] ${loja.nome}/${modelo}: HTTP ${response.status}`);
+      console.warn(`[Preços Online ${SCRAPER_ENGINE_VERSION}][Tavily Extract] ${loja.nome}/${modelo}: HTTP ${response.status}`);
       return state;
     }
 
@@ -1724,7 +1724,7 @@ async function tavilySearch(
     state.httpRequests += 1;
     state.extractRequests += 1;
     state.providerFailed = true;
-    console.warn(`[Preços Online V4.3][Tavily Extract] ${loja.nome}/${modelo}: ${String(error?.message || error)}`);
+    console.warn(`[Preços Online ${SCRAPER_ENGINE_VERSION}][Tavily Extract] ${loja.nome}/${modelo}: ${String(error?.message || error)}`);
   } finally {
     clearTimeout(extractTimer);
   }

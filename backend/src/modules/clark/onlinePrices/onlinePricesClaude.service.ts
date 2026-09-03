@@ -2,11 +2,16 @@ import Anthropic from '@anthropic-ai/sdk';
 import { OnlinePriceClaudeUsage, OnlinePriceResult, OnlineStoreTarget } from './onlinePrices.types';
 
 const DEFAULT_CLAUDE_ONLINE_PRICES_MODEL = 'claude-sonnet-5';
-const DEFAULT_WEB_SEARCH_TOOL_VERSION = 'web_search_20260318';
-const DEFAULT_LOCATION_COUNTRY = process.env.CLAUDE_SEARCH_COUNTRY || 'BR';
+const USER_AGENT =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36';
 
 let anthropicClient: Anthropic | null = null;
 let anthropicClientKey = '';
+
+function envNumber(name: string, fallback: number): number {
+  const parsed = Number(process.env[name]);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
 
 function normalizeClaudeModel(rawModel: string | undefined | null): string {
   const model = String(rawModel || '').trim();
@@ -16,12 +21,6 @@ function normalizeClaudeModel(rawModel: string | undefined | null): string {
 
 function getClaudeModel(): string {
   return normalizeClaudeModel(process.env.CLAUDE_ONLINE_PRICES_MODEL || process.env.CLAUDE_MODEL);
-}
-
-function getWebSearchToolVersion(): string {
-  const toolVersion = String(process.env.CLAUDE_WEB_SEARCH_TOOL || DEFAULT_WEB_SEARCH_TOOL_VERSION).trim();
-  if (!toolVersion || toolVersion === 'web_search_20250305') return DEFAULT_WEB_SEARCH_TOOL_VERSION;
-  return toolVersion;
 }
 
 function getAnthropicClient(): Anthropic {
@@ -37,6 +36,10 @@ function getAnthropicClient(): Anthropic {
   }
 
   return anthropicClient;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function toNumber(value: unknown): number | null {
@@ -70,6 +73,204 @@ function sanitizeText(value: unknown, max = 240): string | null {
   return text ? text.slice(0, max) : null;
 }
 
+function normalizeStoreName(value: unknown): string {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toUpperCase();
+}
+
+function normalizeDomain(domain: string): string | null {
+  const normalized = String(domain || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, '')
+    .replace(/^www\./, '');
+  const clean = (normalized.split('/')[0] || '').trim();
+  return clean && clean.includes('.') ? clean : null;
+}
+
+function safeUrl(value: unknown, loja: OnlineStoreTarget): string | null {
+  const raw = sanitizeText(value, 1000);
+  if (!raw) return null;
+
+  try {
+    const url = new URL(raw);
+    const host = url.hostname.toLowerCase().replace(/^www\./, '');
+    const allowed = loja.dominios
+      .map((domain) => normalizeDomain(domain))
+      .filter((domain): domain is string => !!domain)
+      .some((domain) => host === domain || host.endsWith(`.${domain}`));
+    return allowed ? url.toString() : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function decodeHtmlEntities(value: string): string {
+  return String(value || '')
+    .replace(/&nbsp;|&#160;/gi, ' ')
+    .replace(/&amp;|&#38;/gi, '&')
+    .replace(/&quot;|&#34;/gi, '"')
+    .replace(/&apos;|&#39;|&#x27;/gi, "'")
+    .replace(/&lt;|&#60;/gi, '<')
+    .replace(/&gt;|&#62;/gi, '>')
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(parseInt(dec, 10)));
+}
+
+function stripHtml(value: string): string {
+  return decodeHtmlEntities(
+    String(value || '')
+      .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, ' ')
+      .replace(/<!--([\s\S]*?)-->/g, ' ')
+      .replace(/<[^>]+>/g, ' '),
+  )
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function pageTitleFromHtml(html: string): string | null {
+  const match = String(html || '').match(/<title\b[^>]*>([\s\S]*?)<\/title>/i);
+  return match?.[1] ? sanitizeText(stripHtml(match[1]), 320) : null;
+}
+
+function collectWindows(text: string, patterns: RegExp[], radius: number, maxWindows: number): string[] {
+  const source = String(text || '');
+  const windows: string[] = [];
+  const seen = new Set<string>();
+
+  for (const pattern of patterns) {
+    const flags = pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`;
+    const regex = new RegExp(pattern.source, flags);
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(source)) && windows.length < maxWindows) {
+      const start = Math.max(0, match.index - radius);
+      const end = Math.min(source.length, match.index + match[0].length + radius);
+      const piece = source.slice(start, end).replace(/\s+/g, ' ').trim();
+      if (piece.length < 40) continue;
+      const key = piece.slice(0, 220).toUpperCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      windows.push(piece);
+    }
+    if (windows.length >= maxWindows) break;
+  }
+
+  return windows;
+}
+
+function commercialEvidence(html: string, modelo: string, maxChars: number): string {
+  if (!html) return '';
+
+  const visible = stripHtml(html).slice(0, 900_000);
+  const raw = decodeHtmlEntities(String(html || '')).replace(/\\u002F/gi, '/').replace(/\\\//g, '/').slice(0, 1_200_000);
+  const modelTokens = normalizeStoreName(modelo)
+    .split(' ')
+    .filter((token) => token.length >= 3 || /\d/.test(token))
+    .slice(0, 6)
+    .map((token) => token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+
+  const patterns: RegExp[] = [
+    /12\s*x/gi,
+    /12\s*parcelas?/gi,
+    /parcelamento/gi,
+    /valor\s+da\s+parcela/gi,
+    /installment/gi,
+    /numberOfInstallments/gi,
+    /R\$\s*\d/gi,
+    /\bpix\b/gi,
+    /pre[cç]o\s+(?:à|a)\s+vista/gi,
+    /spotPrice/gi,
+    /sellingPrice/gi,
+    /sellerName/gi,
+    /vendido\s+(?:e\s+entregue\s+)?por/gi,
+    /dispon[ií]vel/gi,
+    /estoque/gi,
+  ];
+  modelTokens.forEach((token) => patterns.push(new RegExp(token, 'gi')));
+
+  const visibleWindows = collectWindows(visible, patterns, 500, 10);
+  const rawWindows = collectWindows(raw, patterns, 650, 8);
+  const jsonLdBlocks = Array.from(String(html || '').matchAll(/<script\b[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi))
+    .map((match) => String(match[1] || '').replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .slice(0, 3);
+
+  const merged: string[] = [];
+  const seen = new Set<string>();
+  [...jsonLdBlocks, ...visibleWindows, ...rawWindows].forEach((piece) => {
+    const clean = piece.replace(/\s+/g, ' ').trim();
+    if (!clean) return;
+    const key = clean.slice(0, 240).toUpperCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    merged.push(clean);
+  });
+
+  return merged.join('\n---\n').slice(0, maxChars);
+}
+
+type PageEvidence = {
+  loja: string;
+  url: string;
+  pageTitle: string | null;
+  httpStatus: number;
+  evidence: string;
+  base: OnlinePriceResult;
+};
+
+async function fetchPageEvidence(loja: OnlineStoreTarget, base: OnlinePriceResult): Promise<PageEvidence | null> {
+  const url = safeUrl(base.url, loja);
+  if (!url) return null;
+
+  const controller = new AbortController();
+  const timeoutMs = Math.max(2500, Math.min(20000, envNumber('ONLINE_PRICES_AI_EVIDENCE_HTTP_TIMEOUT_MS', 10000)));
+  const maxHtmlChars = Math.max(150_000, Math.min(2_000_000, envNumber('ONLINE_PRICES_AI_EVIDENCE_MAX_HTML_CHARS', 1_200_000)));
+  const maxEvidenceChars = Math.max(1500, Math.min(20000, envNumber('ONLINE_PRICES_AI_EVIDENCE_MAX_CHARS_PER_STORE', 8500)));
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      redirect: 'follow',
+      signal: controller.signal,
+      headers: {
+        'User-Agent': USER_AGENT,
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'pt-BR,pt;q=0.9,en;q=0.7',
+        'Cache-Control': 'no-cache',
+      },
+    });
+
+    const finalUrl = safeUrl(response.url || url, loja) || url;
+    if (!response.ok) {
+      return { loja: loja.nome, url: finalUrl, pageTitle: null, httpStatus: response.status, evidence: '', base };
+    }
+
+    const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+    if (contentType && !contentType.includes('text/html') && !contentType.includes('application/xhtml')) {
+      return { loja: loja.nome, url: finalUrl, pageTitle: null, httpStatus: response.status, evidence: '', base };
+    }
+
+    const html = (await response.text()).slice(0, maxHtmlChars);
+    return {
+      loja: loja.nome,
+      url: finalUrl,
+      pageTitle: pageTitleFromHtml(html),
+      httpStatus: response.status,
+      evidence: commercialEvidence(html, base.modelo, maxEvidenceChars),
+      base,
+    };
+  } catch (_) {
+    return { loja: loja.nome, url, pageTitle: null, httpStatus: 0, evidence: '', base };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function extractText(response: any): string {
   const content = Array.isArray(response?.content) ? response.content : [];
   return content
@@ -93,7 +294,7 @@ function extractJsonArray(text: string): any[] {
     if (Array.isArray(parsed?.resultados)) return parsed.resultados;
     if (Array.isArray(parsed?.results)) return parsed.results;
   } catch (_) {
-    // Tenta extrair somente o array abaixo.
+    // tenta extrair o array abaixo
   }
 
   const start = clean.indexOf('[');
@@ -115,7 +316,7 @@ function usageFromResponse(response: any): OnlinePriceClaudeUsage {
   return {
     inputTokens: Number(usage.input_tokens || 0),
     outputTokens: Number(usage.output_tokens || 0),
-    webSearchRequests: Number(usage?.server_tool_use?.web_search_requests || 0),
+    webSearchRequests: 0,
   };
 }
 
@@ -123,40 +324,8 @@ function calcularDiferenca(online: number | null, planilha: number | null): { di
   if (typeof online !== 'number' || typeof planilha !== 'number' || !Number.isFinite(planilha) || planilha === 0) {
     return { diff: null, diffPct: null };
   }
-
   const diff = online - planilha;
   return { diff, diffPct: diff / planilha };
-}
-
-function normalizeDomain(domain: string): string | null {
-  const normalized = String(domain || '')
-    .trim()
-    .toLowerCase()
-    .replace(/^https?:\/\//, '')
-    .replace(/^www\./, '');
-
-  const clean = (normalized.split('/')[0] || '').trim();
-  return clean && clean.includes('.') ? clean : null;
-}
-
-function normalizeStoreName(value: unknown): string {
-  return String(value || '')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .toUpperCase();
-}
-
-function normalizeStatus(value: unknown): OnlinePriceResult['disponibilidade'] {
-  const text = String(value ?? '').trim().toLowerCase();
-  if (value === 1 || text === '1' || text === 'ok' || text === 'encontrado' || text === 'found') return 'encontrado';
-  if (text.includes('erro') || text.includes('error')) return 'erro';
-  if (text.includes('indispon') || text.includes('unavailable') || text.includes('out_of_stock')) return 'indisponivel';
-  if (value === 0 || text === '0' || text.includes('nao_encontrado') || text.includes('não_encontrado') || text.includes('not_found')) {
-    return 'nao_encontrado';
-  }
-  return 'nao_encontrado';
 }
 
 function round2(value: number): number {
@@ -176,10 +345,8 @@ function normalizeCommercialValues(params: {
   let installmentValue = params.installmentValue;
   const text = String(params.installmentText || '').toLowerCase();
 
-  const textSays12x = /(?:^|\D)12\s*x(?:\D|$)/i.test(text);
-  if (!installmentCount && textSays12x) installmentCount = 12;
+  if (!installmentCount && /(?:^|\D)12\s*x(?:\D|$)/i.test(text)) installmentCount = 12;
 
-  // O campo parcelado só é válido para o requisito desta rotina quando for 12x.
   if (installmentCount && installmentCount !== 12) {
     term = null;
     installmentValue = null;
@@ -187,35 +354,22 @@ function normalizeCommercialValues(params: {
 
   if (installmentCount === 12 && installmentValue) {
     const calculated = round2(installmentValue * 12);
-    if (!term || Math.abs(term - calculated) > Math.max(0.05, calculated * 0.015)) {
-      term = calculated;
-    }
+    if (!term || Math.abs(term - calculated) > Math.max(0.05, calculated * 0.015)) term = calculated;
   }
 
+  if (term && installmentCount !== 12) term = null;
+
   if (cash && term) {
-    const minCashToTermRatio = 0.65;
-    // À vista muito abaixo do parcelado costuma ser outro preço capturado da página.
+    const minCashToTermRatio = Math.max(0.4, Math.min(0.9, envNumber('ONLINE_PRICES_MIN_CASH_TO_12X_RATIO', 0.65)));
     if (cash < term * minCashToTermRatio || term < cash * 0.95) cash = null;
   }
 
   return { cash, term, installmentCount, installmentValue };
 }
 
-function safeUrl(value: unknown, loja: OnlineStoreTarget): string | null {
-  const raw = sanitizeText(value, 800);
-  if (!raw) return null;
-
-  try {
-    const url = new URL(raw);
-    const host = url.hostname.toLowerCase().replace(/^www\./, '');
-    const allowed = loja.dominios
-      .map((domain) => normalizeDomain(domain))
-      .filter((domain): domain is string => !!domain)
-      .some((domain) => host === domain || host.endsWith(`.${domain}`));
-    return allowed ? url.toString() : null;
-  } catch (_) {
-    return null;
-  }
+function getErrorStatus(error: any): number {
+  const raw = Number(error?.status || error?.response?.status || error?.statusCode || 0);
+  return Number.isFinite(raw) ? raw : 0;
 }
 
 function getAnthropicMessage(error: any): string {
@@ -228,8 +382,21 @@ function getAnthropicMessage(error: any): string {
   );
 }
 
+function isRetryableAnthropicError(error: any): boolean {
+  const status = getErrorStatus(error);
+  const message = getAnthropicMessage(error).toLowerCase();
+  return (
+    [429, 500, 502, 503, 504, 529].includes(status) ||
+    message.includes('overloaded') ||
+    message.includes('rate limit') ||
+    message.includes('too_many_requests') ||
+    message.includes('temporarily unavailable') ||
+    message.includes('timeout')
+  );
+}
+
 function buildAnthropicFriendlyError(error: any, model: string): Error {
-  const status = error?.status || error?.response?.status || error?.statusCode || '';
+  const status = getErrorStatus(error);
   const message = getAnthropicMessage(error);
   const lower = message.toLowerCase();
   const hints: string[] = [];
@@ -237,15 +404,30 @@ function buildAnthropicFriendlyError(error: any, model: string): Error {
   if (lower.includes('deprecated') || lower.includes('retired') || lower.includes('model')) {
     hints.push(`Modelo configurado: ${model}. Ajuste CLAUDE_ONLINE_PRICES_MODEL no backend.`);
   }
-  if (lower.includes('web search') || lower.includes('web_search')) {
-    hints.push('Verifique se o web search está habilitado na conta Anthropic e se CLAUDE_WEB_SEARCH_TOOL está válido.');
-  }
-  if (lower.includes('country') || lower.includes('user_location')) {
-    hints.push('Use CLAUDE_SEARCH_COUNTRY=BR.');
+  if (status === 529 || lower.includes('overloaded')) {
+    hints.push('A Anthropic está sobrecarregada; a V6 preserva o resultado determinístico após as tentativas automáticas.');
   }
 
   const prefix = status ? `Claude API ${status}: ` : 'Claude API: ';
   return new Error(`${prefix}${message}${hints.length ? ` | ${hints.join(' ')}` : ''}`);
+}
+
+async function createClaudeMessageWithRetry(anthropic: Anthropic, payload: any, model: string): Promise<any> {
+  const attempts = Math.max(1, Math.min(4, Math.floor(envNumber('ONLINE_PRICES_AI_RETRY_ATTEMPTS', 3))));
+  const baseDelay = Math.max(250, Math.min(5000, Math.floor(envNumber('ONLINE_PRICES_AI_RETRY_BASE_MS', 900))));
+  let lastError: any = null;
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await anthropic.messages.create(payload);
+    } catch (error: any) {
+      lastError = error;
+      if (!isRetryableAnthropicError(error) || attempt >= attempts - 1) break;
+      await sleep(baseDelay * Math.pow(2, attempt));
+    }
+  }
+
+  throw buildAnthropicFriendlyError(lastError, model);
 }
 
 export async function pesquisarModeloEmLojasClaude(params: {
@@ -253,177 +435,168 @@ export async function pesquisarModeloEmLojasClaude(params: {
   lojas: OnlineStoreTarget[];
   valoresPlanilhaPorLoja: Record<string, { planilhaAvista?: number | null; planilhaPrazo12x?: number | null }>;
   maxSearchUses: number;
+  resultadosBasePorLoja?: Record<string, OnlinePriceResult>;
 }): Promise<{ results: OnlinePriceResult[]; usage: OnlinePriceClaudeUsage; rawText: string }> {
   const anthropic = getAnthropicClient();
   const claudeModel = getClaudeModel();
+  const baseMap = params.resultadosBasePorLoja || {};
 
-  const allowedDomains = Array.from(
-    new Set(
-      params.lojas
-        .flatMap((loja) => loja.dominios)
-        .map((domain) => normalizeDomain(domain))
-        .filter((domain): domain is string => !!domain),
-    ),
+  const evidenceRows = await Promise.all(
+    params.lojas.map(async (loja) => {
+      const base = baseMap[normalizeStoreName(loja.nome)] || null;
+      if (!base?.url) return null;
+      return fetchPageEvidence(loja, base);
+    }),
   );
 
-  const storeLines = params.lojas
-    .map((loja, index) => `${index + 1}|${loja.nome}|${loja.dominios.join(',')}`)
-    .join('\n');
+  const usableEvidence = evidenceRows.filter((item): item is PageEvidence => !!item && !!item.evidence);
+  if (usableEvidence.length === 0) {
+    return {
+      results: [],
+      usage: { inputTokens: 0, outputTokens: 0, webSearchRequests: 0 },
+      rawText: '',
+    };
+  }
+
+  const evidenceText = usableEvidence
+    .map((item, index) => {
+      const base = item.base;
+      return [
+        `#${index + 1} LOJA=${item.loja}`,
+        `URL_FIXA=${item.url}`,
+        `TITLE_BASE=${base.titulo || item.pageTitle || ''}`,
+        `SELLER_BASE=${base.seller || ''}`,
+        `CASH_BASE=${base.precoAvistaOnline ?? ''}`,
+        `TERM12_BASE=${base.precoPrazo12xOnline ?? ''}`,
+        `PARCELAS_BASE=${base.parcelasTexto || ''}`,
+        `HTTP=${item.httpStatus}`,
+        'EVIDENCIA_PAGINA:',
+        item.evidence,
+      ].join('\n');
+    })
+    .join('\n\n===== OUTRA LOJA =====\n\n');
 
   const prompt = [
-    `M=${params.modelo}`,
-    'Pesquise preço atual no Brasil SOMENTE nas lojas abaixo.',
-    storeLines,
-    'Retorne 1 item por loja, só JSON array, sem markdown.',
-    'REGRA CRÍTICA: à vista/Pix e 12x DEVEM pertencer à MESMA oferta, MESMO vendedor e MESMA URL. Nunca combine ofertas.',
-    'Aceite somente produto NOVO e exatamente o modelo/armazenamento/rede pedidos. Rejeite acessórios, kits, combos, usado, seminovo, recondicionado, outlet e mostruário.',
-    'Priorize oferta disponível que possua à vista + exatamente 12x. Entre várias, escolha menor TOTAL em 12x; desempate pelo menor à vista.',
-    's deve ser exatamente: encontrado, indisponivel ou nao_encontrado.',
-    'Chaves: l=loja,s=status,t=título exato da oferta,a=à vista/pix,p=total em 12x,x=texto 12x,n=nº parcelas,i=valor parcela,v=vendedor,u=URL da oferta.',
-    'Preço/campo ausente=null. Nunca invente. Se não houver exatamente 12x, p/x/n/i devem ser null.',
-    'URL deve ser do domínio da loja e apontar para a própria oferta usada nos preços.',
-    'Ex: [{"l":"MAGALU","s":"encontrado","t":"Samsung Galaxy ...","a":1999.9,"p":2199.96,"x":"12x de R$ 183,33","n":12,"i":183.33,"v":"Loja X","u":"https://..."}]',
+    `MODELO_ALVO=${params.modelo}`,
+    'Você NÃO pode navegar na web e NÃO pode usar conhecimento externo.',
+    'Sua única fonte é a evidência de HTML abaixo, coletada da URL exata que o motor determinístico já validou.',
+    'Objetivo: completar a MESMA oferta/URL, nunca trocar de anúncio, seller ou produto.',
+    'Se o campo ausente não estiver comprovado na evidência, devolva null. Nunca estime e nunca invente.',
+    'Aceite somente preço à vista/Pix e parcelamento EXATAMENTE em 12x. Para 12x, devolva n=12 e i=valor da parcela quando visível.',
+    'Se houver mais de um seller/oferta na página e não for possível vincular os valores ao SELLER_BASE, não complete os campos.',
+    'Não altere URL_FIXA. Não transforme não-encontrado em encontrado. Este passo apenas enriquece ofertas já encontradas.',
+    'Retorne somente JSON array compacto, um item por evidência.',
+    'Chaves: l=loja,a=avista,p=total12x,x=texto12x,n=numeroParcelas,i=valorParcela,v=seller,t=titulo.',
+    'Campos não comprovados=null.',
+    evidenceText,
   ].join('\n');
 
-  const maxUses = Math.max(1, Math.min(Math.floor(params.maxSearchUses || 1), 12));
-  const tool: any = {
-    type: getWebSearchToolVersion(),
-    name: 'web_search',
-    max_uses: maxUses,
-    allowed_callers: ['direct'],
-    user_location: {
-      type: 'approximate',
-      country: DEFAULT_LOCATION_COUNTRY,
-      timezone: 'America/Sao_Paulo',
-    },
-  };
-
-  if (allowedDomains.length > 0) tool.allowed_domains = allowedDomains;
-
-  let response: any;
-  try {
-    response = await anthropic.messages.create({
+  const response = await createClaudeMessageWithRetry(
+    anthropic,
+    {
       model: claudeModel,
-      max_tokens: Math.max(220, Math.min(700, 120 + params.lojas.length * 90)),
-      system: 'Pesquise preço com precisão. Saída exclusivamente JSON compacto. Sem explicações.',
+      max_tokens: Math.max(220, Math.min(700, 180 + usableEvidence.length * 130)),
+      system: 'Atue somente como parser de evidência HTML. Sem web search. Sem conhecimento externo. Saída apenas JSON.',
       messages: [{ role: 'user', content: prompt }],
-      tools: [tool],
-    } as any);
-  } catch (error: any) {
-    throw buildAnthropicFriendlyError(error, claudeModel);
-  }
+    } as any,
+    claudeModel,
+  );
 
   const rawText = extractText(response);
   const parsed = extractJsonArray(rawText);
   const usage = usageFromResponse(response);
   const pesquisadoEm = new Date().toISOString();
-
   const byStore = new Map<string, any>();
   parsed.forEach((item) => {
-    const loja = sanitizeText(item?.l ?? item?.loja ?? item?.store ?? item?.site, 200);
+    const loja = sanitizeText(item?.l ?? item?.loja ?? item?.store, 200);
     if (loja) byStore.set(normalizeStoreName(loja), item);
   });
 
-  const results: OnlinePriceResult[] = params.lojas.map((loja) => {
-    const lojaNormalizada = normalizeStoreName(loja.nome);
-    const found =
-      byStore.get(lojaNormalizada) ||
-      parsed.find((item) => {
-        const parsedStore = normalizeStoreName(item?.l ?? item?.loja ?? item?.store ?? item?.site);
-        return parsedStore && (parsedStore.includes(lojaNormalizada) || lojaNormalizada.includes(parsedStore));
-      }) ||
-      null;
+  const results: OnlinePriceResult[] = usableEvidence.map((evidence) => {
+    const loja = params.lojas.find((item) => normalizeStoreName(item.nome) === normalizeStoreName(evidence.loja))!;
+    const base = evidence.base;
+    const found = byStore.get(normalizeStoreName(loja.nome)) || null;
 
-    const rawCash = toNumber(found?.a ?? found?.preco_avista ?? found?.precoAvista ?? null);
-    const rawTerm = toNumber(found?.p ?? found?.preco_prazo_12x ?? found?.precoPrazo12x ?? null);
-    const numeroParcelasRaw = Number(found?.n ?? found?.numeroParcelas ?? found?.parcelas ?? 0);
-    const rawNumeroParcelas = Number.isFinite(numeroParcelasRaw) && numeroParcelasRaw > 0
-      ? Math.floor(numeroParcelasRaw)
-      : null;
-    const rawValorParcela = toNumber(found?.i ?? found?.valorParcela ?? found?.installmentValue ?? null);
-    const parcelasTexto = sanitizeText(found?.x ?? found?.parcelas_texto ?? found?.parcelasTexto, 120);
+    const aiCash = toNumber(found?.a ?? found?.preco_avista ?? found?.precoAvista ?? null);
+    const aiTerm = toNumber(found?.p ?? found?.preco_prazo_12x ?? found?.precoPrazo12x ?? null);
+    const aiCountRaw = Number(found?.n ?? found?.numeroParcelas ?? found?.parcelas ?? 0);
+    const aiCount = Number.isFinite(aiCountRaw) && aiCountRaw > 0 ? Math.floor(aiCountRaw) : null;
+    const aiInstallmentValue = toNumber(found?.i ?? found?.valorParcela ?? found?.installmentValue ?? null);
+    const aiInstallmentText = sanitizeText(found?.x ?? found?.parcelas_texto ?? found?.parcelasTexto, 120);
+
+    // Mescla somente porque a URL é fixa e é exatamente a mesma oferta base.
     const commercial = normalizeCommercialValues({
-      cash: rawCash,
-      term: rawTerm,
-      installmentCount: rawNumeroParcelas,
-      installmentValue: rawValorParcela,
-      installmentText: parcelasTexto,
+      cash: aiCash ?? toNumber(base.precoAvistaOnline),
+      term: aiTerm ?? toNumber(base.precoPrazo12xOnline),
+      installmentCount: aiCount ?? (base.numeroParcelas || null),
+      installmentValue: aiInstallmentValue ?? toNumber(base.valorParcela),
+      installmentText: aiInstallmentText || base.parcelasTexto || null,
     });
+
     const precoAvistaOnline = commercial.cash;
     const precoPrazo12xOnline = commercial.term;
-    const numeroParcelas = commercial.installmentCount;
-    const valorParcela = commercial.installmentValue;
-    const seller = sanitizeText(found?.v ?? found?.seller ?? found?.vendedor, 120);
-    const titulo = sanitizeText(found?.t ?? found?.titulo ?? found?.title, 260);
-    const offerUrl = safeUrl(found?.u ?? found?.url, loja);
     const planilha = params.valoresPlanilhaPorLoja[loja.nomeNormalizado] || {};
     const precoAvistaPlanilha = toNumber(planilha.planilhaAvista ?? null);
     const precoPrazo12xPlanilha = toNumber(planilha.planilhaPrazo12x ?? null);
     const diffAvista = calcularDiferenca(precoAvistaOnline, precoAvistaPlanilha);
     const diffPrazo = calcularDiferenca(precoPrazo12xOnline, precoPrazo12xPlanilha);
-
-    const disponibilidadeBase = normalizeStatus(found?.s ?? found?.disponibilidade ?? found?.status);
-    const disponibilidade =
-      disponibilidadeBase === 'encontrado' &&
-      !!offerUrl &&
-      (precoAvistaOnline || precoPrazo12xOnline)
-        ? 'encontrado'
-        : disponibilidadeBase;
+    const seller = sanitizeText(found?.v ?? found?.seller ?? found?.vendedor, 120) || base.seller || null;
+    const titulo = base.titulo || sanitizeText(found?.t ?? found?.titulo ?? found?.title, 260) || evidence.pageTitle;
+    const ofertaCompleta = !!precoAvistaOnline && !!precoPrazo12xOnline;
+    const hasCommercialValue = !!precoAvistaOnline || !!precoPrazo12xOnline;
+    const baseSearchStatus =
+      base.pesquisaStatus ||
+      (base.disponibilidade === 'encontrado'
+        ? base.ofertaCompleta
+          ? 'oferta_valida'
+          : 'oferta_parcial'
+        : base.disponibilidade === 'indisponivel'
+          ? 'produto_indisponivel'
+          : base.disponibilidade === 'erro'
+            ? 'falha_pesquisa'
+            : 'nao_encontrado_confirmado');
 
     return {
+      ...base,
+      engineVersion: '6.0.0',
       modelo: params.modelo,
       loja: loja.nome,
       dominios: loja.dominios,
-      disponibilidade,
-      precoAvistaOnline: disponibilidade === 'encontrado' ? precoAvistaOnline : null,
-      precoPrazo12xOnline: disponibilidade === 'encontrado' ? precoPrazo12xOnline : null,
-      parcelasTexto: disponibilidade === 'encontrado' && precoPrazo12xOnline ? parcelasTexto : null,
+      disponibilidade: hasCommercialValue ? 'encontrado' : base.disponibilidade,
+      precoAvistaOnline,
+      precoPrazo12xOnline,
+      parcelasTexto: precoPrazo12xOnline
+        ? aiInstallmentText || base.parcelasTexto || (commercial.installmentValue ? `12x de R$ ${commercial.installmentValue.toFixed(2).replace('.', ',')}` : null)
+        : null,
       precoAvistaPlanilha,
       precoPrazo12xPlanilha,
-      diferencaAvista: disponibilidade === 'encontrado' ? diffAvista.diff : null,
-      diferencaAvistaPercentual: disponibilidade === 'encontrado' ? diffAvista.diffPct : null,
-      diferencaPrazo12x: disponibilidade === 'encontrado' ? diffPrazo.diff : null,
-      diferencaPrazo12xPercentual: disponibilidade === 'encontrado' ? diffPrazo.diffPct : null,
-      titulo: disponibilidade === 'encontrado' ? titulo : null,
-      url: disponibilidade === 'encontrado' ? offerUrl : null,
-      fonte: disponibilidade === 'encontrado' ? 'claude_web_search' : null,
-      confianca: disponibilidade === 'encontrado' ? 85 : 0,
-      observacao:
-        disponibilidade === 'encontrado'
-          ? null
-          : disponibilidade === 'nao_encontrado'
-            ? 'NÃO ENCONTRADO PELA IA'
-            : disponibilidade === 'erro'
-              ? 'FALHA DE PESQUISA NA IA'
-              : 'INDISPONÍVEL',
+      diferencaAvista: precoAvistaOnline ? diffAvista.diff : null,
+      diferencaAvistaPercentual: precoAvistaOnline ? diffAvista.diffPct : null,
+      diferencaPrazo12x: precoPrazo12xOnline ? diffPrazo.diff : null,
+      diferencaPrazo12xPercentual: precoPrazo12xOnline ? diffPrazo.diffPct : null,
+      titulo,
+      url: evidence.url,
+      fonte: hasCommercialValue
+        ? `${base.fonte || 'deterministico'}+claude_page_parser`
+        : base.fonte,
+      confianca: hasCommercialValue ? Math.max(90, Number(base.confianca || 0)) : base.confianca,
+      observacao: ofertaCompleta
+        ? null
+        : precoAvistaOnline && !precoPrazo12xOnline
+          ? 'OFERTA ENCONTRADA; 12X NÃO LOCALIZADO NA MESMA OFERTA'
+          : !precoAvistaOnline && precoPrazo12xOnline
+            ? 'OFERTA ENCONTRADA; PREÇO À VISTA NÃO LOCALIZADO NA MESMA OFERTA'
+            : base.observacao,
       pesquisadoEm,
       seller,
-      numeroParcelas:
-        disponibilidade === 'encontrado' && precoPrazo12xOnline
-          ? numeroParcelas || 12
-          : null,
-      valorParcela:
-        disponibilidade === 'encontrado' && precoPrazo12xOnline
-          ? valorParcela || round2(precoPrazo12xOnline / 12)
-          : null,
-      ofertaCompleta:
-        disponibilidade === 'encontrado' &&
-        !!precoAvistaOnline &&
-        !!precoPrazo12xOnline,
-      pesquisaStatus:
-        disponibilidade === 'encontrado'
-          ? precoAvistaOnline && precoPrazo12xOnline
-            ? 'oferta_valida'
-            : 'oferta_parcial'
-          : disponibilidade === 'nao_encontrado'
-            ? 'nao_encontrado_confirmado'
-            : disponibilidade === 'erro'
-              ? 'falha_pesquisa'
-              : 'produto_indisponivel',
-      offerId:
-        disponibilidade === 'encontrado' && offerUrl
-          ? `${offerUrl}::${normalizeStoreName(seller || '')}`
-          : null,
+      numeroParcelas: precoPrazo12xOnline ? commercial.installmentCount || 12 : null,
+      valorParcela: precoPrazo12xOnline
+        ? commercial.installmentValue || round2(precoPrazo12xOnline / 12)
+        : null,
+      ofertaCompleta,
+      pesquisaStatus: ofertaCompleta ? 'oferta_valida' : hasCommercialValue ? 'oferta_parcial' : baseSearchStatus,
+      offerId: `${evidence.url}::${normalizeStoreName(seller || '')}`,
+      cacheHit: false,
     };
   });
 

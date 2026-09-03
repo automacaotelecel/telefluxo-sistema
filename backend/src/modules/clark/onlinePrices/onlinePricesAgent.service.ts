@@ -15,7 +15,7 @@ import {
 } from './onlinePrices.types';
 
 const ROOT_DIR = process.cwd();
-const ENGINE_VERSION = '5.0.0';
+const ENGINE_VERSION = '6.0.0';
 const CACHE_SCHEMA_VERSION = 11;
 
 function envNumber(name: string, fallback: number): number {
@@ -78,12 +78,12 @@ function isAiFallbackEnabled(): boolean {
 }
 
 function getAiMaxFallbacksPerRun(): number {
-  const value = Math.floor(envNumber('ONLINE_PRICES_AI_MAX_FALLBACKS_PER_RUN', 4));
+  const value = Math.floor(envNumber('ONLINE_PRICES_AI_MAX_FALLBACKS_PER_RUN', 2));
   return Math.max(0, Math.min(20, value));
 }
 
 function getAiFallbackScopes(): Set<string> {
-  const raw = String(process.env.ONLINE_PRICES_AI_FALLBACK_ONLY_FOR || 'partial,error,seller');
+  const raw = String(process.env.ONLINE_PRICES_AI_FALLBACK_ONLY_FOR || 'partial,seller');
   const scopes = raw
     .split(',')
     .map((item) => normalizar(item).replace(/ /g, '_'))
@@ -112,6 +112,12 @@ function hasSuspiciousSeller(result: OnlinePriceResult): boolean {
 
 function shouldUseAiFallback(result: OnlinePriceResult): boolean {
   const scopes = getAiFallbackScopes();
+  const hasKnownUrl = !!String(result.url || '').trim();
+
+  // V6: Claude não faz mais busca aberta na internet. Ele só interpreta a
+  // página/oferta exata que o motor determinístico já localizou. Sem URL
+  // conhecida não há evidência segura para enviar ao modelo.
+  if (!hasKnownUrl) return false;
 
   if (
     result.disponibilidade === 'encontrado' &&
@@ -129,14 +135,8 @@ function shouldUseAiFallback(result: OnlinePriceResult): boolean {
     return scopes.has('PARTIAL') || scopes.has('PARCIAL') || scopes.has('OFERTA_PARCIAL');
   }
 
-  if (result.disponibilidade === 'nao_encontrado') {
-    return scopes.has('NOT_FOUND') || scopes.has('NAO_ENCONTRADO');
-  }
-
-  if (result.disponibilidade === 'indisponivel') {
-    return scopes.has('UNAVAILABLE') || scopes.has('INDISPONIVEL');
-  }
-
+  // Não usamos IA para transformar "não encontrado" em "encontrado". Isso
+  // elimina pesquisa aberta, falso positivo e custo desnecessário.
   return false;
 }
 
@@ -236,19 +236,36 @@ function montarResumo(params: {
 
 function isProviderFatalError(message: string): boolean {
   const lower = String(message || '').toLowerCase();
-  return (
-    lower.includes('anthropic_api_key') ||
-    lower.includes('claude api') ||
-    lower.includes('modelo configurado') ||
-    lower.includes('web search') ||
-    lower.includes('web_search') ||
-    lower.includes('deprecated') ||
-    lower.includes('retired') ||
+
+  // 429/5xx/529/overloaded são transitórios. O Claude service já tenta
+  // novamente; se ainda falhar, preservamos o resultado determinístico em vez
+  // de derrubar o agente inteiro.
+  if (
+    lower.includes('429') ||
+    lower.includes('500') ||
+    lower.includes('502') ||
+    lower.includes('503') ||
+    lower.includes('504') ||
+    lower.includes('529') ||
+    lower.includes('overloaded') ||
     lower.includes('rate limit') ||
     lower.includes('too_many_requests') ||
+    lower.includes('timeout')
+  ) {
+    return false;
+  }
+
+  return (
+    lower.includes('anthropic_api_key') ||
+    lower.includes('modelo configurado') ||
+    lower.includes('deprecated') ||
+    lower.includes('retired') ||
     lower.includes('unauthorized') ||
     lower.includes('authentication') ||
-    lower.includes('api key')
+    lower.includes('invalid x-api-key') ||
+    lower.includes('api key') ||
+    lower.includes('forbidden') ||
+    lower.includes('permission')
   );
 }
 
@@ -342,6 +359,13 @@ function isFreshCache(entry: CacheEntry | undefined): entry is CacheEntry {
 
 
 function isCachedResultCommerciallyReliable(result: OnlinePriceResult): boolean {
+  const observacaoNormalizada = normalizar(result.observacao || '');
+  const fonteNormalizada = normalizar(result.fonte || '');
+
+  // Invalida decisões negativas/positivas geradas pelo antigo Claude com web
+  // search. A V6 usa Claude apenas como parser da URL já descoberta.
+  if (observacaoNormalizada.includes('NAO ENCONTRADO PELA IA')) return false;
+  if (fonteNormalizada.includes('CLAUDE_WEB_SEARCH')) return false;
   if (result.disponibilidade !== 'encontrado') return true;
 
   // Resultado parcial pode ser reaproveitado como fallback seguro. Quando a IA
@@ -625,7 +649,11 @@ function chooseAiOrDirectResult(params: {
   if (!claudeResult) return directFallback;
   if (!directFallback) return claudeResult;
 
-  // Nunca misturamos campos de duas ofertas. Escolhemos um resultado inteiro.
+  // O Claude V6 só pode ENRIQUECER a oferta determinística da mesma URL. Uma
+  // resposta negativa da IA nunca rebaixa um resultado real encontrado.
+  if (claudeResult.disponibilidade !== 'encontrado') return directFallback;
+
+  // Nunca misturamos campos de URLs/ofertas diferentes.
   const claudeScore = resultInformationScore(claudeResult);
   const directScore = resultInformationScore(directFallback);
 
@@ -648,7 +676,7 @@ function chooseAiOrDirectResult(params: {
 export async function analisarPrecosOnline(params: OnlinePriceAnalyzeOptions): Promise<OnlinePriceAnalyzeResponse> {
   ensureReportDir();
   console.log(
-    `[Preços Online ${ENGINE_VERSION}] início da análise; cache schema=${CACHE_SCHEMA_VERSION}; IA=${isAiFallbackEnabled() ? 'ON' : 'OFF'}; limite IA=${getAiMaxFallbacksPerRun()}; escopo=${Array.from(getAiFallbackScopes()).join(',')}`,
+    `[Preços Online ${ENGINE_VERSION}] início da análise; cache schema=${CACHE_SCHEMA_VERSION}; IA=${isAiFallbackEnabled() ? 'ON' : 'OFF'}; limite IA=${getAiMaxFallbacksPerRun()}; escopo=${Array.from(getAiFallbackScopes()).join(',')}; modoIA=parser_url`,
   );
 
   const input = parseOnlinePricesWorkbook({
@@ -826,11 +854,18 @@ export async function analisarPrecosOnline(params: OnlinePriceAnalyzeOptions): P
         1,
         Math.min(getDefaultMaxSearchUsesPerModel(), Math.max(1, unresolvedForAi.length)),
       );
+      const resultadosBasePorLoja: Record<string, OnlinePriceResult> = {};
+      unresolvedForAi.forEach((loja) => {
+        const base = directFallbackByStore.get(normalizar(loja.nome));
+        if (base) resultadosBasePorLoja[normalizar(loja.nome)] = base;
+      });
+
       const { results, usage } = await pesquisarModeloEmLojasClaude({
         modelo: produto.modelo,
         lojas: unresolvedForAi,
         valoresPlanilhaPorLoja: produto.valoresPlanilhaPorLoja,
         maxSearchUses,
+        resultadosBasePorLoja,
       });
 
       usages.push(usage);
