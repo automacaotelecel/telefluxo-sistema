@@ -1,201 +1,441 @@
-import React, { useState, useEffect } from 'react';
-import { Megaphone, Bell, Calendar, Plus, Trash2, X } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  Activity,
+  ArrowDownRight,
+  ArrowUpRight,
+  BarChart3,
+  Bell,
+  CalendarDays,
+  ChevronRight,
+  CircleDollarSign,
+  Crown,
+  Gauge,
+  Megaphone,
+  PackageCheck,
+  Plus,
+  RefreshCw,
+  ShieldCheck,
+  ShoppingBag,
+  Sparkles,
+  Store,
+  Trash2,
+  X,
+} from 'lucide-react';
+import {
+  Area,
+  AreaChart,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts';
+import ExecutiveReportButton from './ExecutiveReportButton';
+import KpiDrilldownDrawer from './KpiDrilldownDrawer';
+import StoreDetailDrawer from './StoreDetailDrawer';
 
-export default function Home({ currentUser }: any) {
+type MetricKey =
+  | 'faturamentoMes'
+  | 'conversaoAcessorios'
+  | 'conversaoPeliculas'
+  | 'seguroPct'
+  | 'ticketMedio';
+
+type DashboardData = {
+  success: boolean;
+  generatedAt?: string;
+  scope?: {
+    type: 'network' | 'store';
+    label: string;
+    stores: string[];
+    canCompareStores: boolean;
+    canUseClark: boolean;
+  };
+  period?: { startDate: string; endDate: string; label: string };
+  kpis?: {
+    faturamentoMes?: number;
+    faturamentoAnterior?: number;
+    crescimento?: number | null;
+    pecasMes?: number;
+    ticketMedio?: number;
+    conversaoAcessorios?: number;
+    conversaoPeliculas?: number;
+    seguroPct?: number;
+    seguros?: number;
+    lojasAtivas?: number;
+  };
+  trend?: Array<{ date: string; faturamento: number; quantidade: number }>;
+  stores?: Array<{
+    loja: string;
+    faturamento: number;
+    quantidade: number;
+    conversaoAcessorios: number;
+    conversaoPeliculas: number;
+    seguroPct: number;
+    vendedores: number;
+  }>;
+  radar?: Array<{
+    level: 'positive' | 'warning' | 'info';
+    title: string;
+    text: string;
+    metric: string;
+  }>;
+  clarkBriefing?: string | null;
+};
+
+type Props = {
+  currentUser: any;
+  onNavigate?: (view: string) => void;
+};
+
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+
+function money(value: any) {
+  return Number(value || 0).toLocaleString('pt-BR', {
+    style: 'currency',
+    currency: 'BRL',
+    maximumFractionDigits: 0,
+  });
+}
+
+function number(value: any, digits = 0) {
+  return Number(value || 0).toLocaleString('pt-BR', {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
+}
+
+function shortDate(value: string) {
+  if (!value) return '';
+  const [, month, day] = value.split('-');
+  return `${day}/${month}`;
+}
+
+function KpiCard({
+  title,
+  value,
+  subtitle,
+  icon: Icon,
+  change,
+  onClick,
+}: {
+  title: string;
+  value: string;
+  subtitle: string;
+  icon: any;
+  change?: number | null;
+  onClick?: () => void;
+}) {
+  const positive = Number(change || 0) >= 0;
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="group rounded-[24px] border border-slate-200/80 bg-white p-5 text-left shadow-[0_12px_35px_rgba(15,23,42,0.05)] transition hover:-translate-y-0.5 hover:border-orange-200 hover:shadow-[0_16px_42px_rgba(15,23,42,0.08)]"
+    >
+      <div className="mb-5 flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">{title}</p>
+          <p className="mt-2 text-[26px] font-black tracking-tight text-slate-900">{value}</p>
+        </div>
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-slate-950 text-white transition group-hover:bg-orange-600">
+          <Icon size={18} />
+        </div>
+      </div>
+
+      <div className="flex min-h-6 items-center justify-between gap-3">
+        <p className="text-[11px] font-semibold text-slate-400">{subtitle}</p>
+        {typeof change === 'number' && Number.isFinite(change) && (
+          <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-black ${positive ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-600'}`}>
+            {positive ? <ArrowUpRight size={12} /> : <ArrowDownRight size={12} />}
+            {Math.abs(change).toFixed(1).replace('.', ',')}%
+          </span>
+        )}
+      </div>
+    </button>
+  );
+}
+
+export default function Home({ currentUser, onNavigate }: Props) {
   const [announcements, setAnnouncements] = useState<any[]>([]);
   const [showModal, setShowModal] = useState(false);
   const [newNotice, setNewNotice] = useState({ title: '', content: '', priority: 'Normal', category: 'Aviso' });
-  
-  const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+  const [dashboard, setDashboard] = useState<DashboardData | null>(null);
+  const [dashboardLoading, setDashboardLoading] = useState(true);
+  const [dashboardError, setDashboardError] = useState('');
+  const [selectedMetric, setSelectedMetric] = useState<MetricKey | null>(null);
+  const [selectedStore, setSelectedStore] = useState<string | null>(null);
 
-  // 🔥 SOLUÇÃO DEFINITIVA DO BOTÃO: Checagem robusta (1 ou true ou texto)
-  const isAdminOrManager = 
-    currentUser?.isAdmin === true || 
-    Number(currentUser?.isAdmin) === 1 || 
-    currentUser?.role?.toLowerCase().includes('gerente') || 
-    currentUser?.role?.toLowerCase().includes('gestor') ||
-    currentUser?.role?.toLowerCase().includes('adm');
+  const role = String(currentUser?.role || '').toUpperCase();
+  const isAdminOrManager =
+    role !== 'LOJA' &&
+    (currentUser?.isAdmin === true ||
+      Number(currentUser?.isAdmin) === 1 ||
+      ['CEO', 'DIRETOR', 'DIRETORIA', 'ADM', 'ADMIN', 'GESTOR'].includes(role));
 
-  const fetchAnnouncements = () => {
+  const isNetworkView = dashboard?.scope?.type === 'network';
+  const firstName = String(currentUser?.name || 'Usuário').split(' ')[0];
+
+  const fetchAnnouncements = useCallback(() => {
     fetch(`${API_URL}/announcements`)
-      .then(r => r.json())
-      .then(data => setAnnouncements(Array.isArray(data) ? data : []))
+      .then((r) => r.json())
+      .then((data) => setAnnouncements(Array.isArray(data) ? data : []))
       .catch(() => setAnnouncements([]));
-  };
+  }, []);
 
-  useEffect(() => { fetchAnnouncements(); }, []);
+  const loadDashboard = useCallback(async () => {
+    const userId = String(currentUser?.id || '').trim();
+    if (!userId) {
+      setDashboardError('Usuário não identificado. Faça login novamente.');
+      setDashboardLoading(false);
+      return;
+    }
+
+    try {
+      setDashboardLoading(true);
+      setDashboardError('');
+      const response = await fetch(`${API_URL}/api/home/resumo?userId=${encodeURIComponent(userId)}`, { cache: 'no-store' });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.error || 'Não foi possível carregar o painel.');
+      setDashboard(data);
+    } catch (error: any) {
+      console.error('Erro ao carregar Home:', error);
+      setDashboardError(error?.message || 'Erro ao carregar os indicadores.');
+    } finally {
+      setDashboardLoading(false);
+    }
+  }, [currentUser?.id]);
+
+  useEffect(() => {
+    fetchAnnouncements();
+    loadDashboard();
+  }, [fetchAnnouncements, loadDashboard]);
+
+  useEffect(() => {
+    const openStore = (event: Event) => {
+      const custom = event as CustomEvent<{ store?: string }>;
+      const store = String(custom.detail?.store || '').trim();
+      if (store) setSelectedStore(store);
+    };
+    window.addEventListener('telefluxo:open-store', openStore as EventListener);
+    return () => window.removeEventListener('telefluxo:open-store', openStore as EventListener);
+  }, []);
 
   const handleCreate = async () => {
-    if (!newNotice.title || !newNotice.content) return alert("Preencha título e conteúdo!");
-    
+    if (!newNotice.title || !newNotice.content) return alert('Preencha título e conteúdo!');
     await fetch(`${API_URL}/announcements`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...newNotice, author: currentUser.name })
+      body: JSON.stringify({ ...newNotice, author: currentUser.name }),
     });
-    
     setShowModal(false);
     setNewNotice({ title: '', content: '', priority: 'Normal', category: 'Aviso' });
     fetchAnnouncements();
   };
 
   const handleDelete = async (id: string) => {
-    if(!confirm("Deseja remover este informativo?")) return;
+    if (!confirm('Deseja remover este informativo?')) return;
     await fetch(`${API_URL}/announcements/${id}`, { method: 'DELETE' });
     fetchAnnouncements();
   };
 
-  // Filtramos os dados por categoria para preencher os espaços
-  const notices = announcements.filter(a => a.category === 'Aviso');
-  const dailyTip = announcements.find(a => a.category === 'Dica');
-  const groupAgenda = announcements.filter(a => a.category === 'Agenda');
+  const notices = announcements.filter((a) => a.category === 'Aviso');
+  const dailyTip = announcements.find((a) => a.category === 'Dica');
+  const groupAgenda = announcements.filter((a) => a.category === 'Agenda');
+  const kpis = dashboard?.kpis || {};
+  const stores = dashboard?.stores || [];
+  const radar = dashboard?.radar || [];
+  const trend = useMemo(
+    () => (dashboard?.trend || []).map((item) => ({ ...item, label: shortDate(item.date) })),
+    [dashboard?.trend],
+  );
 
   return (
-    <div className="flex-1 p-8 overflow-y-auto bg-slate-50">
-      <div className="max-w-5xl mx-auto">
-        
-        {/* CABEÇALHO */}
-        <div className="flex justify-between items-end mb-10">
+    <div className="flex-1 overflow-y-auto bg-[#f5f7fb]">
+      <div className="mx-auto w-full max-w-[1540px] px-5 py-6 md:px-8 lg:px-10 lg:py-8">
+        <section className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
-            <h1 className="text-3xl font-black text-slate-800 uppercase tracking-tighter italic">
-              Olá, {currentUser.name.split(' ')[0]}! 👋
-            </h1>
-            <p className="text-slate-400 font-bold text-[10px] uppercase tracking-[0.2em]">Painel de Controle Grupo Telecel</p>
-          </div>
-          
-          {isAdminOrManager && (
-            <button 
-              onClick={() => setShowModal(true)}
-              className="bg-orange-600 text-white px-6 py-4 rounded-2xl font-black text-xs uppercase flex gap-2 hover:bg-orange-700 shadow-lg transition-all active:scale-95"
-            >
-              <Plus size={16} /> Gerenciar Mural
-            </button>
-          )}
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-          
-          {/* MURAL CENTRAL (AVISOS) */}
-          <div className="md:col-span-2 space-y-6">
-            <h3 className="flex items-center gap-2 font-black uppercase text-[10px] text-slate-400 tracking-widest">
-              <Megaphone size={14} className="text-orange-500" /> Informativos Oficiais
-            </h3>
-            
-            {notices.map((ann) => (
-              <div key={ann.id} className="p-8 rounded-[40px] border border-slate-100 shadow-sm bg-white relative group">
-                {isAdminOrManager && (
-                  <button onClick={() => handleDelete(ann.id)} className="absolute top-6 right-6 text-slate-300 hover:text-red-500 transition-colors">
-                    <Trash2 size={16} />
-                  </button>
-                )}
-                <div className="flex items-center gap-3 mb-4">
-                   <span className={`px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest ${ann.priority === 'Urgente' ? 'bg-red-600 text-white' : 'bg-slate-100 text-slate-500'}`}>
-                      {ann.priority}
-                   </span>
-                </div>
-                <h4 className="text-xl font-black text-slate-800 mb-3 uppercase italic">{ann.title}</h4>
-                <p className="text-slate-600 text-sm leading-relaxed whitespace-pre-wrap">{ann.content}</p>
-              </div>
-            ))}
-          </div>
-
-          {/* LATERAL (DICA E AGENDA) */}
-          <div className="space-y-6">
-             
-             {/* FRASE / DICA DO DIA */}
-             <div className="bg-slate-900 rounded-[40px] p-8 text-white shadow-xl relative group">
-                {isAdminOrManager && dailyTip && (
-                  <button onClick={() => handleDelete(dailyTip.id)} className="absolute top-4 right-4 text-slate-500 hover:text-red-400">
-                    <Trash2 size={14} />
-                  </button>
-                )}
-                <h4 className="font-black uppercase text-[10px] tracking-widest mb-6 text-orange-500 flex items-center gap-2">
-                  <Bell size={14}/> Frase do Dia
-                </h4>
-                <p className="text-lg font-black italic tracking-tighter">
-                  {dailyTip ? `"${dailyTip.content}"` : "Organização é a base de tudo. Bom trabalho!"}
-                </p>
-             </div>
-
-             {/* AGENDA DO GRUPO */}
-             <div className="bg-white rounded-[40px] p-8 border border-slate-100 shadow-sm">
-                <h4 className="font-black uppercase text-[10px] tracking-widest mb-6 text-slate-400 flex items-center gap-2">
-                  <Calendar size={14}/> Agenda Grupo
-                </h4>
-                <div className="space-y-4">
-                   {groupAgenda.map(item => (
-                     <div key={item.id} className="flex justify-between items-start group">
-                        <div className="flex gap-3">
-                          <div className="w-2 h-2 rounded-full bg-orange-500 mt-1"></div>
-                          <p className="text-xs font-black text-slate-700 uppercase">{item.title}</p>
-                        </div>
-                        {isAdminOrManager && (
-                          <button onClick={() => handleDelete(item.id)} className="text-slate-300 hover:text-red-500">
-                            <Trash2 size={12} />
-                          </button>
-                        )}
-                     </div>
-                   ))}
-                   {groupAgenda.length === 0 && <p className="text-[10px] font-bold text-slate-300 uppercase">Sem reuniões hoje.</p>}
-                </div>
-             </div>
-          </div>
-        </div>
-      </div>
-
-      {/* MODAL DE GERENCIAMENTO */}
-      {showModal && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[150] flex items-center justify-center p-4">
-          <div className="bg-white w-full max-w-lg rounded-[40px] shadow-2xl p-10">
-            <div className="flex justify-between items-center mb-6">
-              <h2 className="text-2xl font-black uppercase italic tracking-tighter text-slate-800">Novo Conteúdo</h2>
-              <button onClick={() => setShowModal(false)}><X/></button>
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              <span className="inline-flex items-center gap-2 rounded-full bg-orange-50 px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.16em] text-orange-700">
+                <Activity size={13} /> TeleFluxo Intelligence
+              </span>
+              <span className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.14em] ${isNetworkView ? 'bg-slate-950 text-white' : 'bg-emerald-50 text-emerald-700'}`}>
+                {isNetworkView ? <Crown size={12} /> : <ShieldCheck size={12} />}
+                {dashboard?.scope?.label || 'Validando seu acesso'}
+              </span>
             </div>
-            
-            <div className="space-y-4">
+            <h1 className="text-3xl font-black tracking-[-0.04em] text-slate-950 md:text-4xl">
+              Olá, {firstName}. <span className="text-orange-500">👋</span>
+            </h1>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="inline-flex h-11 items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 text-xs font-bold text-slate-600 shadow-sm">
+              <CalendarDays size={15} className="text-orange-500" />
+              {dashboard?.period?.label || 'Este mês'}
+            </div>
+            <ExecutiveReportButton currentUser={currentUser} dashboard={dashboard} disabled={dashboardLoading} />
+            <button
+              onClick={loadDashboard}
+              disabled={dashboardLoading}
+              className="inline-flex h-11 items-center gap-2 rounded-2xl bg-slate-950 px-4 text-[11px] font-black uppercase tracking-wide text-white shadow-lg transition hover:bg-orange-600 disabled:opacity-50"
+            >
+              <RefreshCw size={14} className={dashboardLoading ? 'animate-spin' : ''} /> Atualizar
+            </button>
+            {isAdminOrManager && (
+              <button onClick={() => setShowModal(true)} className="inline-flex h-11 items-center gap-2 rounded-2xl bg-orange-600 px-4 text-[11px] font-black uppercase tracking-wide text-white shadow-lg transition hover:bg-orange-700">
+                <Plus size={15} /> Mural
+              </button>
+            )}
+          </div>
+        </section>
+
+        {dashboardError && (
+          <div className="mb-6 rounded-2xl border border-rose-200 bg-rose-50 px-5 py-4 text-sm font-bold text-rose-700">{dashboardError}</div>
+        )}
+
+        <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
+          <KpiCard title="Faturamento do mês" value={dashboardLoading ? '—' : money(kpis.faturamentoMes)} subtitle="vs. mês anterior" icon={CircleDollarSign} change={kpis.crescimento} onClick={() => setSelectedMetric('faturamentoMes')} />
+          <KpiCard title="Conversão acessórios" value={dashboardLoading ? '—' : `${number(kpis.conversaoAcessorios, 1)}%`} subtitle="ponderada pelo volume" icon={ShoppingBag} onClick={() => setSelectedMetric('conversaoAcessorios')} />
+          <KpiCard title="Conversão películas" value={dashboardLoading ? '—' : `${number(kpis.conversaoPeliculas, 1)}%`} subtitle="resultado do mês" icon={PackageCheck} onClick={() => setSelectedMetric('conversaoPeliculas')} />
+          <KpiCard title="Seguro" value={dashboardLoading ? '—' : `${number(kpis.seguroPct, 1)}%`} subtitle={`${number(kpis.seguros, 0)} no período`} icon={ShieldCheck} onClick={() => setSelectedMetric('seguroPct')} />
+          <KpiCard title="Ticket médio" value={dashboardLoading ? '—' : money(kpis.ticketMedio)} subtitle={`${number(kpis.pecasMes, 0)} itens no mês`} icon={Gauge} onClick={() => setSelectedMetric('ticketMedio')} />
+        </section>
+
+        <section className="mt-5 grid grid-cols-1 gap-5 xl:grid-cols-[1.65fr_0.85fr]">
+          <div className="rounded-[28px] border border-slate-200/80 bg-white p-5 shadow-[0_14px_40px_rgba(15,23,42,0.05)] md:p-6">
+            <div className="mb-5 flex items-start justify-between gap-4">
               <div>
-                <label className="text-[10px] font-black uppercase text-slate-400 ml-2">Onde publicar?</label>
-                <select 
-                  className="w-full p-4 rounded-2xl border border-slate-200 font-bold outline-none mt-1"
-                  value={newNotice.category}
-                  onChange={e => setNewNotice({...newNotice, category: e.target.value})}
-                >
-                  <option value="Aviso">Mural Central (Informativos)</option>
-                  <option value="Dica">Frase do Dia (Card Preto)</option>
-                  <option value="Agenda">Agenda Grupo (Lista Lateral)</option>
-                </select>
+                <p className="text-[10px] font-black uppercase tracking-[0.18em] text-orange-600">Performance</p>
+                <h2 className="mt-1 text-xl font-black tracking-tight text-slate-950">Faturamento diário</h2>
               </div>
+              <div className="hidden rounded-2xl bg-slate-50 px-4 py-2 text-right sm:block">
+                <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">Total</p>
+                <p className="text-sm font-black text-slate-900">{money(kpis.faturamentoMes)}</p>
+              </div>
+            </div>
 
-              <input 
-                placeholder="Título / Assunto" 
-                className="w-full p-4 rounded-2xl border border-slate-200 font-bold outline-none focus:border-orange-500"
-                value={newNotice.title}
-                onChange={e => setNewNotice({...newNotice, title: e.target.value})}
-              />
-              
-              <textarea 
-                placeholder="Conteúdo ou Mensagem..." 
-                rows={4}
-                className="w-full p-4 rounded-2xl border border-slate-200 font-bold outline-none focus:border-orange-500"
-                value={newNotice.content}
-                onChange={e => setNewNotice({...newNotice, content: e.target.value})}
-              />
-
-              {newNotice.category === 'Aviso' && (
-                <select 
-                  className="w-full p-4 rounded-2xl border border-slate-200 font-bold outline-none"
-                  value={newNotice.priority}
-                  onChange={e => setNewNotice({...newNotice, priority: e.target.value})}
-                >
-                  <option value="Normal">Prioridade Normal</option>
-                  <option value="Urgente">Prioridade Urgente</option>
-                </select>
+            <div className="h-[290px] w-full">
+              {trend.length ? (
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={trend} margin={{ top: 12, right: 8, left: -18, bottom: 0 }}>
+                    <defs>
+                      <linearGradient id="telefluxoArea" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#f97316" stopOpacity={0.24} /><stop offset="100%" stopColor="#f97316" stopOpacity={0.02} /></linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="4 5" vertical={false} stroke="#e2e8f0" />
+                    <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 10, fontWeight: 700 }} />
+                    <YAxis axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 10, fontWeight: 700 }} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
+                    <Tooltip formatter={(value: any) => [money(value), 'Faturamento']} labelFormatter={(label) => `Dia ${label}`} contentStyle={{ borderRadius: 16, border: '1px solid #e2e8f0', boxShadow: '0 15px 40px rgba(15,23,42,.12)' }} />
+                    <Area type="monotone" dataKey="faturamento" stroke="#f97316" strokeWidth={3} fill="url(#telefluxoArea)" />
+                  </AreaChart>
+                </ResponsiveContainer>
+              ) : (
+                <div className="flex h-full items-center justify-center rounded-2xl bg-slate-50 text-sm font-bold text-slate-400">Sem movimento suficiente para montar o gráfico.</div>
               )}
             </div>
+          </div>
 
-            <button onClick={handleCreate} className="w-full py-4 bg-orange-600 text-white rounded-2xl font-black uppercase text-xs shadow-lg hover:bg-orange-700 mt-8 transition-all">
-              Confirmar e Publicar
-            </button>
+          <button
+            onClick={() => onNavigate?.('alertas_inteligentes')}
+            className="group rounded-[28px] bg-slate-950 p-5 text-left text-white shadow-[0_18px_50px_rgba(15,23,42,0.16)] transition hover:-translate-y-0.5 md:p-6"
+          >
+            <div className="flex items-start justify-between">
+              <div>
+                <div className="flex items-center gap-2 text-orange-400"><Sparkles size={16} /><span className="text-[10px] font-black uppercase tracking-[0.18em]">Clark • Radar</span></div>
+                <h2 className="mt-2 text-xl font-black tracking-tight">Pontos que merecem atenção</h2>
+              </div>
+              <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-white/10 transition group-hover:bg-orange-600"><BarChart3 size={17} /></div>
+            </div>
+
+            <div className="mt-5 space-y-3">
+              {radar.length ? radar.slice(0, 4).map((item, index) => (
+                <div key={`${item.title}-${index}`} className="rounded-2xl border border-white/10 bg-white/[0.06] p-4">
+                  <div className="flex items-center justify-between gap-3"><span className={`h-2.5 w-2.5 rounded-full ${item.level === 'positive' ? 'bg-emerald-400' : item.level === 'warning' ? 'bg-amber-400' : 'bg-sky-400'}`} /><span className="text-[9px] font-black uppercase tracking-widest text-slate-400">{item.metric}</span></div>
+                  <p className="mt-2 text-sm font-black text-white">{item.title}</p>
+                  <p className="mt-1 text-xs font-medium leading-relaxed text-slate-300">{item.text}</p>
+                </div>
+              )) : (
+                <div className="rounded-2xl border border-white/10 bg-white/[0.06] p-5 text-sm font-semibold text-slate-300">Nenhum alerta relevante encontrado até agora.</div>
+              )}
+            </div>
+          </button>
+        </section>
+
+        <section className="mt-5 grid grid-cols-1 gap-5 xl:grid-cols-[1.25fr_0.75fr]">
+          <div className="rounded-[28px] border border-slate-200/80 bg-white p-5 shadow-sm md:p-6">
+            <div className="mb-5 flex items-center justify-between gap-3">
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">{isNetworkView ? 'Rede' : 'Sua unidade'}</p>
+                <h2 className="mt-1 text-xl font-black text-slate-950">{isNetworkView ? 'Performance das lojas' : 'Resumo da loja'}</h2>
+              </div>
+              <Store size={20} className="text-orange-500" />
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[690px] border-separate border-spacing-y-2 text-left">
+                <thead>
+                  <tr className="text-[9px] font-black uppercase tracking-[0.16em] text-slate-400">
+                    <th className="px-3 py-2">{isNetworkView ? '#' : 'Escopo'}</th><th className="px-3 py-2">Loja</th><th className="px-3 py-2 text-right">Faturamento</th><th className="px-3 py-2 text-right">Acessórios</th><th className="px-3 py-2 text-right">Películas</th><th className="px-3 py-2 text-right">Seguro</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {stores.length ? stores.slice(0, isNetworkView ? 10 : 1).map((store, index) => (
+                    <tr key={store.loja} onClick={() => setSelectedStore(store.loja)} className="cursor-pointer bg-slate-50/80 text-xs font-bold text-slate-700 transition hover:bg-orange-50">
+                      <td className="rounded-l-2xl px-3 py-3.5 text-slate-400">{isNetworkView ? String(index + 1).padStart(2, '0') : <ShieldCheck size={15} className="text-emerald-600" />}</td>
+                      <td className="px-3 py-3.5 font-black text-slate-900">{store.loja}</td><td className="px-3 py-3.5 text-right">{money(store.faturamento)}</td><td className="px-3 py-3.5 text-right">{number(store.conversaoAcessorios, 1)}%</td><td className="px-3 py-3.5 text-right">{number(store.conversaoPeliculas, 1)}%</td><td className="rounded-r-2xl px-3 py-3.5 text-right">{number(store.seguroPct, 1)}%</td>
+                    </tr>
+                  )) : (
+                    <tr><td colSpan={6} className="py-10 text-center text-sm font-semibold text-slate-400">Nenhum dado disponível.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="space-y-5">
+            <div className="rounded-[28px] border border-slate-200/80 bg-white p-5 shadow-sm md:p-6">
+              <div className="mb-4 flex items-center justify-between">
+                <div><p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Informativos</p><h2 className="mt-1 text-lg font-black text-slate-950">Mural oficial</h2></div>
+                <Megaphone size={19} className="text-orange-500" />
+              </div>
+              <div className="space-y-3">
+                {notices.slice(0, 2).map((ann) => (
+                  <div key={ann.id} className="relative rounded-2xl bg-slate-50 p-4">
+                    {isAdminOrManager && <button onClick={() => handleDelete(ann.id)} className="absolute right-3 top-3 text-slate-300 hover:text-rose-500"><Trash2 size={13} /></button>}
+                    <span className={`rounded-full px-2 py-1 text-[8px] font-black uppercase tracking-widest ${ann.priority === 'Urgente' ? 'bg-rose-100 text-rose-700' : 'bg-white text-slate-500'}`}>{ann.priority}</span>
+                    <p className="mt-3 pr-6 text-sm font-black text-slate-900">{ann.title}</p><p className="mt-1 line-clamp-3 text-xs font-medium leading-relaxed text-slate-500">{ann.content}</p>
+                  </div>
+                ))}
+                {!notices.length && <p className="rounded-2xl bg-slate-50 p-4 text-xs font-bold text-slate-400">Sem novos informativos.</p>}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
+              <div className="rounded-[24px] bg-orange-600 p-5 text-white"><Bell size={17} /><p className="mt-4 text-[9px] font-black uppercase tracking-[0.18em] text-orange-100">Frase do dia</p><p className="mt-2 text-sm font-black leading-relaxed">{dailyTip ? dailyTip.content : 'Organização é a base de tudo. Bom trabalho!'}</p></div>
+              <div className="rounded-[24px] border border-slate-200 bg-white p-5"><CalendarDays size={17} className="text-slate-900" /><p className="mt-4 text-[9px] font-black uppercase tracking-[0.18em] text-slate-400">Agenda grupo</p><p className="mt-2 text-sm font-black text-slate-900">{groupAgenda.length ? `${groupAgenda.length} compromisso(s)` : 'Sem reuniões hoje'}</p>{groupAgenda[0] && <p className="mt-1 text-xs font-semibold text-slate-400">{groupAgenda[0].title}</p>}</div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <KpiDrilldownDrawer open={Boolean(selectedMetric)} metric={selectedMetric} dashboard={dashboard} onClose={() => setSelectedMetric(null)} onOpenStore={(store) => { setSelectedMetric(null); setSelectedStore(store); }} />
+      <StoreDetailDrawer open={Boolean(selectedStore)} store={selectedStore} currentUser={currentUser} onClose={() => setSelectedStore(null)} />
+
+      {showModal && (
+        <div className="fixed inset-0 z-[150] flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-lg rounded-[30px] bg-white p-7 shadow-2xl md:p-9">
+            <div className="mb-6 flex items-center justify-between">
+              <div><p className="text-[10px] font-black uppercase tracking-[0.18em] text-orange-600">Comunicação interna</p><h2 className="mt-1 text-2xl font-black tracking-tight text-slate-900">Novo conteúdo</h2></div>
+              <button onClick={() => setShowModal(false)} className="flex h-10 w-10 items-center justify-center rounded-2xl bg-slate-100 text-slate-600 hover:bg-slate-200"><X size={18} /></button>
+            </div>
+            <div className="space-y-4">
+              <select className="w-full rounded-2xl border border-slate-200 p-4 text-sm font-bold outline-none focus:border-orange-500" value={newNotice.category} onChange={(e) => setNewNotice({ ...newNotice, category: e.target.value })}><option value="Aviso">Mural central</option><option value="Dica">Frase do dia</option><option value="Agenda">Agenda grupo</option></select>
+              <input placeholder="Título / assunto" className="w-full rounded-2xl border border-slate-200 p-4 text-sm font-bold outline-none focus:border-orange-500" value={newNotice.title} onChange={(e) => setNewNotice({ ...newNotice, title: e.target.value })} />
+              <textarea placeholder="Conteúdo ou mensagem..." rows={4} className="w-full rounded-2xl border border-slate-200 p-4 text-sm font-bold outline-none focus:border-orange-500" value={newNotice.content} onChange={(e) => setNewNotice({ ...newNotice, content: e.target.value })} />
+              {newNotice.category === 'Aviso' && <select className="w-full rounded-2xl border border-slate-200 p-4 text-sm font-bold outline-none" value={newNotice.priority} onChange={(e) => setNewNotice({ ...newNotice, priority: e.target.value })}><option value="Normal">Prioridade normal</option><option value="Urgente">Prioridade urgente</option></select>}
+            </div>
+            <button onClick={handleCreate} className="mt-7 flex w-full items-center justify-center gap-2 rounded-2xl bg-orange-600 py-4 text-xs font-black uppercase tracking-wide text-white shadow-lg hover:bg-orange-700">Publicar <ChevronRight size={15} /></button>
           </div>
         </div>
       )}

@@ -16,6 +16,27 @@ const genAI = GEMINI_API_KEY ? new GoogleGenAI({ apiKey: GEMINI_API_KEY }) : nul
 // Roteador de IA via Variável de Ambiente
 const PROVIDER = process.env.CLARK_PROVIDER?.toLowerCase() || 'gemini';
 
+// Consultas factuais já possuem resposta determinística montada com os dados
+// das ferramentas. Nelas, reescrever com LLM só aumenta o risco de alterar
+// números, nomes ou filtros sem agregar valor real.
+const TASKS_COM_RESPOSTA_DETERMINISTICA = new Set<string>([
+  'stock_product_search',
+  'stock_ranking',
+  'sales_summary',
+  'sales_by_store',
+  'sales_by_seller',
+  'sales_by_category',
+  'sales_store_ranking',
+  'sales_seller_ranking',
+  'sales_category_ranking',
+  'sales_growth',
+  'insurance_by_seller',
+  'insurance_by_store',
+  'insurance_seller_ranking',
+  'insurance_store_ranking',
+  'help',
+]);
+
 function toNumber(v: any, fallback = 0) {
   const n = Number(v);
   return Number.isFinite(n) ? n : fallback;
@@ -588,6 +609,17 @@ export function respostaLocalExecutiva(params: {
   return clip(JSON.stringify(first, null, 2), 5000);
 }
 
+function respostaFalhaVerificacao(verifier: ClarkVerificationResult, fallback: string) {
+  const problemas = (verifier.problems || []).map((p) => String(p).trim()).filter(Boolean);
+
+  if (verifier.verdict === 'missing_data' && fallback) {
+    return fallback;
+  }
+
+  const detalhe = problemas.length ? ` Motivo: ${problemas.join(' | ')}` : '';
+  return `Não consegui concluir essa análise com segurança.${detalhe} Não vou completar a resposta com estimativas ou dados inventados.`;
+}
+
 function promptFinal(params: {
   pergunta: string;
   plan: ClarkAgentPlan;
@@ -659,6 +691,21 @@ export async function responderFinalClark(params: {
     results: params.results,
     periodo: params.periodo,
   });
+
+  // Se o verificador detectou erro de ferramenta, intenção errada ou ausência
+  // de dados, a LLM não recebe a chance de "preencher" a lacuna.
+  if (!params.verifier.ok) {
+    return {
+      text: respostaFalhaVerificacao(params.verifier, fallback),
+      usedGemini: false,
+    };
+  }
+
+  // Rankings, resumos e consultas factuais usam a resposta local, produzida
+  // diretamente dos dados validados. IA fica reservada para análises compostas.
+  if (TASKS_COM_RESPOSTA_DETERMINISTICA.has(params.plan.taskType)) {
+    return { text: fallback, usedGemini: false };
+  }
 
   const conteudoPrompt = promptFinal({
     pergunta: params.pergunta,

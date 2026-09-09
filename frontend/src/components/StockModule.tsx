@@ -292,7 +292,7 @@ const getUnitCost = (item: any): number => {
     : 0;
 };
 
-export default function StockModule() {
+export default function StockModule({ currentUser }: { currentUser?: any }) {
   const [stockData, setStockData] = useState<any[]>([]);
   const [salesData, setSalesData] = useState<any[]>([]);
   const [purchaseData, setPurchaseData] = useState<any[]>([]);
@@ -339,8 +339,11 @@ export default function StockModule() {
   const loadData = async () => {
     setLoading(true);
     try {
+      const userId = String(currentUser?.id || '').trim();
+      if (!userId) throw new Error('Usuário não identificado para consulta de estoque.');
+
       // 1. Estoque (AGORA COM REAGRUPAMENTO AUTOMÁTICO PARA VISÃO GERAL)
-      const resStock = await fetch(`${API_URL}/stock`);
+      const resStock = await fetch(`${API_URL}/stock?userId=${encodeURIComponent(userId)}`);
       const jsonStock = await resStock.json();
 
       if (Array.isArray(jsonStock)) {
@@ -428,19 +431,11 @@ export default function StockModule() {
         console.warn("Erro ao carregar compras", e);
       }
 
-      // 3. Descobre usuário
-      let userId = '';
-      try {
-        const rawUser = localStorage.getItem('user') || localStorage.getItem('telefluxo_user');
-        if (rawUser) {
-          const parsed = JSON.parse(rawUser);
-          userId = parsed.id || parsed.userId || parsed._id || '';
-        }
-      } catch (e) {}
+      // 3. Usuário já validado no início da carga.
 
       // 4. Análise de Estoque (O FILME DO IMEI)
       try {
-        const resAnalysis = await fetch(`${API_URL}/stock/analysis`);
+        const resAnalysis = await fetch(`${API_URL}/stock/analysis?userId=${encodeURIComponent(userId)}`);
         const jsonAnalysis = await resAnalysis.json();
         if (Array.isArray(jsonAnalysis)) setAnalysisData(jsonAnalysis);
       } catch (e) {

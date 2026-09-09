@@ -9,6 +9,8 @@ import Agenda from "./components/Agenda";
 import ManagerDashboard from "./components/ManagerDashboard";
 import SalesDashboard from "./components/SalesDashboard";
 import NotificationBell from "./components/NotificationBell";
+import AlertCenterBell from "./components/AlertCenterBell";
+import GlobalSearch from './components/GlobalSearch';
 import IntelligentAlerts from './components/IntelligentAlerts';
 import ExecutiveDashboard from './components/ExecutiveDashboard';
 import AvaliacoesLojas from './components/AvaliacoesLojas';
@@ -168,14 +170,14 @@ function App() {
     userRole === 'SAMSUNG' ||
     userEmail === 'analista.samsungtelecel@gmail.com';
 
-  const canViewSales = ['CEO', 'DIRETOR', 'LOJA'].includes(userRole) || isAdmin;
-  const canViewStock = ['CEO', 'DIRETOR', 'LOJA'].includes(userRole) || isAdmin;
-  const canViewFinance = ['CEO', 'DIRETOR', 'ADM'].includes(userRole) || isAdmin;
-  const canViewTeam = ['CEO', 'DIRETOR', 'ADM'].includes(userRole) || isAdmin;
-  const canViewComparativos = ['ADM', 'CEO'].includes(userRole) || isAdmin || isSamsungUser;
-  const canViewExecutiveDashboard = userRole === 'ADM' || isAdmin;
-  const canViewAuditDashboard = ['ADM', 'ADMIN', 'CEO', 'DIRETOR'].includes(userRole) || isAdmin;
-  const canUseClarkAdm = userRole === 'ADM' || userRole === 'ADMIN' || isAdmin;
+  const canViewSales = ['CEO', 'DIRETOR', 'LOJA'].includes(userRole) || (isAdmin && userRole !== 'LOJA');
+  const canViewStock = ['CEO', 'DIRETOR', 'LOJA'].includes(userRole) || (isAdmin && userRole !== 'LOJA');
+  const canViewFinance = ['CEO', 'DIRETOR', 'ADM'].includes(userRole) || (isAdmin && userRole !== 'LOJA');
+  const canViewTeam = ['CEO', 'DIRETOR', 'ADM'].includes(userRole) || (isAdmin && userRole !== 'LOJA');
+  const canViewComparativos = ['ADM', 'CEO'].includes(userRole) || (isAdmin && userRole !== 'LOJA') || isSamsungUser;
+  const canViewExecutiveDashboard = userRole !== 'LOJA' && (userRole === 'ADM' || isAdmin);
+  const canViewAuditDashboard = userRole !== 'LOJA' && (['ADM', 'ADMIN', 'CEO', 'DIRETOR'].includes(userRole) || isAdmin);
+  const canUseClarkDiretoria = ['CEO', 'DIRETOR', 'DIRETORIA'].includes(userRole);
 
   const isStoreOnly = userRole === 'LOJA';
 
@@ -320,7 +322,7 @@ function App() {
 
   const renderViewContent = (view: string) => {
     if (view === 'home') {
-      return <Home currentUser={user} />;
+      return <Home currentUser={user} onNavigate={handleNavigate} />;
     }
 
     if (
@@ -374,7 +376,7 @@ function App() {
       return <LeituraCartas currentUser={user} />;
     }
 
-    if (view === 'stock') return <StockModule />;
+    if (view === 'stock') return <StockModule currentUser={user} />;
     if (view === 'inventory_audit') return <InventoryAuditModule currentUser={user} />;
     if (view === 'inventory_audit_dashboard' && canViewAuditDashboard) return <InventoryAuditDashboard currentUser={user} />;
 
@@ -409,10 +411,10 @@ function App() {
     if (view === 'sales_dash') return <SalesDashboard />;
     if (view === 'comparativo') return <ComparativoAnual />;
     if (view === 'estoque_vendas') return <EstoqueVendas />;
-    if (view === 'estoque_inteligente') return <EstoqueInteligente />;
+    if (view === 'estoque_inteligente') return <EstoqueInteligente currentUser={user} />;
     if (view === 'estoque_detalhado') return <EstoqueDetalhado />;
-    if (view === 'stockout') return <Stockout />;
-    if (view === 'auditoria_lojas') return <AuditoriaLojas />;
+    if (view === 'stockout') return <Stockout currentUser={user} />;
+    if (view === 'auditoria_lojas') return <AuditoriaLojas currentUser={user} />;
     if (view === 'price_table') return <PriceTablePage />;
 
     if (view === 'solicitacoes') {
@@ -427,19 +429,19 @@ function App() {
       return <RhModule currentUser={user} />;
     }
 
-    if (view === 'contract_analyzer' && canUseClarkAdm) {
+    if (view === 'contract_analyzer' && canUseClarkDiretoria) {
       return <ContractAnalyzer currentUser={user} />;
     }
 
-    if (view === 'online_prices' && canUseClarkAdm) {
+    if (view === 'online_prices' && canUseClarkDiretoria) {
       return <OnlinePricesAgent currentUser={user} />;
     }
 
     if (
       ['contract_analyzer', 'online_prices'].includes(view) &&
-      !canUseClarkAdm
+      !canUseClarkDiretoria
     ) {
-      return <Home currentUser={user} />;
+      return <Home currentUser={user} onNavigate={handleNavigate} />;
     }
 
     if (view === 'team') {
@@ -770,7 +772,7 @@ function App() {
                     active={currentView === 'estoque_vendas'}
                   />
 
-                  {isAdmin && (
+                  {isAdmin && !isStoreOnly && (
                     <SubMenuItem
                       label="Compras x Vendas"
                       view="compras_vendas"
@@ -938,8 +940,20 @@ function App() {
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
-            {canUseClarkAdm && (
+          <div className="flex items-center gap-2 md:gap-3">
+            <GlobalSearch
+              currentUser={user}
+              onNavigate={handleNavigate}
+              onOpenStore={(store) => {
+                handleNavigate('home');
+                window.setTimeout(() => {
+                  window.dispatchEvent(
+                    new CustomEvent('telefluxo:open-store', { detail: { store } })
+                  );
+                }, 80);
+              }}
+            />
+            {canUseClarkDiretoria && (
               <Clark
                 currentUser={user}
                 placement="header"
@@ -947,6 +961,10 @@ function App() {
                 onNavigateOnlinePrices={() => handleNavigate('online_prices')}
               />
             )}
+            <AlertCenterBell
+              currentUser={user}
+              onOpenCenter={() => handleNavigate('alertas_inteligentes')}
+            />
             <NotificationBell currentUser={user} />
           </div>
         </header>

@@ -516,6 +516,11 @@ app.use((req, res, next) => {
   );
   res.header('Access-Control-Allow-Credentials', 'false');
 
+  res.header(
+  'Access-Control-Expose-Headers',
+  'Content-Disposition, X-Telefluxo-Report-Fallback'
+  );
+
   if (req.method === 'OPTIONS') {
     return res.sendStatus(204);
   }
@@ -535,6 +540,10 @@ app.use(cors({
     'X-User-Id',
   ],
   credentials: false,
+  exposedHeaders: [
+  'Content-Disposition',
+  'X-Telefluxo-Report-Fallback',
+  ],
 }));
 
 app.use(express.json({ limit: '100mb' }));
@@ -1972,6 +1981,96 @@ function getCnpjByName(storeName: string): string | null {
   return null;
 }
 
+function getAllowedStoreNamesFromUser(user: any): string[] {
+  const explicit = String(user?.allowedStores || '')
+    .split(',')
+    .map((value: string) => normStore(value))
+    .filter(Boolean)
+    .map((value: string) =>
+      CORRECAO_NOMES_SERVER[value]
+        ? normStore(CORRECAO_NOMES_SERVER[value])
+        : value
+    );
+
+  if (explicit.length > 0) {
+    return Array.from(new Set(explicit));
+  }
+
+  const role = normStore(user?.role);
+
+  // Somente conta de LOJA recebe o fallback pelo nome.
+  if (role !== 'LOJA') return [];
+
+  let candidate = normStore(user?.name)
+    .replace(/^SSG\s+/, '')
+    .trim();
+
+  if (CORRECAO_NOMES_SERVER[candidate]) {
+    candidate = normStore(
+      CORRECAO_NOMES_SERVER[candidate]
+    );
+  }
+
+  const official = Object.values(
+    LOJAS_MAP_GLOBAL
+  ).find((storeName) => {
+    const normalizedStore =
+      normStore(storeName);
+
+    return (
+      normalizedStore === candidate ||
+      candidate.includes(normalizedStore) ||
+      normalizedStore.includes(candidate)
+    );
+  });
+
+  return official
+    ? [normStore(official)]
+    : [];
+}
+
+  function userHasNetworkScope(user: any): boolean {
+    if (!user) return false;
+
+    const role = normStore(user.role);
+
+    const networkRoles = [
+      'CEO',
+      'DIRETOR',
+      'DIRETORIA',
+      'ADM',
+      'ADMIN',
+      'GESTOR',
+      'SOCIO',
+      'SÓCIO',
+      'MASTER',
+    ];
+
+    const storeScopedRoles = [
+      'LOJA',
+      'VENDEDOR',
+      'GERENTE LOJA',
+      'GERENTE DE LOJA',
+      'OPERADOR',
+      'COLABORADOR',
+    ];
+
+    const storeScoped =
+      storeScopedRoles.some(
+        (item) =>
+          role === item ||
+          role.includes(item)
+      );
+
+    return (
+      !storeScoped &&
+      (
+        networkRoles.includes(role) ||
+        Boolean(user.isAdmin)
+      )
+    );
+  }
+
 // ==========================================
 // 🛡️ SISTEMA DE SEGURANÇA E FILTROS (VERSÃO DEBUG)
 // ==========================================
@@ -1994,26 +2093,80 @@ async function getSalesFilter(userId: string, tableType: 'vendas' | 'kpi'): Prom
 
     console.log(`👤 USUÁRIO: ${user.name} | CARGO: ${user.role}`);
 
-    // 1. DIRETORIA E ADM: ACESSO TOTAL
-    const superRoles = ['CEO', 'DIRETOR', 'ADM', 'ADMIN', 'GESTOR', 'SÓCIO', 'MASTER'];
-    if (user.isAdmin || superRoles.includes(String(user.role).toUpperCase())) {
-        console.log("✅ ACESSO LIBERADO: Super Usuário/Admin.");
-        return "1=1"; 
+    // 1. ESCOPO DE REDE x ESCOPO DE LOJA
+    // Uma conta de LOJA nunca pode ganhar acesso
+    // à rede inteira apenas porque possui isAdmin=true.
+
+    const normalizedRole =
+      normStore(user.role);
+
+    const networkRoles = [
+      'CEO',
+      'DIRETOR',
+      'DIRETORIA',
+      'ADM',
+      'ADMIN',
+      'GESTOR',
+      'SOCIO',
+      'SÓCIO',
+      'MASTER',
+    ];
+
+    const storeScopedRoles = [
+      'LOJA',
+      'VENDEDOR',
+      'GERENTE LOJA',
+      'GERENTE DE LOJA',
+      'OPERADOR',
+      'COLABORADOR',
+    ];
+
+    const roleIsStoreScoped =
+      storeScopedRoles.some(
+        (role) =>
+          normalizedRole === role ||
+          normalizedRole.includes(role)
+      );
+
+    const roleIsNetwork =
+      networkRoles.includes(
+        normalizedRole
+      );
+
+    // Só libera toda a rede se NÃO for conta
+    // de loja e possuir perfil de rede.
+    if (
+      !roleIsStoreScoped &&
+      (
+        roleIsNetwork ||
+        Boolean(user.isAdmin)
+      )
+    ) {
+      console.log(
+        "✅ ACESSO LIBERADO: Perfil de rede."
+      );
+
+      return "1=1";
     }
 
-    // 2. USUÁRIOS COMUNS (VENDEDORES/GERENTES)
-    if (!user.allowedStores || user.allowedStores.trim() === "") {
-        console.warn("⛔ BLOQUEIO: Usuário não tem lojas vinculadas no cadastro.");
-        return "1=0"; 
+    // Usuário de loja / usuário restrito
+    const correctedStoreNames =
+      getAllowedStoreNamesFromUser(user);
+
+    if (
+      correctedStoreNames.length === 0
+    ) {
+      console.warn(
+        "⛔ BLOQUEIO: Usuário não tem lojas vinculadas no cadastro."
+      );
+
+      return "1=0";
     }
 
-    const rawStoreNames = user.allowedStores.split(',').map(s => normStore(s));
-    console.log(`🏢 Lojas Permitidas (Cadastro):`, rawStoreNames);
-
-    const correctedStoreNames = rawStoreNames.map(s => {
-        const corrigido = CORRECAO_NOMES_SERVER[s];
-        return corrigido ? normStore(corrigido) : s;
-    });
+    console.log(
+      `🏢 Lojas Permitidas (Cadastro/Fallback seguro):`,
+      correctedStoreNames
+    );
     
     if (tableType === 'kpi') {
         // Tabela KPI usa NOME DA LOJA (Texto)
@@ -4163,13 +4316,11 @@ app.get('/api/intelligent-alerts', async (req, res) => {
       });
     }
 
-    const role = smartAlertsNormalizeText(user.role);
-    const superRoles = ['CEO', 'DIRETOR', 'ADM', 'ADMIN', 'GESTOR', 'SÓCIO', 'SOCIO', 'MASTER'];
-    const canSeeAll = Boolean(user.isAdmin || superRoles.includes(role));
+    
+    const canSeeAll = userHasNetworkScope(user);
 
-    const allowedStores = String(user.allowedStores || '')
-      .split(',')
-      .map((store) => smartAlertsNormalizeText(CORRECAO_NOMES_SERVER[smartAlertsNormalizeText(store)] || store))
+    const allowedStores = getAllowedStoreNamesFromUser(user)
+      .map((store) => smartAlertsNormalizeText(store))
       .filter(Boolean);
 
     const canUseStore = (store: string) => {
@@ -4180,6 +4331,8 @@ app.get('/api/intelligent-alerts', async (req, res) => {
 
     const now = new Date();
     now.setHours(12, 0, 0, 0);
+    
+    const role = smartAlertsNormalizeText(user.role);
 
     const startMonth = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
     const start30 = smartAlertsAddDays(now, -30);
@@ -6811,6 +6964,723 @@ const isDailySupplement = (row: any) => {
 });
 
 
+  // =======================================================
+  // 🏠 HOME EXECUTIVA / OPERACIONAL - RESUMO COM ESCOPO
+  // =======================================================
+  // A mesma rota atende diretoria e lojas. O backend decide o escopo:
+  // - perfis de rede: visão consolidada;
+  // - perfis de loja: somente allowedStores do usuário.
+  // O frontend nunca define quais lojas podem ser consultadas.
+  app.get('/api/home/resumo', async (req, res) => {
+    let db: any;
+
+    try {
+      const userId = String(req.query.userId || '').trim();
+      if (!userId || userId === 'undefined' || userId === 'null') {
+        return res.status(401).json({ success: false, error: 'Usuário não informado.' });
+      }
+
+      const user = await prisma.user.findUnique({ where: { id: userId } });
+      if (!user) {
+        return res.status(401).json({ success: false, error: 'Usuário não encontrado.' });
+      }
+
+      if (!fs.existsSync(GLOBAL_DB_PATH)) {
+        return res.json({
+          success: true,
+          scope: { type: 'store', label: 'Sem dados disponíveis', stores: [] },
+          generatedAt: new Date().toISOString(),
+          kpis: {},
+          trend: [],
+          stores: [],
+          radar: [],
+        });
+      }
+
+      const role = normStore(user.role);
+      const networkRoles = ['CEO', 'DIRETOR', 'DIRETORIA', 'ADM', 'ADMIN', 'GESTOR', 'SOCIO', 'SÓCIO', 'MASTER'];
+      const storeScopedRoles = ['LOJA', 'VENDEDOR', 'GERENTE LOJA', 'GERENTE DE LOJA', 'OPERADOR', 'COLABORADOR'];
+      const roleIsStoreScoped = storeScopedRoles.some((item) => role === item || role.includes(item));
+      const hasNetworkScope = !roleIsStoreScoped && (networkRoles.includes(role) || Boolean(user.isAdmin));
+      const isClarkDirector = ['CEO', 'DIRETOR', 'DIRETORIA'].includes(role);
+
+      const allowedStores = getAllowedStoreNamesFromUser(user);
+
+      if (!hasNetworkScope && allowedStores.length === 0) {
+        return res.status(403).json({ success: false, error: 'Usuário sem loja vinculada.' });
+      }
+
+      const now = new Date();
+      const yyyy = now.getFullYear();
+      const mm = String(now.getMonth() + 1).padStart(2, '0');
+      const monthStart = `${yyyy}-${mm}-01`;
+      const today = `${yyyy}-${mm}-${String(now.getDate()).padStart(2, '0')}`;
+
+      const previousMonthDate = new Date(yyyy, now.getMonth() - 1, 1);
+      const py = previousMonthDate.getFullYear();
+      const pm = String(previousMonthDate.getMonth() + 1).padStart(2, '0');
+      const previousStart = `${py}-${pm}-01`;
+      const previousEndDate = new Date(yyyy, now.getMonth(), 0);
+      const previousEnd = `${previousEndDate.getFullYear()}-${String(previousEndDate.getMonth() + 1).padStart(2, '0')}-${String(previousEndDate.getDate()).padStart(2, '0')}`;
+
+      const salesFilter = await getSalesFilter(userId, 'vendas');
+      const kpiFilter = await getSalesFilter(userId, 'kpi');
+
+      db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+
+      const monthRows = await db.all(`
+        SELECT
+          data_emissao,
+          cnpj_empresa,
+          COALESCE(total_liquido, 0) AS total_liquido,
+          COALESCE(quantidade, 0) AS quantidade
+        FROM vendas
+        WHERE ${salesFilter}
+          AND data_emissao >= '${monthStart}'
+          AND data_emissao <= '${today}'
+        ORDER BY data_emissao ASC
+      `);
+
+      const previousRows = await db.all(`
+        SELECT
+          COALESCE(total_liquido, 0) AS total_liquido,
+          COALESCE(quantidade, 0) AS quantidade
+        FROM vendas
+        WHERE ${salesFilter}
+          AND data_emissao >= '${previousStart}'
+          AND data_emissao <= '${previousEnd}'
+      `);
+
+      let kpiRows: any[] = [];
+      try {
+        kpiRows = await db.all(`
+          SELECT
+            loja,
+            vendedor,
+            COALESCE(fat_atual, 0) AS fat_atual,
+            COALESCE(fat_anterior, 0) AS fat_anterior,
+            COALESCE(pct_acessorios, 0) AS pct_acessorios,
+            COALESCE(conv_peliculas, 0) AS conv_peliculas,
+            COALESCE(seguros, 0) AS seguros,
+            COALESCE(pct_seguro, 0) AS pct_seguro,
+            COALESCE(ticket, 0) AS ticket,
+            COALESCE(qtd, 0) AS qtd
+          FROM vendedores
+          WHERE ${kpiFilter}
+        `);
+      } catch (error) {
+        console.warn('⚠️ Home: tabela vendedores indisponível:', error);
+        kpiRows = [];
+      }
+
+      const toNumber = (value: any) => {
+        const n = Number(value);
+        return Number.isFinite(n) ? n : 0;
+      };
+
+      const storeNameFromCnpj = (value: any) => {
+        const cnpj = String(value || '').replace(/\D/g, '');
+        return LOJAS_MAP_GLOBAL[cnpj] || 'LOJA NÃO IDENTIFICADA';
+      };
+
+      const faturamentoMes = monthRows.reduce((sum: number, row: any) => sum + toNumber(row.total_liquido), 0);
+      const pecasMes = monthRows.reduce((sum: number, row: any) => sum + Math.max(0, toNumber(row.quantidade)), 0);
+      const faturamentoAnterior = previousRows.reduce((sum: number, row: any) => sum + toNumber(row.total_liquido), 0);
+      const crescimento = faturamentoAnterior > 0 ? ((faturamentoMes - faturamentoAnterior) / faturamentoAnterior) * 100 : null;
+
+      const weightedMetric = (field: string) => {
+        let weighted = 0;
+        let weight = 0;
+        for (const row of kpiRows) {
+          const qtd = Math.max(0, toNumber(row.qtd));
+          if (qtd <= 0) continue;
+          weighted += toNumber(row[field]) * qtd;
+          weight += qtd;
+        }
+        return weight > 0 ? weighted / weight : 0;
+      };
+
+      const daily = new Map<string, { date: string; faturamento: number; quantidade: number }>();
+      const storesMap = new Map<string, any>();
+
+      for (const row of monthRows) {
+        const date = String(row.data_emissao || '').slice(0, 10);
+        if (date) {
+          const current = daily.get(date) || { date, faturamento: 0, quantidade: 0 };
+          current.faturamento += toNumber(row.total_liquido);
+          current.quantidade += Math.max(0, toNumber(row.quantidade));
+          daily.set(date, current);
+        }
+
+        const loja = storeNameFromCnpj(row.cnpj_empresa);
+        const currentStore = storesMap.get(loja) || {
+          loja,
+          faturamento: 0,
+          quantidade: 0,
+          conversaoAcessorios: 0,
+          conversaoPeliculas: 0,
+          seguroPct: 0,
+          vendedores: 0,
+        };
+        currentStore.faturamento += toNumber(row.total_liquido);
+        currentStore.quantidade += Math.max(0, toNumber(row.quantidade));
+        storesMap.set(loja, currentStore);
+      }
+
+      const kpiByStore = new Map<string, any[]>();
+      for (const row of kpiRows) {
+        const loja = String(row.loja || 'LOJA NÃO IDENTIFICADA').trim();
+        const rows = kpiByStore.get(loja) || [];
+        rows.push(row);
+        kpiByStore.set(loja, rows);
+        if (!storesMap.has(loja)) {
+          storesMap.set(loja, {
+            loja,
+            faturamento: rows.reduce((sum: number, item: any) => sum + toNumber(item.fat_atual), 0),
+            quantidade: rows.reduce((sum: number, item: any) => sum + Math.max(0, toNumber(item.qtd)), 0),
+            conversaoAcessorios: 0,
+            conversaoPeliculas: 0,
+            seguroPct: 0,
+            vendedores: 0,
+          });
+        }
+      }
+
+      const weightedFromRows = (rows: any[], field: string) => {
+        let weighted = 0;
+        let weight = 0;
+        for (const row of rows) {
+          const qtd = Math.max(0, toNumber(row.qtd));
+          if (qtd <= 0) continue;
+          weighted += toNumber(row[field]) * qtd;
+          weight += qtd;
+        }
+        return weight > 0 ? weighted / weight : 0;
+      };
+
+      for (const [loja, store] of storesMap.entries()) {
+        const rows = kpiByStore.get(loja) || [];
+        store.conversaoAcessorios = weightedFromRows(rows, 'pct_acessorios');
+        store.conversaoPeliculas = weightedFromRows(rows, 'conv_peliculas');
+        store.seguroPct = weightedFromRows(rows, 'pct_seguro');
+        store.vendedores = rows.length;
+        if (store.faturamento <= 0 && rows.length) {
+          store.faturamento = rows.reduce((sum: number, item: any) => sum + toNumber(item.fat_atual), 0);
+        }
+        storesMap.set(loja, store);
+      }
+
+      const stores = Array.from(storesMap.values())
+        .filter((item: any) => item.loja !== 'LOJA NÃO IDENTIFICADA')
+        .sort((a: any, b: any) => b.faturamento - a.faturamento);
+
+      const networkAverage = stores.length
+        ? stores.reduce((sum: number, item: any) => sum + toNumber(item.conversaoAcessorios), 0) / stores.length
+        : 0;
+
+      const radar: any[] = [];
+      if (hasNetworkScope) {
+        const bottomConversion = [...stores]
+          .filter((item: any) => item.quantidade > 0)
+          .sort((a: any, b: any) => a.conversaoAcessorios - b.conversaoAcessorios)
+          .slice(0, 3);
+
+        bottomConversion.forEach((item: any) => {
+          radar.push({
+            level: 'warning',
+            title: item.loja,
+            text: `Conversão de acessórios em ${toNumber(item.conversaoAcessorios).toFixed(1).replace('.', ',')}%.`,
+            metric: 'Conversão',
+          });
+        });
+
+        if (stores[0]) {
+          radar.unshift({
+            level: 'positive',
+            title: stores[0].loja,
+            text: `Maior faturamento do mês: ${toNumber(stores[0].faturamento).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}.`,
+            metric: 'Destaque',
+          });
+        }
+      } else if (stores[0]) {
+        const store = stores[0];
+        radar.push({
+          level: store.conversaoAcessorios >= networkAverage && networkAverage > 0 ? 'positive' : 'info',
+          title: store.loja,
+          text: `Sua conversão de acessórios está em ${toNumber(store.conversaoAcessorios).toFixed(1).replace('.', ',')}% neste mês.`,
+          metric: 'Sua unidade',
+        });
+      }
+
+      const scopeStores = hasNetworkScope ? stores.map((item: any) => item.loja) : allowedStores;
+
+      return res.json({
+        success: true,
+        generatedAt: new Date().toISOString(),
+        scope: {
+          type: hasNetworkScope ? 'network' : 'store',
+          label: hasNetworkScope ? 'Visão consolidada da rede' : 'Dados restritos à sua unidade',
+          stores: scopeStores,
+          canCompareStores: hasNetworkScope,
+          canUseClark: isClarkDirector,
+        },
+        period: { startDate: monthStart, endDate: today, label: 'Este mês' },
+        kpis: {
+          faturamentoMes,
+          faturamentoAnterior,
+          crescimento,
+          pecasMes,
+          ticketMedio: pecasMes > 0 ? faturamentoMes / pecasMes : 0,
+          conversaoAcessorios: weightedMetric('pct_acessorios'),
+          conversaoPeliculas: weightedMetric('conv_peliculas'),
+          seguroPct: weightedMetric('pct_seguro'),
+          seguros: kpiRows.reduce((sum: number, row: any) => sum + toNumber(row.seguros), 0),
+          lojasAtivas: hasNetworkScope ? stores.length : Math.min(1, stores.length),
+        },
+        trend: Array.from(daily.values()).sort((a, b) => a.date.localeCompare(b.date)),
+        stores: hasNetworkScope ? stores : stores.slice(0, 1),
+        radar: radar.slice(0, 5),
+        clarkBriefing: hasNetworkScope
+          ? `A rede faturou ${faturamentoMes.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })} no mês. ${crescimento === null ? 'Ainda não há base suficiente para comparação.' : `A variação contra o mês anterior é de ${crescimento.toFixed(1).replace('.', ',')}%.`} A conversão de acessórios está em ${weightedMetric('pct_acessorios').toFixed(1).replace('.', ',')}%.`
+          : null,
+      });
+    } catch (error: any) {
+      console.error('❌ Erro /api/home/resumo:', error);
+      return res.status(500).json({ success: false, error: error?.message || 'Erro ao montar resumo da home.' });
+    } finally {
+      try { if (db) await db.close(); } catch {}
+    }
+  });
+
+// =======================================================
+// 🔎 BUSCA GLOBAL + DRILL-DOWN DE LOJA + RELATÓRIO EXECUTIVO
+// =======================================================
+function executiveNormalizeStoreName(value: any): string {
+  const normalized = normStore(value);
+  return CORRECAO_NOMES_SERVER[normalized]
+    ? normStore(CORRECAO_NOMES_SERVER[normalized])
+    : normalized;
+}
+
+function executiveEscapeHtml(value: any): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+function executiveMoney(value: any): string {
+  return Number(value || 0).toLocaleString('pt-BR', {
+    style: 'currency',
+    currency: 'BRL',
+    maximumFractionDigits: 0,
+  });
+}
+
+function executivePct(value: any): string {
+  return `${Number(value || 0).toFixed(1).replace('.', ',')}%`;
+}
+
+app.get('/api/home/store-detail', async (req, res) => {
+  let db: any;
+
+  try {
+    const userId = String(req.query.userId || '').trim();
+    const requestedStore = executiveNormalizeStoreName(req.query.store);
+
+    if (!userId || !requestedStore) {
+      return res.status(400).json({ success: false, error: 'Usuário e loja são obrigatórios.' });
+    }
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      return res.status(401).json({ success: false, error: 'Usuário não encontrado.' });
+    }
+
+    const hasNetworkScope = userHasNetworkScope(user);
+    const allowedStores = getAllowedStoreNamesFromUser(user).map(executiveNormalizeStoreName);
+
+    if (!hasNetworkScope && !allowedStores.includes(requestedStore)) {
+      return res.status(403).json({ success: false, error: 'Você não possui acesso a esta loja.' });
+    }
+
+    const cnpj = getCnpjByName(requestedStore);
+    if (!cnpj) {
+      return res.status(404).json({ success: false, error: 'Loja não encontrada no mapa oficial.' });
+    }
+
+    if (!fs.existsSync(GLOBAL_DB_PATH)) {
+      return res.json({
+        success: true,
+        store: requestedStore,
+        kpis: {},
+        trend: [],
+        sellers: [],
+      });
+    }
+
+    const { startDate, endDate } = getCurrentMonthRange();
+    db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+
+    const salesRows = await db.all(
+      `
+        SELECT
+          data_emissao,
+          COALESCE(total_liquido, 0) AS total_liquido,
+          COALESCE(quantidade, 0) AS quantidade
+        FROM vendas
+        WHERE cnpj_empresa = ?
+          AND data_emissao >= ?
+          AND data_emissao <= ?
+        ORDER BY data_emissao ASC
+      `,
+      [cnpj, startDate, endDate]
+    );
+
+    let sellerRows: any[] = [];
+    try {
+      sellerRows = await db.all(
+        `
+          SELECT
+            vendedor,
+            COALESCE(fat_atual, 0) AS faturamento,
+            COALESCE(pct_acessorios, 0) AS pct_acessorios,
+            COALESCE(conv_peliculas, 0) AS conv_peliculas,
+            COALESCE(pct_seguro, 0) AS pct_seguro,
+            COALESCE(seguros, 0) AS seguros,
+            COALESCE(ticket, 0) AS ticket,
+            COALESCE(qtd, 0) AS qtd
+          FROM vendedores
+          WHERE loja = ? COLLATE NOCASE
+          ORDER BY fat_atual DESC, vendedor ASC
+        `,
+        [requestedStore]
+      );
+    } catch (error) {
+      console.warn('⚠️ Store detail: tabela vendedores indisponível:', error);
+      sellerRows = [];
+    }
+
+    const toNumber = (value: any) => {
+      const n = Number(value);
+      return Number.isFinite(n) ? n : 0;
+    };
+
+    const faturamento = salesRows.reduce((sum: number, row: any) => sum + toNumber(row.total_liquido), 0);
+    const quantidade = salesRows.reduce((sum: number, row: any) => sum + Math.max(0, toNumber(row.quantidade)), 0);
+
+    const weighted = (field: string) => {
+      let total = 0;
+      let weight = 0;
+      for (const row of sellerRows) {
+        const qtd = Math.max(0, toNumber(row.qtd));
+        if (qtd <= 0) continue;
+        total += toNumber(row[field]) * qtd;
+        weight += qtd;
+      }
+      return weight > 0 ? total / weight : 0;
+    };
+
+    const daily = new Map<string, { date: string; faturamento: number; quantidade: number }>();
+    for (const row of salesRows) {
+      const date = String(row.data_emissao || '').slice(0, 10);
+      if (!date) continue;
+      const current = daily.get(date) || { date, faturamento: 0, quantidade: 0 };
+      current.faturamento += toNumber(row.total_liquido);
+      current.quantidade += Math.max(0, toNumber(row.quantidade));
+      daily.set(date, current);
+    }
+
+    return res.json({
+      success: true,
+      store: requestedStore,
+      period: { startDate, endDate, label: 'Este mês' },
+      kpis: {
+        faturamento,
+        quantidade,
+        ticketMedio: quantidade > 0 ? faturamento / quantidade : 0,
+        conversaoAcessorios: weighted('pct_acessorios'),
+        conversaoPeliculas: weighted('conv_peliculas'),
+        seguroPct: weighted('pct_seguro'),
+        seguros: sellerRows.reduce((sum: number, row: any) => sum + toNumber(row.seguros), 0),
+        vendedores: sellerRows.length,
+      },
+      trend: Array.from(daily.values()).sort((a, b) => a.date.localeCompare(b.date)),
+      sellers: sellerRows.slice(0, 20),
+    });
+  } catch (error: any) {
+    console.error('❌ Erro /api/home/store-detail:', error);
+    return res.status(500).json({ success: false, error: error?.message || 'Erro ao carregar detalhes da loja.' });
+  } finally {
+    try { if (db) await db.close(); } catch {}
+  }
+});
+
+app.get('/api/global-search', async (req, res) => {
+  let db: any;
+
+  try {
+    const userId = String(req.query.userId || '').trim();
+    const query = String(req.query.q || '').trim();
+
+    if (!userId) {
+      return res.status(401).json({ success: false, error: 'Usuário não informado.' });
+    }
+
+    if (query.length < 2) {
+      return res.json({ success: true, results: [] });
+    }
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      return res.status(401).json({ success: false, error: 'Usuário não encontrado.' });
+    }
+
+    const hasNetworkScope = userHasNetworkScope(user);
+    const allowedStores = getAllowedStoreNamesFromUser(user).map(executiveNormalizeStoreName);
+    const normalizedQuery = normStore(query);
+    const results: any[] = [];
+
+    const visibleStores = hasNetworkScope
+      ? Array.from(new Set(Object.values(LOJAS_MAP_GLOBAL).map(executiveNormalizeStoreName)))
+      : allowedStores;
+
+    visibleStores
+      .filter((store) => store.includes(normalizedQuery))
+      .slice(0, 8)
+      .forEach((store) => {
+        results.push({
+          id: `store:${store}`,
+          kind: 'store',
+          label: store,
+          subtitle: hasNetworkScope ? 'Abrir detalhes da loja' : 'Sua unidade',
+          store,
+        });
+      });
+
+    if (!fs.existsSync(GLOBAL_DB_PATH)) {
+      return res.json({ success: true, results });
+    }
+
+    db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+    const kpiFilter = await getSalesFilter(userId, 'kpi');
+    const salesFilter = await getSalesFilter(userId, 'vendas');
+    const like = `%${query.replace(/[%_]/g, '')}%`;
+
+    try {
+      const sellers = await db.all(
+        `
+          SELECT loja, vendedor, COALESCE(fat_atual, 0) AS faturamento
+          FROM vendedores
+          WHERE ${kpiFilter}
+            AND UPPER(vendedor) LIKE UPPER(?)
+          ORDER BY fat_atual DESC
+          LIMIT 8
+        `,
+        [like]
+      );
+
+      for (const seller of sellers) {
+        results.push({
+          id: `seller:${seller.loja}:${seller.vendedor}`,
+          kind: 'seller',
+          label: seller.vendedor,
+          subtitle: `${seller.loja} • ${executiveMoney(seller.faturamento)}`,
+          store: seller.loja,
+        });
+      }
+    } catch (error) {
+      console.warn('⚠️ Busca global: vendedores indisponíveis:', error);
+    }
+
+    try {
+      const products = await db.all(
+        `
+          SELECT
+            descricao,
+            SUM(COALESCE(quantidade, 0)) AS quantidade,
+            SUM(COALESCE(total_liquido, 0)) AS faturamento
+          FROM vendas
+          WHERE ${salesFilter}
+            AND UPPER(descricao) LIKE UPPER(?)
+          GROUP BY descricao
+          ORDER BY quantidade DESC, faturamento DESC
+          LIMIT 8
+        `,
+        [like]
+      );
+
+      for (const product of products) {
+        results.push({
+          id: `product:${product.descricao}`,
+          kind: 'product',
+          label: product.descricao,
+          subtitle: `${Number(product.quantidade || 0).toLocaleString('pt-BR')} un. • ${executiveMoney(product.faturamento)}`,
+        });
+      }
+    } catch (error) {
+      console.warn('⚠️ Busca global: produtos indisponíveis:', error);
+    }
+
+    return res.json({ success: true, results: results.slice(0, 20) });
+  } catch (error: any) {
+    console.error('❌ Erro /api/global-search:', error);
+    return res.status(500).json({ success: false, error: error?.message || 'Erro na busca global.' });
+  } finally {
+    try { if (db) await db.close(); } catch {}
+  }
+});
+
+app.post('/api/executive-report/pdf', async (req, res) => {
+  let browser: any;
+
+  try {
+    const userId = String(req.body?.userId || '').trim();
+    const dashboard = req.body?.dashboard;
+
+    if (!userId || !dashboard) {
+      return res.status(400).json({ success: false, error: 'Usuário e dados do relatório são obrigatórios.' });
+    }
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      return res.status(401).json({ success: false, error: 'Usuário não encontrado.' });
+    }
+
+    const hasNetworkScope = userHasNetworkScope(user);
+    const allowedStores = getAllowedStoreNamesFromUser(user).map(executiveNormalizeStoreName);
+    const requestedScope = String(dashboard?.scope?.type || 'store');
+    const payloadStores = Array.isArray(dashboard?.scope?.stores)
+      ? dashboard.scope.stores.map(executiveNormalizeStoreName)
+      : [];
+
+    if (!hasNetworkScope) {
+      if (requestedScope === 'network') {
+        return res.status(403).json({ success: false, error: 'Relatório consolidado não permitido para este perfil.' });
+      }
+      if (payloadStores.some((store: string) => !allowedStores.includes(store))) {
+        return res.status(403).json({ success: false, error: 'O relatório contém loja fora do seu escopo.' });
+      }
+    }
+
+    const kpis = dashboard?.kpis || {};
+    const stores = Array.isArray(dashboard?.stores) ? dashboard.stores.slice(0, 20) : [];
+    const radar = Array.isArray(dashboard?.radar) ? dashboard.radar.slice(0, 8) : [];
+    const trend = Array.isArray(dashboard?.trend) ? dashboard.trend.slice(-31) : [];
+    const scopeLabel = dashboard?.scope?.label || (hasNetworkScope ? 'Visão consolidada da rede' : 'Sua unidade');
+    const periodLabel = dashboard?.period?.label || 'Este mês';
+    const generatedAt = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+    const maxTrend = Math.max(1, ...trend.map((item: any) => Number(item?.faturamento || 0)));
+
+    const storeRows = stores.map((store: any, index: number) => `
+      <tr>
+        <td>${String(index + 1).padStart(2, '0')}</td>
+        <td class="store">${executiveEscapeHtml(store.loja)}</td>
+        <td>${executiveMoney(store.faturamento)}</td>
+        <td>${executivePct(store.conversaoAcessorios)}</td>
+        <td>${executivePct(store.conversaoPeliculas)}</td>
+        <td>${executivePct(store.seguroPct)}</td>
+      </tr>
+    `).join('');
+
+    const radarCards = radar.map((item: any) => `
+      <div class="alert-card">
+        <div class="alert-head"><span class="dot ${item.level === 'positive' ? 'green' : item.level === 'warning' ? 'orange' : 'blue'}"></span><span>${executiveEscapeHtml(item.metric || 'Indicador')}</span></div>
+        <strong>${executiveEscapeHtml(item.title)}</strong>
+        <p>${executiveEscapeHtml(item.text)}</p>
+      </div>
+    `).join('');
+
+    const trendBars = trend.map((item: any) => {
+      const height = Math.max(3, Math.round((Number(item.faturamento || 0) / maxTrend) * 100));
+      return `<div class="bar-wrap"><div class="bar" style="height:${height}%"></div><span>${executiveEscapeHtml(String(item.date || '').slice(8, 10))}</span></div>`;
+    }).join('');
+
+    const html = `<!doctype html>
+    <html lang="pt-BR">
+      <head>
+        <meta charset="utf-8" />
+        <style>
+          *{box-sizing:border-box} body{margin:0;background:#f5f7fb;color:#0f172a;font-family:Arial,Helvetica,sans-serif;font-size:12px}
+          .page{padding:28px 30px 34px}.header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:22px}.brand{font-size:10px;font-weight:800;letter-spacing:.18em;color:#f97316;text-transform:uppercase}.title{font-size:28px;font-weight:900;letter-spacing:-.04em;margin:5px 0 4px}.muted{color:#64748b;font-size:10px}.badge{background:#0f172a;color:white;border-radius:999px;padding:8px 12px;font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.1em}
+          .kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:16px}.kpi{background:white;border:1px solid #e2e8f0;border-radius:16px;padding:14px}.kpi label{display:block;color:#94a3b8;font-size:8px;font-weight:800;letter-spacing:.12em;text-transform:uppercase}.kpi strong{display:block;font-size:18px;margin-top:7px;letter-spacing:-.03em}.section{background:white;border:1px solid #e2e8f0;border-radius:18px;padding:16px;margin-top:12px}.section h2{font-size:14px;margin:0 0 12px}.grid{display:grid;grid-template-columns:1.4fr .8fr;gap:12px}
+          .chart{height:150px;display:flex;align-items:flex-end;gap:4px;border-bottom:1px solid #e2e8f0;padding:10px 3px 0}.bar-wrap{height:100%;flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:4px}.bar{width:100%;max-width:16px;background:#f97316;border-radius:4px 4px 0 0}.bar-wrap span{font-size:6px;color:#94a3b8}
+          .alerts{display:grid;gap:8px}.alert-card{border:1px solid #e2e8f0;border-radius:12px;padding:10px;background:#f8fafc}.alert-head{display:flex;gap:6px;align-items:center;color:#94a3b8;text-transform:uppercase;font-size:7px;font-weight:800;letter-spacing:.12em}.dot{width:6px;height:6px;border-radius:50%}.green{background:#10b981}.orange{background:#f59e0b}.blue{background:#38bdf8}.alert-card strong{display:block;margin-top:6px;font-size:10px}.alert-card p{margin:4px 0 0;color:#64748b;font-size:8px;line-height:1.45}
+          table{width:100%;border-collapse:collapse}th{font-size:7px;color:#94a3b8;text-transform:uppercase;letter-spacing:.1em;text-align:right;padding:8px;border-bottom:1px solid #e2e8f0}th:nth-child(1),th:nth-child(2){text-align:left}td{padding:9px 8px;border-bottom:1px solid #f1f5f9;text-align:right;font-size:9px;font-weight:700}td:first-child,td:nth-child(2){text-align:left}.store{font-weight:900}.footer{display:flex;justify-content:space-between;margin-top:16px;color:#94a3b8;font-size:7px}.orange-text{color:#f97316}
+        </style>
+      </head>
+      <body>
+        <div class="page">
+          <div class="header">
+            <div><div class="brand">TeleFluxo Intelligence</div><div class="title">Relatório Executivo</div><div class="muted">${executiveEscapeHtml(scopeLabel)} • ${executiveEscapeHtml(periodLabel)}</div></div>
+            <div class="badge">${executiveEscapeHtml(user.name || user.role || 'TeleFluxo')}</div>
+          </div>
+
+          <div class="kpis">
+            <div class="kpi"><label>Faturamento</label><strong>${executiveMoney(kpis.faturamentoMes)}</strong></div>
+            <div class="kpi"><label>Acessórios</label><strong>${executivePct(kpis.conversaoAcessorios)}</strong></div>
+            <div class="kpi"><label>Películas</label><strong>${executivePct(kpis.conversaoPeliculas)}</strong></div>
+            <div class="kpi"><label>Seguro</label><strong>${executivePct(kpis.seguroPct)}</strong></div>
+            <div class="kpi"><label>Ticket médio</label><strong>${executiveMoney(kpis.ticketMedio)}</strong></div>
+          </div>
+
+          <div class="grid">
+            <div class="section"><h2>Faturamento diário</h2><div class="chart">${trendBars || '<div class="muted">Sem dados suficientes.</div>'}</div></div>
+            <div class="section"><h2>Pontos de atenção</h2><div class="alerts">${radarCards || '<div class="muted">Nenhum ponto relevante.</div>'}</div></div>
+          </div>
+
+          <div class="section">
+            <h2>${requestedScope === 'network' ? 'Performance das lojas' : 'Resumo da unidade'}</h2>
+            <table>
+              <thead><tr><th>#</th><th>Loja</th><th>Faturamento</th><th>Acessórios</th><th>Películas</th><th>Seguro</th></tr></thead>
+              <tbody>${storeRows || '<tr><td colspan="6">Sem dados disponíveis.</td></tr>'}</tbody>
+            </table>
+          </div>
+
+          <div class="footer"><span>Gerado pelo <strong class="orange-text">TeleFluxo</strong></span><span>${executiveEscapeHtml(generatedAt)}</span></div>
+        </div>
+      </body>
+    </html>`;
+
+    const date = getBrazilTodayIso();
+    const scopeName = requestedScope === 'network' ? 'rede' : executiveNormalizeStoreName(payloadStores[0] || user.name || 'loja').toLowerCase().replace(/[^a-z0-9]+/g, '-');
+
+    try {
+      const { chromium } = await import('playwright');
+      browser = await chromium.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
+      const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+      await page.setContent(html, { waitUntil: 'load' });
+      const pdf = await page.pdf({
+        format: 'A4',
+        landscape: true,
+        printBackground: true,
+        margin: { top: '10mm', right: '10mm', bottom: '10mm', left: '10mm' },
+      });
+
+      const fileName = `telefluxo-relatorio-${scopeName}-${date}.pdf`;
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+      res.setHeader('Cache-Control', 'no-store');
+      return res.send(pdf);
+    } catch (pdfError) {
+      console.warn('⚠️ Chromium indisponível para PDF. Entregando relatório HTML imprimível:', pdfError);
+      const fileName = `telefluxo-relatorio-${scopeName}-${date}.html`;
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+      res.setHeader('X-Telefluxo-Report-Fallback', 'html');
+      res.setHeader('Cache-Control', 'no-store');
+      return res.send(html);
+    }
+  } catch (error: any) {
+    console.error('❌ Erro /api/executive-report/pdf:', error);
+    return res.status(500).json({ success: false, error: error?.message || 'Erro ao gerar relatório executivo.' });
+  } finally {
+    try { if (browser) await browser.close(); } catch {}
+  }
+});
+
 // ==========================================
 // 2. ROTA /sales (VERSÃO FINAL LIMPA) -- ROTA DE VENDAS
 // ==========================================
@@ -7694,14 +8564,169 @@ await prisma.$transaction(
 // ==========================================
 // 📦 ROTA QUE O REACT USA PARA LER O ESTOQUE
 // ==========================================
-app.get('/stock', async (_req, res) => {
-  try {
-    const stock = deduplicateStockRows(
-      await prisma.stock.findMany({
-        orderBy: {
-          updatedAt: 'desc',
+
+  async function getStockScopeByUserId(
+    userId: string
+  ): Promise<{
+    global: boolean;
+    stores: string[];
+  }> {
+    if (
+      !userId ||
+      userId === 'undefined' ||
+      userId === 'null'
+    ) {
+      return {
+        global: false,
+        stores: [],
+      };
+    }
+
+    const user =
+      await prisma.user.findUnique({
+        where: {
+          id: userId,
         },
-      })
+      });
+
+    if (!user) {
+      return {
+        global: false,
+        stores: [],
+      };
+    }
+
+    const role =
+      normStore(user.role);
+
+    const networkRoles = [
+      'CEO',
+      'DIRETOR',
+      'DIRETORIA',
+      'ADM',
+      'ADMIN',
+      'GESTOR',
+      'SOCIO',
+      'SÓCIO',
+      'MASTER',
+    ];
+
+    const storeScopedRoles = [
+      'LOJA',
+      'VENDEDOR',
+      'GERENTE LOJA',
+      'GERENTE DE LOJA',
+      'OPERADOR',
+      'COLABORADOR',
+    ];
+
+    const roleIsStoreScoped =
+      storeScopedRoles.some(
+        (item) =>
+          role === item ||
+          role.includes(item)
+      );
+
+    if (
+      !roleIsStoreScoped &&
+      (
+        networkRoles.includes(role) ||
+        Boolean(user.isAdmin)
+      )
+    ) {
+      return {
+        global: true,
+        stores: [],
+      };
+    }
+
+    const stores =
+      getAllowedStoreNamesFromUser(
+        user
+      );
+
+    return {
+      global: false,
+      stores,
+    };
+  }
+
+
+  function stockRowAllowedForScope(
+    item: any,
+    scope: {
+      global: boolean;
+      stores: string[];
+    }
+  ) {
+    if (scope.global) {
+      return true;
+    }
+
+    if (!scope.stores.length) {
+      return false;
+    }
+
+    const rawRowStore =
+      normStore(
+        item?.storeName ||
+        item?.loja ||
+        ''
+      );
+
+    const rowStore =
+      CORRECAO_NOMES_SERVER[
+        rawRowStore
+      ]
+        ? normStore(
+            CORRECAO_NOMES_SERVER[
+              rawRowStore
+            ]
+          )
+        : rawRowStore;
+
+    return scope.stores.some(
+      (store) =>
+        rowStore === store
+    );
+  }
+
+app.get('/stock', async (req, res) => {
+  try {
+    const userId =
+      String(
+        req.query.userId || ''
+      ).trim();
+
+    const scope =
+      await getStockScopeByUserId(
+        userId
+      );
+
+    if (
+      !scope.global &&
+      scope.stores.length === 0
+    ) {
+      return res.status(403).json({
+        error:
+          'Usuário sem permissão de estoque ou sem loja vinculada.',
+      });
+    }
+
+    const stock = deduplicateStockRows(
+      (
+        await prisma.stock.findMany({
+          orderBy: {
+            updatedAt: 'desc',
+          },
+        })
+      ).filter(
+        (item: any) =>
+          stockRowAllowedForScope(
+            item,
+            scope
+          )
+      )
     );
 
     return res.json(
@@ -7793,9 +8818,42 @@ app.get('/api/comparativos/mkt-base', async (_req, res) => {
 // --- ROTA DE ANÁLISE (AGING DE ESTOQUE) ---
 app.get('/stock/analysis', async (req, res) => {
     try {
-        const currentStock = await prisma.stock.findMany({
-            where: { serial: { not: '' } } // <-- Removido o not: null para evitar o erro 1117
-        });
+        const userId =
+        String(
+          req.query.userId || ''
+          ).trim();
+
+        const scope =
+          await getStockScopeByUserId(
+            userId
+          );
+
+        if (
+          !scope.global &&
+          scope.stores.length === 0
+        ) {
+          return res.status(403).json({
+            error:
+              'Usuário sem permissão de estoque ou sem loja vinculada.',
+          });
+        }
+
+        const currentStock =
+        (
+          await prisma.stock.findMany({
+            where: {
+              serial: {
+                not: ''
+              }
+            }
+          })
+        ).filter(
+          (item: any) =>
+            stockRowAllowedForScope(
+              item,
+              scope
+            )
+        );
 
         const histories = await prisma.imeiHistory.findMany();
 
@@ -7920,15 +8978,56 @@ const handleSellersKpi = async (req: Request, res: Response) => {
     let query = `${baseSelect} ORDER BY fat_atual DESC, vendedor ASC`;
     let params: any[] = [];
 
+    const normalizedKpiRole =
+    normStore(user?.role);
+
+    const kpiNetworkRoles = [
+      'CEO',
+      'DIRETOR',
+      'DIRETORIA',
+      'ADM',
+      'ADMIN',
+      'GESTOR',
+      'SOCIO',
+      'SÓCIO',
+      'MASTER',
+    ];
+
+    const kpiStoreScopedRoles = [
+      'LOJA',
+      'VENDEDOR',
+      'GERENTE LOJA',
+      'GERENTE DE LOJA',
+      'OPERADOR',
+      'COLABORADOR',
+    ];
+
+    const kpiRoleIsStoreScoped =
+      kpiStoreScopedRoles.some(
+        (role) =>
+          normalizedKpiRole === role ||
+          normalizedKpiRole.includes(
+            role
+          )
+      );
+
     const isPrivileged =
-      user &&
-      (user.isAdmin || ['CEO', 'DIRETOR', 'ADM'].includes(user.role));
+      Boolean(
+        user &&
+        !kpiRoleIsStoreScoped &&
+        (
+          kpiNetworkRoles.includes(
+            normalizedKpiRole
+          ) ||
+          user.isAdmin
+        )
+      );
 
     if (!isPrivileged) {
-      const allowedStores = String(user?.allowedStores || "")
-        .split(",")
-        .map((s: string) => s.trim())
-        .filter(Boolean);
+      const allowedStores =
+        getAllowedStoreNamesFromUser(
+          user
+        );
 
       if (allowedStores.length === 0) {
         await db.close();

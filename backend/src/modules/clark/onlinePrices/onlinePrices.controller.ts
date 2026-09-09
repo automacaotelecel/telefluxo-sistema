@@ -1,6 +1,6 @@
 import fs from 'fs';
 import { Request, Response } from 'express';
-import { validarAcessoAdmRequest } from '../../security/adminAccess';
+import { validarAcessoDiretoriaClarkRequest } from '../../security/adminAccess';
 import {
   analisarPrecosOnline,
   getOnlinePricesReportPath,
@@ -19,7 +19,7 @@ function parseBoolean(value: unknown): boolean {
 
 export async function analisarPrecosOnlineController(req: Request, res: Response) {
   try {
-    const acesso = await validarAcessoAdmRequest(req);
+    const acesso = await validarAcessoDiretoriaClarkRequest(req);
 
     if (!acesso.allowed) {
       return res.status(acesso.status).json({
@@ -66,7 +66,7 @@ export async function analisarPrecosOnlineController(req: Request, res: Response
 
 export async function baixarRelatorioPrecosOnlineController(req: Request, res: Response) {
   try {
-    const acesso = await validarAcessoAdmRequest(req);
+    const acesso = await validarAcessoDiretoriaClarkRequest(req);
 
     if (!acesso.allowed) {
       return res.status(acesso.status).json({ ok: false, error: acesso.error });
@@ -93,7 +93,7 @@ export async function baixarRelatorioPrecosOnlineController(req: Request, res: R
 
 export async function listarHistoricoPrecosOnlineController(req: Request, res: Response) {
   try {
-    const acesso = await validarAcessoAdmRequest(req);
+    const acesso = await validarAcessoDiretoriaClarkRequest(req);
 
     if (!acesso.allowed) {
       return res.status(acesso.status).json({ ok: false, error: acesso.error });
@@ -115,7 +115,7 @@ export async function listarHistoricoPrecosOnlineController(req: Request, res: R
 
 export async function obterUltimaConsultaPrecosOnlineController(req: Request, res: Response) {
   try {
-    const acesso = await validarAcessoAdmRequest(req);
+    const acesso = await validarAcessoDiretoriaClarkRequest(req);
 
     if (!acesso.allowed) {
       return res.status(acesso.status).json({ ok: false, error: acesso.error });

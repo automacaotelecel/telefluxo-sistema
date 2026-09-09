@@ -11,6 +11,51 @@ const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 const genAI = GEMINI_API_KEY ? new GoogleGenAI({ apiKey: GEMINI_API_KEY }) : null;
 const PROVIDER = String(process.env.CLARK_PROVIDER || '').trim().toLowerCase();
 
+const VALID_TOOL_NAMES = new Set<ClarkToolName>([
+  'resolver_produto',
+  'consultar_estoque_produto',
+  'consultar_ranking_estoque',
+  'consultar_vendas_resumo',
+  'consultar_vendas_por_loja',
+  'consultar_vendas_por_vendedor',
+  'consultar_vendas_por_categoria',
+  'consultar_crescimento_mensal',
+  'consultar_relatorio_vendas',
+  'consultar_seguros_por_vendedor',
+  'consultar_seguros_por_loja',
+  'executar_sql_analitico',
+  'gerar_relatorio_executivo',
+  'consultar_analise_produto_comercial',
+  'consultar_vendas_vs_estoque',
+  'consultar_risco_stockout',
+  'consultar_excesso_estoque',
+  'consultar_redistribuicao_estoque',
+  'consultar_modo_diretoria',
+  'responder_ajuda',
+]);
+
+const VALID_TASK_TYPES = new Set<string>([
+  'stock_product_search', 'stock_ranking', 'sales_summary',
+  'sales_by_store', 'sales_by_seller', 'sales_by_category',
+  'sales_store_ranking', 'sales_seller_ranking', 'sales_category_ranking',
+  'sales_report', 'sales_growth',
+  'insurance_by_seller', 'insurance_by_store',
+  'insurance_seller_ranking', 'insurance_store_ranking',
+  'sql_analytics', 'product_commercial_analysis', 'stock_sales_cross',
+  'stockout_risk', 'excess_stock', 'stock_redistribution', 'director_mode', 'help',
+]);
+
+const TASKS_DETERMINISTICAS = new Set<string>([
+  'stock_product_search', 'stock_ranking', 'sales_summary',
+  'sales_by_store', 'sales_by_seller', 'sales_by_category',
+  'sales_store_ranking', 'sales_seller_ranking', 'sales_category_ranking',
+  'sales_report', 'sales_growth',
+  'insurance_by_seller', 'insurance_by_store',
+  'insurance_seller_ranking', 'insurance_store_ranking',
+  'product_commercial_analysis', 'stock_sales_cross', 'stockout_risk',
+  'excess_stock', 'stock_redistribution', 'director_mode',
+]);
+
 function safeJsonParse(text: string) {
   const raw = String(text || '').trim();
   if (!raw) throw new Error('Resposta vazia da IA.');
@@ -422,8 +467,8 @@ export function planejarLocalClark(ctx: ClarkBrainContext): ClarkAgentPlan {
       mode: 'analitico',
       confidence: 0.7,
       entities: { limit: limite, period: { inicio: ctx.periodo.inicio, fim: ctx.periodo.fim, descricao: ctx.periodo.descricao } },
-      toolCalls: [call('executar_sql_analitico', { sql: 'SELECT 1 AS consulta_precisa_de_planejamento', limit: 20 }, 'Fallback analítico. O planner Gemini deve substituir por SQL útil quando disponível.', ctx.periodo, pergunta)],
-      validationRules: ['SQL deve ser SELECT e responder à pergunta.'],
+      toolCalls: [call('responder_ajuda', { motivo: 'consulta_analitica_precisa_de_planejamento' }, 'A pergunta exige planejamento adicional; não executar SQL placeholder.', ctx.periodo, pergunta)],
+      validationRules: ['Não executar consulta placeholder.', 'Se a IA não conseguir planejar com segurança, explicar a limitação sem inventar dados.'],
       answerStyle: { shouldExplainUncertainty: true, shouldIncludeTables: true, shouldIncludeInsights: true, shouldIncludeSuggestions: true },
     };
   }
@@ -501,27 +546,60 @@ export async function planejarClark(ctx: ClarkBrainContext): Promise<{ plan: Cla
     return { plan: local, usedGemini: false };
   }
 
+  // Intenções já reconhecidas com regra de negócio determinística não devem ser
+  // reescritas pelo modelo. A IA externa entra apenas quando o parser local não
+  // conseguiu fechar a intenção e precisa planejar uma consulta ambígua.
+  if (TASKS_DETERMINISTICAS.has(local.taskType)) {
+    return { plan: local, usedGemini: false };
+  }
+
   const normalizarPlano = (parsed: any): ClarkAgentPlan => {
-    const toolCalls = Array.isArray(parsed.toolCalls) ? parsed.toolCalls : [];
+    const toolCalls = Array.isArray(parsed?.toolCalls) ? parsed.toolCalls : [];
     const normalizedCalls: ClarkToolCall[] = toolCalls
-      .filter((c: any) => c && c.tool)
-      .map((c: any) => ({
-        tool: c.tool as ClarkToolName,
-        reason: String(c.reason || ''),
-        args: {
-          originalQuestion: ctx.perguntaExpandida,
-          startDate: ctx.periodo.inicio,
-          endDate: ctx.periodo.fim,
-          ...(c.args || {}),
-        },
-      }));
+      .filter((c: any) => c && VALID_TOOL_NAMES.has(String(c.tool) as ClarkToolName))
+      .slice(0, 4)
+      .map((c: any) => {
+        const rawArgs = c.args && typeof c.args === 'object' ? c.args : {};
+        const rawLimit = Number(rawArgs.limit);
+        const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(Math.floor(rawLimit), 1000) : undefined;
+
+        return {
+          tool: String(c.tool) as ClarkToolName,
+          reason: String(c.reason || '').slice(0, 500),
+          args: {
+            ...rawArgs,
+            ...(limit ? { limit } : {}),
+            // Campos abaixo são autoritativos do backend. A IA não pode trocar
+            // pergunta, período ou filtros detectados pelo sistema.
+            originalQuestion: ctx.perguntaOriginal,
+            startDate: ctx.periodo.inicio,
+            endDate: ctx.periodo.fim,
+            ...(ctx.filtros.lojaCanonica ? { store: ctx.filtros.lojaCanonica } : {}),
+            ...(ctx.filtros.categoriaCanonica ? { category: ctx.filtros.categoriaCanonica } : {}),
+          },
+        };
+      });
+
+    const parsedTask = String(parsed?.taskType || '');
+    const parsedMode = parsed?.mode === 'simples' || parsed?.mode === 'analitico' ? parsed.mode : local.mode;
+    const parsedConfidence = Number(parsed?.confidence);
 
     return {
       ...local,
-      ...parsed,
+      understoodQuestion: String(parsed?.understoodQuestion || local.understoodQuestion).slice(0, 1000),
+      taskType: (VALID_TASK_TYPES.has(parsedTask) ? parsedTask : local.taskType) as ClarkAgentPlan['taskType'],
+      mode: parsedMode,
+      confidence: Number.isFinite(parsedConfidence) ? Math.max(0, Math.min(parsedConfidence, 1)) : local.confidence,
+      entities: {
+        ...local.entities,
+        ...(parsed?.entities && typeof parsed.entities === 'object' ? parsed.entities : {}),
+        ...(ctx.filtros.lojaCanonica ? { store: ctx.filtros.lojaCanonica } : {}),
+        ...(ctx.filtros.categoriaCanonica ? { category: ctx.filtros.categoriaCanonica } : {}),
+        period: { inicio: ctx.periodo.inicio, fim: ctx.periodo.fim, descricao: ctx.periodo.descricao },
+      },
       toolCalls: normalizedCalls.length ? normalizedCalls : local.toolCalls,
-      validationRules: Array.isArray(parsed.validationRules) ? parsed.validationRules : local.validationRules,
-      answerStyle: { ...local.answerStyle, ...(parsed.answerStyle || {}) },
+      validationRules: Array.isArray(parsed?.validationRules) ? parsed.validationRules.map((v: any) => String(v).slice(0, 500)).slice(0, 12) : local.validationRules,
+      answerStyle: { ...local.answerStyle, ...(parsed?.answerStyle || {}) },
     };
   };
 

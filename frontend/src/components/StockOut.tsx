@@ -79,7 +79,7 @@ const getSpecificModel = (fullName: string) => {
     return `${baseName}${modifierStr}${is5G}${storage}`.trim();
 };
 
-export default function Stockout() {
+export default function Stockout({ currentUser }: { currentUser?: any }) {
   const [stockData, setStockData] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   
@@ -96,7 +96,7 @@ export default function Stockout() {
   const loadData = async () => {
     setLoading(true);
     try {
-      const resStock = await fetch(`${API_URL}/stock`);
+      const resStock = await fetch(`${API_URL}/stock?userId=${encodeURIComponent(String(currentUser?.id || ''))}`);
       const jsonStock = await resStock.json();
       if(Array.isArray(jsonStock)) setStockData(jsonStock);
     } catch (error) { 

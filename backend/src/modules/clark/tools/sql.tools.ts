@@ -7,11 +7,12 @@ import { ClarkToolResult } from '../agent/clarkAgent.types';
 import { ClarkToolContext } from './clarkTools.types';
 
 const FORBIDDEN_SQL = /\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|REPLACE|TRUNCATE|ATTACH|DETACH|VACUUM|PRAGMA|BEGIN|COMMIT|ROLLBACK)\b/i;
+const FORBIDDEN_SYSTEM_TABLES = /\b(SQLITE_MASTER|SQLITE_SCHEMA|SQLITE_TEMP_MASTER|PRISMA_MIGRATIONS)\b/i;
 
 function databaseDir() {
   const rootDir = process.cwd();
   return process.env.RENDER
-    ? path.join(__dirname, '../../../../database')
+    ? '/var/data'
     : path.join(rootDir, 'database');
 }
 
@@ -37,15 +38,23 @@ function cleanSql(sql: string) {
 function assertSafeSelect(sql: string) {
   const normalized = cleanSql(sql);
 
-  if (!normalized) throw new Error('SQL vazio.');
+  if (!normalized) throw new Error('SQL vazio. A consulta analítica precisa ser planejada antes da execução.');
   if (!/^SELECT\b/i.test(normalized)) {
     throw new Error('A ferramenta analítica aceita apenas consultas SELECT.');
   }
   if (FORBIDDEN_SQL.test(normalized)) {
     throw new Error('SQL contém comando bloqueado. Use apenas SELECT.');
   }
+  if (FORBIDDEN_SYSTEM_TABLES.test(normalized)) {
+    throw new Error('Consulta a tabelas internas do SQLite/Prisma não é permitida.');
+  }
   if (/;/.test(normalized)) {
     throw new Error('Envie apenas uma consulta SELECT por vez.');
+  }
+
+  const compact = normalized.replace(/\s+/g, ' ').trim();
+  if (/^SELECT\s+1(?:\s+AS\s+[A-Z0-9_]+)?$/i.test(compact) || /CONSULTA_PRECISA_DE_PLANEJAMENTO/i.test(compact)) {
+    throw new Error('Consulta placeholder bloqueada porque não responde à pergunta do usuário.');
   }
 
   return normalized;
@@ -56,13 +65,25 @@ function addLimit(sql: string, limit: number) {
   return `${sql}\nLIMIT ${Math.max(1, Math.min(Number(limit) || 100, 1000))}`;
 }
 
+function ensureSqlScope(ctx: ClarkToolContext) {
+  const scope = (ctx as any)?.scope;
+
+  // SQL livre é difícil de reescrever com segurança para escopo por loja.
+  // Usuários restritos devem usar as tools de negócio, que aplicam rowPermitidaClark.
+  if (!scope?.isSuperUser) {
+    throw new Error('Consulta SQL analítica livre não é permitida para usuário com escopo restrito. Use as consultas de vendas/estoque por loja autorizada.');
+  }
+}
+
 export async function toolExecutarSqlAnalitico(
   args: Record<string, any>,
-  _ctx: ClarkToolContext
+  ctx: ClarkToolContext
 ): Promise<ClarkToolResult> {
   let db: any = null;
 
   try {
+    ensureSqlScope(ctx);
+
     const dbPath = pickDatabase(args);
     if (!fs.existsSync(dbPath)) {
       throw new Error(`Banco não encontrado: ${path.basename(dbPath)}.`);

@@ -1950,7 +1950,7 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
       const userId = String(currentUser?.id || getCurrentUserId() || '');
       const [baseResp, stockResp, priceResp, priceGuideResp, salesResp, onlineResp] = await Promise.all([
         fetchJsonFromCandidates('/api/comparativos/mkt-base'),
-        fetchJsonFromCandidates('/stock'),
+        fetchJsonFromCandidates(`/stock?userId=${encodeURIComponent(userId)}`),
         fetchJsonFromCandidates('/price-table?category=Aparelhos'),
         fetchPriceGuideSheet(),
         userId && startDate && endDate

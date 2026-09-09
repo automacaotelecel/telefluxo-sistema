@@ -174,7 +174,7 @@ export default function SalesDashboard() {
         }
 
         try {
-            const resStock = await fetch(`${API_URL}/stock`);
+            const resStock = await fetch(`${API_URL}/stock?userId=${encodeURIComponent(userId)}`);
             if (resStock.ok) {
                 const dataStock = await resStock.json();
                 setStockRawData(Array.isArray(dataStock) ? dataStock : []);
@@ -460,6 +460,122 @@ setRanking(finalRanking);
           .sort((a, b) => b.total - a.total);
   }, [filteredData]);
 
+  const storeKpiRanking = useMemo(() => {
+      const groups = new Map<string, any>();
+
+      ranking.forEach((seller: any) => {
+          const loja = String(seller.loja || 'N/D').trim() || 'N/D';
+          if (loja === 'N/D') return;
+
+          if (!groups.has(loja)) {
+              groups.set(loja, {
+                  loja,
+                  vendedores: 0,
+                  faturamento: 0,
+                  tendencia: 0,
+                  mes_anterior: 0,
+                  seguros: 0,
+                  qtd: 0,
+                  rs_aparelho: 0,
+                  rs_acessorio: 0,
+                  rs_tablet: 0,
+                  rs_wearable: 0,
+                  peso_conversao: 0,
+                  acessorios_ponderado: 0,
+                  peliculas_ponderado: 0,
+                  acessorios_soma_simples: 0,
+                  peliculas_soma_simples: 0,
+                  conversoes_validas: 0,
+              });
+          }
+
+          const group = groups.get(loja);
+          const qtd = Math.max(0, Number(seller.qtd) || 0);
+          const convAcessorios = Number(seller.pct_acessorios) || 0;
+          const convPeliculas = Number(seller.conv_peliculas) || 0;
+
+          group.vendedores += 1;
+          group.faturamento += Number(seller.faturamento) || 0;
+          group.tendencia += Number(seller.tendencia) || 0;
+          group.mes_anterior += Number(seller.mes_anterior) || 0;
+          group.seguros += Number(seller.seguros) || 0;
+          group.qtd += qtd;
+          group.rs_aparelho += Number(seller.rs_aparelho) || 0;
+          group.rs_acessorio += Number(seller.rs_acessorio) || 0;
+          group.rs_tablet += Number(seller.rs_tablet) || 0;
+          group.rs_wearable += Number(seller.rs_wearable) || 0;
+
+          group.acessorios_soma_simples += convAcessorios;
+          group.peliculas_soma_simples += convPeliculas;
+          group.conversoes_validas += 1;
+
+          // A taxa por loja precisa ser consolidada, não uma média simples das
+          // porcentagens dos vendedores. Usamos QTD como peso operacional, que
+          // é o denominador disponível no KPI já sincronizado por vendedor.
+          if (qtd > 0) {
+              group.peso_conversao += qtd;
+              group.acessorios_ponderado += convAcessorios * qtd;
+              group.peliculas_ponderado += convPeliculas * qtd;
+          }
+      });
+
+      return Array.from(groups.values())
+          .map((group: any) => {
+              const fallbackDivisor = Math.max(1, group.conversoes_validas);
+              const pctAcessorios = group.peso_conversao > 0
+                  ? group.acessorios_ponderado / group.peso_conversao
+                  : group.acessorios_soma_simples / fallbackDivisor;
+              const convPeliculas = group.peso_conversao > 0
+                  ? group.peliculas_ponderado / group.peso_conversao
+                  : group.peliculas_soma_simples / fallbackDivisor;
+              const crescimento = group.mes_anterior > 0
+                  ? (group.faturamento - group.mes_anterior) / group.mes_anterior
+                  : 0;
+              const pctSeguro = group.faturamento > 0
+                  ? group.seguros / group.faturamento
+                  : 0;
+
+              return {
+                  ...group,
+                  crescimento,
+                  pct_acessorios: pctAcessorios,
+                  conv_peliculas: convPeliculas,
+                  pct_seguro: pctSeguro,
+              };
+          })
+          .sort((a: any, b: any) => b.faturamento - a.faturamento);
+  }, [ranking]);
+
+  const storeKpiNetworkSummary = useMemo(() => {
+      let peso = 0;
+      let acessoriosPonderado = 0;
+      let peliculasPonderado = 0;
+      let acessoriosSimples = 0;
+      let peliculasSimples = 0;
+      let lojas = 0;
+
+      storeKpiRanking.forEach((item: any) => {
+          const qtd = Math.max(0, Number(item.qtd) || 0);
+          const convAcessorios = Number(item.pct_acessorios) || 0;
+          const convPeliculas = Number(item.conv_peliculas) || 0;
+
+          acessoriosSimples += convAcessorios;
+          peliculasSimples += convPeliculas;
+          lojas += 1;
+
+          if (qtd > 0) {
+              peso += qtd;
+              acessoriosPonderado += convAcessorios * qtd;
+              peliculasPonderado += convPeliculas * qtd;
+          }
+      });
+
+      return {
+          pct_acessorios: peso > 0 ? acessoriosPonderado / peso : acessoriosSimples / Math.max(1, lojas),
+          conv_peliculas: peso > 0 ? peliculasPonderado / peso : peliculasSimples / Math.max(1, lojas),
+      };
+  }, [storeKpiRanking]);
+
   const totalTendencia = useMemo(() => {
       if (diasPassados === 0) return summary.total_vendas;
       const projecao = (summary.total_vendas / diasPassados) * diasNoMes;
@@ -649,6 +765,7 @@ setRanking(finalRanking);
           <div className="flex gap-2">
               <button onClick={() => setActiveTab('visao_geral')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all ${activeTab === 'visao_geral' ? 'bg-[#1428A0] text-white shadow-md' : 'bg-white text-slate-500 hover:bg-slate-50'}`}>Visão Mensal</button>
               <button onClick={() => setActiveTab('vendedores')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all ${activeTab === 'vendedores' ? 'bg-[#1428A0] text-white shadow-md' : 'bg-white text-slate-500 hover:bg-slate-50'}`}>Vendedores</button>
+              <button onClick={() => setActiveTab('lojas')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all flex items-center gap-2 ${activeTab === 'lojas' ? 'bg-[#1428A0] text-white shadow-md' : 'bg-white text-slate-500 hover:bg-slate-50'}`}><Store size={14}/> Lojas</button>
               <button onClick={() => setActiveTab('fluxo')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all flex items-center gap-2 ${activeTab === 'fluxo' ? 'bg-[#1428A0] text-white shadow-md' : 'bg-white text-slate-500 hover:bg-slate-50'}`}>
                  <Footprints size={14}/> Fluxo / Bestflow (Beta)
               </button>
@@ -881,6 +998,77 @@ setRanking(finalRanking);
                         })}
                     </tbody>
                 </table>
+            </div>
+        </div>
+      )}
+
+      {activeTab === 'lojas' && (
+        <div className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="bg-white p-5 rounded-xl shadow-sm border-l-4 border-[#1428A0]">
+                    <div className="flex justify-between items-start mb-2"><span className="text-[10px] font-black text-slate-400 uppercase">Lojas Consolidadas</span><Store size={16} className="text-[#1428A0]"/></div>
+                    <div className="text-2xl font-black text-slate-800">{storeKpiRanking.length}</div>
+                </div>
+                <div className="bg-white p-5 rounded-xl shadow-sm border-l-4 border-indigo-500">
+                    <div className="flex justify-between items-start mb-2"><span className="text-[10px] font-black text-slate-400 uppercase">Conv. Acessórios Rede</span><Headphones size={16} className="text-indigo-500"/></div>
+                    <div className="text-2xl font-black text-slate-800">
+                        {formatPercent(storeKpiNetworkSummary.pct_acessorios)}
+                    </div>
+                </div>
+                <div className="bg-white p-5 rounded-xl shadow-sm border-l-4 border-amber-500">
+                    <div className="flex justify-between items-start mb-2"><span className="text-[10px] font-black text-slate-400 uppercase">Conv. Películas Rede</span><Smartphone size={16} className="text-amber-500"/></div>
+                    <div className="text-2xl font-black text-slate-800">
+                        {formatPercent(storeKpiNetworkSummary.conv_peliculas)}
+                    </div>
+                </div>
+            </div>
+
+            <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
+                <div className="p-4 border-b border-slate-100 flex flex-col md:flex-row md:justify-between md:items-center gap-2 bg-slate-50">
+                    <div className="flex items-center gap-2">
+                        <Store size={14} className="text-slate-500"/>
+                        <h3 className="font-black text-slate-700 uppercase text-xs">Conversão consolidada por loja</h3>
+                    </div>
+                    <span className="text-[9px] font-bold text-slate-400 uppercase">Taxas ponderadas pela quantidade (QTD) dos vendedores da loja</span>
+                </div>
+                <div className="overflow-x-auto max-h-[700px]">
+                    <table className="w-full text-left border-collapse">
+                        <thead className="sticky top-0 bg-white shadow-sm z-10">
+                            <tr className="text-[9px] font-black text-slate-400 uppercase tracking-wider">
+                                <th className="p-3 text-center">#</th>
+                                <th className="p-3">Loja</th>
+                                <th className="p-3 text-center">Vendedores</th>
+                                <th className="p-3 text-right text-[#1428A0]">Faturamento</th>
+                                <th className="p-3 text-right text-purple-600">Tendência</th>
+                                <th className="p-3 text-right">Mês Ant.</th>
+                                <th className="p-3 text-right">Cresc.</th>
+                                <th className="p-3 text-right text-indigo-500">Conv Acess</th>
+                                <th className="p-3 text-right text-amber-500">Conv Películas</th>
+                                <th className="p-3 text-right text-emerald-600">R$ Seguros</th>
+                                <th className="p-3 text-right text-emerald-600">% Seg</th>
+                            </tr>
+                        </thead>
+                        <tbody className="text-xs font-bold text-slate-700">
+                            {storeKpiRanking.map((loja: any, i: number) => (
+                                <tr key={loja.loja} className="border-b border-slate-50 hover:bg-slate-50 transition-colors">
+                                    <td className="p-3 text-center">
+                                        <span className={`w-5 h-5 flex items-center justify-center rounded text-[9px] mx-auto ${i < 3 ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-500'}`}>{i + 1}</span>
+                                    </td>
+                                    <td className="p-3 uppercase whitespace-nowrap font-black text-slate-800">{loja.loja}</td>
+                                    <td className="p-3 text-center text-slate-500">{loja.vendedores}</td>
+                                    <td className="p-3 text-right font-black text-slate-800 whitespace-nowrap">{formatMoney(loja.faturamento)}</td>
+                                    <td className="p-3 text-right text-purple-600 whitespace-nowrap">{formatMoney(loja.tendencia)}</td>
+                                    <td className="p-3 text-right text-slate-400 whitespace-nowrap">{formatMoney(loja.mes_anterior)}</td>
+                                    <td className={`p-3 text-right whitespace-nowrap ${loja.crescimento >= 0 ? 'text-green-600' : 'text-red-500'}`}>{formatPercent(loja.crescimento)}</td>
+                                    <td className="p-3 text-right text-indigo-500 whitespace-nowrap font-black">{formatPercent(loja.pct_acessorios)}</td>
+                                    <td className="p-3 text-right text-amber-500 whitespace-nowrap font-black">{formatPercent(loja.conv_peliculas)}</td>
+                                    <td className="p-3 text-right text-emerald-600 whitespace-nowrap">{formatMoney(loja.seguros)}</td>
+                                    <td className="p-3 text-right font-black text-emerald-600 whitespace-nowrap">{formatPercent(loja.pct_seguro)}</td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
             </div>
         </div>
       )}

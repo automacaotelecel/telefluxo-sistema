@@ -3,6 +3,7 @@ import path from 'path';
 import sqlite3 from 'sqlite3';
 import { open } from 'sqlite';
 import { ClarkHistoricoMensagem, ClarkResposta } from '../clark.types';
+import { perguntaPareceFollowUpClark } from './clarkMemory.service';
 
 type SqliteDb = Awaited<ReturnType<typeof open>>;
 
@@ -259,11 +260,10 @@ export function aplicarMemoriaNaPerguntaClark(
     .replace(/[\u0300-\u036f]/g, '')
     .toUpperCase();
 
-  const curtaOuFollowUp =
-    pergunta.length <= 70 ||
-    /^(E\s+|AGORA\s+|TAMBEM\s+|TAMBÉM\s+|SO\s+|SÓ\s+|SOMENTE\s+|APENAS\s+|NO\s+|NA\s+|DA\s+|DO\s+|COMPARA|COMPARE|ENTAO|ENTÃO)/i.test(pergunta);
-
-  if (!curtaOuFollowUp) return pergunta;
+  // Memória persistente só deve entrar quando a pergunta atual realmente
+  // referencia o contexto anterior. Perguntas curtas e completas, como
+  // "vendas por loja este mês", não podem herdar o último produto consultado.
+  if (!perguntaPareceFollowUpClark(pergunta)) return pergunta;
 
   const temProdutoNaPergunta =
     /\b(GALAXY|SM-[A-Z0-9]|S\d{2}|A\d{2}|M\d{2}|Z\s?FLIP|Z\s?FOLD|TAB\s?S)\b/i.test(pergunta);

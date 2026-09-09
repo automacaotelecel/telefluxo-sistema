@@ -14,7 +14,7 @@ const REGIOES = {
   "Centro de Distribuição": ["CD TAGUATINGA"]
 };
 
-export default function AuditoriaLojas() {
+export default function AuditoriaLojas({ currentUser }: { currentUser?: any }) {
   const [stockRaw, setStockRaw] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedStore, setSelectedStore] = useState<string | null>(null);
@@ -33,7 +33,7 @@ export default function AuditoriaLojas() {
   const loadStock = async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${API_URL}/stock`);
+      const res = await fetch(`${API_URL}/stock?userId=${encodeURIComponent(String(currentUser?.id || ''))}`);
       if (res.ok) {
         const data = await res.json();
         setStockRaw(data);

@@ -3,7 +3,7 @@ import { processarPerguntaClark } from './clark.service';
 import { limparMemoriaExecutivaClark, obterMemoriaExecutivaClark } from './brain/clarkExecutiveMemory.service';
 import { ClarkHistoricoMensagem } from './clark.types';
 import { gerarExcelUniversalClark } from './reports/excelUniversal.service';
-import { validarAcessoAdmRequest } from '../security/adminAccess';
+import { validarAcessoDiretoriaClarkRequest } from '../security/adminAccess';
 
 function normalizarHistorico(value: any): ClarkHistoricoMensagem[] {
   if (!Array.isArray(value)) return [];
@@ -19,7 +19,7 @@ function normalizarHistorico(value: any): ClarkHistoricoMensagem[] {
 
 export async function perguntarClarkController(req: Request, res: Response) {
   try {
-    const acesso = await validarAcessoAdmRequest(req);
+    const acesso = await validarAcessoDiretoriaClarkRequest(req);
 
     if (!acesso.allowed) {
       return res.status(acesso.status).json({
@@ -74,7 +74,7 @@ export async function perguntarClarkController(req: Request, res: Response) {
 
 export async function exportarRelatorioExcelClark(req: Request, res: Response) {
   try {
-    const acesso = await validarAcessoAdmRequest(req);
+    const acesso = await validarAcessoDiretoriaClarkRequest(req);
 
     if (!acesso.allowed) {
       return res.status(acesso.status).json({
@@ -115,7 +115,7 @@ export async function exportarRelatorioExcelClark(req: Request, res: Response) {
 
 export async function obterMemoriaClarkController(req: Request, res: Response) {
   try {
-    const acesso = await validarAcessoAdmRequest(req);
+    const acesso = await validarAcessoDiretoriaClarkRequest(req);
 
     if (!acesso.allowed) {
       return res.status(acesso.status).json({ ok: false, error: acesso.error });
@@ -137,7 +137,7 @@ export async function obterMemoriaClarkController(req: Request, res: Response) {
 
 export async function limparMemoriaClarkController(req: Request, res: Response) {
   try {
-    const acesso = await validarAcessoAdmRequest(req);
+    const acesso = await validarAcessoDiretoriaClarkRequest(req);
 
     if (!acesso.allowed) {
       return res.status(acesso.status).json({ ok: false, error: acesso.error });
@@ -159,7 +159,7 @@ export async function limparMemoriaClarkController(req: Request, res: Response) 
 
 export async function gerarRelatorioExecutivoClarkController(req: Request, res: Response) {
   try {
-    const acesso = await validarAcessoAdmRequest(req);
+    const acesso = await validarAcessoDiretoriaClarkRequest(req);
 
     if (!acesso.allowed) {
       return res.status(acesso.status).json({ ok: false, error: acesso.error });
