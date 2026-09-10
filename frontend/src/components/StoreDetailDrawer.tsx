@@ -41,6 +41,12 @@ function pct(value: any) {
   return `${Number(value || 0).toFixed(1).replace('.', ',')}%`;
 }
 
+function sellerPct(value: any) {
+  const n = Number(value || 0);
+  const percent = Math.abs(n) <= 5 ? n * 100 : n;
+  return `${percent.toFixed(1).replace('.', ',')}%`;
+}
+
 function Metric({ icon: Icon, label, value }: { icon: any; label: string; value: string }) {
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-4">
@@ -167,7 +173,7 @@ export default function StoreDetailDrawer({ open, store, currentUser, onClose }:
                       <span className="text-[10px] font-black text-slate-400">{String(index + 1).padStart(2, '0')}</span>
                       <div className="min-w-0">
                         <p className="truncate text-xs font-black text-slate-850">{seller.vendedor}</p>
-                        <p className="mt-0.5 text-[9px] font-semibold text-slate-400">Acessórios {pct(seller.pct_acessorios)} • Películas {pct(seller.conv_peliculas)}</p>
+                        <p className="mt-0.5 text-[9px] font-semibold text-slate-400">Acessórios {sellerPct(seller.pct_acessorios)} • Películas {sellerPct(seller.conv_peliculas)}</p>
                       </div>
                       <span className="text-xs font-black text-slate-950">{money(seller.faturamento)}</span>
                     </div>

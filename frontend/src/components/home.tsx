@@ -9,7 +9,6 @@ import {
   ChevronRight,
   CircleDollarSign,
   Crown,
-  Gauge,
   Megaphone,
   PackageCheck,
   Plus,
@@ -58,6 +57,10 @@ type DashboardData = {
     crescimento?: number | null;
     pecasMes?: number;
     ticketMedio?: number;
+    tendenciaMes?: number;
+    tendenciaAno?: number;
+    realizadoAno?: number;
+    crescimentoTendencia?: number | null;
     conversaoAcessorios?: number;
     conversaoPeliculas?: number;
     seguroPct?: number;
@@ -157,6 +160,60 @@ function KpiCard({
   );
 }
 
+
+function ConversionCard({
+  acessorios,
+  peliculas,
+  seguro,
+  loading,
+  onSelectMetric,
+}: {
+  acessorios: number;
+  peliculas: number;
+  seguro: number;
+  loading: boolean;
+  onSelectMetric: (metric: MetricKey) => void;
+}) {
+  const items = [
+    { key: 'conversaoAcessorios' as MetricKey, label: 'Acessórios', value: acessorios, icon: ShoppingBag },
+    { key: 'conversaoPeliculas' as MetricKey, label: 'Películas', value: peliculas, icon: PackageCheck },
+    { key: 'seguroPct' as MetricKey, label: 'Seguro', value: seguro, icon: ShieldCheck },
+  ];
+
+  return (
+    <div className="rounded-[24px] border border-slate-200/80 bg-white p-5 shadow-[0_12px_35px_rgba(15,23,42,0.05)]">
+      <div className="mb-4 flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Conversões</p>
+          <p className="mt-1 text-[11px] font-semibold text-slate-400">Acessórios, películas e seguro</p>
+        </div>
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-slate-950 text-white">
+          <BarChart3 size={18} />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-3 gap-2">
+        {items.map(({ key, label, value, icon: Icon }) => (
+          <button
+            key={key}
+            type="button"
+            onClick={() => onSelectMetric(key)}
+            className="rounded-2xl bg-slate-50 px-2.5 py-3 text-left transition hover:bg-orange-50"
+          >
+            <div className="flex items-center gap-1.5 text-slate-400">
+              <Icon size={12} />
+              <span className="truncate text-[8px] font-black uppercase tracking-wide">{label}</span>
+            </div>
+            <p className="mt-2 text-[17px] font-black tracking-tight text-slate-950">
+              {loading ? '—' : `${number(value, 1)}%`}
+            </p>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function Home({ currentUser, onNavigate }: Props) {
   const [announcements, setAnnouncements] = useState<any[]>([]);
   const [showModal, setShowModal] = useState(false);
@@ -166,6 +223,10 @@ export default function Home({ currentUser, onNavigate }: Props) {
   const [dashboardError, setDashboardError] = useState('');
   const [selectedMetric, setSelectedMetric] = useState<MetricKey | null>(null);
   const [selectedStore, setSelectedStore] = useState<string | null>(null);
+  const [storeFilter, setStoreFilter] = useState<string | null>(null);
+  const [storeView, setStoreView] = useState<any | null>(null);
+  const [storeViewLoading, setStoreViewLoading] = useState(false);
+  const [storeViewError, setStoreViewError] = useState('');
 
   const role = String(currentUser?.role || '').toUpperCase();
   const isAdminOrManager =
@@ -207,20 +268,69 @@ export default function Home({ currentUser, onNavigate }: Props) {
     }
   }, [currentUser?.id]);
 
+  const loadStoreView = useCallback(async (store: string) => {
+    const userId = String(currentUser?.id || '').trim();
+    const normalizedStore = String(store || '').trim();
+
+    if (!userId || !normalizedStore) return;
+
+    try {
+      setStoreViewLoading(true);
+      setStoreViewError('');
+
+      const response = await fetch(
+        `${API_URL}/api/home/store-detail?userId=${encodeURIComponent(userId)}&store=${encodeURIComponent(normalizedStore)}`,
+        { cache: 'no-store' },
+      );
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data?.error || 'Não foi possível carregar a loja.');
+      }
+
+      setStoreView(data);
+    } catch (error: any) {
+      console.error('Erro ao carregar visão da loja:', error);
+      setStoreView(null);
+      setStoreViewError(error?.message || 'Erro ao carregar a unidade.');
+    } finally {
+      setStoreViewLoading(false);
+    }
+  }, [currentUser?.id]);
+
+  const selectStoreForAnalysis = useCallback((store: string) => {
+    const normalized = String(store || '').trim();
+    if (!normalized) return;
+    setStoreFilter(normalized);
+  }, []);
+
+  const clearStoreAnalysis = useCallback(() => {
+    setStoreFilter(null);
+    setStoreView(null);
+    setStoreViewError('');
+  }, []);
+
+
   useEffect(() => {
     fetchAnnouncements();
     loadDashboard();
   }, [fetchAnnouncements, loadDashboard]);
 
   useEffect(() => {
+    if (storeFilter) {
+      loadStoreView(storeFilter);
+    }
+  }, [storeFilter, loadStoreView]);
+
+  useEffect(() => {
     const openStore = (event: Event) => {
       const custom = event as CustomEvent<{ store?: string }>;
       const store = String(custom.detail?.store || '').trim();
-      if (store) setSelectedStore(store);
+      if (store) selectStoreForAnalysis(store);
     };
     window.addEventListener('telefluxo:open-store', openStore as EventListener);
     return () => window.removeEventListener('telefluxo:open-store', openStore as EventListener);
-  }, []);
+  }, [selectStoreForAnalysis]);
 
   const handleCreate = async () => {
     if (!newNotice.title || !newNotice.content) return alert('Preencha título e conteúdo!');
@@ -243,13 +353,96 @@ export default function Home({ currentUser, onNavigate }: Props) {
   const notices = announcements.filter((a) => a.category === 'Aviso');
   const dailyTip = announcements.find((a) => a.category === 'Dica');
   const groupAgenda = announcements.filter((a) => a.category === 'Agenda');
-  const kpis = dashboard?.kpis || {};
+  const networkKpis = dashboard?.kpis || {};
   const stores = dashboard?.stores || [];
-  const radar = dashboard?.radar || [];
+  const isStoreAnalysis = Boolean(storeFilter && storeView?.success);
+
+  const kpis = isStoreAnalysis
+    ? {
+        ...networkKpis,
+        faturamentoMes: storeView?.kpis?.faturamento || 0,
+        faturamentoAnterior: storeView?.kpis?.faturamentoAnterior || 0,
+        crescimentoTendencia: storeView?.kpis?.crescimentoTendencia ?? null,
+        tendenciaMes: storeView?.kpis?.tendenciaMes || 0,
+        tendenciaAno: storeView?.kpis?.tendenciaAno || 0,
+        realizadoAno: storeView?.kpis?.realizadoAno || 0,
+        pecasMes: storeView?.kpis?.quantidade || 0,
+        conversaoAcessorios: storeView?.kpis?.conversaoAcessorios || 0,
+        conversaoPeliculas: storeView?.kpis?.conversaoPeliculas || 0,
+        seguroPct: storeView?.kpis?.seguroPct || 0,
+        seguros: storeView?.kpis?.seguros || 0,
+      }
+    : networkKpis;
+
+  const radar = useMemo(() => {
+    if (!isStoreAnalysis) return dashboard?.radar || [];
+
+    return [
+      {
+        level: 'info' as const,
+        title: storeFilter || 'Loja selecionada',
+        text: `Tendência de fechamento do mês: ${money(kpis.tendenciaMes)}.`,
+        metric: 'Tendência mês',
+      },
+      {
+        level: 'positive' as const,
+        title: storeFilter || 'Loja selecionada',
+        text: `Acessórios ${number(kpis.conversaoAcessorios, 1)}% • Películas ${number(kpis.conversaoPeliculas, 1)}% • Seguro ${number(kpis.seguroPct, 1)}%.`,
+        metric: 'Conversões',
+      },
+    ];
+  }, [
+    dashboard?.radar,
+    isStoreAnalysis,
+    storeFilter,
+    kpis.tendenciaMes,
+    kpis.conversaoAcessorios,
+    kpis.conversaoPeliculas,
+    kpis.seguroPct,
+  ]);
+
   const trend = useMemo(
-    () => (dashboard?.trend || []).map((item) => ({ ...item, label: shortDate(item.date) })),
-    [dashboard?.trend],
+    () =>
+      ((isStoreAnalysis ? storeView?.trend : dashboard?.trend) || []).map((item: any) => ({
+        ...item,
+        label: shortDate(item.date),
+      })),
+    [dashboard?.trend, isStoreAnalysis, storeView?.trend],
   );
+
+  const viewLoading = dashboardLoading || (Boolean(storeFilter) && storeViewLoading);
+  const scopeLabel = isStoreAnalysis
+    ? `Análise da loja • ${storeFilter}`
+    : dashboard?.scope?.label || 'Validando seu acesso';
+
+  const reportDashboard = useMemo(() => {
+    if (!dashboard || !isStoreAnalysis || !storeFilter) return dashboard;
+
+    const selectedStoreData = stores.find(
+      (store) => String(store.loja).toUpperCase() === String(storeFilter).toUpperCase(),
+    );
+
+    return {
+      ...dashboard,
+      scope: {
+        ...(dashboard.scope || {
+          type: 'store' as const,
+          label: '',
+          stores: [],
+          canCompareStores: false,
+          canUseClark: false,
+        }),
+        type: 'store' as const,
+        label: `Análise da loja • ${storeFilter}`,
+        stores: [storeFilter],
+        canCompareStores: false,
+      },
+      kpis,
+      trend: storeView?.trend || [],
+      stores: selectedStoreData ? [selectedStoreData] : [],
+      radar,
+    };
+  }, [dashboard, isStoreAnalysis, kpis, radar, storeFilter, storeView?.trend, stores]);
 
   return (
     <div className="flex-1 overflow-y-auto bg-[#f5f7fb]">
@@ -260,10 +453,19 @@ export default function Home({ currentUser, onNavigate }: Props) {
               <span className="inline-flex items-center gap-2 rounded-full bg-orange-50 px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.16em] text-orange-700">
                 <Activity size={13} /> TeleFluxo Intelligence
               </span>
-              <span className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.14em] ${isNetworkView ? 'bg-slate-950 text-white' : 'bg-emerald-50 text-emerald-700'}`}>
-                {isNetworkView ? <Crown size={12} /> : <ShieldCheck size={12} />}
-                {dashboard?.scope?.label || 'Validando seu acesso'}
+              <span className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.14em] ${isNetworkView && !isStoreAnalysis ? 'bg-slate-950 text-white' : 'bg-emerald-50 text-emerald-700'}`}>
+                {isNetworkView && !isStoreAnalysis ? <Crown size={12} /> : <ShieldCheck size={12} />}
+                {scopeLabel}
               </span>
+              {isStoreAnalysis && (
+                <button
+                  type="button"
+                  onClick={clearStoreAnalysis}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-[9px] font-black uppercase tracking-wide text-slate-600 transition hover:border-orange-200 hover:text-orange-700"
+                >
+                  <X size={11} /> Voltar para rede
+                </button>
+              )}
             </div>
             <h1 className="text-3xl font-black tracking-[-0.04em] text-slate-950 md:text-4xl">
               Olá, {firstName}. <span className="text-orange-500">👋</span>
@@ -275,13 +477,13 @@ export default function Home({ currentUser, onNavigate }: Props) {
               <CalendarDays size={15} className="text-orange-500" />
               {dashboard?.period?.label || 'Este mês'}
             </div>
-            <ExecutiveReportButton currentUser={currentUser} dashboard={dashboard} disabled={dashboardLoading} />
+            <ExecutiveReportButton currentUser={currentUser} dashboard={reportDashboard} disabled={viewLoading} />
             <button
-              onClick={loadDashboard}
-              disabled={dashboardLoading}
+              onClick={() => { loadDashboard(); if (storeFilter) loadStoreView(storeFilter); }}
+              disabled={viewLoading}
               className="inline-flex h-11 items-center gap-2 rounded-2xl bg-slate-950 px-4 text-[11px] font-black uppercase tracking-wide text-white shadow-lg transition hover:bg-orange-600 disabled:opacity-50"
             >
-              <RefreshCw size={14} className={dashboardLoading ? 'animate-spin' : ''} /> Atualizar
+              <RefreshCw size={14} className={viewLoading ? 'animate-spin' : ''} /> Atualizar
             </button>
             {isAdminOrManager && (
               <button onClick={() => setShowModal(true)} className="inline-flex h-11 items-center gap-2 rounded-2xl bg-orange-600 px-4 text-[11px] font-black uppercase tracking-wide text-white shadow-lg transition hover:bg-orange-700">
@@ -291,16 +493,40 @@ export default function Home({ currentUser, onNavigate }: Props) {
           </div>
         </section>
 
-        {dashboardError && (
-          <div className="mb-6 rounded-2xl border border-rose-200 bg-rose-50 px-5 py-4 text-sm font-bold text-rose-700">{dashboardError}</div>
+        {(dashboardError || storeViewError) && (
+          <div className="mb-6 rounded-2xl border border-rose-200 bg-rose-50 px-5 py-4 text-sm font-bold text-rose-700">
+            {dashboardError || storeViewError}
+          </div>
         )}
 
-        <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
-          <KpiCard title="Faturamento do mês" value={dashboardLoading ? '—' : money(kpis.faturamentoMes)} subtitle="vs. mês anterior" icon={CircleDollarSign} change={kpis.crescimento} onClick={() => setSelectedMetric('faturamentoMes')} />
-          <KpiCard title="Conversão acessórios" value={dashboardLoading ? '—' : `${number(kpis.conversaoAcessorios, 1)}%`} subtitle="ponderada pelo volume" icon={ShoppingBag} onClick={() => setSelectedMetric('conversaoAcessorios')} />
-          <KpiCard title="Conversão películas" value={dashboardLoading ? '—' : `${number(kpis.conversaoPeliculas, 1)}%`} subtitle="resultado do mês" icon={PackageCheck} onClick={() => setSelectedMetric('conversaoPeliculas')} />
-          <KpiCard title="Seguro" value={dashboardLoading ? '—' : `${number(kpis.seguroPct, 1)}%`} subtitle={`${number(kpis.seguros, 0)} no período`} icon={ShieldCheck} onClick={() => setSelectedMetric('seguroPct')} />
-          <KpiCard title="Ticket médio" value={dashboardLoading ? '—' : money(kpis.ticketMedio)} subtitle={`${number(kpis.pecasMes, 0)} itens no mês`} icon={Gauge} onClick={() => setSelectedMetric('ticketMedio')} />
+        <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <KpiCard
+            title="Faturamento do mês"
+            value={viewLoading ? '—' : money(kpis.faturamentoMes)}
+            subtitle={isStoreAnalysis ? storeFilter || 'Loja selecionada' : 'realizado até agora'}
+            icon={CircleDollarSign}
+            onClick={() => setSelectedMetric('faturamentoMes')}
+          />
+          <KpiCard
+            title="Tendência mês"
+            value={viewLoading ? '—' : money(kpis.tendenciaMes)}
+            subtitle="projeção de fechamento"
+            icon={BarChart3}
+            change={kpis.crescimentoTendencia}
+          />
+          <KpiCard
+            title="Tendência ano"
+            value={viewLoading ? '—' : money(kpis.tendenciaAno)}
+            subtitle={viewLoading ? 'calculando projeção' : `${money(kpis.realizadoAno)} realizado no ano`}
+            icon={Activity}
+          />
+          <ConversionCard
+            acessorios={Number(kpis.conversaoAcessorios || 0)}
+            peliculas={Number(kpis.conversaoPeliculas || 0)}
+            seguro={Number(kpis.seguroPct || 0)}
+            loading={viewLoading}
+            onSelectMetric={setSelectedMetric}
+          />
         </section>
 
         <section className="mt-5 grid grid-cols-1 gap-5 xl:grid-cols-[1.65fr_0.85fr]">
@@ -308,7 +534,7 @@ export default function Home({ currentUser, onNavigate }: Props) {
             <div className="mb-5 flex items-start justify-between gap-4">
               <div>
                 <p className="text-[10px] font-black uppercase tracking-[0.18em] text-orange-600">Performance</p>
-                <h2 className="mt-1 text-xl font-black tracking-tight text-slate-950">Faturamento diário</h2>
+                <h2 className="mt-1 text-xl font-black tracking-tight text-slate-950">{isStoreAnalysis ? `Faturamento diário • ${storeFilter}` : 'Faturamento diário'}</h2>
               </div>
               <div className="hidden rounded-2xl bg-slate-50 px-4 py-2 text-right sm:block">
                 <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">Total</p>
@@ -364,10 +590,15 @@ export default function Home({ currentUser, onNavigate }: Props) {
 
         <section className="mt-5 grid grid-cols-1 gap-5 xl:grid-cols-[1.25fr_0.75fr]">
           <div className="rounded-[28px] border border-slate-200/80 bg-white p-5 shadow-sm md:p-6">
-            <div className="mb-5 flex items-center justify-between gap-3">
+            <div className="mb-5 flex items-start justify-between gap-3">
               <div>
                 <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">{isNetworkView ? 'Rede' : 'Sua unidade'}</p>
                 <h2 className="mt-1 text-xl font-black text-slate-950">{isNetworkView ? 'Performance das lojas' : 'Resumo da loja'}</h2>
+                {isNetworkView && (
+                  <p className="mt-1 text-[11px] font-semibold text-slate-400">
+                    Clique em uma loja para recalcular os indicadores somente para aquela unidade.
+                  </p>
+                )}
               </div>
               <Store size={20} className="text-orange-500" />
             </div>
@@ -376,17 +607,51 @@ export default function Home({ currentUser, onNavigate }: Props) {
               <table className="w-full min-w-[690px] border-separate border-spacing-y-2 text-left">
                 <thead>
                   <tr className="text-[9px] font-black uppercase tracking-[0.16em] text-slate-400">
-                    <th className="px-3 py-2">{isNetworkView ? '#' : 'Escopo'}</th><th className="px-3 py-2">Loja</th><th className="px-3 py-2 text-right">Faturamento</th><th className="px-3 py-2 text-right">Acessórios</th><th className="px-3 py-2 text-right">Películas</th><th className="px-3 py-2 text-right">Seguro</th>
+                    <th className="px-3 py-2">{isNetworkView ? '#' : 'Escopo'}</th><th className="px-3 py-2">Loja</th><th className="px-3 py-2 text-right">Faturamento</th><th className="px-3 py-2 text-right">Acessórios</th><th className="px-3 py-2 text-right">Películas</th><th className="px-3 py-2 text-right">Seguro</th><th className="px-3 py-2 text-right">Detalhes</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {stores.length ? stores.slice(0, isNetworkView ? 10 : 1).map((store, index) => (
-                    <tr key={store.loja} onClick={() => setSelectedStore(store.loja)} className="cursor-pointer bg-slate-50/80 text-xs font-bold text-slate-700 transition hover:bg-orange-50">
-                      <td className="rounded-l-2xl px-3 py-3.5 text-slate-400">{isNetworkView ? String(index + 1).padStart(2, '0') : <ShieldCheck size={15} className="text-emerald-600" />}</td>
-                      <td className="px-3 py-3.5 font-black text-slate-900">{store.loja}</td><td className="px-3 py-3.5 text-right">{money(store.faturamento)}</td><td className="px-3 py-3.5 text-right">{number(store.conversaoAcessorios, 1)}%</td><td className="px-3 py-3.5 text-right">{number(store.conversaoPeliculas, 1)}%</td><td className="rounded-r-2xl px-3 py-3.5 text-right">{number(store.seguroPct, 1)}%</td>
-                    </tr>
-                  )) : (
-                    <tr><td colSpan={6} className="py-10 text-center text-sm font-semibold text-slate-400">Nenhum dado disponível.</td></tr>
+                  {stores.length ? stores.slice(0, isNetworkView ? 10 : 1).map((store, index) => {
+                    const active = Boolean(storeFilter) && String(storeFilter).toUpperCase() === String(store.loja).toUpperCase();
+
+                    return (
+                      <tr
+                        key={store.loja}
+                        onClick={() => selectStoreForAnalysis(store.loja)}
+                        className={`cursor-pointer text-xs font-bold text-slate-700 transition ${
+                          active ? 'bg-orange-50 ring-1 ring-inset ring-orange-200' : 'bg-slate-50/80 hover:bg-orange-50'
+                        }`}
+                      >
+                        <td className="rounded-l-2xl px-3 py-3.5 text-slate-400">
+                          {isNetworkView ? String(index + 1).padStart(2, '0') : <ShieldCheck size={15} className="text-emerald-600" />}
+                        </td>
+                        <td className="px-3 py-3.5 font-black text-slate-900">
+                          <div className="flex items-center gap-2">
+                            <span>{store.loja}</span>
+                            {active && <span className="rounded-full bg-orange-100 px-2 py-0.5 text-[8px] font-black uppercase text-orange-700">Em análise</span>}
+                          </div>
+                        </td>
+                        <td className="px-3 py-3.5 text-right">{money(store.faturamento)}</td>
+                        <td className="px-3 py-3.5 text-right">{number(store.conversaoAcessorios, 1)}%</td>
+                        <td className="px-3 py-3.5 text-right">{number(store.conversaoPeliculas, 1)}%</td>
+                        <td className="px-3 py-3.5 text-right">{number(store.seguroPct, 1)}%</td>
+                        <td className="rounded-r-2xl px-3 py-3.5 text-right">
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setSelectedStore(store.loja);
+                            }}
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-xl bg-white text-slate-400 shadow-sm ring-1 ring-slate-200 transition hover:text-orange-600"
+                            title="Abrir detalhes da loja"
+                          >
+                            <ChevronRight size={14} />
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  }) : (
+                    <tr><td colSpan={7} className="py-10 text-center text-sm font-semibold text-slate-400">Nenhum dado disponível.</td></tr>
                   )}
                 </tbody>
               </table>
@@ -419,7 +684,7 @@ export default function Home({ currentUser, onNavigate }: Props) {
         </section>
       </div>
 
-      <KpiDrilldownDrawer open={Boolean(selectedMetric)} metric={selectedMetric} dashboard={dashboard} onClose={() => setSelectedMetric(null)} onOpenStore={(store) => { setSelectedMetric(null); setSelectedStore(store); }} />
+      <KpiDrilldownDrawer open={Boolean(selectedMetric)} metric={selectedMetric} dashboard={reportDashboard} onClose={() => setSelectedMetric(null)} onOpenStore={(store) => { setSelectedMetric(null); setSelectedStore(store); }} />
       <StoreDetailDrawer open={Boolean(selectedStore)} store={selectedStore} currentUser={currentUser} onClose={() => setSelectedStore(null)} />
 
       {showModal && (

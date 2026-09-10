@@ -2483,7 +2483,10 @@ function deduplicateStockRows<T extends Record<string, any>>(
 
     if (
       currentUpdatedAt > existingUpdatedAt ||
-      currentQty > existingQty
+      (
+        currentUpdatedAt === existingUpdatedAt &&
+        currentQty > existingQty
+      )
     ) {
       unique.set(key, row);
     }
@@ -4415,20 +4418,31 @@ app.get('/api/intelligent-alerts', async (req, res) => {
       return storeProduct;
     };
 
-    const stockRows = await prisma.stock.findMany({
-      select: {
-        storeName: true,
-        cnpj: true,
-        productCode: true,
-        reference: true,
-        description: true,
-        category: true,
-        quantity: true,
-        costPrice: true,
-        averageCost: true,
-        acquisitionCost: true,
-      },
-    });
+    const stockRows = deduplicateStockRows(
+      await prisma.stock.findMany({
+        orderBy: {
+          updatedAt: 'desc',
+        },
+        select: {
+          storeName: true,
+          cnpj: true,
+          productCode: true,
+          reference: true,
+          description: true,
+          category: true,
+          quantity: true,
+          costPrice: true,
+          averageCost: true,
+          acquisitionCost: true,
+          serial: true,
+          stockType: true,
+          updatedAt: true,
+        },
+      })
+    ).filter(
+      (row: any) =>
+        extractStockType(row) === 'ESTOQUE'
+    );
 
     for (const stock of stockRows) {
       const store = smartAlertsStoreName(stock);
@@ -4781,65 +4795,89 @@ app.get('/api/intelligent-alerts', async (req, res) => {
       }
     }
 
-    for (const product of products) {
-      const origins = product.stores
-        .map((storeItem) => ({
-          ...storeItem,
-          coverageDays: smartAlertsCoverageDays(storeItem.stock, storeItem.sales90),
-        }))
-        .filter((storeItem) => storeItem.stock >= 3 && (storeItem.coverageDays === null || storeItem.coverageDays >= 90))
-        .sort((a, b) => b.stock - a.stock);
+    const remapSuggestions =
+      await remapGenerateSuggestionsForUser(user);
 
-      const destinations = product.stores
-        .map((storeItem) => ({
-          ...storeItem,
-          coverageDays: smartAlertsCoverageDays(storeItem.stock, storeItem.sales90),
-        }))
-        .filter((storeItem) => {
-          if (storeItem.sales90 < 2) return false;
-          if (storeItem.stock <= 0) return true;
-          return storeItem.coverageDays !== null && storeItem.coverageDays <= 15;
-        })
-        .sort((a, b) => {
-          const covA = a.coverageDays ?? 0;
-          const covB = b.coverageDays ?? 0;
-          return covA - covB || b.sales90 - a.sales90;
-        });
-
-      if (origins.length === 0 || destinations.length === 0) continue;
-
-      const origin = origins[0];
-      const destination = destinations[0];
-
-      if (!origin || !destination || origin.store === destination.store) continue;
-
-      const suggestedQty = Math.max(1, Math.min(5, Math.floor(origin.stock / 2)));
-
+    for (
+      const suggestion of remapSuggestions.slice(0, 60)
+    ) {
       smartAlertsAddAlert(alerts, {
-        id: smartAlertsBuildId(['remanejamento', product.key, origin.store, destination.store]),
+        id: smartAlertsBuildId([
+          'remanejamento',
+          suggestion.reference ||
+            suggestion.product,
+          suggestion.fromStore,
+          suggestion.toStore,
+        ]),
+
         type: 'oportunidade_remanejamento',
-        severity: destination.stock <= 0 ? 'alta' : 'media',
+
+        severity:
+          suggestion.priority === 'critica'
+            ? 'alta'
+            : suggestion.priority === 'alta'
+              ? 'alta'
+              : 'media',
+
         status: 'aberto',
-        title: `Remanejamento sugerido: ${product.product}`,
-        description: `${destination.store} tem baixa cobertura e ${origin.store} possui estoque com maior folga.`,
+
+        title:
+          `Remanejamento sugerido: ${suggestion.product}`,
+
+        description:
+          suggestion.reason,
+
         module: 'remanejamento',
-        store: destination.store,
-        product: product.product,
-        category: product.category,
+
+        store:
+          suggestion.toStore,
+
+        product:
+          suggestion.product,
+
+        category:
+          suggestion.category,
+
         metric: {
-          label: 'Sugestão',
-          value: `${suggestedQty} un.`,
-          helper: `${origin.store} → ${destination.store}`,
+          label: 'Sugestão segura',
+          value:
+            `${suggestion.suggestedQty} un.`,
+          helper:
+            `${suggestion.fromStore} → ${suggestion.toStore}`,
         },
-        action: `Remanejar até ${suggestedQty} unidade(s) de ${origin.store} para ${destination.store}.`,
+
+        action:
+          `Remanejar ${suggestion.suggestedQty} unidade(s) de ${suggestion.fromStore} para ${suggestion.toStore}.`,
+
         createdAt,
+
         details: {
-          origem: origin.store,
-          destino: destination.store,
-          estoqueOrigem: origin.stock,
-          estoqueDestino: destination.stock,
-          vendas90Destino: destination.sales90,
-          coberturaDestino: destination.coverageDays,
+          origem:
+            suggestion.fromStore,
+
+          destino:
+            suggestion.toStore,
+
+          estoqueOrigem:
+            suggestion.originStock,
+
+          estoqueDestino:
+            suggestion.destinationStock,
+
+          vendas90Destino:
+            suggestion.destinationSales90,
+
+          coberturaDestino:
+            suggestion.destinationCoverageDays,
+
+          reservaOrigem:
+            suggestion.originSafetyStock,
+
+          estoqueOrigemApos:
+            suggestion.originProjectedStock,
+
+          estoqueDestinoApos:
+            suggestion.destinationProjectedStock,
         },
       });
     }
@@ -4982,7 +5020,11 @@ type RemapSuggestion = {
   originStock: number;
   originSales90: number;
   originCoverageDays: number | null;
+  originSafetyStock: number;
+  originAvailableBefore: number;
+  originProjectedStock: number;
   destinationStock: number;
+  destinationProjectedStock: number;
   destinationSales90: number;
   destinationCoverageDays: number | null;
   networkStock: number;
@@ -5162,15 +5204,12 @@ async function remapEnsureTable(): Promise<void> {
 }
 
 function remapIsSuperUser(user: any): boolean {
-  const role = remapNormalizeText(user?.role);
-  const superRoles = ['CEO', 'DIRETOR', 'ADM', 'ADMIN', 'GESTOR', 'GERENTE', 'SOCIO', 'SÓCIO', 'MASTER'];
-  return Boolean(user?.isAdmin || superRoles.includes(role));
+  return userHasNetworkScope(user);
 }
 
 function remapAllowedStores(user: any): string[] {
-  return String(user?.allowedStores || '')
-    .split(',')
-    .map((store) => remapNormalizeText(CORRECAO_NOMES_SERVER[remapNormalizeText(store)] || store))
+  return getAllowedStoreNamesFromUser(user)
+    .map((store) => remapNormalizeText(store))
     .filter(Boolean);
 }
 
@@ -5185,7 +5224,11 @@ function remapCanSeeFlow(user: any, fromStore: string, toStore: string): boolean
   return remapCanSeeStore(user, fromStore) || remapCanSeeStore(user, toStore);
 }
 
-function remapPriority(destinationStock: number, destinationCoverage: number | null, destinationSales90: number): RemapPriority {
+function remapPriority(
+  destinationStock: number,
+  destinationCoverage: number | null,
+  destinationSales90: number
+): RemapPriority {
   if (destinationStock <= 0 && destinationSales90 > 0) return 'critica';
   if (destinationCoverage !== null && destinationCoverage <= 7) return 'critica';
   if (destinationCoverage !== null && destinationCoverage <= 15) return 'alta';
@@ -5193,24 +5236,58 @@ function remapPriority(destinationStock: number, destinationCoverage: number | n
   return 'baixa';
 }
 
-function remapRecommendedQty(origin: RemapStoreProductAgg, destination: RemapStoreProductAgg): number {
-  const originDailySales = origin.sales90 / 90;
-  const destinationDailySales = destination.sales90 / 90;
+function remapSafetyStock(
+  origin: RemapStoreProductAgg
+): number {
+  const originDailySales = Math.max(0, origin.sales90) / 90;
 
-  const originSafetyStock = Math.max(1, Math.ceil(originDailySales * 20));
-  const destinationTargetStock = Math.max(2, Math.ceil(destinationDailySales * 20));
-
-  const originExcess = Math.max(0, Math.floor(origin.stock - originSafetyStock));
-  const destinationNeed = Math.max(0, Math.ceil(destinationTargetStock - destination.stock));
-
-  if (destination.stock <= 0 && destination.sales90 > 0) {
-    return Math.max(1, Math.min(originExcess, Math.max(2, destinationNeed), 6));
-  }
-
-  return Math.max(0, Math.min(originExcess, destinationNeed, 5));
+  return Math.max(
+    2,
+    Math.ceil(originDailySales * 15)
+  );
 }
 
-async function remapGenerateSuggestionsForUser(user: any): Promise<RemapSuggestion[]> {
+function remapDestinationTarget(
+  destination: RemapStoreProductAgg
+): number {
+  const destinationDailySales = Math.max(0, destination.sales90) / 90;
+
+  return Math.max(
+    2,
+    Math.ceil(destinationDailySales * 15)
+  );
+}
+
+function remapRecommendedQty(
+  origin: RemapStoreProductAgg,
+  destination: RemapStoreProductAgg
+): number {
+  const originSafetyStock = remapSafetyStock(origin);
+  const destinationTargetStock = remapDestinationTarget(destination);
+
+  const originExcess = Math.max(
+    0,
+    Math.floor(origin.stock - originSafetyStock)
+  );
+
+  const destinationNeed = Math.max(
+    0,
+    Math.ceil(destinationTargetStock - destination.stock)
+  );
+
+  if (originExcess <= 0 || destinationNeed <= 0) {
+    return 0;
+  }
+
+  return Math.max(
+    0,
+    Math.min(originExcess, destinationNeed, 5)
+  );
+}
+
+async function remapGenerateSuggestionsForUser(
+  user: any
+): Promise<RemapSuggestion[]> {
   let annualDb: any;
 
   const now = new Date();
@@ -5218,11 +5295,60 @@ async function remapGenerateSuggestionsForUser(user: any): Promise<RemapSuggesti
 
   const start90 = remapAddDays(now, -90);
   const annualDbPath = remapAnnualDbPath();
-  const securityFilter = await getSalesFilter(String(user?.id || ''), 'vendas');
+  const securityFilter = await getSalesFilter(
+    String(user?.id || ''),
+    'vendas'
+  );
 
-  const productStoreMap = new Map<string, RemapStoreProductAgg>();
-  const byReference = new Map<string, string>();
-  const byDescription = new Map<string, string>();
+  const productStoreMap =
+    new Map<string, RemapStoreProductAgg>();
+
+  const byReference =
+    new Map<string, string>();
+
+  const byDescription =
+    new Map<string, string>();
+
+  const AMBIGUOUS_REMAP_ALIAS =
+    '__AMBIGUOUS__';
+
+  const registerRemapAlias = (
+    map: Map<string, string>,
+    alias: string,
+    productKey: string
+  ) => {
+    if (!alias) return;
+
+    const existing = map.get(alias);
+
+    if (!existing) {
+      map.set(alias, productKey);
+      return;
+    }
+
+    if (
+      existing !== productKey &&
+      existing !== AMBIGUOUS_REMAP_ALIAS
+    ) {
+      map.set(alias, AMBIGUOUS_REMAP_ALIAS);
+    }
+  };
+
+  const resolveRemapAlias = (
+    map: Map<string, string>,
+    alias: string
+  ): string => {
+    const value = alias
+      ? map.get(alias)
+      : '';
+
+    return (
+      value &&
+      value !== AMBIGUOUS_REMAP_ALIAS
+        ? value
+        : ''
+    );
+  };
 
   const getStoreProduct = (params: {
     productKey?: string;
@@ -5231,261 +5357,877 @@ async function remapGenerateSuggestionsForUser(user: any): Promise<RemapSuggesti
     category?: string;
     store: string;
   }): RemapStoreProductAgg => {
-    const referenceKey = remapNormalizeKey(params.reference || '');
-    const descriptionKey = remapNormalizeKey(params.product);
+    const referenceKey =
+      remapNormalizeKey(
+        params.reference || ''
+      );
+
+    const descriptionKey =
+      remapNormalizeKey(
+        params.product
+      );
+
     const productKey =
       params.productKey ||
-      byReference.get(referenceKey) ||
-      byDescription.get(descriptionKey) ||
+      resolveRemapAlias(
+        byReference,
+        referenceKey
+      ) ||
+      resolveRemapAlias(
+        byDescription,
+        descriptionKey
+      ) ||
       referenceKey ||
       descriptionKey;
 
-    const store = remapNormalizeText(params.store || 'LOJA NÃO INFORMADA');
-    const key = `${productKey}::${store}`;
+    const store =
+      remapNormalizeText(
+        params.store ||
+        'LOJA NÃO INFORMADA'
+      );
 
-    let item = productStoreMap.get(key);
+    const key =
+      `${productKey}::${store}`;
+
+    let item =
+      productStoreMap.get(key);
 
     if (!item) {
       item = {
         key: productKey,
-        product: params.product || params.reference || 'PRODUTO NÃO INFORMADO',
-        reference: params.reference || '',
-        category: params.category || 'GERAL',
+        product:
+          params.product ||
+          params.reference ||
+          'PRODUTO NÃO INFORMADO',
+        reference:
+          params.reference || '',
+        category:
+          params.category || 'GERAL',
         store,
         stock: 0,
         sales90: 0,
         coverageDays: null,
       };
 
-      productStoreMap.set(key, item);
+      productStoreMap.set(
+        key,
+        item
+      );
     }
 
-    if (!item.reference && params.reference) item.reference = params.reference;
-    if ((!item.category || item.category === 'GERAL') && params.category) item.category = params.category;
+    if (
+      !item.reference &&
+      params.reference
+    ) {
+      item.reference =
+        params.reference;
+    }
 
-    if (referenceKey) byReference.set(referenceKey, productKey);
-    if (descriptionKey) byDescription.set(descriptionKey, productKey);
+    if (
+      (
+        !item.category ||
+        item.category === 'GERAL'
+      ) &&
+      params.category
+    ) {
+      item.category =
+        params.category;
+    }
+
+    registerRemapAlias(
+      byReference,
+      referenceKey,
+      productKey
+    );
+
+    registerRemapAlias(
+      byDescription,
+      descriptionKey,
+      productKey
+    );
 
     return item;
   };
 
-  const stockRows = await prisma.stock.findMany({
-    select: {
-      cnpj: true,
-      storeName: true,
-      productCode: true,
-      reference: true,
-      description: true,
-      category: true,
-      quantity: true,
-    },
-  });
+  const stockRows =
+    deduplicateStockRows(
+      await prisma.stock.findMany({
+        orderBy: {
+          updatedAt: 'desc',
+        },
+        select: {
+          cnpj: true,
+          storeName: true,
+          productCode: true,
+          reference: true,
+          description: true,
+          category: true,
+          quantity: true,
+          serial: true,
+          stockType: true,
+          updatedAt: true,
+        },
+      })
+    ).filter(
+      (row: any) =>
+        extractStockType(row) ===
+        'ESTOQUE'
+    );
 
   for (const stock of stockRows) {
-    const store = remapStoreName(stock);
+    const store =
+      remapStoreName(stock);
 
-    if (!remapCanSeeStore(user, store)) {
+    if (
+      !remapCanSeeStore(
+        user,
+        store
+      )
+    ) {
       continue;
     }
 
-    const product = String(stock.description || '').trim();
+    const product =
+      String(
+        stock.description || ''
+      ).trim();
+
     if (!product) continue;
 
-    const reference = String(stock.reference || stock.productCode || '').trim();
-    const productKey = remapNormalizeKey(reference) || remapNormalizeKey(product);
+    const productCode =
+      String(
+        stock.productCode || ''
+      ).trim();
 
-    const item = getStoreProduct({
-      productKey,
-      product,
-      reference,
-      category: String(stock.category || 'GERAL').toUpperCase(),
-      store,
-    });
+    const reference =
+      String(
+        stock.reference || ''
+      ).trim();
 
-    item.stock += remapToNumber(stock.quantity);
+    const productCodeKey =
+      remapNormalizeKey(
+        productCode
+      );
+
+    const referenceKey =
+      remapNormalizeKey(
+        reference
+      );
+
+    const descriptionKey =
+      remapNormalizeKey(
+        product
+      );
+
+    const productKey =
+      productCodeKey ||
+      referenceKey ||
+      descriptionKey;
+
+    if (!productKey) continue;
+
+    const item =
+      getStoreProduct({
+        productKey,
+        product,
+        reference:
+          reference ||
+          productCode,
+        category:
+          String(
+            stock.category ||
+            'GERAL'
+          ).toUpperCase(),
+        store,
+      });
+
+    registerRemapAlias(
+      byReference,
+      productCodeKey,
+      productKey
+    );
+
+    registerRemapAlias(
+      byReference,
+      referenceKey,
+      productKey
+    );
+
+    registerRemapAlias(
+      byDescription,
+      descriptionKey,
+      productKey
+    );
+
+    item.stock += Math.max(
+      0,
+      remapToNumber(
+        stock.quantity
+      )
+    );
   }
 
-  const addSale = (row: any) => {
-    const date = remapParseDate(row.data_emissao || row.DATA_EMISSAO || row.data || row.DATA);
-    if (!date || date < start90 || date > now) return;
+  const addSale = (
+    row: any
+  ) => {
+    const date =
+      remapParseDate(
+        row.data_emissao ||
+        row.DATA_EMISSAO ||
+        row.data ||
+        row.DATA
+      );
 
-    const store = remapStoreName(row);
-    if (!remapCanSeeStore(user, store)) return;
+    if (
+      !date ||
+      date < start90 ||
+      date > now
+    ) {
+      return;
+    }
 
-    const qty = remapToNumber(
-      row.qtd_real ??
+    const store =
+      remapStoreName(row);
+
+    if (
+      !remapCanSeeStore(
+        user,
+        store
+      )
+    ) {
+      return;
+    }
+
+    const qty =
+      remapToNumber(
+        row.qtd_real ??
         row.QTD_REAL ??
         row.quantidade ??
         row.QUANTIDADE ??
         row.qtd ??
         row.QTD ??
         1
-    );
+      );
 
     if (!qty) return;
 
-    const reference = String(
-      row.referencia || row.REFERENCIA || row.codigo_produto || row.CODIGO_PRODUTO || ''
-    ).trim();
+    const productCode =
+      String(
+        row.codigo_produto ||
+        row.CODIGO_PRODUTO ||
+        ''
+      ).trim();
 
-    const product = String(
-      row.descricao || row.DESCRICAO || row.produto || row.PRODUTO || reference || ''
-    ).trim();
+    const reference =
+      String(
+        row.referencia ||
+        row.REFERENCIA ||
+        ''
+      ).trim();
 
-    if (!reference && !product) return;
+    const product =
+      String(
+        row.descricao ||
+        row.DESCRICAO ||
+        row.produto ||
+        row.PRODUTO ||
+        reference ||
+        productCode ||
+        ''
+      ).trim();
 
-    const referenceKey = remapNormalizeKey(reference);
-    const descriptionKey = remapNormalizeKey(product);
-    const productKey = byReference.get(referenceKey) || byDescription.get(descriptionKey) || referenceKey || descriptionKey;
+    if (
+      !productCode &&
+      !reference &&
+      !product
+    ) {
+      return;
+    }
 
-    const item = getStoreProduct({
-      productKey,
-      product: product || reference,
-      reference,
-      category: String(row.categoria_real || row.CATEGORIA_REAL || row.categoria || row.CATEGORIA || row.familia || row.FAMILIA || 'GERAL').toUpperCase(),
-      store,
-    });
+    const productCodeKey =
+      remapNormalizeKey(
+        productCode
+      );
+
+    const referenceKey =
+      remapNormalizeKey(
+        reference
+      );
+
+    const descriptionKey =
+      remapNormalizeKey(
+        product
+      );
+
+    const productKey =
+      resolveRemapAlias(
+        byReference,
+        productCodeKey
+      ) ||
+      resolveRemapAlias(
+        byReference,
+        referenceKey
+      ) ||
+      resolveRemapAlias(
+        byDescription,
+        descriptionKey
+      ) ||
+      productCodeKey ||
+      referenceKey ||
+      descriptionKey;
+
+    if (!productKey) return;
+
+    const item =
+      getStoreProduct({
+        productKey,
+        product:
+          product ||
+          reference ||
+          productCode,
+        reference:
+          reference ||
+          productCode,
+        category:
+          String(
+            row.categoria_real ||
+            row.CATEGORIA_REAL ||
+            row.categoria ||
+            row.CATEGORIA ||
+            row.familia ||
+            row.FAMILIA ||
+            'GERAL'
+          ).toUpperCase(),
+        store,
+      });
 
     item.sales90 += qty;
   };
 
-  if (fs.existsSync(annualDbPath)) {
-    annualDb = await open({ filename: annualDbPath, driver: sqlite3.Database });
+  if (
+    fs.existsSync(
+      annualDbPath
+    )
+  ) {
+    annualDb = await open({
+      filename:
+        annualDbPath,
+      driver:
+        sqlite3.Database,
+    });
 
-    const hasRaw = await remapTableExists(annualDb, 'vendas_anuais_raw');
-    const hasAnnual = await remapTableExists(annualDb, 'vendas_anuais');
+    const hasRaw =
+      await remapTableExists(
+        annualDb,
+        'vendas_anuais_raw'
+      );
+
+    const hasAnnual =
+      await remapTableExists(
+        annualDb,
+        'vendas_anuais'
+      );
 
     if (hasRaw) {
-      const rows = await annualDb.all(`
-        SELECT
-          data_emissao,
-          cnpj_empresa,
-          loja,
-          referencia,
-          codigo_produto,
-          descricao,
-          categoria,
-          categoria_real,
-          quantidade,
-          qtd_real,
-          cancelado
-        FROM vendas_anuais_raw
-        WHERE COALESCE(cancelado, 'N') = 'N'
-          AND ${securityFilter}
-      `);
+      const rows =
+        await annualDb.all(`
+          SELECT
+            data_emissao,
+            cnpj_empresa,
+            loja,
+            referencia,
+            codigo_produto,
+            descricao,
+            categoria,
+            categoria_real,
+            quantidade,
+            qtd_real,
+            cancelado
+          FROM vendas_anuais_raw
+          WHERE COALESCE(cancelado, 'N') = 'N'
+            AND ${securityFilter}
+        `);
 
-      rows.forEach((row: any) => addSale(row));
+      rows.forEach(
+        (row: any) =>
+          addSale(row)
+      );
     } else if (hasAnnual) {
-      const rows = await annualDb.all(`
-        SELECT
-          data_emissao,
-          cnpj_empresa,
-          loja,
-          familia AS referencia,
-          descricao,
-          familia AS categoria,
-          quantidade
-        FROM vendas_anuais
-        WHERE ${securityFilter}
-        AND data_emissao >= ?
-        AND data_emissao <= ?
-      `);
+      const rows =
+        await annualDb.all(
+          `
+            SELECT
+              data_emissao,
+              cnpj_empresa,
+              loja,
+              familia AS referencia,
+              descricao,
+              familia AS categoria,
+              quantidade
+            FROM vendas_anuais
+            WHERE ${securityFilter}
+              AND data_emissao >= ?
+              AND data_emissao <= ?
+          `,
+          [
+            estoqueDetalhadoDateToIso(
+              start90
+            ),
+            estoqueDetalhadoDateToIso(
+              now
+            ),
+          ]
+        );
 
-      rows.forEach((row: any) => addSale(row));
+      rows.forEach(
+        (row: any) =>
+          addSale(row)
+      );
     }
 
     await annualDb.close();
     annualDb = null;
   }
 
-  const items = Array.from(productStoreMap.values()).map((item) => {
-    item.coverageDays = item.sales90 > 0 ? item.stock / (item.sales90 / 90) : null;
-    return item;
-  });
+  const items =
+    Array.from(
+      productStoreMap.values()
+    ).map((item) => {
+      item.coverageDays =
+        item.sales90 > 0
+          ? item.stock /
+            (
+              item.sales90 /
+              90
+            )
+          : null;
 
-  const groupedByProduct = new Map<string, RemapStoreProductAgg[]>();
+      return item;
+    });
+
+  const groupedByProduct =
+    new Map<
+      string,
+      RemapStoreProductAgg[]
+    >();
 
   for (const item of items) {
-    if (!groupedByProduct.has(item.key)) groupedByProduct.set(item.key, []);
-    groupedByProduct.get(item.key)?.push(item);
+    if (
+      !groupedByProduct.has(
+        item.key
+      )
+    ) {
+      groupedByProduct.set(
+        item.key,
+        []
+      );
+    }
+
+    groupedByProduct
+      .get(item.key)
+      ?.push(item);
   }
 
-  const suggestions: RemapSuggestion[] = [];
+  const suggestions:
+    RemapSuggestion[] = [];
 
-  for (const [, storeItems] of groupedByProduct.entries()) {
-    const networkStock = storeItems.reduce((sum, item) => sum + item.stock, 0);
-    const networkSales90 = storeItems.reduce((sum, item) => sum + item.sales90, 0);
+  for (
+    const [
+      ,
+      storeItems,
+    ] of groupedByProduct.entries()
+  ) {
+    const networkStock =
+      storeItems.reduce(
+        (
+          sum,
+          item
+        ) =>
+          sum +
+          item.stock,
+        0
+      );
 
-    if (networkStock <= 1 || networkSales90 <= 0) continue;
+    const networkSales90 =
+      storeItems.reduce(
+        (
+          sum,
+          item
+        ) =>
+          sum +
+          item.sales90,
+        0
+      );
 
-    const origins = storeItems
-      .filter((item) => {
-        const coverage = item.coverageDays;
-        return item.stock >= 2 && (item.sales90 === 0 || coverage === null || coverage >= 45);
-      })
-      .sort((a, b) => {
-        const ac = a.coverageDays ?? 9999;
-        const bc = b.coverageDays ?? 9999;
-        return bc - ac || b.stock - a.stock;
-      });
+    if (
+      networkStock <= 1 ||
+      networkSales90 <= 0
+    ) {
+      continue;
+    }
 
-    const destinations = storeItems
-      .filter((item) => {
-        const coverage = item.coverageDays;
-        return item.sales90 > 0 && (item.stock <= 0 || (coverage !== null && coverage <= 30));
-      })
-      .sort((a, b) => {
-        const ap = remapPriority(a.stock, a.coverageDays, a.sales90);
-        const bp = remapPriority(b.stock, b.coverageDays, b.sales90);
-        const order: Record<RemapPriority, number> = { critica: 4, alta: 3, media: 2, baixa: 1 };
-        return order[bp] - order[ap] || a.stock - b.stock;
-      });
+    const origins =
+      storeItems
+        .filter(
+          (item) => {
+            const coverage =
+              item.coverageDays;
 
-    for (const destination of destinations) {
-      const origin = origins.find((candidate) => candidate.store !== destination.store);
-      if (!origin) continue;
+            const safetyStock =
+              remapSafetyStock(
+                item
+              );
 
-      const qty = remapRecommendedQty(origin, destination);
-      if (qty <= 0) continue;
+            const available =
+              Math.max(
+                0,
+                Math.floor(
+                  item.stock -
+                  safetyStock
+                )
+              );
 
-      const priority = remapPriority(destination.stock, destination.coverageDays, destination.sales90);
+            return (
+              available > 0 &&
+              (
+                item.sales90 ===
+                  0 ||
+                coverage ===
+                  null ||
+                coverage >= 45
+              )
+            );
+          }
+        )
+        .sort(
+          (a, b) => {
+            const ac =
+              a.coverageDays ??
+              9999;
+
+            const bc =
+              b.coverageDays ??
+              9999;
+
+            return (
+              bc - ac ||
+              b.stock -
+                a.stock
+            );
+          }
+        )
+        .map(
+          (item) => ({
+            ...item,
+          })
+        );
+
+    const destinations =
+      storeItems
+        .filter(
+          (item) => {
+            const coverage =
+              item.coverageDays;
+
+            return (
+              item.sales90 > 0 &&
+              (
+                item.stock <=
+                  0 ||
+                (
+                  coverage !==
+                    null &&
+                  coverage <=
+                    15
+                )
+              )
+            );
+          }
+        )
+        .sort(
+          (a, b) => {
+            const ap =
+              remapPriority(
+                a.stock,
+                a.coverageDays,
+                a.sales90
+              );
+
+            const bp =
+              remapPriority(
+                b.stock,
+                b.coverageDays,
+                b.sales90
+              );
+
+            const order:
+              Record<
+                RemapPriority,
+                number
+              > = {
+                critica: 4,
+                alta: 3,
+                media: 2,
+                baixa: 1,
+              };
+
+            return (
+              order[bp] -
+                order[ap] ||
+              a.stock -
+                b.stock
+            );
+          }
+        )
+        .map(
+          (item) => ({
+            ...item,
+          })
+        );
+
+    for (
+      const destination
+      of destinations
+    ) {
+      const candidates =
+        origins
+          .filter(
+            (
+              candidate
+            ) =>
+              candidate.store !==
+              destination.store
+          )
+          .map(
+            (
+              candidate
+            ) => ({
+              origin:
+                candidate,
+              qty:
+                remapRecommendedQty(
+                  candidate,
+                  destination
+                ),
+            })
+          )
+          .filter(
+            (
+              candidate
+            ) =>
+              candidate.qty >
+              0
+          )
+          .sort(
+            (a, b) => {
+              const aCoverage =
+                a.origin
+                  .coverageDays ??
+                9999;
+
+              const bCoverage =
+                b.origin
+                  .coverageDays ??
+                9999;
+
+              return (
+                b.qty -
+                  a.qty ||
+                bCoverage -
+                  aCoverage ||
+                b.origin.stock -
+                  a.origin.stock
+              );
+            }
+          );
+
+      const selected =
+        candidates[0];
+
+      if (!selected) {
+        continue;
+      }
+
+      const origin =
+        selected.origin;
+
+      const qty =
+        selected.qty;
+
+      const originStockBefore =
+        Math.max(
+          0,
+          remapToNumber(
+            origin.stock
+          )
+        );
+
+      const destinationStockBefore =
+        Math.max(
+          0,
+          remapToNumber(
+            destination.stock
+          )
+        );
+
+      const originSafetyStock =
+        remapSafetyStock(
+          origin
+        );
+
+      const originAvailableBefore =
+        Math.max(
+          0,
+          Math.floor(
+            originStockBefore -
+            originSafetyStock
+          )
+        );
+
+      const originProjectedStock =
+        originStockBefore -
+        qty;
+
+      const destinationProjectedStock =
+        destinationStockBefore +
+        qty;
+
+      if (
+        qty <= 0 ||
+        qty >
+          originAvailableBefore ||
+        originProjectedStock <
+          originSafetyStock
+      ) {
+        continue;
+      }
+
+      const priority =
+        remapPriority(
+          destinationStockBefore,
+          destination.coverageDays,
+          destination.sales90
+        );
+
       const reason =
-        destination.stock <= 0
-          ? `${destination.store} está sem estoque, mas vendeu ${destination.sales90} un. nos últimos 90 dias. ${origin.store} tem estoque disponível para remanejamento.`
-          : `${destination.store} está com cobertura baixa (${Math.round(destination.coverageDays || 0)} dias). ${origin.store} tem cobertura superior e pode abastecer sem ficar descoberta.`;
+        destinationStockBefore <=
+        0
+          ? `${destination.store} está sem estoque e vendeu ${destination.sales90} un. nos últimos 90 dias. ${origin.store} possui ${originStockBefore} un.; reserva ${originSafetyStock}; após enviar ${qty}, ficará com ${originProjectedStock} un.`
+          : `${destination.store} está com cobertura baixa (${Math.round(destination.coverageDays || 0)} dias). ${origin.store} possui ${originStockBefore} un.; reserva ${originSafetyStock}; após enviar ${qty}, ficará com ${originProjectedStock} un.`;
 
-      const rawId = `${origin.key}-${origin.store}-${destination.store}-${qty}`;
-      const id = crypto.createHash('md5').update(rawId).digest('hex');
+      const rawId =
+        [
+          origin.key,
+          origin.store,
+          destination.store,
+          qty,
+          originStockBefore,
+        ].join('-');
+
+      const id =
+        crypto
+          .createHash(
+            'md5'
+          )
+          .update(rawId)
+          .digest('hex');
 
       suggestions.push({
         id,
-        product: destination.product || origin.product,
-        reference: destination.reference || origin.reference,
-        category: destination.category || origin.category || 'GERAL',
-        fromStore: origin.store,
-        toStore: destination.store,
-        suggestedQty: qty,
+        product:
+          destination.product ||
+          origin.product,
+        reference:
+          destination.reference ||
+          origin.reference,
+        category:
+          destination.category ||
+          origin.category ||
+          'GERAL',
+        fromStore:
+          origin.store,
+        toStore:
+          destination.store,
+        suggestedQty:
+          qty,
         priority,
         reason,
-        originStock: origin.stock,
-        originSales90: origin.sales90,
-        originCoverageDays: origin.coverageDays,
-        destinationStock: destination.stock,
-        destinationSales90: destination.sales90,
-        destinationCoverageDays: destination.coverageDays,
+        originStock:
+          originStockBefore,
+        originSales90:
+          origin.sales90,
+        originCoverageDays:
+          origin.coverageDays,
+        originSafetyStock,
+        originAvailableBefore,
+        originProjectedStock,
+        destinationStock:
+          destinationStockBefore,
+        destinationProjectedStock,
+        destinationSales90:
+          destination.sales90,
+        destinationCoverageDays:
+          destination.coverageDays,
         networkStock,
         networkSales90,
-        createdFrom: 'engine',
+        createdFrom:
+          'engine',
       });
+
+      origin.stock =
+        originProjectedStock;
+
+      origin.coverageDays =
+        origin.sales90 > 0
+          ? origin.stock /
+            (
+              origin.sales90 /
+              90
+            )
+          : null;
+
+      destination.stock =
+        destinationProjectedStock;
+
+      destination.coverageDays =
+        destination.sales90 >
+        0
+          ? destination.stock /
+            (
+              destination
+                .sales90 /
+              90
+            )
+          : null;
     }
   }
 
-  suggestions.sort((a, b) => {
-    const order: Record<RemapPriority, number> = { critica: 4, alta: 3, media: 2, baixa: 1 };
-    return order[b.priority] - order[a.priority] || b.destinationSales90 - a.destinationSales90;
-  });
+  suggestions.sort(
+    (a, b) => {
+      const order:
+        Record<
+          RemapPriority,
+          number
+        > = {
+          critica: 4,
+          alta: 3,
+          media: 2,
+          baixa: 1,
+        };
 
-  return suggestions.slice(0, 250);
+      return (
+        order[b.priority] -
+          order[a.priority] ||
+        b.destinationSales90 -
+          a.destinationSales90
+      );
+    }
+  );
+
+  return suggestions.slice(
+    0,
+    250
+  );
 }
 
 function remapDbRowToRequest(row: any) {
@@ -5672,7 +6414,7 @@ app.post('/api/remanejamento-aprovacao/solicitacoes', async (req, res) => {
     const product = String(suggestion.product || '').trim();
     const reference = String(suggestion.reference || '').trim();
     const category = String(suggestion.category || 'GERAL').trim();
-    const requestedQty = Math.max(1, Math.round(remapToNumber(suggestion.suggestedQty)));
+    const requestedQty = Math.max(0, Math.round(remapToNumber(suggestion.suggestedQty)));
     const priority = ['critica', 'alta', 'media', 'baixa'].includes(String(suggestion.priority))
       ? String(suggestion.priority)
       : 'media';
@@ -5681,6 +6423,45 @@ app.post('/api/remanejamento-aprovacao/solicitacoes', async (req, res) => {
       return res.status(400).json({
         success: false,
         error: 'Produto ou quantidade inválida.',
+      });
+    }
+
+    const liveSuggestions =
+      await remapGenerateSuggestionsForUser(user);
+
+    const productIdentity =
+      remapNormalizeKey(reference) ||
+      remapNormalizeKey(product);
+
+    const liveSuggestion =
+      liveSuggestions.find((item) => {
+        const liveIdentity =
+          remapNormalizeKey(item.reference) ||
+          remapNormalizeKey(item.product);
+
+        return (
+          remapNormalizeText(item.fromStore) === fromStore &&
+          remapNormalizeText(item.toStore) === toStore &&
+          liveIdentity === productIdentity
+        );
+      });
+
+    if (!liveSuggestion) {
+      return res.status(409).json({
+        success: false,
+        error:
+          'Esta sugestão não é mais segura com o estoque atual. Atualize o remanejamento antes de solicitar.',
+      });
+    }
+
+    if (
+      requestedQty >
+      liveSuggestion.suggestedQty
+    ) {
+      return res.status(409).json({
+        success: false,
+        error:
+          `Quantidade indisponível. O máximo seguro neste momento é ${liveSuggestion.suggestedQty} unidade(s).`,
       });
     }
 
@@ -5745,8 +6526,17 @@ app.post('/api/remanejamento-aprovacao/solicitacoes', async (req, res) => {
       requestedQty,
       'solicitado',
       priority,
-      String(suggestion.reason || ''),
-      JSON.stringify(suggestion),
+      String(
+        liveSuggestion.reason ||
+        suggestion.reason ||
+        ''
+      ),
+
+      JSON.stringify({
+        ...liveSuggestion,
+        suggestedQty: requestedQty,
+        validatedAt: nowIso,
+      }),
       safeUserId,
       createdByName,
       safeUserId,
@@ -6395,38 +7185,47 @@ app.get('/api/painel-diretoria/resumo', async (req, res) => {
   };
 
 // Recupera o nome mesmo quando o produto já está sem estoque.
-const imeiHistoryRows =
-  await prisma.imeiHistory.findMany({
-    select: {
-      productCode: true,
-      description: true,
-    },
-  });
+    const imeiHistoryRows =
+      await prisma.imeiHistory.findMany({
+        select: {
+          productCode: true,
+          description: true,
+        },
+      });
 
-for (const history of imeiHistoryRows) {
-  registerProductIdentity({
-    produto: history.description,
-    referencia: '',
-    codigoProduto: history.productCode,
-    categoria: 'GERAL',
-  });
-}
+    for (const history of imeiHistoryRows) {
+      registerProductIdentity({
+        produto: history.description,
+        referencia: '',
+        codigoProduto: history.productCode,
+        categoria: 'GERAL',
+      });
+    }
 
-    const stockRows = await prisma.stock.findMany({
-      where: {
-        stockType: 'ESTOQUE',
-      },
-      select: {
-        storeName: true,
-        cnpj: true,
-        productCode: true,
-        reference: true,
-        description: true,
-        category: true,
-        quantity: true,
-        salePrice: true,
-      },
-    });
+    const stockRows = deduplicateStockRows(
+      await prisma.stock.findMany({
+        orderBy: {
+          updatedAt: 'desc',
+        },
+
+        select: {
+          cnpj: true,
+          storeName: true,
+          productCode: true,
+          reference: true,
+          description: true,
+          category: true,
+          quantity: true,
+          salePrice: true,
+          serial: true,
+          stockType: true,
+          updatedAt: true,
+        },
+      })
+    ).filter(
+      (row: any) =>
+        extractStockType(row) === 'ESTOQUE'
+    );
 
     for (const stock of stockRows) {
       const loja = execDashStoreName(stock);
@@ -6971,6 +7770,221 @@ const isDailySupplement = (row: any) => {
   // - perfis de rede: visão consolidada;
   // - perfis de loja: somente allowedStores do usuário.
   // O frontend nunca define quais lojas podem ser consultadas.
+
+    async function getExecutiveYearProjection(params: {
+    userId: string;
+    currentMonthActual: number;
+    cnpj?: string | null;
+    now?: Date;
+    }) {
+    const now = params.now || new Date();
+    const year = now.getFullYear();
+    const currentMonth = now.getMonth() + 1;
+
+    const monthStart = `${year}-${String(currentMonth).padStart(2, '0')}-01`;
+    const yearStart = `${year}-01-01`;
+
+    const utcToday = Date.UTC(
+      year,
+      now.getMonth(),
+      now.getDate()
+    );
+
+    const utcYearStart = Date.UTC(
+      year,
+      0,
+      1
+    );
+
+    const elapsedDays = Math.max(
+      1,
+      Math.floor(
+        (utcToday - utcYearStart) / 86400000
+      ) + 1
+    );
+
+    const totalDays =
+      new Date(year, 1, 29).getMonth() === 1
+        ? 366
+        : 365;
+
+    let previousMonthsActual = 0;
+
+    if (currentMonth > 1) {
+      const salesFilter = params.cnpj
+        ? `cnpj_empresa = '${String(params.cnpj).replace(/'/g, "''")}'`
+        : await getSalesFilter(
+            params.userId,
+            'vendas'
+          );
+
+      let annualDb: any;
+
+      try {
+        if (fs.existsSync(ANUAL_DB_PATH)) {
+          annualDb = await open({
+            filename: ANUAL_DB_PATH,
+            driver: sqlite3.Database,
+          });
+
+          const hasRaw =
+            await annualTableExists(
+              annualDb,
+              'vendas_anuais_raw'
+            );
+
+          const hasAnnual =
+            await annualTableExists(
+              annualDb,
+              'vendas_anuais'
+            );
+
+          if (hasRaw) {
+            const row = await annualDb.get(`
+              SELECT
+                COALESCE(
+                  SUM(
+                    COALESCE(
+                      total_real,
+                      total_liquido,
+                      0
+                    )
+                  ),
+                  0
+                ) AS total
+              FROM vendas_anuais_raw
+              WHERE ${salesFilter}
+                AND ano = ${year}
+                AND mes >= 1
+                AND mes < ${currentMonth}
+                AND (
+                  cancelado IS NULL
+                  OR UPPER(
+                    TRIM(
+                      CAST(cancelado AS TEXT)
+                    )
+                  ) NOT IN (
+                    'S',
+                    'SIM',
+                    'TRUE',
+                    '1',
+                    'CANCELADO',
+                    'CANCELADA'
+                  )
+                )
+            `);
+
+            previousMonthsActual =
+              Number(row?.total || 0);
+
+          } else if (hasAnnual) {
+            const row = await annualDb.get(`
+              SELECT
+                COALESCE(
+                  SUM(
+                    COALESCE(
+                      total_liquido,
+                      0
+                    )
+                  ),
+                  0
+                ) AS total
+              FROM vendas_anuais
+              WHERE ${salesFilter}
+                AND data_emissao >= '${yearStart}'
+                AND data_emissao < '${monthStart}'
+            `);
+
+            previousMonthsActual =
+              Number(row?.total || 0);
+          }
+        }
+      } catch (error) {
+        console.warn(
+          '⚠️ Home: não foi possível calcular realizado anual pelo banco anual:',
+          error
+        );
+      } finally {
+        try {
+          if (annualDb) {
+            await annualDb.close();
+          }
+        } catch {}
+      }
+
+      // Fallback para o banco operacional.
+      if (
+        previousMonthsActual <= 0 &&
+        fs.existsSync(GLOBAL_DB_PATH)
+      ) {
+        let fallbackDb: any;
+
+        try {
+          fallbackDb = await open({
+            filename: GLOBAL_DB_PATH,
+            driver: sqlite3.Database,
+          });
+
+          const row = await fallbackDb.get(`
+            SELECT
+              COALESCE(
+                SUM(
+                  COALESCE(
+                    total_liquido,
+                    0
+                  )
+                ),
+                0
+              ) AS total
+            FROM vendas
+            WHERE ${salesFilter}
+              AND data_emissao >= '${yearStart}'
+              AND data_emissao < '${monthStart}'
+          `);
+
+          previousMonthsActual =
+            Number(row?.total || 0);
+
+        } catch (error) {
+          console.warn(
+            '⚠️ Home: fallback anual indisponível:',
+            error
+          );
+        } finally {
+          try {
+            if (fallbackDb) {
+              await fallbackDb.close();
+            }
+          } catch {}
+        }
+      }
+    }
+
+    const realizadoAno =
+      previousMonthsActual +
+      Math.max(
+        0,
+        Number(
+          params.currentMonthActual || 0
+        )
+      );
+
+    const tendenciaAno =
+      realizadoAno > 0
+        ? (
+            realizadoAno /
+            elapsedDays
+          ) * totalDays
+        : 0;
+
+    return {
+      realizadoAno,
+      tendenciaAno,
+      elapsedDays,
+      totalDays,
+    };
+  }
+
   app.get('/api/home/resumo', async (req, res) => {
     let db: any;
 
@@ -7065,6 +8079,7 @@ const isDailySupplement = (row: any) => {
             COALESCE(pct_seguro, 0) AS pct_seguro,
             COALESCE(ticket, 0) AS ticket,
             COALESCE(qtd, 0) AS qtd
+            COALESCE(tendencia, 0) AS tendencia,
           FROM vendedores
           WHERE ${kpiFilter}
         `);
@@ -7088,16 +8103,108 @@ const isDailySupplement = (row: any) => {
       const faturamentoAnterior = previousRows.reduce((sum: number, row: any) => sum + toNumber(row.total_liquido), 0);
       const crescimento = faturamentoAnterior > 0 ? ((faturamentoMes - faturamentoAnterior) / faturamentoAnterior) * 100 : null;
 
+      const diasNoMes =
+        new Date(
+          yyyy,
+          now.getMonth() + 1,
+          0
+        ).getDate();
+
+      const diaAtual =
+        Math.max(
+          1,
+          now.getDate()
+        );
+
+      const tendenciaKpi =
+        kpiRows.reduce(
+          (sum: number, row: any) =>
+            sum +
+            Math.max(
+              0,
+              toNumber(row.tendencia)
+            ),
+          0
+        );
+
+      const tendenciaMes =
+        tendenciaKpi > 0
+          ? tendenciaKpi
+          : (
+              faturamentoMes /
+              diaAtual
+            ) * diasNoMes;
+
+      const faturamentoAnteriorKpi =
+        kpiRows.reduce(
+          (sum: number, row: any) =>
+            sum +
+            Math.max(
+              0,
+              toNumber(row.fat_anterior)
+            ),
+          0
+        );
+
+      const baseMesAnterior =
+        faturamentoAnteriorKpi > 0
+          ? faturamentoAnteriorKpi
+          : faturamentoAnterior;
+
+      const crescimentoTendencia =
+        baseMesAnterior > 0
+          ? (
+              (
+                tendenciaMes -
+                baseMesAnterior
+              ) /
+              baseMesAnterior
+            ) * 100
+          : null;
+
+      const yearProjection =
+        await getExecutiveYearProjection({
+          userId,
+          currentMonthActual:
+            faturamentoMes,
+          now,
+        });
+
+      const toPercentPoints = (value: any) => {
+      const n = toNumber(value);
+
+      // Os KPIs vêm do banco em formato decimal.
+      // Ex.: 1.049 = 104,9% | 0.062 = 6,2%.
+      return Math.abs(n) <= 5 ? n * 100 : n;
+      };
+
       const weightedMetric = (field: string) => {
-        let weighted = 0;
-        let weight = 0;
-        for (const row of kpiRows) {
-          const qtd = Math.max(0, toNumber(row.qtd));
-          if (qtd <= 0) continue;
-          weighted += toNumber(row[field]) * qtd;
+      let weighted = 0;
+      let weight = 0;
+      let simple = 0;
+      let valid = 0;
+
+      for (const row of kpiRows) {
+        const rawValue = toNumber(row[field]);
+        const qtd = Math.max(0, toNumber(row.qtd));
+
+        simple += rawValue;
+        valid += 1;
+
+        if (qtd > 0) {
+          weighted += rawValue * qtd;
           weight += qtd;
         }
-        return weight > 0 ? weighted / weight : 0;
+      }
+
+      const ratio =
+        weight > 0
+          ? weighted / weight
+          : valid > 0
+            ? simple / valid
+            : 0;
+
+      return toPercentPoints(ratio);
       };
 
       const daily = new Map<string, { date: string; faturamento: number; quantidade: number }>();
@@ -7147,15 +8254,32 @@ const isDailySupplement = (row: any) => {
       }
 
       const weightedFromRows = (rows: any[], field: string) => {
-        let weighted = 0;
-        let weight = 0;
-        for (const row of rows) {
-          const qtd = Math.max(0, toNumber(row.qtd));
-          if (qtd <= 0) continue;
-          weighted += toNumber(row[field]) * qtd;
+      let weighted = 0;
+      let weight = 0;
+      let simple = 0;
+      let valid = 0;
+
+      for (const row of rows) {
+        const rawValue = toNumber(row[field]);
+        const qtd = Math.max(0, toNumber(row.qtd));
+
+        simple += rawValue;
+        valid += 1;
+
+        if (qtd > 0) {
+          weighted += rawValue * qtd;
           weight += qtd;
         }
-        return weight > 0 ? weighted / weight : 0;
+      }
+
+      const ratio =
+        weight > 0
+          ? weighted / weight
+          : valid > 0
+            ? simple / valid
+            : 0;
+
+      return toPercentPoints(ratio);
       };
 
       for (const [loja, store] of storesMap.entries()) {
@@ -7229,6 +8353,12 @@ const isDailySupplement = (row: any) => {
           faturamentoMes,
           faturamentoAnterior,
           crescimento,
+          tendenciaMes,
+          tendenciaAno:
+            yearProjection.tendenciaAno,
+          realizadoAno:
+            yearProjection.realizadoAno,
+          crescimentoTendencia,
           pecasMes,
           ticketMedio: pecasMes > 0 ? faturamentoMes / pecasMes : 0,
           conversaoAcessorios: weightedMetric('pct_acessorios'),
@@ -7351,7 +8481,9 @@ app.get('/api/home/store-detail', async (req, res) => {
             COALESCE(pct_seguro, 0) AS pct_seguro,
             COALESCE(seguros, 0) AS seguros,
             COALESCE(ticket, 0) AS ticket,
-            COALESCE(qtd, 0) AS qtd
+            COALESCE(qtd, 0) AS qtd,
+            COALESCE(fat_anterior, 0) AS fat_anterior,
+            COALESCE(tendencia, 0) AS tendencia,
           FROM vendedores
           WHERE loja = ? COLLATE NOCASE
           ORDER BY fat_atual DESC, vendedor ASC
@@ -7371,16 +8503,106 @@ app.get('/api/home/store-detail', async (req, res) => {
     const faturamento = salesRows.reduce((sum: number, row: any) => sum + toNumber(row.total_liquido), 0);
     const quantidade = salesRows.reduce((sum: number, row: any) => sum + Math.max(0, toNumber(row.quantidade)), 0);
 
+    const now = new Date();
+
+    const diasNoMes =
+      new Date(
+        now.getFullYear(),
+        now.getMonth() + 1,
+        0
+      ).getDate();
+
+    const diaAtual =
+      Math.max(
+        1,
+        now.getDate()
+      );
+
+    const tendenciaKpi =
+      sellerRows.reduce(
+        (sum: number, row: any) =>
+          sum +
+          Math.max(
+            0,
+            toNumber(row.tendencia)
+          ),
+        0
+      );
+
+    const tendenciaMes =
+      tendenciaKpi > 0
+        ? tendenciaKpi
+        : (
+            faturamento /
+            diaAtual
+          ) * diasNoMes;
+
+    const faturamentoAnterior =
+      sellerRows.reduce(
+        (sum: number, row: any) =>
+          sum +
+          Math.max(
+            0,
+            toNumber(
+              row.fat_anterior
+            )
+          ),
+        0
+      );
+
+    const crescimentoTendencia =
+      faturamentoAnterior > 0
+        ? (
+            (
+              tendenciaMes -
+              faturamentoAnterior
+            ) /
+            faturamentoAnterior
+          ) * 100
+        : null;
+
+    const yearProjection =
+      await getExecutiveYearProjection({
+        userId,
+        currentMonthActual:
+          faturamento,
+        cnpj,
+        now,
+      });
+
+    const storeDetailPercentPoints = (value: any) => {
+    const n = toNumber(value);
+
+    return Math.abs(n) <= 5 ? n * 100 : n;
+    };
+
     const weighted = (field: string) => {
       let total = 0;
       let weight = 0;
+      let simple = 0;
+      let valid = 0;
+
       for (const row of sellerRows) {
+        const rawValue = toNumber(row[field]);
         const qtd = Math.max(0, toNumber(row.qtd));
-        if (qtd <= 0) continue;
-        total += toNumber(row[field]) * qtd;
-        weight += qtd;
+
+        simple += rawValue;
+        valid += 1;
+
+        if (qtd > 0) {
+          total += rawValue * qtd;
+          weight += qtd;
+        }
       }
-      return weight > 0 ? total / weight : 0;
+
+      const ratio =
+        weight > 0
+          ? total / weight
+          : valid > 0
+            ? simple / valid
+            : 0;
+
+      return storeDetailPercentPoints(ratio);
     };
 
     const daily = new Map<string, { date: string; faturamento: number; quantidade: number }>();
@@ -7399,6 +8621,13 @@ app.get('/api/home/store-detail', async (req, res) => {
       period: { startDate, endDate, label: 'Este mês' },
       kpis: {
         faturamento,
+        faturamentoAnterior,
+        tendenciaMes,
+        tendenciaAno:
+          yearProjection.tendenciaAno,
+        realizadoAno:
+          yearProjection.realizadoAno,
+        crescimentoTendencia,
         quantidade,
         ticketMedio: quantidade > 0 ? faturamento / quantidade : 0,
         conversaoAcessorios: weighted('pct_acessorios'),
@@ -7605,7 +8834,7 @@ app.post('/api/executive-report/pdf', async (req, res) => {
         <style>
           *{box-sizing:border-box} body{margin:0;background:#f5f7fb;color:#0f172a;font-family:Arial,Helvetica,sans-serif;font-size:12px}
           .page{padding:28px 30px 34px}.header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:22px}.brand{font-size:10px;font-weight:800;letter-spacing:.18em;color:#f97316;text-transform:uppercase}.title{font-size:28px;font-weight:900;letter-spacing:-.04em;margin:5px 0 4px}.muted{color:#64748b;font-size:10px}.badge{background:#0f172a;color:white;border-radius:999px;padding:8px 12px;font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.1em}
-          .kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:16px}.kpi{background:white;border:1px solid #e2e8f0;border-radius:16px;padding:14px}.kpi label{display:block;color:#94a3b8;font-size:8px;font-weight:800;letter-spacing:.12em;text-transform:uppercase}.kpi strong{display:block;font-size:18px;margin-top:7px;letter-spacing:-.03em}.section{background:white;border:1px solid #e2e8f0;border-radius:18px;padding:16px;margin-top:12px}.section h2{font-size:14px;margin:0 0 12px}.grid{display:grid;grid-template-columns:1.4fr .8fr;gap:12px}
+          .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px}.kpi{background:white;border:1px solid #e2e8f0;border-radius:16px;padding:14px}.kpi label{display:block;color:#94a3b8;font-size:8px;font-weight:800;letter-spacing:.12em;text-transform:uppercase}.kpi strong{display:block;font-size:18px;margin-top:7px;letter-spacing:-.03em}.section{background:white;border:1px solid #e2e8f0;border-radius:18px;padding:16px;margin-top:12px}.section h2{font-size:14px;margin:0 0 12px}.grid{display:grid;grid-template-columns:1.4fr .8fr;gap:12px}
           .chart{height:150px;display:flex;align-items:flex-end;gap:4px;border-bottom:1px solid #e2e8f0;padding:10px 3px 0}.bar-wrap{height:100%;flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:4px}.bar{width:100%;max-width:16px;background:#f97316;border-radius:4px 4px 0 0}.bar-wrap span{font-size:6px;color:#94a3b8}
           .alerts{display:grid;gap:8px}.alert-card{border:1px solid #e2e8f0;border-radius:12px;padding:10px;background:#f8fafc}.alert-head{display:flex;gap:6px;align-items:center;color:#94a3b8;text-transform:uppercase;font-size:7px;font-weight:800;letter-spacing:.12em}.dot{width:6px;height:6px;border-radius:50%}.green{background:#10b981}.orange{background:#f59e0b}.blue{background:#38bdf8}.alert-card strong{display:block;margin-top:6px;font-size:10px}.alert-card p{margin:4px 0 0;color:#64748b;font-size:8px;line-height:1.45}
           table{width:100%;border-collapse:collapse}th{font-size:7px;color:#94a3b8;text-transform:uppercase;letter-spacing:.1em;text-align:right;padding:8px;border-bottom:1px solid #e2e8f0}th:nth-child(1),th:nth-child(2){text-align:left}td{padding:9px 8px;border-bottom:1px solid #f1f5f9;text-align:right;font-size:9px;font-weight:700}td:first-child,td:nth-child(2){text-align:left}.store{font-weight:900}.footer{display:flex;justify-content:space-between;margin-top:16px;color:#94a3b8;font-size:7px}.orange-text{color:#f97316}
@@ -7619,12 +8848,72 @@ app.post('/api/executive-report/pdf', async (req, res) => {
           </div>
 
           <div class="kpis">
-            <div class="kpi"><label>Faturamento</label><strong>${executiveMoney(kpis.faturamentoMes)}</strong></div>
-            <div class="kpi"><label>Acessórios</label><strong>${executivePct(kpis.conversaoAcessorios)}</strong></div>
-            <div class="kpi"><label>Películas</label><strong>${executivePct(kpis.conversaoPeliculas)}</strong></div>
-            <div class="kpi"><label>Seguro</label><strong>${executivePct(kpis.seguroPct)}</strong></div>
-            <div class="kpi"><label>Ticket médio</label><strong>${executiveMoney(kpis.ticketMedio)}</strong></div>
-          </div>
+            <div class="kpi">
+                <label>
+                  Faturamento do mês
+                </label>
+
+                <strong>
+                  ${executiveMoney(
+                    kpis.faturamentoMes
+                  )}
+                </strong>
+              </div>
+
+              <div class="kpi">
+                <label>
+                  Tendência mês
+                </label>
+
+                <strong>
+                  ${executiveMoney(
+                    kpis.tendenciaMes
+                  )}
+                </strong>
+              </div>
+
+              <div class="kpi">
+                <label>
+                  Tendência ano
+                </label>
+
+                <strong>
+                  ${executiveMoney(
+                    kpis.tendenciaAno
+                  )}
+                </strong>
+              </div>
+
+              <div class="kpi">
+                <label>
+                  Conversões
+                </label>
+
+                <strong
+                  style="
+                    font-size:12px;
+                    line-height:1.55
+                  "
+                >
+                  Acess.
+                  ${executivePct(
+                    kpis.conversaoAcessorios
+                  )}
+                  <br/>
+
+                  Pelíc.
+                  ${executivePct(
+                    kpis.conversaoPeliculas
+                  )}
+                  <br/>
+
+                  Seguro
+                  ${executivePct(
+                    kpis.seguroPct
+                  )}
+                </strong>
+              </div>
+            </div>
 
           <div class="grid">
             <div class="section"><h2>Faturamento diário</h2><div class="chart">${trendBars || '<div class="muted">Sem dados suficientes.</div>'}</div></div>

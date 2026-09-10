@@ -248,6 +248,28 @@ const getSaleProductCode = (sale: any) =>
     sale.productCode
   )).trim();
 
+const getProductIdentityKey = (params: {
+  productCode?: any;
+  reference?: any;
+  description?: any;
+}) => {
+  const codeKey = normalizeStr(String(params.productCode || ''));
+  if (codeKey) return `CODE:${codeKey}`;
+
+  const referenceKey = normalizeStr(String(params.reference || ''));
+  if (referenceKey) return `REF:${referenceKey}`;
+
+  const descriptionKey = normalizeStr(String(params.description || ''));
+  return descriptionKey ? `DESC:${descriptionKey}` : '';
+};
+
+const getStockProductIdentityKey = (item: any) =>
+  getProductIdentityKey({
+    productCode: item?.productCode,
+    reference: item?.reference,
+    description: item?.description,
+  });
+
 const getUnitCost = (item: any): number => {
   const groupedUnitCost = Number(item?.unitCost);
 
@@ -351,7 +373,11 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
 
         jsonStock.forEach((item: any) => {
           const stockType = getStockType(item);
-          const key = `${item.storeName}|${item.productCode}|${stockType}`;
+          const productIdentity = getStockProductIdentityKey(item);
+
+          // Nunca agrupa apenas por productCode vazio.
+          // Ordem segura: productCode -> reference -> description.
+          const key = `${String(item.storeName || '').trim().toUpperCase()}|${productIdentity || 'SEM_IDENTIDADE'}|${stockType}`;
 
           if (!groupedStock[key]) {
             groupedStock[key] = {
@@ -463,8 +489,26 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
         vendasAnual = jsonSalesAnual.sales || (Array.isArray(jsonSalesAnual) ? jsonSalesAnual : []);
       }
 
-      // Junta os dois bancos
-      const vendasCombinadas = [...vendasAnual, ...vendasMes];
+      // Evita duplicar o mês atual.
+      // /sales_anuais pode conter o mesmo mês que /sales. Quando houver dados
+      // operacionais do mês atual, eles prevalecem e o agregado anual desse mês
+      // é descartado.
+      const currentMonthPrefix = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
+      const hasCurrentMonthOperationalRows = vendasMes.some((sale: any) => {
+        const date = normalizeDate(sale.data_emissao || sale.DATA_EMISSAO || '');
+        return date.startsWith(currentMonthPrefix);
+      });
+
+      const annualWithoutDuplicatedCurrentMonth = vendasAnual.filter((sale: any) => {
+        if (!hasCurrentMonthOperationalRows) return true;
+        const date = normalizeDate(sale.data_emissao || sale.DATA_EMISSAO || '');
+        return !date.startsWith(currentMonthPrefix);
+      });
+
+      const vendasCombinadas = [
+        ...annualWithoutDuplicatedCurrentMonth,
+        ...vendasMes,
+      ];
 
       // Blindagem extra: garante filtro final no frontend também
       const vendasFiltradasNoPeriodo = vendasCombinadas.filter((sale: any) => {
@@ -576,19 +620,48 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
       const descKey = normalizeStr(item.description);
       if (!descKey) return;
 
+      const identityKey = getStockProductIdentityKey(item);
       const current = catalog[descKey];
-      const currentIsCd = current && isCdStore(current.storeName || '');
-      const itemIsCd = isCdStore(item.storeName || '');
 
-      if (!current || itemIsCd || (!currentIsCd && !current.productCode && item.productCode)) {
+      if (!current) {
         catalog[descKey] = {
           description: item.description || 'SEM DESCRIÇÃO',
           productCode: item.productCode || '',
+          reference: item.reference || '',
           category: item.category || 'GERAL',
           line: getLineValue(item),
           cluster: getClusterValue(item),
-          storeName: item.storeName || ''
+          storeName: item.storeName || '',
+          identities: identityKey ? [identityKey] : [],
+          ambiguousIdentity: false,
         };
+        return;
+      }
+
+      const identities = new Set<string>(current.identities || []);
+      if (identityKey) identities.add(identityKey);
+
+      current.identities = Array.from(identities);
+      current.ambiguousIdentity = identities.size > 1;
+
+      const currentIsCd = isCdStore(current.storeName || '');
+      const itemIsCd = isCdStore(item.storeName || '');
+
+      if (
+        itemIsCd ||
+        (
+          !currentIsCd &&
+          !current.productCode &&
+          item.productCode
+        )
+      ) {
+        current.description = item.description || current.description;
+        current.productCode = item.productCode || current.productCode;
+        current.reference = item.reference || current.reference;
+        current.category = item.category || current.category;
+        current.line = getLineValue(item);
+        current.cluster = getClusterValue(item);
+        current.storeName = item.storeName || current.storeName;
       }
     });
 
@@ -610,6 +683,38 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
       if (!descKey) return;
 
       const catalogItem = stockCatalogByDescription[descKey] || {};
+
+      // Se a mesma descrição estiver ligada a mais de um SKU e a venda não
+      // trouxer código/referência, é mais seguro ignorar essa linha do que
+      // inventar uma correspondência e gerar remanejamento falso.
+      if (
+        catalogItem.ambiguousIdentity &&
+        !String(params.productCode || '').trim() &&
+        !String(params.reference || '').trim()
+      ) {
+        return;
+      }
+
+      const resolvedProductCode = String(
+        params.productCode ||
+        (
+          !catalogItem.ambiguousIdentity
+            ? catalogItem.productCode
+            : ''
+        ) ||
+        ''
+      ).trim();
+
+      // Identidade conservadora do SKU. Se houver código/referência, ele manda;
+      // descrição só é fallback. Isso evita somar estoque de produtos diferentes.
+      const productIdentity = getProductIdentityKey({
+        productCode: resolvedProductCode,
+        reference: params.reference,
+        description: rawDescription,
+      });
+
+      if (!productIdentity) return;
+
       const storeName = String(params.storeName || '').trim().toUpperCase();
       if (!storeName || isCdStore(storeName) || isLogisticallyExcludedStore(storeName)) return;
 
@@ -625,12 +730,12 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
       const cluster = String(params.cluster || catalogItem.cluster || 'SEM CLUSTER').trim().toUpperCase();
       if (clusterFilter.length > 0 && !clusterFilter.includes(cluster)) return;
 
-      const groupKey = `${region}|${descKey}`;
+      const groupKey = `${region}|${productIdentity}`;
 
       if (!productGroups[groupKey]) {
         productGroups[groupKey] = {
           description: catalogItem.description || rawDescription || 'SEM DESCRIÇÃO',
-          productCode: params.productCode || catalogItem.productCode || '',
+          productCode: resolvedProductCode,
           region,
           category,
           totalStock: 0,
@@ -673,6 +778,7 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
         storeName: item.storeName,
         description: item.description || 'SEM DESCRIÇÃO',
         productCode: item.productCode || '',
+        reference: item.reference || '',
         category: item.category || 'GERAL',
         line: getLineValue(item),
         cluster: getClusterValue(item),
@@ -755,6 +861,18 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
           const donorCoverage = donor.coverageDays >= 999 ? 'sem giro' : `${Math.round(donor.coverageDays)} dias`;
           const receiverCoverage = receiver.coverageDays > 0 ? `${Math.round(receiver.coverageDays)} dias` : 'sem cobertura';
 
+          const donorStockBefore = Math.max(0, Number(donor.qty) || 0);
+          const receiverStockBefore = Math.max(0, Number(receiver.qty) || 0);
+          const donorProjectedStock = Math.max(0, donorStockBefore - moveQty);
+          const receiverProjectedStock = receiverStockBefore + moveQty;
+
+          // Validação final obrigatória: nunca sugere saída que deixe a origem
+          // abaixo da reserva mínima calculada.
+          if (donorProjectedStock < donor.minSafetyStock) {
+            donor.surplus = 0;
+            continue;
+          }
+
           suggestions.push({
             type: 'move',
             product: prod.description,
@@ -764,19 +882,24 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
             to: receiver.storeName,
             qty: moveQty,
             region: prod.region,
-            donorStock: donor.qty,
+            donorStock: donorStockBefore,
+            donorProjectedStock,
+            donorSafetyStock: donor.minSafetyStock,
+            donorAvailableBefore: Math.max(0, donorStockBefore - donor.minSafetyStock),
             donorSales: donor.sales,
-            receiverStock: receiver.qty,
+            receiverStock: receiverStockBefore,
+            receiverProjectedStock,
             receiverSales: receiver.sales,
-            priority: receiver.qty === 0 ? 'CRÍTICA' : receiver.coverageDays < 7 ? 'ALTA' : 'MÉDIA',
-            reason: receiver.qty === 0
-              ? `Destino vendeu ${receiver.sales} un. no período, mas está sem estoque. Origem com cobertura ${donorCoverage}.`
-              : `Origem com cobertura ${donorCoverage} e destino com ${receiverCoverage}.`,
+            priority: receiverStockBefore === 0 ? 'CRÍTICA' : receiver.coverageDays < 7 ? 'ALTA' : 'MÉDIA',
+            reason: receiverStockBefore === 0
+              ? `Destino vendeu ${receiver.sales} un. no período, mas está sem estoque. Origem tinha ${donorStockBefore} un., reserva ${donor.minSafetyStock} e ficará com ${donorProjectedStock} un. após a transferência.`
+              : `Origem com cobertura ${donorCoverage}; destino com ${receiverCoverage}. Origem ficará com ${donorProjectedStock} un., acima da reserva de ${donor.minSafetyStock}.`,
           });
 
           donor.surplus -= moveQty;
+          donor.qty = donorProjectedStock;
           receiver.need -= moveQty;
-          receiver.qty += moveQty;
+          receiver.qty = receiverProjectedStock;
           movedInRound = true;
         }
 
@@ -1335,7 +1458,7 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
     }
 
     else if (moduleMode === 'redistribution') {
-      headers = ["Prioridade", "Produto", "Categoria", "Região", "Origem", "Estoque Origem", "Vendas Origem", "Destino", "Estoque Destino", "Vendas Destino", "Quantidade", "Motivo"];
+      headers = ["Prioridade", "Produto", "Categoria", "Região", "Origem", "Estoque Origem", "Reserva Origem", "Estoque Após", "Vendas Origem", "Destino", "Estoque Destino", "Estoque Destino Após", "Vendas Destino", "Quantidade", "Motivo"];
       redistributionSuggestions.moves.forEach((move: any) => {
         csvRows.push([
           `"${move.priority}"`,
@@ -1344,9 +1467,12 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
           `"${move.region}"`,
           `"${move.from}"`,
           move.donorStock,
+          move.donorSafetyStock ?? '',
+          move.donorProjectedStock ?? '',
           move.donorSales,
           `"${move.to}"`,
           move.receiverStock,
+          move.receiverProjectedStock ?? '',
           move.receiverSales,
           move.qty,
           `"${move.reason}"`
@@ -1802,6 +1928,11 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
                             <td className="px-4 py-3 text-center">
                               <p className="text-sm font-black text-slate-800">{move.donorStock} est.</p>
                               <p className="text-[9px] font-bold text-slate-400">{move.donorSales} vend.</p>
+                              {Number.isFinite(Number(move.donorSafetyStock)) && (
+                                <p className="text-[9px] font-bold text-indigo-500 mt-0.5">
+                                  reserva {move.donorSafetyStock} • após {move.donorProjectedStock}
+                                </p>
+                              )}
                             </td>
                             <td className="px-4 py-3">
                               <p className="text-xs font-black text-slate-700 uppercase">{move.to}</p>

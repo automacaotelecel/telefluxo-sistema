@@ -365,15 +365,21 @@ export default function SalesDashboard() {
         const nome = k.vendedor || k.nome_vendedor || "N/D";
         const faturamento = Number(k.fat_atual ?? k.fatAtual ?? k.faturamento ?? 0);
 
+        const tendencia = Number(k.tendencia ?? 0);
+        const mesAnterior = Number(k.fat_anterior ?? k.fatAnterior ?? k.mes_anterior ?? k.mesAnterior ?? 0);
+        const crescimentoProjetado = mesAnterior > 0
+            ? (tendencia - mesAnterior) / mesAnterior
+            : 0;
+
         return {
         key: buildSellerKey(nome, loja),
         loja,
         nome,
         total: faturamento,
         faturamento,
-        tendencia: Number(k.tendencia ?? 0),
-        mes_anterior: Number(k.fat_anterior ?? k.fatAnterior ?? k.mes_anterior ?? k.mesAnterior ?? 0),
-        crescimento: Number(k.crescimento ?? 0),
+        tendencia,
+        mes_anterior: mesAnterior,
+        crescimento: crescimentoProjetado,
         pct_acessorios: Number(k.pct_acessorios ?? k.pctAcessorios ?? 0),
         conv_peliculas: Number(k.conv_peliculas ?? k.convPeliculas ?? 0),
         seguros: Number(k.seguros ?? 0),
@@ -528,8 +534,11 @@ setRanking(finalRanking);
               const convPeliculas = group.peso_conversao > 0
                   ? group.peliculas_ponderado / group.peso_conversao
                   : group.peliculas_soma_simples / fallbackDivisor;
+              // Crescimento da tabela de lojas deve comparar a projeção do mês
+              // (tendência) com o mês anterior. Comparar o realizado parcial com
+              // um mês completo gera quedas artificiais como -70%.
               const crescimento = group.mes_anterior > 0
-                  ? (group.faturamento - group.mes_anterior) / group.mes_anterior
+                  ? (group.tendencia - group.mes_anterior) / group.mes_anterior
                   : 0;
               const pctSeguro = group.faturamento > 0
                   ? group.seguros / group.faturamento

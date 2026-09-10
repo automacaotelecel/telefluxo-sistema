@@ -78,6 +78,19 @@ const DEFAULT_EXPANDED = {
 
 const STORE_HOME_VIEW = 'home';
 
+const SESSION_STORAGE_KEY = 'telefluxo_session_active';
+const SESSION_LAST_ACTIVITY_KEY = 'telefluxo_last_activity';
+const SESSION_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutos sem atividade
+
+function clearTelefluxoSession() {
+  localStorage.removeItem('telefluxo_user');
+  localStorage.removeItem('user');
+  localStorage.removeItem('userId');
+  localStorage.removeItem('telefluxo_user_id');
+  sessionStorage.removeItem(SESSION_STORAGE_KEY);
+  sessionStorage.removeItem(SESSION_LAST_ACTIVITY_KEY);
+}
+
 const STORE_ALLOWED_VIEWS = new Set([
   'home',
   'rh',
@@ -128,7 +141,13 @@ function App() {
     }
 
     const savedUser = localStorage.getItem('telefluxo_user');
-    if (savedUser && savedUser !== "undefined") {
+    const sessionActive = sessionStorage.getItem(SESSION_STORAGE_KEY) === '1';
+    const lastActivity = Number(sessionStorage.getItem(SESSION_LAST_ACTIVITY_KEY) || 0);
+    const sessionExpired = !lastActivity || Date.now() - lastActivity >= SESSION_TIMEOUT_MS;
+
+    // Uma nova abertura do navegador/aba não possui sessionStorage e exige login.
+    // Um simples refresh mantém a sessão, desde que ela não esteja expirada.
+    if (savedUser && savedUser !== "undefined" && sessionActive && !sessionExpired) {
       try {
         const parsedUser = JSON.parse(savedUser);
         const initialView = getInitialViewForUser(parsedUser);
@@ -136,9 +155,12 @@ function App() {
         setCurrentView(initialView);
         setMountedViews([initialView]);
         setExpanded(DEFAULT_EXPANDED);
+        sessionStorage.setItem(SESSION_LAST_ACTIVITY_KEY, String(Date.now()));
       } catch (e) {
-        localStorage.removeItem('telefluxo_user');
+        clearTelefluxoSession();
       }
+    } else {
+      clearTelefluxoSession();
     }
 
     setIsLoading(false);
@@ -157,6 +179,85 @@ function App() {
       console.error(e);
     }
   }, [isSidebarCollapsed]);
+
+  useEffect(() => {
+    if (!user) return;
+
+    let timeoutId: number | undefined;
+    let lastRecordedAt = 0;
+
+    const expireSession = () => {
+      clearTelefluxoSession();
+      setUser(null);
+      setCurrentView('home');
+      setMountedViews(['home']);
+      setExpanded(DEFAULT_EXPANDED);
+    };
+
+    const scheduleExpiry = () => {
+      if (timeoutId) window.clearTimeout(timeoutId);
+
+      const lastActivity = Number(
+        sessionStorage.getItem(SESSION_LAST_ACTIVITY_KEY) || Date.now()
+      );
+      const remaining = SESSION_TIMEOUT_MS - (Date.now() - lastActivity);
+
+      if (remaining <= 0) {
+        expireSession();
+        return;
+      }
+
+      timeoutId = window.setTimeout(expireSession, remaining);
+    };
+
+    const registerActivity = () => {
+      const now = Date.now();
+      // Evita escrever no sessionStorage centenas de vezes por segundo em mousemove/scroll.
+      if (now - lastRecordedAt < 5000) return;
+      lastRecordedAt = now;
+      sessionStorage.setItem(SESSION_LAST_ACTIVITY_KEY, String(now));
+      scheduleExpiry();
+    };
+
+    const events: Array<keyof WindowEventMap> = [
+      'mousedown',
+      'keydown',
+      'scroll',
+      'touchstart',
+      'mousemove',
+    ];
+
+    sessionStorage.setItem(SESSION_STORAGE_KEY, '1');
+    sessionStorage.setItem(SESSION_LAST_ACTIVITY_KEY, String(Date.now()));
+    scheduleExpiry();
+
+    events.forEach((eventName) =>
+      window.addEventListener(eventName, registerActivity, { passive: true })
+    );
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        const lastActivity = Number(
+          sessionStorage.getItem(SESSION_LAST_ACTIVITY_KEY) || 0
+        );
+        if (!lastActivity || Date.now() - lastActivity >= SESSION_TIMEOUT_MS) {
+          expireSession();
+        } else {
+          scheduleExpiry();
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    return () => {
+      if (timeoutId) window.clearTimeout(timeoutId);
+      events.forEach((eventName) =>
+        window.removeEventListener(eventName, registerActivity)
+      );
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [user?.id]);
 
   const userRole = String(user?.role || '').toUpperCase();
   const userEmail = String(user?.email || '').toLowerCase();
@@ -201,8 +302,11 @@ function App() {
   }, [currentView, user]);
 
   const handleLogout = () => {
-    localStorage.clear();
-    window.location.reload();
+    clearTelefluxoSession();
+    setUser(null);
+    setCurrentView('home');
+    setMountedViews(['home']);
+    setExpanded(DEFAULT_EXPANDED);
   };
 
   const handleNavigate = (view: string) => {
@@ -267,6 +371,8 @@ function App() {
           const initialView = getInitialViewForUser(data);
           setUser(data);
           localStorage.setItem('telefluxo_user', JSON.stringify(data));
+          sessionStorage.setItem(SESSION_STORAGE_KEY, '1');
+          sessionStorage.setItem(SESSION_LAST_ACTIVITY_KEY, String(Date.now()));
           setCurrentView(initialView);
           setMountedViews([initialView]);
           setExpanded(DEFAULT_EXPANDED);
