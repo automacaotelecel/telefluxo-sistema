@@ -8070,6 +8070,7 @@ const isDailySupplement = (row: any) => {
         kpiRows = await db.all(`
           SELECT
             loja,
+            cnpj_empresa,
             vendedor,
             COALESCE(fat_atual, 0) AS fat_atual,
             COALESCE(fat_anterior, 0) AS fat_anterior,
@@ -8078,8 +8079,8 @@ const isDailySupplement = (row: any) => {
             COALESCE(seguros, 0) AS seguros,
             COALESCE(pct_seguro, 0) AS pct_seguro,
             COALESCE(ticket, 0) AS ticket,
-            COALESCE(qtd, 0) AS qtd
-            COALESCE(tendencia, 0) AS tendencia,
+            COALESCE(qtd, 0) AS qtd,
+            COALESCE(tendencia, 0) AS tendencia
           FROM vendedores
           WHERE ${kpiFilter}
         `);
@@ -8236,7 +8237,24 @@ const isDailySupplement = (row: any) => {
 
       const kpiByStore = new Map<string, any[]>();
       for (const row of kpiRows) {
-        const loja = String(row.loja || 'LOJA NÃO IDENTIFICADA').trim();
+        const rawLoja =
+          String(row.loja || '').trim();
+
+        const cnpjKpi =
+          String(row.cnpj_empresa || '')
+            .replace(/\D/g, '');
+
+        const cnpjResolvido =
+          cnpjKpi ||
+          getCnpjByName(rawLoja) ||
+          '';
+
+        const loja =
+          cnpjResolvido &&
+          LOJAS_MAP_GLOBAL[cnpjResolvido]
+            ? LOJAS_MAP_GLOBAL[cnpjResolvido]
+            : rawLoja ||
+              'LOJA NÃO IDENTIFICADA';
         const rows = kpiByStore.get(loja) || [];
         rows.push(row);
         kpiByStore.set(loja, rows);
@@ -8483,12 +8501,29 @@ app.get('/api/home/store-detail', async (req, res) => {
             COALESCE(ticket, 0) AS ticket,
             COALESCE(qtd, 0) AS qtd,
             COALESCE(fat_anterior, 0) AS fat_anterior,
-            COALESCE(tendencia, 0) AS tendencia,
+            COALESCE(tendencia, 0) AS tendencia
           FROM vendedores
-          WHERE loja = ? COLLATE NOCASE
+          WHERE
+            REPLACE(
+              REPLACE(
+                REPLACE(
+                  REPLACE(
+                    COALESCE(cnpj_empresa, ''),
+                    '.', ''
+                  ),
+                  '/', ''
+                ),
+                '-', ''
+              ),
+              ' ', ''
+            ) = ?
+            OR loja = ? COLLATE NOCASE
           ORDER BY fat_atual DESC, vendedor ASC
         `,
-        [requestedStore]
+        [
+          String(cnpj).replace(/\D/g, ''),
+          requestedStore
+        ]
       );
     } catch (error) {
       console.warn('⚠️ Store detail: tabela vendedores indisponível:', error);
