@@ -7985,6 +7985,86 @@ const isDailySupplement = (row: any) => {
     };
   }
 
+    type HomeConversionCounts = {
+    aparelhos: number;
+    acessorios: number;
+    peliculas: number;
+    seguros: number;
+  };
+
+  function homeEmptyConversionCounts(): HomeConversionCounts {
+    return {
+      aparelhos: 0,
+      acessorios: 0,
+      peliculas: 0,
+      seguros: 0,
+    };
+  }
+
+  function homeNormalizeCategory(value: any): string {
+    return String(value || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toUpperCase();
+  }
+
+  function homeAddConversionSale(
+    target: HomeConversionCounts,
+    row: any
+  ) {
+    const categoria =
+      homeNormalizeCategory(row?.familia);
+
+    const quantidade =
+      Number(row?.quantidade || 0);
+
+    if (
+      !Number.isFinite(quantidade) ||
+      quantidade === 0
+    ) {
+      return;
+    }
+
+    if (categoria.includes('APARELH')) {
+      target.aparelhos += quantidade;
+      return;
+    }
+
+    if (categoria.includes('ACESS')) {
+      target.acessorios += quantidade;
+      return;
+    }
+
+    if (categoria.includes('PELIC')) {
+      target.peliculas += quantidade;
+      return;
+    }
+
+    if (
+      categoria.includes('SEGURO') ||
+      categoria.includes('PROTECAO') ||
+      categoria.includes('GARANTIA')
+    ) {
+      target.seguros += quantidade;
+    }
+  }
+
+  function homeConversionPercent(
+    numerator: number,
+    denominator: number
+  ): number {
+    if (denominator <= 0) {
+      return 0;
+    }
+
+    return (
+      numerator /
+      denominator
+    ) * 100;
+  }
+
   app.get('/api/home/resumo', async (req, res) => {
     let db: any;
 
@@ -8046,6 +8126,7 @@ const isDailySupplement = (row: any) => {
         SELECT
           data_emissao,
           cnpj_empresa,
+          COALESCE(familia, '') AS familia,
           COALESCE(total_liquido, 0) AS total_liquido,
           COALESCE(quantidade, 0) AS quantidade
         FROM vendas
@@ -8094,6 +8175,47 @@ const isDailySupplement = (row: any) => {
         return Number.isFinite(n) ? n : 0;
       };
 
+      const conversionNetwork =
+        homeEmptyConversionCounts();
+
+      const conversionByCnpj =
+        new Map<
+          string,
+          HomeConversionCounts
+        >();
+
+      for (const row of monthRows) {
+        // Rede inteira
+        homeAddConversionSale(
+          conversionNetwork,
+          row
+        );
+
+        // Cada loja individualmente
+        const cnpj =
+          String(
+            row.cnpj_empresa || ''
+          ).replace(/\D/g, '');
+
+        if (!cnpj) {
+          continue;
+        }
+
+        const storeConversion =
+          conversionByCnpj.get(cnpj) ||
+          homeEmptyConversionCounts();
+
+        homeAddConversionSale(
+          storeConversion,
+          row
+        );
+
+        conversionByCnpj.set(
+          cnpj,
+          storeConversion
+        );
+      }
+
       const storeNameFromCnpj = (value: any) => {
         const cnpj = String(value || '').replace(/\D/g, '');
         return LOJAS_MAP_GLOBAL[cnpj] || 'LOJA NÃO IDENTIFICADA';
@@ -8117,40 +8239,16 @@ const isDailySupplement = (row: any) => {
           now.getDate()
         );
 
-      const tendenciaKpi =
-        kpiRows.reduce(
-          (sum: number, row: any) =>
-            sum +
-            Math.max(
-              0,
-              toNumber(row.tendencia)
-            ),
-          0
-        );
-
       const tendenciaMes =
-        tendenciaKpi > 0
-          ? tendenciaKpi
-          : (
+        faturamentoMes > 0
+          ? (
               faturamentoMes /
               diaAtual
-            ) * diasNoMes;
-
-      const faturamentoAnteriorKpi =
-        kpiRows.reduce(
-          (sum: number, row: any) =>
-            sum +
-            Math.max(
-              0,
-              toNumber(row.fat_anterior)
-            ),
-          0
-        );
+            ) * diasNoMes
+          : 0;
 
       const baseMesAnterior =
-        faturamentoAnteriorKpi > 0
-          ? faturamentoAnteriorKpi
-          : faturamentoAnterior;
+        faturamentoAnterior;
 
       const crescimentoTendencia =
         baseMesAnterior > 0
@@ -8207,6 +8305,36 @@ const isDailySupplement = (row: any) => {
 
       return toPercentPoints(ratio);
       };
+
+      const conversaoAcessoriosRede =
+        conversionNetwork.aparelhos > 0
+          ? homeConversionPercent(
+              conversionNetwork.acessorios,
+              conversionNetwork.aparelhos
+            )
+          : weightedMetric(
+              'pct_acessorios'
+            );
+
+      const conversaoPeliculasRede =
+        conversionNetwork.aparelhos > 0
+          ? homeConversionPercent(
+              conversionNetwork.peliculas,
+              conversionNetwork.aparelhos
+            )
+          : weightedMetric(
+              'conv_peliculas'
+            );
+
+      const conversaoSeguroRede =
+        conversionNetwork.aparelhos > 0
+          ? homeConversionPercent(
+              conversionNetwork.seguros,
+              conversionNetwork.aparelhos
+            )
+          : weightedMetric(
+              'pct_seguro'
+            );
 
       const daily = new Map<string, { date: string; faturamento: number; quantidade: number }>();
       const storesMap = new Map<string, any>();
@@ -8302,13 +8430,78 @@ const isDailySupplement = (row: any) => {
 
       for (const [loja, store] of storesMap.entries()) {
         const rows = kpiByStore.get(loja) || [];
-        store.conversaoAcessorios = weightedFromRows(rows, 'pct_acessorios');
-        store.conversaoPeliculas = weightedFromRows(rows, 'conv_peliculas');
-        store.seguroPct = weightedFromRows(rows, 'pct_seguro');
-        store.vendedores = rows.length;
-        if (store.faturamento <= 0 && rows.length) {
-          store.faturamento = rows.reduce((sum: number, item: any) => sum + toNumber(item.fat_atual), 0);
+
+        const cnpjLoja =
+          String(
+            getCnpjByName(loja) || ''
+          ).replace(/\D/g, '');
+
+        const conversion =
+          cnpjLoja
+            ? conversionByCnpj.get(cnpjLoja)
+            : undefined;
+
+        if (
+          conversion &&
+          conversion.aparelhos > 0
+        ) {
+          store.conversaoAcessorios =
+            homeConversionPercent(
+              conversion.acessorios,
+              conversion.aparelhos
+            );
+
+          store.conversaoPeliculas =
+            homeConversionPercent(
+              conversion.peliculas,
+              conversion.aparelhos
+            );
+
+          store.seguroPct =
+            homeConversionPercent(
+              conversion.seguros,
+              conversion.aparelhos
+            );
+        } else {
+          // Fallback caso não exista
+          // categoria suficiente nas vendas.
+          store.conversaoAcessorios =
+            weightedFromRows(
+              rows,
+              'pct_acessorios'
+            );
+
+          store.conversaoPeliculas =
+            weightedFromRows(
+              rows,
+              'conv_peliculas'
+            );
+
+          store.seguroPct =
+            weightedFromRows(
+              rows,
+              'pct_seguro'
+            );
         }
+
+        store.vendedores = rows.length;
+
+        if (
+          store.faturamento <= 0 &&
+          rows.length
+        ) {
+          store.faturamento =
+            rows.reduce(
+              (
+                sum: number,
+                item: any
+              ) =>
+                sum +
+                toNumber(item.fat_atual),
+              0
+            );
+        }
+
         storesMap.set(loja, store);
       }
 
@@ -8379,9 +8572,12 @@ const isDailySupplement = (row: any) => {
           crescimentoTendencia,
           pecasMes,
           ticketMedio: pecasMes > 0 ? faturamentoMes / pecasMes : 0,
-          conversaoAcessorios: weightedMetric('pct_acessorios'),
-          conversaoPeliculas: weightedMetric('conv_peliculas'),
-          seguroPct: weightedMetric('pct_seguro'),
+          conversaoAcessorios:
+            conversaoAcessoriosRede,
+          conversaoPeliculas:
+            conversaoPeliculasRede,
+          seguroPct:
+            conversaoSeguroRede,
           seguros: kpiRows.reduce((sum: number, row: any) => sum + toNumber(row.seguros), 0),
           lojasAtivas: hasNetworkScope ? stores.length : Math.min(1, stores.length),
         },
@@ -8389,7 +8585,7 @@ const isDailySupplement = (row: any) => {
         stores: hasNetworkScope ? stores : stores.slice(0, 1),
         radar: radar.slice(0, 5),
         clarkBriefing: hasNetworkScope
-          ? `A rede faturou ${faturamentoMes.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })} no mês. ${crescimento === null ? 'Ainda não há base suficiente para comparação.' : `A variação contra o mês anterior é de ${crescimento.toFixed(1).replace('.', ',')}%.`} A conversão de acessórios está em ${weightedMetric('pct_acessorios').toFixed(1).replace('.', ',')}%.`
+          ? `A rede faturou ${faturamentoMes.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })} no mês. ${crescimento === null ? 'Ainda não há base suficiente para comparação.' : `A variação contra o mês anterior é de ${crescimento.toFixed(1).replace('.', ',')}%.`} A conversão de acessórios está em ${conversaoAcessoriosRede.toFixed(1).replace('.', ',')}%.`
           : null,
       });
     } catch (error: any) {
@@ -8476,6 +8672,7 @@ app.get('/api/home/store-detail', async (req, res) => {
       `
         SELECT
           data_emissao,
+          COALESCE(familia, '') AS familia,
           COALESCE(total_liquido, 0) AS total_liquido,
           COALESCE(quantidade, 0) AS quantidade
         FROM vendas
@@ -8535,6 +8732,16 @@ app.get('/api/home/store-detail', async (req, res) => {
       return Number.isFinite(n) ? n : 0;
     };
 
+    const storeConversion =
+      homeEmptyConversionCounts();
+
+    for (const row of salesRows) {
+      homeAddConversionSale(
+        storeConversion,
+        row
+      );
+    }
+
     const faturamento = salesRows.reduce((sum: number, row: any) => sum + toNumber(row.total_liquido), 0);
     const quantidade = salesRows.reduce((sum: number, row: any) => sum + Math.max(0, toNumber(row.quantidade)), 0);
 
@@ -8553,24 +8760,13 @@ app.get('/api/home/store-detail', async (req, res) => {
         now.getDate()
       );
 
-    const tendenciaKpi =
-      sellerRows.reduce(
-        (sum: number, row: any) =>
-          sum +
-          Math.max(
-            0,
-            toNumber(row.tendencia)
-          ),
-        0
-      );
-
     const tendenciaMes =
-      tendenciaKpi > 0
-        ? tendenciaKpi
-        : (
-            faturamento /
-            diaAtual
-          ) * diasNoMes;
+    faturamento > 0
+      ? (
+          faturamento /
+          diaAtual
+        ) * diasNoMes
+      : 0;
 
     const faturamentoAnterior =
       sellerRows.reduce(
@@ -8640,6 +8836,36 @@ app.get('/api/home/store-detail', async (req, res) => {
       return storeDetailPercentPoints(ratio);
     };
 
+    const conversaoAcessoriosLoja =
+      storeConversion.aparelhos > 0
+        ? homeConversionPercent(
+            storeConversion.acessorios,
+            storeConversion.aparelhos
+          )
+        : weighted(
+            'pct_acessorios'
+          );
+
+    const conversaoPeliculasLoja =
+      storeConversion.aparelhos > 0
+        ? homeConversionPercent(
+            storeConversion.peliculas,
+            storeConversion.aparelhos
+          )
+        : weighted(
+            'conv_peliculas'
+          );
+
+    const conversaoSeguroLoja =
+      storeConversion.aparelhos > 0
+        ? homeConversionPercent(
+            storeConversion.seguros,
+            storeConversion.aparelhos
+          )
+        : weighted(
+            'pct_seguro'
+          );
+
     const daily = new Map<string, { date: string; faturamento: number; quantidade: number }>();
     for (const row of salesRows) {
       const date = String(row.data_emissao || '').slice(0, 10);
@@ -8665,9 +8891,12 @@ app.get('/api/home/store-detail', async (req, res) => {
         crescimentoTendencia,
         quantidade,
         ticketMedio: quantidade > 0 ? faturamento / quantidade : 0,
-        conversaoAcessorios: weighted('pct_acessorios'),
-        conversaoPeliculas: weighted('conv_peliculas'),
-        seguroPct: weighted('pct_seguro'),
+        conversaoAcessorios:
+          conversaoAcessoriosLoja,
+        conversaoPeliculas:
+          conversaoPeliculasLoja,
+        seguroPct:
+          conversaoSeguroLoja,
         seguros: sellerRows.reduce((sum: number, row: any) => sum + toNumber(row.seguros), 0),
         vendedores: sellerRows.length,
       },
