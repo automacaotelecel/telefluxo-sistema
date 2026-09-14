@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   Building2,
+  CircleDollarSign,
   Gauge,
   Loader2,
   PackageCheck,
@@ -132,7 +133,8 @@ export default function StoreDetailDrawer({ open, store, currentUser, onClose }:
                 <Metric icon={TrendingUp} label="Faturamento" value={money(kpis.faturamento)} />
                 <Metric icon={ShoppingBag} label="Acessórios" value={pct(kpis.conversaoAcessorios)} />
                 <Metric icon={PackageCheck} label="Películas" value={pct(kpis.conversaoPeliculas)} />
-                <Metric icon={ShieldCheck} label="Seguro" value={pct(kpis.seguroPct)} />
+                <Metric icon={ShieldCheck} label="Seguro %" value={pct(kpis.seguroPct)} />
+                <Metric icon={CircleDollarSign} label="R$ Seguros" value={money(kpis.seguros)} />
                 <Metric icon={Gauge} label="Ticket médio" value={money(kpis.ticketMedio)} />
                 <Metric icon={UserRound} label="Vendedores" value={String(kpis.vendedores || 0)} />
               </section>

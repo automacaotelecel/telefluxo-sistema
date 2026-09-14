@@ -8326,15 +8326,24 @@ const isDailySupplement = (row: any) => {
               'conv_peliculas'
             );
 
+      const segurosValorRede =
+        kpiRows.reduce(
+          (sum: number, row: any) =>
+            sum + toNumber(row.seguros),
+          0
+        );
+
+      const faturamentoKpiRede =
+        kpiRows.reduce(
+          (sum: number, row: any) =>
+            sum + toNumber(row.fat_atual),
+          0
+        );
+
       const conversaoSeguroRede =
-        conversionNetwork.aparelhos > 0
-          ? homeConversionPercent(
-              conversionNetwork.seguros,
-              conversionNetwork.aparelhos
-            )
-          : weightedMetric(
-              'pct_seguro'
-            );
+        faturamentoKpiRede > 0
+          ? (segurosValorRede / faturamentoKpiRede) * 100
+          : weightedMetric('pct_seguro');
 
       const daily = new Map<string, { date: string; faturamento: number; quantidade: number }>();
       const storesMap = new Map<string, any>();
@@ -8457,11 +8466,7 @@ const isDailySupplement = (row: any) => {
               conversion.aparelhos
             );
 
-          store.seguroPct =
-            homeConversionPercent(
-              conversion.seguros,
-              conversion.aparelhos
-            );
+          
         } else {
           // Fallback caso não exista
           // categoria suficiente nas vendas.
@@ -8477,12 +8482,31 @@ const isDailySupplement = (row: any) => {
               'conv_peliculas'
             );
 
-          store.seguroPct =
-            weightedFromRows(
-              rows,
-              'pct_seguro'
-            );
-        }
+         }
+
+         const segurosValorLoja =
+          rows.reduce(
+            (sum: number, item: any) =>
+              sum + toNumber(item.seguros),
+            0
+          );
+
+        const faturamentoKpiLoja =
+          rows.reduce(
+            (sum: number, item: any) =>
+              sum + toNumber(item.fat_atual),
+            0
+          );
+
+        store.seguros = segurosValorLoja;
+
+        store.seguroPct =
+          faturamentoKpiLoja > 0
+            ? (segurosValorLoja / faturamentoKpiLoja) * 100
+            : weightedFromRows(
+                rows,
+                'pct_seguro'
+              );
 
         store.vendedores = rows.length;
 
@@ -8578,7 +8602,7 @@ const isDailySupplement = (row: any) => {
             conversaoPeliculasRede,
           seguroPct:
             conversaoSeguroRede,
-          seguros: kpiRows.reduce((sum: number, row: any) => sum + toNumber(row.seguros), 0),
+          seguros: segurosValorRede,
           lojasAtivas: hasNetworkScope ? stores.length : Math.min(1, stores.length),
         },
         trend: Array.from(daily.values()).sort((a, b) => a.date.localeCompare(b.date)),
@@ -8856,15 +8880,24 @@ app.get('/api/home/store-detail', async (req, res) => {
             'conv_peliculas'
           );
 
+    const segurosValorLoja =
+      sellerRows.reduce(
+        (sum: number, row: any) =>
+          sum + toNumber(row.seguros),
+        0
+      );
+
+    const faturamentoKpiLoja =
+      sellerRows.reduce(
+        (sum: number, row: any) =>
+          sum + toNumber(row.faturamento),
+        0
+      );
+
     const conversaoSeguroLoja =
-      storeConversion.aparelhos > 0
-        ? homeConversionPercent(
-            storeConversion.seguros,
-            storeConversion.aparelhos
-          )
-        : weighted(
-            'pct_seguro'
-          );
+      faturamentoKpiLoja > 0
+        ? (segurosValorLoja / faturamentoKpiLoja) * 100
+        : weighted('pct_seguro');
 
     const daily = new Map<string, { date: string; faturamento: number; quantidade: number }>();
     for (const row of salesRows) {
@@ -8897,7 +8930,7 @@ app.get('/api/home/store-detail', async (req, res) => {
           conversaoPeliculasLoja,
         seguroPct:
           conversaoSeguroLoja,
-        seguros: sellerRows.reduce((sum: number, row: any) => sum + toNumber(row.seguros), 0),
+        seguros: segurosValorLoja,
         vendedores: sellerRows.length,
       },
       trend: Array.from(daily.values()).sort((a, b) => a.date.localeCompare(b.date)),

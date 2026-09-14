@@ -2168,7 +2168,7 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
         'PERÍODO': item.inicio && item.termino ? `${item.inicio} a ${item.termino}` : '-',
         'MODELO NA CARTA': item.modeloPdf,
         'BASIC MODEL': basicModel,
-        'MODELO TRADUZIDO': resolvedDescription,
+        'MODELO TRADUZIDO': descricao,
         'REFERÊNCIA': referencia,
         'TIPO DE PRODUTO': productType,
         'FATOR DA FÓRMULA': formulaFactor,

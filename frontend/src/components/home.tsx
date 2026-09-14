@@ -165,19 +165,29 @@ function ConversionCard({
   acessorios,
   peliculas,
   seguro,
+  segurosValor,
   loading,
   onSelectMetric,
 }: {
   acessorios: number;
   peliculas: number;
   seguro: number;
+  segurosValor: number;
   loading: boolean;
   onSelectMetric: (metric: MetricKey) => void;
 }) {
-  const items = [
-    { key: 'conversaoAcessorios' as MetricKey, label: 'Acessórios', value: acessorios, icon: ShoppingBag },
-    { key: 'conversaoPeliculas' as MetricKey, label: 'Películas', value: peliculas, icon: PackageCheck },
-    { key: 'seguroPct' as MetricKey, label: 'Seguro', value: seguro, icon: ShieldCheck },
+  const items: Array<{
+    id: string;
+    key?: MetricKey;
+    label: string;
+    value: number;
+    icon: any;
+    format: 'percent' | 'money';
+  }> = [
+    { id: 'acessorios', key: 'conversaoAcessorios', label: 'Acessórios', value: acessorios, icon: ShoppingBag, format: 'percent' },
+    { id: 'peliculas', key: 'conversaoPeliculas', label: 'Películas', value: peliculas, icon: PackageCheck, format: 'percent' },
+    { id: 'seguro-pct', key: 'seguroPct', label: 'Seguro %', value: seguro, icon: ShieldCheck, format: 'percent' },
+    { id: 'seguro-valor', label: 'R$ Seguros', value: segurosValor, icon: CircleDollarSign, format: 'money' },
   ];
 
   return (
@@ -192,20 +202,25 @@ function ConversionCard({
         </div>
       </div>
 
-      <div className="grid grid-cols-3 gap-2">
-        {items.map(({ key, label, value, icon: Icon }) => (
+      <div className="grid grid-cols-2 gap-2">
+        {items.map(({ id, key, label, value, icon: Icon, format }) => (
           <button
-            key={key}
+            key={id}
             type="button"
-            onClick={() => onSelectMetric(key)}
-            className="rounded-2xl bg-slate-50 px-2.5 py-3 text-left transition hover:bg-orange-50"
+            onClick={() => key && onSelectMetric(key)}
+            disabled={!key}
+            className={`rounded-2xl bg-slate-50 px-2.5 py-3 text-left transition ${key ? 'hover:bg-orange-50' : 'cursor-default'}`}
           >
             <div className="flex items-center gap-1.5 text-slate-400">
               <Icon size={12} />
               <span className="truncate text-[8px] font-black uppercase tracking-wide">{label}</span>
             </div>
             <p className="mt-2 text-[17px] font-black tracking-tight text-slate-950">
-              {loading ? '—' : `${number(value, 1)}%`}
+              {loading
+                ? '—'
+                : format === 'money'
+                  ? money(value)
+                  : `${number(value, 1)}%`}
             </p>
           </button>
         ))}
@@ -524,6 +539,7 @@ export default function Home({ currentUser, onNavigate }: Props) {
             acessorios={Number(kpis.conversaoAcessorios || 0)}
             peliculas={Number(kpis.conversaoPeliculas || 0)}
             seguro={Number(kpis.seguroPct || 0)}
+            segurosValor={Number(kpis.seguros || 0)}
             loading={viewLoading}
             onSelectMetric={setSelectedMetric}
           />
