@@ -8065,6 +8065,49 @@ const isDailySupplement = (row: any) => {
     ) * 100;
   }
 
+  async function ensureVendedoresInsuranceColumns(db: any) {
+  const tableExists = await db.get(`
+    SELECT name
+    FROM sqlite_master
+    WHERE type = 'table'
+      AND name = 'vendedores'
+  `);
+
+  if (!tableExists) {
+    return;
+  }
+
+  const columns = await db.all(`
+    PRAGMA table_info(vendedores)
+  `);
+
+  const names = new Set(
+    (columns || []).map((column: any) =>
+      String(column?.name || '')
+        .trim()
+        .toLowerCase()
+    )
+  );
+
+  if (!names.has('qtd_seguros')) {
+    await db.exec(`
+      ALTER TABLE vendedores
+      ADD COLUMN qtd_seguros REAL DEFAULT 0
+    `);
+  }
+
+  if (
+    !names.has(
+      'qtd_produtos_com_seguro'
+    )
+  ) {
+    await db.exec(`
+      ALTER TABLE vendedores
+      ADD COLUMN qtd_produtos_com_seguro REAL DEFAULT 0
+    `);
+  }
+}
+
   app.get('/api/home/resumo', async (req, res) => {
     let db: any;
 
@@ -8121,6 +8164,7 @@ const isDailySupplement = (row: any) => {
       const kpiFilter = await getSalesFilter(userId, 'kpi');
 
       db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+           await ensureVendedoresInsuranceColumns(db);
 
       const monthRows = await db.all(`
         SELECT
@@ -8159,6 +8203,14 @@ const isDailySupplement = (row: any) => {
             COALESCE(conv_peliculas, 0) AS conv_peliculas,
             COALESCE(seguros, 0) AS seguros,
             COALESCE(pct_seguro, 0) AS pct_seguro,
+            COALESCE(
+              qtd_seguros,
+              0
+            ) AS qtd_seguros,
+            COALESCE(
+              qtd_produtos_com_seguro,
+              0
+            ) AS qtd_produtos_com_seguro,
             COALESCE(ticket, 0) AS ticket,
             COALESCE(qtd, 0) AS qtd,
             COALESCE(tendencia, 0) AS tendencia
@@ -8333,16 +8385,36 @@ const isDailySupplement = (row: any) => {
           0
         );
 
-      const faturamentoKpiRede =
+      const qtdSegurosRede =
         kpiRows.reduce(
           (sum: number, row: any) =>
-            sum + toNumber(row.fat_atual),
+            sum +
+            Math.max(
+              0,
+              toNumber(row.qtd_seguros)
+            ),
+          0
+        );
+
+      const qtdProdutosComSeguroRede =
+        kpiRows.reduce(
+          (sum: number, row: any) =>
+            sum +
+            Math.max(
+              0,
+              toNumber(
+                row.qtd_produtos_com_seguro
+              )
+            ),
           0
         );
 
       const conversaoSeguroRede =
-        faturamentoKpiRede > 0
-          ? (segurosValorRede / faturamentoKpiRede) * 100
+        qtdProdutosComSeguroRede > 0
+          ? (
+              qtdSegurosRede /
+              qtdProdutosComSeguroRede
+            ) * 100
           : weightedMetric('pct_seguro');
 
       const daily = new Map<string, { date: string; faturamento: number; quantidade: number }>();
@@ -8491,18 +8563,39 @@ const isDailySupplement = (row: any) => {
             0
           );
 
-        const faturamentoKpiLoja =
+        const qtdSegurosLoja =
           rows.reduce(
             (sum: number, item: any) =>
-              sum + toNumber(item.fat_atual),
+              sum +
+              Math.max(
+                0,
+                toNumber(item.qtd_seguros)
+              ),
             0
           );
 
-        store.seguros = segurosValorLoja;
+        const qtdProdutosComSeguroLoja =
+          rows.reduce(
+            (sum: number, item: any) =>
+              sum +
+              Math.max(
+                0,
+                toNumber(
+                  item.qtd_produtos_com_seguro
+                )
+              ),
+            0
+          );
+
+        store.seguros =
+          segurosValorLoja;
 
         store.seguroPct =
-          faturamentoKpiLoja > 0
-            ? (segurosValorLoja / faturamentoKpiLoja) * 100
+          qtdProdutosComSeguroLoja > 0
+            ? (
+                qtdSegurosLoja /
+                qtdProdutosComSeguroLoja
+              ) * 100
             : weightedFromRows(
                 rows,
                 'pct_seguro'
@@ -8691,7 +8784,7 @@ app.get('/api/home/store-detail', async (req, res) => {
 
     const { startDate, endDate } = getCurrentMonthRange();
     db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
-
+          await ensureVendedoresInsuranceColumns(db);
     const salesRows = await db.all(
       `
         SELECT
@@ -8719,6 +8812,14 @@ app.get('/api/home/store-detail', async (req, res) => {
             COALESCE(conv_peliculas, 0) AS conv_peliculas,
             COALESCE(pct_seguro, 0) AS pct_seguro,
             COALESCE(seguros, 0) AS seguros,
+            COALESCE(
+              qtd_seguros,
+              0
+            ) AS qtd_seguros,
+            COALESCE(
+              qtd_produtos_com_seguro,
+              0
+            ) AS qtd_produtos_com_seguro,
             COALESCE(ticket, 0) AS ticket,
             COALESCE(qtd, 0) AS qtd,
             COALESCE(fat_anterior, 0) AS fat_anterior,
@@ -8887,16 +8988,36 @@ app.get('/api/home/store-detail', async (req, res) => {
         0
       );
 
-    const faturamentoKpiLoja =
+    const qtdSegurosLoja =
       sellerRows.reduce(
         (sum: number, row: any) =>
-          sum + toNumber(row.faturamento),
+          sum +
+          Math.max(
+            0,
+            toNumber(row.qtd_seguros)
+          ),
+        0
+      );
+
+    const qtdProdutosComSeguroLoja =
+      sellerRows.reduce(
+        (sum: number, row: any) =>
+          sum +
+          Math.max(
+            0,
+            toNumber(
+              row.qtd_produtos_com_seguro
+            )
+          ),
         0
       );
 
     const conversaoSeguroLoja =
-      faturamentoKpiLoja > 0
-        ? (segurosValorLoja / faturamentoKpiLoja) * 100
+      qtdProdutosComSeguroLoja > 0
+        ? (
+            qtdSegurosLoja /
+            qtdProdutosComSeguroLoja
+          ) * 100
         : weighted('pct_seguro');
 
     const daily = new Map<string, { date: string; faturamento: number; quantidade: number }>();
@@ -10534,6 +10655,7 @@ const handleSellersKpi = async (req: Request, res: Response) => {
     const user: any = await prisma.user.findUnique({ where: { id: userId } });
 
     const db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+                await ensureVendedoresInsuranceColumns(db);
 
     const baseSelect = `
       SELECT
@@ -10549,6 +10671,8 @@ const handleSellersKpi = async (req: Request, res: Response) => {
         conv_peliculas,
         seguros,
         pct_seguro,
+        qtd_seguros,
+        qtd_produtos_com_seguro,
         pa,
         ticket,
         ticket AS ticket_medio,
@@ -10926,7 +11050,10 @@ app.post('/api/sync/vendedores_anuais', async (req, res) => {
               INSERT INTO vendedores_anuais (
                 loja, vendedor, fat_atual, tendencia, fat_anterior,
                 crescimento, pa, ticket, qtd, regiao, pct_seguro, seguros
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              ) VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+              )
             `);
             for (const item of dados) {
               stmt.run(
@@ -11839,6 +11966,8 @@ app.post('/api/sync/vendedores', async (req, res) => {
           regiao TEXT,
           pct_seguro REAL,
           seguros REAL,
+          qtd_seguros REAL DEFAULT 0,
+          qtd_produtos_com_seguro REAL DEFAULT 0,
           pct_acessorios REAL,
           conv_peliculas REAL,
           rs_aparelho REAL,
@@ -11863,6 +11992,8 @@ app.post('/api/sync/vendedores', async (req, res) => {
           regiao TEXT,
           pct_seguro REAL,
           seguros REAL,
+          qtd_seguros REAL DEFAULT 0,
+          qtd_produtos_com_seguro REAL DEFAULT 0,
           pct_acessorios REAL,
           conv_peliculas REAL,
           rs_aparelho REAL,
@@ -11872,6 +12003,8 @@ app.post('/api/sync/vendedores', async (req, res) => {
         )
       `);
     }
+
+    await ensureVendedoresInsuranceColumns(db);
 
     const stmt = await db.prepare(`
       INSERT INTO vendedores (
@@ -11888,6 +12021,8 @@ app.post('/api/sync/vendedores', async (req, res) => {
         regiao,
         pct_seguro,
         seguros,
+        qtd_seguros,
+        qtd_produtos_com_seguro,
         pct_acessorios,
         conv_peliculas,
         rs_aparelho,
@@ -11895,7 +12030,10 @@ app.post('/api/sync/vendedores', async (req, res) => {
         rs_tablet,
         rs_wearable
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+      )
     `);
 
     for (const item of dados) {
@@ -11913,6 +12051,12 @@ app.post('/api/sync/vendedores', async (req, res) => {
         item.regiao ?? null,
         Number(item.pct_seguro ?? item.pct_seguros ?? 0),
         Number(item.seguros ?? 0),
+        Number(
+          item.qtd_seguros ?? 0
+        ),
+        Number(
+          item.qtd_produtos_com_seguro ?? 0
+        ),
         Number(item.pct_acessorios ?? 0),
         Number(item.conv_peliculas ?? 0),
         Number(item.rs_aparelho ?? 0),

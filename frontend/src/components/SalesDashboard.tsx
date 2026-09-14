@@ -384,6 +384,8 @@ export default function SalesDashboard() {
         conv_peliculas: Number(k.conv_peliculas ?? k.convPeliculas ?? 0),
         seguros: Number(k.seguros ?? 0),
         pct_seguro: Number(k.pct_seguro ?? k.pctSeguro ?? k.pct_seguros ?? k.pctSeguros ?? 0),
+        qtd_seguros: Number(k.qtd_seguros ?? k.qtdSeguros ?? 0),
+        qtd_produtos_com_seguro: Number(k.qtd_produtos_com_seguro ?? k.qtdProdutosComSeguro ?? 0),
         rs_aparelho: Number(k.rs_aparelho ?? k.rsAparelho ?? 0),
         rs_acessorio: Number(k.rs_acessorio ?? k.rsAcessorio ?? 0),
         rs_tablet: Number(k.rs_tablet ?? k.rsTablet ?? 0),
@@ -481,6 +483,8 @@ setRanking(finalRanking);
                   tendencia: 0,
                   mes_anterior: 0,
                   seguros: 0,
+                  qtd_seguros: 0,
+                  qtd_produtos_com_seguro: 0,
                   qtd: 0,
                   rs_aparelho: 0,
                   rs_acessorio: 0,
@@ -505,6 +509,8 @@ setRanking(finalRanking);
           group.tendencia += Number(seller.tendencia) || 0;
           group.mes_anterior += Number(seller.mes_anterior) || 0;
           group.seguros += Number(seller.seguros) || 0;
+          group.qtd_seguros += Math.max(0, Number(seller.qtd_seguros) || 0);
+          group.qtd_produtos_com_seguro += Math.max(0, Number(seller.qtd_produtos_com_seguro) || 0);
           group.qtd += qtd;
           group.rs_aparelho += Number(seller.rs_aparelho) || 0;
           group.rs_acessorio += Number(seller.rs_acessorio) || 0;
@@ -540,8 +546,8 @@ setRanking(finalRanking);
               const crescimento = group.mes_anterior > 0
                   ? (group.tendencia - group.mes_anterior) / group.mes_anterior
                   : 0;
-              const pctSeguro = group.faturamento > 0
-                  ? group.seguros / group.faturamento
+              const pctSeguro = group.qtd_produtos_com_seguro > 0
+                  ? group.qtd_seguros / group.qtd_produtos_com_seguro
                   : 0;
 
               return {
@@ -561,6 +567,9 @@ setRanking(finalRanking);
       let peliculasPonderado = 0;
       let acessoriosSimples = 0;
       let peliculasSimples = 0;
+      let qtdSeguros = 0;
+      let qtdProdutosComSeguro = 0;
+      let segurosValor = 0;
       let lojas = 0;
 
       storeKpiRanking.forEach((item: any) => {
@@ -570,6 +579,9 @@ setRanking(finalRanking);
 
           acessoriosSimples += convAcessorios;
           peliculasSimples += convPeliculas;
+          qtdSeguros += Math.max(0, Number(item.qtd_seguros) || 0);
+          qtdProdutosComSeguro += Math.max(0, Number(item.qtd_produtos_com_seguro) || 0);
+          segurosValor += Math.max(0, Number(item.seguros) || 0);
           lojas += 1;
 
           if (qtd > 0) {
@@ -582,6 +594,8 @@ setRanking(finalRanking);
       return {
           pct_acessorios: peso > 0 ? acessoriosPonderado / peso : acessoriosSimples / Math.max(1, lojas),
           conv_peliculas: peso > 0 ? peliculasPonderado / peso : peliculasSimples / Math.max(1, lojas),
+          pct_seguro: qtdProdutosComSeguro > 0 ? qtdSeguros / qtdProdutosComSeguro : 0,
+          seguros: segurosValor,
       };
   }, [storeKpiRanking]);
 
@@ -1013,7 +1027,7 @@ setRanking(finalRanking);
 
       {activeTab === 'lojas' && (
         <div className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
                 <div className="bg-white p-5 rounded-xl shadow-sm border-l-4 border-[#1428A0]">
                     <div className="flex justify-between items-start mb-2"><span className="text-[10px] font-black text-slate-400 uppercase">Lojas Consolidadas</span><Store size={16} className="text-[#1428A0]"/></div>
                     <div className="text-2xl font-black text-slate-800">{storeKpiRanking.length}</div>
@@ -1028,6 +1042,15 @@ setRanking(finalRanking);
                     <div className="flex justify-between items-start mb-2"><span className="text-[10px] font-black text-slate-400 uppercase">Conv. Películas Rede</span><Smartphone size={16} className="text-amber-500"/></div>
                     <div className="text-2xl font-black text-slate-800">
                         {formatPercent(storeKpiNetworkSummary.conv_peliculas)}
+                    </div>
+                </div>
+                <div className="bg-white p-5 rounded-xl shadow-sm border-l-4 border-emerald-500">
+                    <div className="flex justify-between items-start mb-2"><span className="text-[10px] font-black text-slate-400 uppercase">Conv. Seguro Rede</span><ShieldCheck size={16} className="text-emerald-500"/></div>
+                    <div className="text-2xl font-black text-slate-800">
+                        {formatPercent(storeKpiNetworkSummary.pct_seguro)}
+                    </div>
+                    <div className="mt-1 text-[10px] font-bold text-slate-400">
+                        {formatMoney(storeKpiNetworkSummary.seguros)} em seguros
                     </div>
                 </div>
             </div>
