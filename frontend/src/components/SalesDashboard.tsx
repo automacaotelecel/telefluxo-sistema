@@ -1045,7 +1045,7 @@ setRanking(finalRanking);
                     </div>
                 </div>
                 <div className="bg-white p-5 rounded-xl shadow-sm border-l-4 border-emerald-500">
-                    <div className="flex justify-between items-start mb-2"><span className="text-[10px] font-black text-slate-400 uppercase">Conv. Seguro Rede</span><ShieldCheck size={16} className="text-emerald-500"/></div>
+                    <div className="flex justify-between items-start mb-2"><span className="text-[10px] font-black text-slate-400 uppercase">Conv. Seguro Rede</span><CheckSquare size={16} className="text-emerald-500"/></div>
                     <div className="text-2xl font-black text-slate-800">
                         {formatPercent(storeKpiNetworkSummary.pct_seguro)}
                     </div>

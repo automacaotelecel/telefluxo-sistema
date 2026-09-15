@@ -369,23 +369,29 @@ function OperationalPanel({
   const categories = operations?.categorias || [];
   const regions = operations?.regioes || [];
   const maxCategory = Math.max(1, ...categories.map((item) => Number(item.faturamento || 0)));
-
   const regionChartData = useMemo(() => {
-    const normalized = regions
-      .map((item) => ({
-        name: String(item.regiao || 'SEM REGIÃO'),
-        value: Math.max(0, Number(item.faturamento || 0)),
-      }))
-      .filter((item) => item.value > 0)
-      .sort((a, b) => b.value - a.value);
-
-    if (normalized.length <= 5) return normalized;
-
-    const main = normalized.slice(0, 4);
-    const otherValue = normalized.slice(4).reduce((sum, item) => sum + item.value, 0);
-    return [...main, { name: 'OUTROS', value: otherValue }];
+  return regions
+    .map((item) => ({
+      name: String(
+        item.regiao || 'SEM REGIÃO'
+      ),
+      value: Math.max(
+        0,
+        Number(
+          item.faturamento || 0
+        )
+      ),
+    }))
+    .filter(
+      (item) =>
+        item.value > 0 &&
+        item.name !== 'SEM REGIÃO'
+    )
+    .sort(
+      (a, b) =>
+        b.value - a.value
+    );
   }, [regions]);
-
   const regionTotal = regionChartData.reduce((sum, item) => sum + item.value, 0);
   const singleRegion = regionChartData.length === 1 ? regionChartData[0] : null;
 

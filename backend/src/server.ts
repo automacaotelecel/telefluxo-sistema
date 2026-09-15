@@ -8775,62 +8775,283 @@ const isDailySupplement = (row: any) => {
 
     const salesFilter = await getSalesFilter(params.userId, 'vendas');
     const cnpj = String(params.cnpj || '').replace(/\D/g, '');
-    const storeSql = cnpj ? ` AND cnpj_empresa = '${annualSqlText(cnpj)}' ` : '';
+    const storeSql = cnpj
+      ? ` AND cnpj_empresa = '${annualSqlText(cnpj)}' `
+      : '';
+
+    const startYear = Number(params.startDate.slice(0, 4));
+    const startMonth = Number(params.startDate.slice(5, 7));
+    const endYear = Number(params.endDate.slice(0, 4));
+    const endMonth = Number(params.endDate.slice(5, 7));
+    const startYm = startYear * 100 + startMonth;
+    const endYm = endYear * 100 + endMonth;
 
     let db: any;
+
     try {
-      db = await open({ filename: ANUAL_DB_PATH, driver: sqlite3.Database });
-      const hasInsurance = await annualTableExists(db, 'seguros_anuais');
+      db = await open({
+        filename: ANUAL_DB_PATH,
+        driver: sqlite3.Database,
+      });
 
-      let rows: any[] = [];
-      if (hasInsurance) {
-        rows = await db.all(`
-          SELECT
-            COALESCE(cnpj_empresa, '') AS cnpj_empresa,
-            COALESCE(NULLIF(loja, ''), '') AS loja,
-            SUM(COALESCE(premio, 0)) AS valor,
-            SUM(COALESCE(qtd, 0)) AS qtd
-          FROM seguros_anuais
-          WHERE ${salesFilter}
-            ${storeSql}
-            AND data_emissao >= ?
-            AND data_emissao <= ?
-          GROUP BY COALESCE(cnpj_empresa, ''), COALESCE(NULLIF(loja, ''), '')
-        `, [params.startDate, params.endDate]);
+      const getColumns = async (tableName: string): Promise<Set<string>> => {
+        const info = await db.all(`PRAGMA table_info(${tableName})`);
+        return new Set(
+          (info || []).map((row: any) =>
+            String(row?.name || '').trim().toLowerCase()
+          )
+        );
+      };
+
+      const numberExpr = (
+        columns: Set<string>,
+        candidates: string[]
+      ): string => {
+        const available = candidates.filter((column) =>
+          columns.has(column.toLowerCase())
+        );
+
+        return available.length
+          ? `COALESCE(${available.join(', ')}, 0)`
+          : '0';
+      };
+
+      const textExpr = (
+        columns: Set<string>,
+        candidates: string[],
+        fallback = ''
+      ): string => {
+        const available = candidates.filter((column) =>
+          columns.has(column.toLowerCase())
+        );
+
+        if (!available.length) {
+          return `'${annualSqlText(fallback)}'`;
+        }
+
+        return `COALESCE(${available
+          .map((column) => `NULLIF(${column}, '')`)
+          .join(', ')}, '${annualSqlText(fallback)}')`;
+      };
+
+      const mergeRows = (rows: any[]): boolean => {
+        let useful = false;
+
+        for (const row of rows || []) {
+          const valor = homeToNumber(row.valor);
+          const qtd = homeToNumber(row.qtd);
+
+          if (valor !== 0 || qtd !== 0) useful = true;
+
+          const key =
+            String(row.cnpj_empresa || '').replace(/\D/g, '') ||
+            normStore(row.loja || '');
+
+          if (!key) continue;
+
+          const current = result.get(key) || { valor: 0, qtd: 0 };
+          current.valor += valor;
+          current.qtd += qtd;
+          result.set(key, current);
+        }
+
+        return useful;
+      };
+
+      // 1) Fonte oficial de seguros anuais, quando estiver populada.
+      if (await annualTableExists(db, 'seguros_anuais')) {
+        const columns = await getColumns('seguros_anuais');
+
+        if (columns.has('cnpj_empresa')) {
+          const valorExpr = numberExpr(columns, [
+            'premio',
+            'seguros_total',
+            'seguro_total',
+            'valor',
+            'total_real',
+            'total_liquido',
+          ]);
+
+          const qtdExpr = numberExpr(columns, [
+            'qtd',
+            'seguros_qtd',
+            'seguro_qtd',
+            'qtd_real',
+            'quantidade',
+          ]);
+
+          const lojaExpr = textExpr(columns, ['loja']);
+
+          let periodSql = '';
+          const paramsSql: any[] = [];
+
+          if (columns.has('data_emissao')) {
+            periodSql = ' AND data_emissao >= ? AND data_emissao <= ? ';
+            paramsSql.push(params.startDate, params.endDate);
+          } else if (columns.has('ano') && columns.has('mes')) {
+            periodSql = ' AND ((ano * 100) + mes) BETWEEN ? AND ? ';
+            paramsSql.push(startYm, endYm);
+          }
+
+          const rows = await db.all(
+            `
+              SELECT
+                COALESCE(cnpj_empresa, '') AS cnpj_empresa,
+                ${lojaExpr} AS loja,
+                SUM(${valorExpr}) AS valor,
+                SUM(${qtdExpr}) AS qtd
+              FROM seguros_anuais
+              WHERE ${salesFilter}
+                ${storeSql}
+                ${periodSql}
+              GROUP BY
+                COALESCE(cnpj_empresa, ''),
+                ${lojaExpr}
+            `,
+            paramsSql
+          );
+
+          if (mergeRows(rows)) {
+            console.log('✅ Home seguros históricos: fonte seguros_anuais');
+            return result;
+          }
+          result.clear();
+        }
       }
 
-      const useful = rows.some((row: any) => homeToNumber(row.valor) !== 0 || homeToNumber(row.qtd) !== 0);
+      // 2) Agregado mensal, caso o banco anual já possua esse snapshot.
+      if (await annualTableExists(db, 'agg_lojas_mensal')) {
+        const columns = await getColumns('agg_lojas_mensal');
 
-      if (!useful && await annualTableExists(db, 'vendas_anuais_raw')) {
-        rows = await db.all(`
-          SELECT
-            COALESCE(cnpj_empresa, '') AS cnpj_empresa,
-            COALESCE(NULLIF(loja, ''), '') AS loja,
-            SUM(COALESCE(total_real, total_liquido, 0)) AS valor,
-            SUM(COALESCE(qtd_real, quantidade, 0)) AS qtd
-          FROM vendas_anuais_raw
-          WHERE ${salesFilter}
-            ${storeSql}
-            AND data_emissao >= ?
-            AND data_emissao <= ?
-            AND (
-              UPPER(COALESCE(categoria_real, categoria, descricao, '')) LIKE '%SEGURO%'
-              OR UPPER(COALESCE(descricao, '')) LIKE '%SEGURO%'
-              OR UPPER(COALESCE(descricao, '')) LIKE '%PROTECAO%'
-              OR UPPER(COALESCE(descricao, '')) LIKE '%PROTEÇÃO%'
-              OR UPPER(COALESCE(descricao, '')) LIKE '%GARANTIA%'
-            )
-          GROUP BY COALESCE(cnpj_empresa, ''), COALESCE(NULLIF(loja, ''), '')
-        `, [params.startDate, params.endDate]);
+        if (
+          columns.has('cnpj_empresa') &&
+          columns.has('ano') &&
+          columns.has('mes')
+        ) {
+          const valorExpr = numberExpr(columns, [
+            'seguros_total',
+            'seguro_total',
+          ]);
+
+          const qtdExpr = numberExpr(columns, [
+            'seguros_qtd',
+            'seguro_qtd',
+          ]);
+
+          const lojaExpr = textExpr(columns, ['loja']);
+
+          const rows = await db.all(
+            `
+              SELECT
+                COALESCE(cnpj_empresa, '') AS cnpj_empresa,
+                ${lojaExpr} AS loja,
+                SUM(${valorExpr}) AS valor,
+                SUM(${qtdExpr}) AS qtd
+              FROM agg_lojas_mensal
+              WHERE ${salesFilter}
+                ${storeSql}
+                AND ((ano * 100) + mes) BETWEEN ? AND ?
+              GROUP BY
+                COALESCE(cnpj_empresa, ''),
+                ${lojaExpr}
+            `,
+            [startYm, endYm]
+          );
+
+          if (mergeRows(rows)) {
+            console.log('✅ Home seguros históricos: fonte agg_lojas_mensal');
+            return result;
+          }
+          result.clear();
+        }
       }
 
-      for (const row of rows) {
-        const key = String(row.cnpj_empresa || '').replace(/\D/g, '') || normStore(row.loja || '');
-        if (!key) continue;
-        result.set(key, {
-          valor: homeToNumber(row.valor),
-          qtd: homeToNumber(row.qtd),
-        });
+      // 3) Fallback: identifica as linhas de seguro dentro da base anual bruta.
+      if (await annualTableExists(db, 'vendas_anuais_raw')) {
+        const columns = await getColumns('vendas_anuais_raw');
+
+        if (columns.has('cnpj_empresa')) {
+          const valorExpr = numberExpr(columns, [
+            'total_real',
+            'total_liquido',
+            'premio',
+            'valor_total',
+            'total',
+          ]);
+
+          const qtdExpr = numberExpr(columns, [
+            'qtd_real',
+            'quantidade',
+            'qtd',
+          ]);
+
+          const lojaExpr = textExpr(columns, ['loja']);
+
+          const insuranceFields = [
+            'categoria_real',
+            'categoria',
+            'familia',
+            'descricao',
+            'referencia',
+          ].filter((field) => columns.has(field));
+
+          if (insuranceFields.length) {
+            const insuranceSql = insuranceFields
+              .flatMap((field) => [
+                `UPPER(COALESCE(${field}, '')) LIKE '%SEGURO%'`,
+                `UPPER(COALESCE(${field}, '')) LIKE '%PROTECAO%'`,
+                `UPPER(COALESCE(${field}, '')) LIKE '%PROTEÇÃO%'`,
+                `UPPER(COALESCE(${field}, '')) LIKE '%GARANTIA%'`,
+              ])
+              .join(' OR ');
+
+            let periodSql = '';
+            const paramsSql: any[] = [];
+
+            if (columns.has('data_emissao')) {
+              periodSql = ' AND data_emissao >= ? AND data_emissao <= ? ';
+              paramsSql.push(params.startDate, params.endDate);
+            } else if (columns.has('ano') && columns.has('mes')) {
+              periodSql = ' AND ((ano * 100) + mes) BETWEEN ? AND ? ';
+              paramsSql.push(startYm, endYm);
+            }
+
+            const cancelClause = columns.has('cancelado')
+              ? `
+                  AND (
+                    cancelado IS NULL
+                    OR UPPER(TRIM(CAST(cancelado AS TEXT))) NOT IN (
+                      'S', 'SIM', 'TRUE', '1', 'CANCELADO', 'CANCELADA'
+                    )
+                  )
+                `
+              : '';
+
+            const rows = await db.all(
+              `
+                SELECT
+                  COALESCE(cnpj_empresa, '') AS cnpj_empresa,
+                  ${lojaExpr} AS loja,
+                  SUM(${valorExpr}) AS valor,
+                  SUM(${qtdExpr}) AS qtd
+                FROM vendas_anuais_raw
+                WHERE ${salesFilter}
+                  ${storeSql}
+                  ${periodSql}
+                  ${cancelClause}
+                  AND (${insuranceSql})
+                GROUP BY
+                  COALESCE(cnpj_empresa, ''),
+                  ${lojaExpr}
+              `,
+              paramsSql
+            );
+
+            if (mergeRows(rows)) {
+              console.log('✅ Home seguros históricos: fonte vendas_anuais_raw');
+            }
+          }
+        }
       }
 
       return result;
@@ -8841,6 +9062,7 @@ const isDailySupplement = (row: any) => {
       if (db) await db.close().catch(() => undefined);
     }
   }
+
 
   function homeWeightedMetric(rows: any[], field: string): number {
     let weighted = 0;
