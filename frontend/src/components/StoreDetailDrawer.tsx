@@ -27,6 +27,8 @@ type Props = {
   open: boolean;
   store: string | null;
   currentUser: any;
+  startDate?: string;
+  endDate?: string;
   onClose: () => void;
 };
 
@@ -60,7 +62,7 @@ function Metric({ icon: Icon, label, value }: { icon: any; label: string; value:
   );
 }
 
-export default function StoreDetailDrawer({ open, store, currentUser, onClose }: Props) {
+export default function StoreDetailDrawer({ open, store, currentUser, startDate, endDate, onClose }: Props) {
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -73,7 +75,15 @@ export default function StoreDetailDrawer({ open, store, currentUser, onClose }:
     setError('');
     setData(null);
 
-    fetch(`${API_URL}/api/home/store-detail?userId=${encodeURIComponent(currentUser.id)}&store=${encodeURIComponent(store)}`, {
+    const params = new URLSearchParams({
+      userId: String(currentUser.id),
+      store,
+    });
+
+    if (startDate) params.set('startDate', startDate);
+    if (endDate) params.set('endDate', endDate);
+
+    fetch(`${API_URL}/api/home/store-detail?${params.toString()}`, {
       signal: controller.signal,
       cache: 'no-store',
     })
@@ -89,7 +99,7 @@ export default function StoreDetailDrawer({ open, store, currentUser, onClose }:
       .finally(() => setLoading(false));
 
     return () => controller.abort();
-  }, [open, store, currentUser?.id]);
+  }, [open, store, currentUser?.id, startDate, endDate]);
 
   const sellers = useMemo(() => Array.isArray(data?.sellers) ? data.sellers : [], [data?.sellers]);
   const trend = useMemo(() => Array.isArray(data?.trend) ? data.trend : [], [data?.trend]);

@@ -7985,11 +7985,34 @@ const isDailySupplement = (row: any) => {
     };
   }
 
-    type HomeConversionCounts = {
+  type HomeConversionCounts = {
     aparelhos: number;
     acessorios: number;
     peliculas: number;
     seguros: number;
+  };
+
+  type HomeResolvedPeriod = {
+    startDate: string;
+    endDate: string;
+    monthStart: string;
+    monthEnd: string;
+    label: string;
+    isCurrentMonth: boolean;
+    isHistorical: boolean;
+    isFullMonth: boolean;
+    daysSelected: number;
+    daysInMonth: number;
+  };
+
+  type HomeSalesLoadResult = {
+    rows: any[];
+    source: 'current' | 'annual_raw' | 'annual' | 'none';
+  };
+
+  type HomeInsuranceAggregate = {
+    valor: number;
+    qtd: number;
   };
 
   function homeEmptyConversionCounts(): HomeConversionCounts {
@@ -8010,22 +8033,19 @@ const isDailySupplement = (row: any) => {
       .toUpperCase();
   }
 
+  function homeToNumber(value: any): number {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : 0;
+  }
+
   function homeAddConversionSale(
     target: HomeConversionCounts,
     row: any
   ) {
-    const categoria =
-      homeNormalizeCategory(row?.familia);
+    const categoria = homeNormalizeCategory(row?.familia);
+    const quantidade = homeToNumber(row?.quantidade);
 
-    const quantidade =
-      Number(row?.quantidade || 0);
-
-    if (
-      !Number.isFinite(quantidade) ||
-      quantidade === 0
-    ) {
-      return;
-    }
+    if (!Number.isFinite(quantidade) || quantidade === 0) return;
 
     if (categoria.includes('APARELH')) {
       target.aparelhos += quantidade;
@@ -8055,62 +8075,1145 @@ const isDailySupplement = (row: any) => {
     numerator: number,
     denominator: number
   ): number {
-    if (denominator <= 0) {
-      return 0;
+    if (denominator <= 0) return 0;
+    return (numerator / denominator) * 100;
+  }
+
+  function homeIsInsuranceEligibleCategory(value: any): boolean {
+    const categoria = homeNormalizeCategory(value);
+    return (
+      categoria.includes('APARELH') ||
+      categoria.includes('TABLET') ||
+      categoria.includes('WEAR') ||
+      categoria.includes('NOTEBOOK')
+    );
+  }
+
+  function homeValidIsoDate(value: any): string {
+    const raw = String(value || '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return '';
+
+    const date = new Date(`${raw}T12:00:00`);
+    if (Number.isNaN(date.getTime())) return '';
+
+    const yyyy = date.getFullYear();
+    const mm = String(date.getMonth() + 1).padStart(2, '0');
+    const dd = String(date.getDate()).padStart(2, '0');
+    const normalized = `${yyyy}-${mm}-${dd}`;
+
+    return normalized === raw ? raw : '';
+  }
+
+  function homeDaysInclusive(startDate: string, endDate: string): number {
+    const start = new Date(`${startDate}T12:00:00`);
+    const end = new Date(`${endDate}T12:00:00`);
+    return Math.max(1, Math.floor((end.getTime() - start.getTime()) / 86400000) + 1);
+  }
+
+  function homeMonthName(month: number): string {
+    const names = [
+      'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
+      'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro',
+    ];
+    return names[Math.max(0, Math.min(11, month - 1))] || '';
+  }
+
+  function homeResolvePeriod(startRaw: any, endRaw: any): HomeResolvedPeriod {
+    const today = getBrazilTodayIso();
+    const currentPrefix = today.slice(0, 7);
+
+    let startDate = homeValidIsoDate(startRaw);
+    let endDate = homeValidIsoDate(endRaw);
+
+    if (!startDate || !endDate || startDate.slice(0, 7) !== endDate.slice(0, 7)) {
+      startDate = `${currentPrefix}-01`;
+      endDate = today;
     }
 
-    return (
-      numerator /
-      denominator
-    ) * 100;
+    if (endDate > today) endDate = today;
+    if (startDate > endDate) {
+      startDate = `${endDate.slice(0, 7)}-01`;
+    }
+
+    const year = Number(startDate.slice(0, 4));
+    const month = Number(startDate.slice(5, 7));
+    const daysInMonth = new Date(year, month, 0).getDate();
+    const monthStart = `${startDate.slice(0, 7)}-01`;
+    const monthEnd = `${startDate.slice(0, 7)}-${String(daysInMonth).padStart(2, '0')}`;
+    const isCurrentMonth = startDate.slice(0, 7) === currentPrefix;
+    const isFullMonth = startDate === monthStart && endDate === (isCurrentMonth ? today : monthEnd);
+    const isHistorical = !isCurrentMonth;
+
+    const label = isCurrentMonth
+      ? startDate === monthStart && endDate === today
+        ? 'Este mês'
+        : `${startDate.slice(8, 10)}/${startDate.slice(5, 7)} a ${endDate.slice(8, 10)}/${endDate.slice(5, 7)}`
+      : startDate === monthStart && endDate === monthEnd
+        ? `${homeMonthName(month)} de ${year}`
+        : `${startDate.slice(8, 10)}/${startDate.slice(5, 7)} a ${endDate.slice(8, 10)}/${endDate.slice(5, 7)}/${year}`;
+
+    return {
+      startDate,
+      endDate,
+      monthStart,
+      monthEnd,
+      label,
+      isCurrentMonth,
+      isHistorical,
+      isFullMonth,
+      daysSelected: homeDaysInclusive(startDate, endDate),
+      daysInMonth,
+    };
+  }
+
+  function homePreviousComparablePeriod(period: HomeResolvedPeriod) {
+    const start = new Date(`${period.startDate}T12:00:00`);
+    const end = new Date(`${period.endDate}T12:00:00`);
+
+    const previousYear = start.getMonth() === 0 ? start.getFullYear() - 1 : start.getFullYear();
+    const previousMonthIndex = start.getMonth() === 0 ? 11 : start.getMonth() - 1;
+    const previousDays = new Date(previousYear, previousMonthIndex + 1, 0).getDate();
+
+    const startDay = Math.min(start.getDate(), previousDays);
+    const endDay = Math.min(end.getDate(), previousDays);
+    const mm = String(previousMonthIndex + 1).padStart(2, '0');
+
+    return {
+      startDate: `${previousYear}-${mm}-${String(startDay).padStart(2, '0')}`,
+      endDate: `${previousYear}-${mm}-${String(Math.max(startDay, endDay)).padStart(2, '0')}`,
+    };
   }
 
   async function ensureVendedoresInsuranceColumns(db: any) {
-  const tableExists = await db.get(`
-    SELECT name
-    FROM sqlite_master
-    WHERE type = 'table'
-      AND name = 'vendedores'
-  `);
-
-  if (!tableExists) {
-    return;
-  }
-
-  const columns = await db.all(`
-    PRAGMA table_info(vendedores)
-  `);
-
-  const names = new Set(
-    (columns || []).map((column: any) =>
-      String(column?.name || '')
-        .trim()
-        .toLowerCase()
-    )
-  );
-
-  if (!names.has('qtd_seguros')) {
-    await db.exec(`
-      ALTER TABLE vendedores
-      ADD COLUMN qtd_seguros REAL DEFAULT 0
+    const tableExists = await db.get(`
+      SELECT name
+      FROM sqlite_master
+      WHERE type = 'table'
+        AND name = 'vendedores'
     `);
+
+    if (!tableExists) return;
+
+    const columns = await db.all(`PRAGMA table_info(vendedores)`);
+    const names = new Set(
+      (columns || []).map((column: any) =>
+        String(column?.name || '').trim().toLowerCase()
+      )
+    );
+
+    if (!names.has('qtd_seguros')) {
+      await db.exec(`
+        ALTER TABLE vendedores
+        ADD COLUMN qtd_seguros REAL DEFAULT 0
+      `);
+    }
+
+    if (!names.has('qtd_produtos_com_seguro')) {
+      await db.exec(`
+        ALTER TABLE vendedores
+        ADD COLUMN qtd_produtos_com_seguro REAL DEFAULT 0
+      `);
+    }
   }
 
-  if (
-    !names.has(
-      'qtd_produtos_com_seguro'
-    )
-  ) {
-    await db.exec(`
-      ALTER TABLE vendedores
-      ADD COLUMN qtd_produtos_com_seguro REAL DEFAULT 0
-    `);
-  }
-}
+  function homeStoreNameFromRow(row: any): string {
+    const cnpj = String(row?.cnpj_empresa || '').replace(/\D/g, '');
+    if (cnpj && LOJAS_MAP_GLOBAL[cnpj]) return LOJAS_MAP_GLOBAL[cnpj];
 
-  app.get('/api/home/resumo', async (req, res) => {
+    const raw = normStore(row?.loja || '');
+    if (!raw) return 'LOJA NÃO IDENTIFICADA';
+
+    return CORRECAO_NOMES_SERVER[raw]
+      ? normStore(CORRECAO_NOMES_SERVER[raw])
+      : raw;
+  }
+
+  async function homeLoadSalesRows(params: {
+    userId: string;
+    startDate: string;
+    endDate: string;
+    cnpj?: string | null;
+  }): Promise<HomeSalesLoadResult> {
+    const salesFilter = await getSalesFilter(params.userId, 'vendas');
+    const currentPrefix = getBrazilTodayIso().slice(0, 7);
+    const selectedPrefix = params.startDate.slice(0, 7);
+    const cnpj = String(params.cnpj || '').replace(/\D/g, '');
+    const storeSql = cnpj ? ` AND cnpj_empresa = '${annualSqlText(cnpj)}' ` : '';
+
+    const readCurrent = async (): Promise<any[]> => {
+      if (!fs.existsSync(GLOBAL_DB_PATH)) return [];
+      let db: any;
+      try {
+        db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+        return await db.all(`
+          SELECT
+            data_emissao,
+            COALESCE(cnpj_empresa, '') AS cnpj_empresa,
+            '' AS loja,
+            COALESCE(nome_vendedor, '') AS nome_vendedor,
+            COALESCE(descricao, '') AS descricao,
+            COALESCE(familia, 'OUTROS') AS familia,
+            COALESCE(regiao, '') AS regiao,
+            COALESCE(total_liquido, 0) AS total_liquido,
+            COALESCE(quantidade, 0) AS quantidade
+          FROM vendas
+          WHERE ${salesFilter}
+            ${storeSql}
+            AND data_emissao >= ?
+            AND data_emissao <= ?
+          ORDER BY data_emissao ASC
+        `, [params.startDate, params.endDate]);
+      } finally {
+        if (db) await db.close().catch(() => undefined);
+      }
+    };
+
+    const readAnnual =
+  async (): Promise<HomeSalesLoadResult> => {
+    if (!fs.existsSync(ANUAL_DB_PATH)) {
+      return {
+        rows: [],
+        source: 'none',
+      };
+    }
+
     let db: any;
 
+    try {
+      db = await open({
+        filename: ANUAL_DB_PATH,
+        driver: sqlite3.Database,
+      });
+
+      const getColumns = async (
+        tableName: string
+      ): Promise<Set<string>> => {
+        const info =
+          await db.all(
+            `PRAGMA table_info(${tableName})`
+          );
+
+        return new Set(
+          (info || []).map(
+            (row: any) =>
+              String(row?.name || '')
+                .trim()
+                .toLowerCase()
+          )
+        );
+      };
+
+      const numberExpr = (
+        columns: Set<string>,
+        candidates: string[]
+      ): string => {
+        const available =
+          candidates.filter(
+            (column) =>
+              columns.has(
+                column.toLowerCase()
+              )
+          );
+
+        if (!available.length) {
+          return '0';
+        }
+
+        return `COALESCE(
+          ${available.join(', ')},
+          0
+        )`;
+      };
+
+      const textExpr = (
+        columns: Set<string>,
+        candidates: string[],
+        fallback = ''
+      ): string => {
+        const available =
+          candidates.filter(
+            (column) =>
+              columns.has(
+                column.toLowerCase()
+              )
+          );
+
+        if (!available.length) {
+          return `'${annualSqlText(
+            fallback
+          )}'`;
+        }
+
+        const nullable =
+          available.map(
+            (column) =>
+              `NULLIF(${column}, '')`
+          );
+
+        return `COALESCE(
+          ${nullable.join(', ')},
+          '${annualSqlText(fallback)}'
+        )`;
+      };
+
+      const hasRaw =
+        await annualTableExists(
+          db,
+          'vendas_anuais_raw'
+        );
+
+      const hasAnnual =
+        await annualTableExists(
+          db,
+          'vendas_anuais'
+        );
+
+      // =====================================
+      // 1. BASE ANUAL RAW
+      // =====================================
+      if (hasRaw) {
+        const columns =
+          await getColumns(
+            'vendas_anuais_raw'
+          );
+
+        if (
+          columns.has('data_emissao') &&
+          columns.has('cnpj_empresa')
+        ) {
+          const totalExpr =
+            numberExpr(
+              columns,
+              [
+                'total_real',
+                'total_liquido',
+                'vendas_total',
+                'venda_total',
+                'valor_total',
+                'total',
+              ]
+            );
+
+          const quantityExpr =
+            numberExpr(
+              columns,
+              [
+                'qtd_real',
+                'quantidade',
+                'vendas_qtd',
+                'venda_qtd',
+                'qtd',
+              ]
+            );
+
+          const storeExpr =
+            textExpr(
+              columns,
+              ['loja']
+            );
+
+          const sellerExpr =
+            textExpr(
+              columns,
+              [
+                'nome_vendedor',
+                'vendedor',
+              ],
+              'VENDEDOR NÃO INFORMADO'
+            );
+
+          const descriptionExpr =
+            textExpr(
+              columns,
+              [
+                'descricao',
+                'referencia',
+                'familia',
+              ]
+            );
+
+          const familyExpr =
+            textExpr(
+              columns,
+              [
+                'categoria_real',
+                'familia',
+                'categoria',
+              ],
+              'OUTROS'
+            );
+
+          const regionExpr =
+            textExpr(
+              columns,
+              ['regiao']
+            );
+
+          const cancelClause =
+            columns.has('cancelado')
+              ? `
+                AND (
+                  cancelado IS NULL
+                  OR UPPER(
+                    TRIM(
+                      CAST(
+                        cancelado AS TEXT
+                      )
+                    )
+                  ) NOT IN (
+                    'S',
+                    'SIM',
+                    'TRUE',
+                    '1',
+                    'CANCELADO',
+                    'CANCELADA'
+                  )
+                )
+              `
+              : '';
+
+          const rows =
+            await db.all(
+              `
+                SELECT
+                  data_emissao,
+
+                  COALESCE(
+                    cnpj_empresa,
+                    ''
+                  ) AS cnpj_empresa,
+
+                  ${storeExpr}
+                    AS loja,
+
+                  ${sellerExpr}
+                    AS nome_vendedor,
+
+                  ${descriptionExpr}
+                    AS descricao,
+
+                  ${familyExpr}
+                    AS familia,
+
+                  ${regionExpr}
+                    AS regiao,
+
+                  ${totalExpr}
+                    AS total_liquido,
+
+                  ${quantityExpr}
+                    AS quantidade
+
+                FROM vendas_anuais_raw
+
+                WHERE ${salesFilter}
+
+                  ${storeSql}
+
+                  AND data_emissao >= ?
+                  AND data_emissao <= ?
+
+                  ${cancelClause}
+
+                ORDER BY
+                  data_emissao ASC
+              `,
+              [
+                params.startDate,
+                params.endDate,
+              ]
+            );
+
+          if (rows.length) {
+            return {
+              rows,
+              source: 'annual_raw',
+            };
+          }
+        }
+      }
+
+      // =====================================
+      // 2. BASE ANUAL CONSOLIDADA
+      // =====================================
+      if (hasAnnual) {
+        const columns =
+          await getColumns(
+            'vendas_anuais'
+          );
+
+        if (
+          columns.has('data_emissao') &&
+          columns.has('cnpj_empresa')
+        ) {
+          const totalExpr =
+            numberExpr(
+              columns,
+              [
+                'total_liquido',
+                'total_real',
+                'vendas_total',
+                'venda_total',
+                'valor_total',
+                'total',
+              ]
+            );
+
+          const quantityExpr =
+            numberExpr(
+              columns,
+              [
+                'quantidade',
+                'qtd_real',
+                'vendas_qtd',
+                'venda_qtd',
+                'qtd',
+              ]
+            );
+
+          const storeExpr =
+            textExpr(
+              columns,
+              ['loja']
+            );
+
+          const sellerExpr =
+            textExpr(
+              columns,
+              [
+                'nome_vendedor',
+                'vendedor',
+              ],
+              'VENDEDOR NÃO INFORMADO'
+            );
+
+          const descriptionExpr =
+            textExpr(
+              columns,
+              [
+                'descricao',
+                'familia',
+                'categoria',
+              ]
+            );
+
+          const familyExpr =
+            textExpr(
+              columns,
+              [
+                'familia',
+                'categoria_real',
+                'categoria',
+              ],
+              'OUTROS'
+            );
+
+          const regionExpr =
+            textExpr(
+              columns,
+              ['regiao']
+            );
+
+          const rows =
+            await db.all(
+              `
+                SELECT
+                  data_emissao,
+
+                  COALESCE(
+                    cnpj_empresa,
+                    ''
+                  ) AS cnpj_empresa,
+
+                  ${storeExpr}
+                    AS loja,
+
+                  ${sellerExpr}
+                    AS nome_vendedor,
+
+                  ${descriptionExpr}
+                    AS descricao,
+
+                  ${familyExpr}
+                    AS familia,
+
+                  ${regionExpr}
+                    AS regiao,
+
+                  ${totalExpr}
+                    AS total_liquido,
+
+                  ${quantityExpr}
+                    AS quantidade
+
+                FROM vendas_anuais
+
+                WHERE ${salesFilter}
+
+                  ${storeSql}
+
+                  AND data_emissao >= ?
+                  AND data_emissao <= ?
+
+                ORDER BY
+                  data_emissao ASC
+              `,
+              [
+                params.startDate,
+                params.endDate,
+              ]
+            );
+
+          if (rows.length) {
+            return {
+              rows,
+              source: 'annual',
+            };
+          }
+        }
+      }
+
+      return {
+        rows: [],
+        source: 'none',
+      };
+
+    } finally {
+      if (db) {
+        await db
+          .close()
+          .catch(
+            () => undefined
+          );
+      }
+    }
+  };
+
+    if (selectedPrefix === currentPrefix) {
+      const rows = await readCurrent();
+      if (rows.length) return { rows, source: 'current' };
+      return readAnnual();
+    }
+
+    const annual = await readAnnual();
+    if (annual.rows.length) return annual;
+
+    const fallbackRows = await readCurrent();
+    return {
+      rows: fallbackRows,
+      source: fallbackRows.length ? 'current' : 'none',
+    };
+  }
+
+  async function homeLoadCurrentKpiRows(params: {
+    userId: string;
+    cnpj?: string | null;
+    store?: string | null;
+  }): Promise<any[]> {
+    if (!fs.existsSync(GLOBAL_DB_PATH)) return [];
+
+    let db: any;
+    try {
+      db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+      await ensureVendedoresInsuranceColumns(db);
+
+      const kpiFilter = await getSalesFilter(params.userId, 'kpi');
+      const cnpj = String(params.cnpj || '').replace(/\D/g, '');
+      const store = normStore(params.store || '');
+
+      const clauses: string[] = [`(${kpiFilter})`];
+      const values: any[] = [];
+
+      if (cnpj || store) {
+        clauses.push(`(
+          REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(cnpj_empresa, ''), '.', ''), '/', ''), '-', ''), ' ', '') = ?
+          OR UPPER(COALESCE(loja, '')) = UPPER(?)
+        )`);
+        values.push(cnpj, store);
+      }
+
+      return await db.all(`
+        SELECT
+          loja,
+          cnpj_empresa,
+          vendedor,
+          COALESCE(fat_atual, 0) AS fat_atual,
+          COALESCE(fat_anterior, 0) AS fat_anterior,
+          COALESCE(pct_acessorios, 0) AS pct_acessorios,
+          COALESCE(conv_peliculas, 0) AS conv_peliculas,
+          COALESCE(seguros, 0) AS seguros,
+          COALESCE(pct_seguro, 0) AS pct_seguro,
+          COALESCE(qtd_seguros, 0) AS qtd_seguros,
+          COALESCE(qtd_produtos_com_seguro, 0) AS qtd_produtos_com_seguro,
+          COALESCE(ticket, 0) AS ticket,
+          COALESCE(qtd, 0) AS qtd,
+          COALESCE(tendencia, 0) AS tendencia,
+          COALESCE(rs_aparelho, 0) AS rs_aparelho,
+          COALESCE(rs_acessorio, 0) AS rs_acessorio,
+          COALESCE(rs_tablet, 0) AS rs_tablet,
+          COALESCE(rs_wearable, 0) AS rs_wearable
+        FROM vendedores
+        WHERE ${clauses.join(' AND ')}
+        ORDER BY fat_atual DESC, vendedor ASC
+      `, values);
+    } catch (error) {
+      console.warn('⚠️ Home: KPIs atuais indisponíveis:', error);
+      return [];
+    } finally {
+      if (db) await db.close().catch(() => undefined);
+    }
+  }
+
+  async function homeLoadAnnualInsurance(params: {
+    userId: string;
+    startDate: string;
+    endDate: string;
+    cnpj?: string | null;
+  }): Promise<Map<string, HomeInsuranceAggregate>> {
+    const result = new Map<string, HomeInsuranceAggregate>();
+    if (!fs.existsSync(ANUAL_DB_PATH)) return result;
+
+    const salesFilter = await getSalesFilter(params.userId, 'vendas');
+    const cnpj = String(params.cnpj || '').replace(/\D/g, '');
+    const storeSql = cnpj ? ` AND cnpj_empresa = '${annualSqlText(cnpj)}' ` : '';
+
+    let db: any;
+    try {
+      db = await open({ filename: ANUAL_DB_PATH, driver: sqlite3.Database });
+      const hasInsurance = await annualTableExists(db, 'seguros_anuais');
+
+      let rows: any[] = [];
+      if (hasInsurance) {
+        rows = await db.all(`
+          SELECT
+            COALESCE(cnpj_empresa, '') AS cnpj_empresa,
+            COALESCE(NULLIF(loja, ''), '') AS loja,
+            SUM(COALESCE(premio, 0)) AS valor,
+            SUM(COALESCE(qtd, 0)) AS qtd
+          FROM seguros_anuais
+          WHERE ${salesFilter}
+            ${storeSql}
+            AND data_emissao >= ?
+            AND data_emissao <= ?
+          GROUP BY COALESCE(cnpj_empresa, ''), COALESCE(NULLIF(loja, ''), '')
+        `, [params.startDate, params.endDate]);
+      }
+
+      const useful = rows.some((row: any) => homeToNumber(row.valor) !== 0 || homeToNumber(row.qtd) !== 0);
+
+      if (!useful && await annualTableExists(db, 'vendas_anuais_raw')) {
+        rows = await db.all(`
+          SELECT
+            COALESCE(cnpj_empresa, '') AS cnpj_empresa,
+            COALESCE(NULLIF(loja, ''), '') AS loja,
+            SUM(COALESCE(total_real, total_liquido, 0)) AS valor,
+            SUM(COALESCE(qtd_real, quantidade, 0)) AS qtd
+          FROM vendas_anuais_raw
+          WHERE ${salesFilter}
+            ${storeSql}
+            AND data_emissao >= ?
+            AND data_emissao <= ?
+            AND (
+              UPPER(COALESCE(categoria_real, categoria, descricao, '')) LIKE '%SEGURO%'
+              OR UPPER(COALESCE(descricao, '')) LIKE '%SEGURO%'
+              OR UPPER(COALESCE(descricao, '')) LIKE '%PROTECAO%'
+              OR UPPER(COALESCE(descricao, '')) LIKE '%PROTEÇÃO%'
+              OR UPPER(COALESCE(descricao, '')) LIKE '%GARANTIA%'
+            )
+          GROUP BY COALESCE(cnpj_empresa, ''), COALESCE(NULLIF(loja, ''), '')
+        `, [params.startDate, params.endDate]);
+      }
+
+      for (const row of rows) {
+        const key = String(row.cnpj_empresa || '').replace(/\D/g, '') || normStore(row.loja || '');
+        if (!key) continue;
+        result.set(key, {
+          valor: homeToNumber(row.valor),
+          qtd: homeToNumber(row.qtd),
+        });
+      }
+
+      return result;
+    } catch (error) {
+      console.warn('⚠️ Home: seguros anuais indisponíveis:', error);
+      return result;
+    } finally {
+      if (db) await db.close().catch(() => undefined);
+    }
+  }
+
+  function homeWeightedMetric(rows: any[], field: string): number {
+    let weighted = 0;
+    let weight = 0;
+    let simple = 0;
+    let valid = 0;
+
+    for (const row of rows) {
+      const rawValue = homeToNumber(row[field]);
+      const qtd = Math.max(0, homeToNumber(row.qtd));
+      simple += rawValue;
+      valid += 1;
+      if (qtd > 0) {
+        weighted += rawValue * qtd;
+        weight += qtd;
+      }
+    }
+
+    const ratio = weight > 0 ? weighted / weight : valid > 0 ? simple / valid : 0;
+    return Math.abs(ratio) <= 5 ? ratio * 100 : ratio;
+  }
+
+  function homeBuildHistoricalSellers(rows: any[]) {
+    const sellers = new Map<string, any>();
+
+    for (const row of rows) {
+      const vendedor = normStore(row.nome_vendedor || 'VENDEDOR NÃO INFORMADO');
+      if (!vendedor) continue;
+
+      const current = sellers.get(vendedor) || {
+        vendedor,
+        faturamento: 0,
+        qtd: 0,
+        conversao: homeEmptyConversionCounts(),
+      };
+
+      current.faturamento += homeToNumber(row.total_liquido);
+      current.qtd += Math.max(0, homeToNumber(row.quantidade));
+      homeAddConversionSale(current.conversao, row);
+      sellers.set(vendedor, current);
+    }
+
+    return Array.from(sellers.values())
+      .map((seller: any) => ({
+        vendedor: seller.vendedor,
+        faturamento: seller.faturamento,
+        qtd: seller.qtd,
+        pct_acessorios: seller.conversao.aparelhos > 0
+          ? homeConversionPercent(seller.conversao.acessorios, seller.conversao.aparelhos) / 100
+          : 0,
+        conv_peliculas: seller.conversao.aparelhos > 0
+          ? homeConversionPercent(seller.conversao.peliculas, seller.conversao.aparelhos) / 100
+          : 0,
+        pct_seguro: 0,
+        seguros: 0,
+      }))
+      .sort((a, b) => b.faturamento - a.faturamento);
+  }
+
+  async function homeBuildSnapshot(params: {
+    userId: string;
+    period: HomeResolvedPeriod;
+    cnpj?: string | null;
+    store?: string | null;
+  }) {
+    const { userId, period } = params;
+    const cnpj = String(params.cnpj || '').replace(/\D/g, '');
+
+    const selectedLoad = await homeLoadSalesRows({
+      userId,
+      startDate: period.startDate,
+      endDate: period.endDate,
+      cnpj,
+    });
+
+    const previousPeriod = homePreviousComparablePeriod(period);
+    const previousLoad = await homeLoadSalesRows({
+      userId,
+      startDate: previousPeriod.startDate,
+      endDate: previousPeriod.endDate,
+      cnpj,
+    });
+
+    const monthToEndLoad = await homeLoadSalesRows({
+      userId,
+      startDate: period.monthStart,
+      endDate: period.endDate,
+      cnpj,
+    });
+
+    const salesRows = selectedLoad.rows;
+    const previousRows = previousLoad.rows;
+
+    const kpiRows = period.isCurrentMonth
+      ? await homeLoadCurrentKpiRows({ userId, cnpj, store: params.store ?? null })
+      : [];
+
+    const annualInsurance = period.isHistorical
+      ? await homeLoadAnnualInsurance({
+          userId,
+          startDate: period.startDate,
+          endDate: period.endDate,
+          cnpj,
+        })
+      : new Map<string, HomeInsuranceAggregate>();
+
+    const faturamentoMes = salesRows.reduce(
+      (sum: number, row: any) => sum + homeToNumber(row.total_liquido),
+      0
+    );
+
+    const pecasMes = salesRows.reduce(
+      (sum: number, row: any) => sum + Math.max(0, homeToNumber(row.quantidade)),
+      0
+    );
+
+    const faturamentoAnterior = previousRows.reduce(
+      (sum: number, row: any) => sum + homeToNumber(row.total_liquido),
+      0
+    );
+
+    const crescimento = faturamentoAnterior > 0
+      ? ((faturamentoMes - faturamentoAnterior) / faturamentoAnterior) * 100
+      : null;
+
+    const diasBase = Math.max(1, period.daysSelected);
+    const tendenciaMes = period.isHistorical && period.isFullMonth
+      ? faturamentoMes
+      : faturamentoMes > 0
+        ? (faturamentoMes / diasBase) * period.daysInMonth
+        : 0;
+
+    const crescimentoTendencia = faturamentoAnterior > 0
+      ? ((tendenciaMes - faturamentoAnterior) / faturamentoAnterior) * 100
+      : null;
+
+    const monthActualThroughEnd = monthToEndLoad.rows.reduce(
+      (sum: number, row: any) => sum + homeToNumber(row.total_liquido),
+      0
+    );
+
+    const projectionDate = new Date(`${period.endDate}T12:00:00`);
+    const yearProjection = await getExecutiveYearProjection({
+      userId,
+      currentMonthActual: monthActualThroughEnd,
+      cnpj: cnpj || null,
+      now: projectionDate,
+    });
+
+    const conversionNetwork = homeEmptyConversionCounts();
+    for (const row of salesRows) homeAddConversionSale(conversionNetwork, row);
+
+    const conversaoAcessoriosRede = conversionNetwork.aparelhos > 0
+      ? homeConversionPercent(conversionNetwork.acessorios, conversionNetwork.aparelhos)
+      : homeWeightedMetric(kpiRows, 'pct_acessorios');
+
+    const conversaoPeliculasRede = conversionNetwork.aparelhos > 0
+      ? homeConversionPercent(conversionNetwork.peliculas, conversionNetwork.aparelhos)
+      : homeWeightedMetric(kpiRows, 'conv_peliculas');
+
+    const kpiInsuranceValue = kpiRows.reduce(
+      (sum: number, row: any) => sum + homeToNumber(row.seguros),
+      0
+    );
+    const kpiInsuranceQty = kpiRows.reduce(
+      (sum: number, row: any) => sum + Math.max(0, homeToNumber(row.qtd_seguros)),
+      0
+    );
+    const kpiInsuranceEligible = kpiRows.reduce(
+      (sum: number, row: any) => sum + Math.max(0, homeToNumber(row.qtd_produtos_com_seguro)),
+      0
+    );
+
+    const annualInsuranceTotal = Array.from(annualInsurance.values()).reduce(
+      (sum, item) => ({ valor: sum.valor + item.valor, qtd: sum.qtd + item.qtd }),
+      { valor: 0, qtd: 0 }
+    );
+
+    const historicalEligibleQty = salesRows.reduce(
+      (sum: number, row: any) =>
+        sum + (homeIsInsuranceEligibleCategory(row.familia) ? Math.max(0, homeToNumber(row.quantidade)) : 0),
+      0
+    );
+
+    const segurosValorRede = period.isCurrentMonth
+      ? kpiInsuranceValue
+      : annualInsuranceTotal.valor;
+
+    const conversaoSeguroRede = period.isCurrentMonth
+      ? kpiInsuranceEligible > 0
+        ? homeConversionPercent(kpiInsuranceQty, kpiInsuranceEligible)
+        : homeWeightedMetric(kpiRows, 'pct_seguro')
+      : historicalEligibleQty > 0
+        ? homeConversionPercent(annualInsuranceTotal.qtd, historicalEligibleQty)
+        : 0;
+
+    const daily = new Map<string, { date: string; faturamento: number; quantidade: number }>();
+    const categoryMap = new Map<string, { categoria: string; faturamento: number; quantidade: number }>();
+    const regionMap = new Map<string, { regiao: string; faturamento: number; quantidade: number }>();
+    const storesMap = new Map<string, any>();
+
+    for (const row of salesRows) {
+      const date = String(row.data_emissao || '').slice(0, 10);
+      if (date) {
+        const current = daily.get(date) || { date, faturamento: 0, quantidade: 0 };
+        current.faturamento += homeToNumber(row.total_liquido);
+        current.quantidade += Math.max(0, homeToNumber(row.quantidade));
+        daily.set(date, current);
+      }
+
+      const category = homeNormalizeCategory(row.familia) || 'OUTROS';
+      if (!category.includes('SEGURO') && !category.includes('PROTECAO') && !category.includes('GARANTIA')) {
+        const categoryCurrent = categoryMap.get(category) || { categoria: category, faturamento: 0, quantidade: 0 };
+        categoryCurrent.faturamento += homeToNumber(row.total_liquido);
+        categoryCurrent.quantidade += Math.max(0, homeToNumber(row.quantidade));
+        categoryMap.set(category, categoryCurrent);
+      }
+
+      const loja = homeStoreNameFromRow(row);
+      const region = annualRegionFromStore(loja, row.regiao || '');
+      const regionCurrent = regionMap.get(region) || { regiao: region, faturamento: 0, quantidade: 0 };
+      regionCurrent.faturamento += homeToNumber(row.total_liquido);
+      regionCurrent.quantidade += Math.max(0, homeToNumber(row.quantidade));
+      regionMap.set(region, regionCurrent);
+
+      const store = storesMap.get(loja) || {
+        loja,
+        cnpj: String(row.cnpj_empresa || '').replace(/\D/g, '') || getCnpjByName(loja) || '',
+        regiao: region,
+        faturamento: 0,
+        quantidade: 0,
+        conversao: homeEmptyConversionCounts(),
+        conversaoAcessorios: 0,
+        conversaoPeliculas: 0,
+        seguroPct: 0,
+        seguros: 0,
+        vendedores: 0,
+      };
+
+      store.faturamento += homeToNumber(row.total_liquido);
+      store.quantidade += Math.max(0, homeToNumber(row.quantidade));
+      homeAddConversionSale(store.conversao, row);
+      storesMap.set(loja, store);
+    }
+
+    const kpiByStore = new Map<string, any[]>();
+    for (const row of kpiRows) {
+      const rawStore = normStore(row.loja || '');
+      const cnpjKpi = String(row.cnpj_empresa || '').replace(/\D/g, '');
+      const loja = cnpjKpi && LOJAS_MAP_GLOBAL[cnpjKpi]
+        ? LOJAS_MAP_GLOBAL[cnpjKpi]
+        : rawStore || 'LOJA NÃO IDENTIFICADA';
+      const items = kpiByStore.get(loja) || [];
+      items.push(row);
+      kpiByStore.set(loja, items);
+
+      if (!storesMap.has(loja)) {
+        storesMap.set(loja, {
+          loja,
+          cnpj: cnpjKpi || getCnpjByName(loja) || '',
+          regiao: annualRegionFromStore(loja),
+          faturamento: items.reduce((sum: number, item: any) => sum + homeToNumber(item.fat_atual), 0),
+          quantidade: items.reduce((sum: number, item: any) => sum + Math.max(0, homeToNumber(item.qtd)), 0),
+          conversao: homeEmptyConversionCounts(),
+          conversaoAcessorios: 0,
+          conversaoPeliculas: 0,
+          seguroPct: 0,
+          seguros: 0,
+          vendedores: 0,
+        });
+      }
+    }
+
+    for (const [loja, store] of storesMap.entries()) {
+      const rows = kpiByStore.get(loja) || [];
+
+      store.conversaoAcessorios = store.conversao.aparelhos > 0
+        ? homeConversionPercent(store.conversao.acessorios, store.conversao.aparelhos)
+        : homeWeightedMetric(rows, 'pct_acessorios');
+
+      store.conversaoPeliculas = store.conversao.aparelhos > 0
+        ? homeConversionPercent(store.conversao.peliculas, store.conversao.aparelhos)
+        : homeWeightedMetric(rows, 'conv_peliculas');
+
+      if (period.isCurrentMonth) {
+        const seguroValor = rows.reduce((sum: number, item: any) => sum + homeToNumber(item.seguros), 0);
+        const seguroQtd = rows.reduce((sum: number, item: any) => sum + Math.max(0, homeToNumber(item.qtd_seguros)), 0);
+        const eligible = rows.reduce((sum: number, item: any) => sum + Math.max(0, homeToNumber(item.qtd_produtos_com_seguro)), 0);
+        store.seguros = seguroValor;
+        store.seguroPct = eligible > 0
+          ? homeConversionPercent(seguroQtd, eligible)
+          : homeWeightedMetric(rows, 'pct_seguro');
+        store.vendedores = rows.length;
+      } else {
+        const key = String(store.cnpj || '').replace(/\D/g, '') || normStore(loja);
+        const insurance = annualInsurance.get(key) || { valor: 0, qtd: 0 };
+        const eligible = salesRows
+          .filter((row: any) => homeStoreNameFromRow(row) === loja && homeIsInsuranceEligibleCategory(row.familia))
+          .reduce((sum: number, row: any) => sum + Math.max(0, homeToNumber(row.quantidade)), 0);
+        store.seguros = insurance.valor;
+        store.seguroPct = eligible > 0 ? homeConversionPercent(insurance.qtd, eligible) : 0;
+        store.vendedores = new Set(
+          salesRows
+            .filter((row: any) => homeStoreNameFromRow(row) === loja)
+            .map((row: any) => normStore(row.nome_vendedor || ''))
+            .filter(Boolean)
+        ).size;
+      }
+
+      delete store.conversao;
+      storesMap.set(loja, store);
+    }
+
+    const stores = Array.from(storesMap.values())
+      .filter((item: any) => item.loja && item.loja !== 'LOJA NÃO IDENTIFICADA')
+      .sort((a: any, b: any) => b.faturamento - a.faturamento);
+
+    const categorias = Array.from(categoryMap.values())
+      .sort((a, b) => b.faturamento - a.faturamento)
+      .slice(0, 6)
+      .map((item) => ({
+        ...item,
+        participacao: faturamentoMes > 0 ? (item.faturamento / faturamentoMes) * 100 : 0,
+      }));
+
+    const regioes = Array.from(regionMap.values())
+      .sort((a, b) => b.faturamento - a.faturamento)
+      .slice(0, 6)
+      .map((item) => ({
+        ...item,
+        participacao: faturamentoMes > 0 ? (item.faturamento / faturamentoMes) * 100 : 0,
+      }));
+
+    return {
+      salesRows,
+      kpiRows,
+      source: selectedLoad.source,
+      period,
+      kpis: {
+        faturamentoMes,
+        faturamentoAnterior,
+        crescimento,
+        tendenciaMes,
+        tendenciaAno: yearProjection.tendenciaAno,
+        realizadoAno: yearProjection.realizadoAno,
+        crescimentoTendencia,
+        pecasMes,
+        ticketMedio: pecasMes > 0 ? faturamentoMes / pecasMes : 0,
+        conversaoAcessorios: conversaoAcessoriosRede,
+        conversaoPeliculas: conversaoPeliculasRede,
+        seguroPct: conversaoSeguroRede,
+        seguros: segurosValorRede,
+        lojasAtivas: stores.length,
+      },
+      trend: Array.from(daily.values()).sort((a, b) => a.date.localeCompare(b.date)),
+      stores,
+      operations: {
+        mediaDiaria: period.daysSelected > 0 ? faturamentoMes / period.daysSelected : 0,
+        quantidade: pecasMes,
+        lojasAtivas: stores.length,
+        vendedoresAtivos: period.isCurrentMonth
+          ? new Set(kpiRows.map((row: any) => normStore(row.vendedor || '')).filter(Boolean)).size
+          : new Set(salesRows.map((row: any) => normStore(row.nome_vendedor || '')).filter(Boolean)).size,
+        topLoja: stores[0] ? { loja: stores[0].loja, faturamento: stores[0].faturamento } : null,
+        categorias,
+        regioes,
+        source: selectedLoad.source,
+        insuranceScope: period.isCurrentMonth && !period.isFullMonth ? 'month_to_date' : 'selected_period',
+      },
+    };
+  }
+
+  app.get('/api/home/resumo', async (req, res) => {
     try {
       const userId = String(req.query.userId || '').trim();
       if (!userId || userId === 'undefined' || userId === 'null') {
@@ -8122,549 +9225,17 @@ const isDailySupplement = (row: any) => {
         return res.status(401).json({ success: false, error: 'Usuário não encontrado.' });
       }
 
-      if (!fs.existsSync(GLOBAL_DB_PATH)) {
-        return res.json({
-          success: true,
-          scope: { type: 'store', label: 'Sem dados disponíveis', stores: [] },
-          generatedAt: new Date().toISOString(),
-          kpis: {},
-          trend: [],
-          stores: [],
-          radar: [],
-        });
-      }
-
-      const role = normStore(user.role);
-      const networkRoles = ['CEO', 'DIRETOR', 'DIRETORIA', 'ADM', 'ADMIN', 'GESTOR', 'SOCIO', 'SÓCIO', 'MASTER'];
-      const storeScopedRoles = ['LOJA', 'VENDEDOR', 'GERENTE LOJA', 'GERENTE DE LOJA', 'OPERADOR', 'COLABORADOR'];
-      const roleIsStoreScoped = storeScopedRoles.some((item) => role === item || role.includes(item));
-      const hasNetworkScope = !roleIsStoreScoped && (networkRoles.includes(role) || Boolean(user.isAdmin));
-      const isClarkDirector = ['CEO', 'DIRETOR', 'DIRETORIA'].includes(role);
-
+      const hasNetworkScope = userHasNetworkScope(user);
+      const isClarkDirector = ['CEO', 'DIRETOR', 'DIRETORIA'].includes(normStore(user.role));
       const allowedStores = getAllowedStoreNamesFromUser(user);
 
       if (!hasNetworkScope && allowedStores.length === 0) {
         return res.status(403).json({ success: false, error: 'Usuário sem loja vinculada.' });
       }
 
-      const now = new Date();
-      const yyyy = now.getFullYear();
-      const mm = String(now.getMonth() + 1).padStart(2, '0');
-      const monthStart = `${yyyy}-${mm}-01`;
-      const today = `${yyyy}-${mm}-${String(now.getDate()).padStart(2, '0')}`;
-
-      const previousMonthDate = new Date(yyyy, now.getMonth() - 1, 1);
-      const py = previousMonthDate.getFullYear();
-      const pm = String(previousMonthDate.getMonth() + 1).padStart(2, '0');
-      const previousStart = `${py}-${pm}-01`;
-      const previousEndDate = new Date(yyyy, now.getMonth(), 0);
-      const previousEnd = `${previousEndDate.getFullYear()}-${String(previousEndDate.getMonth() + 1).padStart(2, '0')}-${String(previousEndDate.getDate()).padStart(2, '0')}`;
-
-      const salesFilter = await getSalesFilter(userId, 'vendas');
-      const kpiFilter = await getSalesFilter(userId, 'kpi');
-
-      db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
-           await ensureVendedoresInsuranceColumns(db);
-
-      const monthRows = await db.all(`
-        SELECT
-          data_emissao,
-          cnpj_empresa,
-          COALESCE(familia, '') AS familia,
-          COALESCE(total_liquido, 0) AS total_liquido,
-          COALESCE(quantidade, 0) AS quantidade
-        FROM vendas
-        WHERE ${salesFilter}
-          AND data_emissao >= '${monthStart}'
-          AND data_emissao <= '${today}'
-        ORDER BY data_emissao ASC
-      `);
-
-      const previousRows = await db.all(`
-        SELECT
-          COALESCE(total_liquido, 0) AS total_liquido,
-          COALESCE(quantidade, 0) AS quantidade
-        FROM vendas
-        WHERE ${salesFilter}
-          AND data_emissao >= '${previousStart}'
-          AND data_emissao <= '${previousEnd}'
-      `);
-
-      let kpiRows: any[] = [];
-      try {
-        kpiRows = await db.all(`
-          SELECT
-            loja,
-            cnpj_empresa,
-            vendedor,
-            COALESCE(fat_atual, 0) AS fat_atual,
-            COALESCE(fat_anterior, 0) AS fat_anterior,
-            COALESCE(pct_acessorios, 0) AS pct_acessorios,
-            COALESCE(conv_peliculas, 0) AS conv_peliculas,
-            COALESCE(seguros, 0) AS seguros,
-            COALESCE(pct_seguro, 0) AS pct_seguro,
-            COALESCE(
-              qtd_seguros,
-              0
-            ) AS qtd_seguros,
-            COALESCE(
-              qtd_produtos_com_seguro,
-              0
-            ) AS qtd_produtos_com_seguro,
-            COALESCE(ticket, 0) AS ticket,
-            COALESCE(qtd, 0) AS qtd,
-            COALESCE(tendencia, 0) AS tendencia
-          FROM vendedores
-          WHERE ${kpiFilter}
-        `);
-      } catch (error) {
-        console.warn('⚠️ Home: tabela vendedores indisponível:', error);
-        kpiRows = [];
-      }
-
-      const toNumber = (value: any) => {
-        const n = Number(value);
-        return Number.isFinite(n) ? n : 0;
-      };
-
-      const conversionNetwork =
-        homeEmptyConversionCounts();
-
-      const conversionByCnpj =
-        new Map<
-          string,
-          HomeConversionCounts
-        >();
-
-      for (const row of monthRows) {
-        // Rede inteira
-        homeAddConversionSale(
-          conversionNetwork,
-          row
-        );
-
-        // Cada loja individualmente
-        const cnpj =
-          String(
-            row.cnpj_empresa || ''
-          ).replace(/\D/g, '');
-
-        if (!cnpj) {
-          continue;
-        }
-
-        const storeConversion =
-          conversionByCnpj.get(cnpj) ||
-          homeEmptyConversionCounts();
-
-        homeAddConversionSale(
-          storeConversion,
-          row
-        );
-
-        conversionByCnpj.set(
-          cnpj,
-          storeConversion
-        );
-      }
-
-      const storeNameFromCnpj = (value: any) => {
-        const cnpj = String(value || '').replace(/\D/g, '');
-        return LOJAS_MAP_GLOBAL[cnpj] || 'LOJA NÃO IDENTIFICADA';
-      };
-
-      const faturamentoMes = monthRows.reduce((sum: number, row: any) => sum + toNumber(row.total_liquido), 0);
-      const pecasMes = monthRows.reduce((sum: number, row: any) => sum + Math.max(0, toNumber(row.quantidade)), 0);
-      const faturamentoAnterior = previousRows.reduce((sum: number, row: any) => sum + toNumber(row.total_liquido), 0);
-      const crescimento = faturamentoAnterior > 0 ? ((faturamentoMes - faturamentoAnterior) / faturamentoAnterior) * 100 : null;
-
-      const diasNoMes =
-        new Date(
-          yyyy,
-          now.getMonth() + 1,
-          0
-        ).getDate();
-
-      const diaAtual =
-        Math.max(
-          1,
-          now.getDate()
-        );
-
-      const tendenciaMes =
-        faturamentoMes > 0
-          ? (
-              faturamentoMes /
-              diaAtual
-            ) * diasNoMes
-          : 0;
-
-      const baseMesAnterior =
-        faturamentoAnterior;
-
-      const crescimentoTendencia =
-        baseMesAnterior > 0
-          ? (
-              (
-                tendenciaMes -
-                baseMesAnterior
-              ) /
-              baseMesAnterior
-            ) * 100
-          : null;
-
-      const yearProjection =
-        await getExecutiveYearProjection({
-          userId,
-          currentMonthActual:
-            faturamentoMes,
-          now,
-        });
-
-      const toPercentPoints = (value: any) => {
-      const n = toNumber(value);
-
-      // Os KPIs vêm do banco em formato decimal.
-      // Ex.: 1.049 = 104,9% | 0.062 = 6,2%.
-      return Math.abs(n) <= 5 ? n * 100 : n;
-      };
-
-      const weightedMetric = (field: string) => {
-      let weighted = 0;
-      let weight = 0;
-      let simple = 0;
-      let valid = 0;
-
-      for (const row of kpiRows) {
-        const rawValue = toNumber(row[field]);
-        const qtd = Math.max(0, toNumber(row.qtd));
-
-        simple += rawValue;
-        valid += 1;
-
-        if (qtd > 0) {
-          weighted += rawValue * qtd;
-          weight += qtd;
-        }
-      }
-
-      const ratio =
-        weight > 0
-          ? weighted / weight
-          : valid > 0
-            ? simple / valid
-            : 0;
-
-      return toPercentPoints(ratio);
-      };
-
-      const conversaoAcessoriosRede =
-        conversionNetwork.aparelhos > 0
-          ? homeConversionPercent(
-              conversionNetwork.acessorios,
-              conversionNetwork.aparelhos
-            )
-          : weightedMetric(
-              'pct_acessorios'
-            );
-
-      const conversaoPeliculasRede =
-        conversionNetwork.aparelhos > 0
-          ? homeConversionPercent(
-              conversionNetwork.peliculas,
-              conversionNetwork.aparelhos
-            )
-          : weightedMetric(
-              'conv_peliculas'
-            );
-
-      const segurosValorRede =
-        kpiRows.reduce(
-          (sum: number, row: any) =>
-            sum + toNumber(row.seguros),
-          0
-        );
-
-      const qtdSegurosRede =
-        kpiRows.reduce(
-          (sum: number, row: any) =>
-            sum +
-            Math.max(
-              0,
-              toNumber(row.qtd_seguros)
-            ),
-          0
-        );
-
-      const qtdProdutosComSeguroRede =
-        kpiRows.reduce(
-          (sum: number, row: any) =>
-            sum +
-            Math.max(
-              0,
-              toNumber(
-                row.qtd_produtos_com_seguro
-              )
-            ),
-          0
-        );
-
-      const conversaoSeguroRede =
-        qtdProdutosComSeguroRede > 0
-          ? (
-              qtdSegurosRede /
-              qtdProdutosComSeguroRede
-            ) * 100
-          : weightedMetric('pct_seguro');
-
-      const daily = new Map<string, { date: string; faturamento: number; quantidade: number }>();
-      const storesMap = new Map<string, any>();
-
-      for (const row of monthRows) {
-        const date = String(row.data_emissao || '').slice(0, 10);
-        if (date) {
-          const current = daily.get(date) || { date, faturamento: 0, quantidade: 0 };
-          current.faturamento += toNumber(row.total_liquido);
-          current.quantidade += Math.max(0, toNumber(row.quantidade));
-          daily.set(date, current);
-        }
-
-        const loja = storeNameFromCnpj(row.cnpj_empresa);
-        const currentStore = storesMap.get(loja) || {
-          loja,
-          faturamento: 0,
-          quantidade: 0,
-          conversaoAcessorios: 0,
-          conversaoPeliculas: 0,
-          seguroPct: 0,
-          vendedores: 0,
-        };
-        currentStore.faturamento += toNumber(row.total_liquido);
-        currentStore.quantidade += Math.max(0, toNumber(row.quantidade));
-        storesMap.set(loja, currentStore);
-      }
-
-      const kpiByStore = new Map<string, any[]>();
-      for (const row of kpiRows) {
-        const rawLoja =
-          String(row.loja || '').trim();
-
-        const cnpjKpi =
-          String(row.cnpj_empresa || '')
-            .replace(/\D/g, '');
-
-        const cnpjResolvido =
-          cnpjKpi ||
-          getCnpjByName(rawLoja) ||
-          '';
-
-        const loja =
-          cnpjResolvido &&
-          LOJAS_MAP_GLOBAL[cnpjResolvido]
-            ? LOJAS_MAP_GLOBAL[cnpjResolvido]
-            : rawLoja ||
-              'LOJA NÃO IDENTIFICADA';
-        const rows = kpiByStore.get(loja) || [];
-        rows.push(row);
-        kpiByStore.set(loja, rows);
-        if (!storesMap.has(loja)) {
-          storesMap.set(loja, {
-            loja,
-            faturamento: rows.reduce((sum: number, item: any) => sum + toNumber(item.fat_atual), 0),
-            quantidade: rows.reduce((sum: number, item: any) => sum + Math.max(0, toNumber(item.qtd)), 0),
-            conversaoAcessorios: 0,
-            conversaoPeliculas: 0,
-            seguroPct: 0,
-            vendedores: 0,
-          });
-        }
-      }
-
-      const weightedFromRows = (rows: any[], field: string) => {
-      let weighted = 0;
-      let weight = 0;
-      let simple = 0;
-      let valid = 0;
-
-      for (const row of rows) {
-        const rawValue = toNumber(row[field]);
-        const qtd = Math.max(0, toNumber(row.qtd));
-
-        simple += rawValue;
-        valid += 1;
-
-        if (qtd > 0) {
-          weighted += rawValue * qtd;
-          weight += qtd;
-        }
-      }
-
-      const ratio =
-        weight > 0
-          ? weighted / weight
-          : valid > 0
-            ? simple / valid
-            : 0;
-
-      return toPercentPoints(ratio);
-      };
-
-      for (const [loja, store] of storesMap.entries()) {
-        const rows = kpiByStore.get(loja) || [];
-
-        const cnpjLoja =
-          String(
-            getCnpjByName(loja) || ''
-          ).replace(/\D/g, '');
-
-        const conversion =
-          cnpjLoja
-            ? conversionByCnpj.get(cnpjLoja)
-            : undefined;
-
-        if (
-          conversion &&
-          conversion.aparelhos > 0
-        ) {
-          store.conversaoAcessorios =
-            homeConversionPercent(
-              conversion.acessorios,
-              conversion.aparelhos
-            );
-
-          store.conversaoPeliculas =
-            homeConversionPercent(
-              conversion.peliculas,
-              conversion.aparelhos
-            );
-
-          
-        } else {
-          // Fallback caso não exista
-          // categoria suficiente nas vendas.
-          store.conversaoAcessorios =
-            weightedFromRows(
-              rows,
-              'pct_acessorios'
-            );
-
-          store.conversaoPeliculas =
-            weightedFromRows(
-              rows,
-              'conv_peliculas'
-            );
-
-         }
-
-         const segurosValorLoja =
-          rows.reduce(
-            (sum: number, item: any) =>
-              sum + toNumber(item.seguros),
-            0
-          );
-
-        const qtdSegurosLoja =
-          rows.reduce(
-            (sum: number, item: any) =>
-              sum +
-              Math.max(
-                0,
-                toNumber(item.qtd_seguros)
-              ),
-            0
-          );
-
-        const qtdProdutosComSeguroLoja =
-          rows.reduce(
-            (sum: number, item: any) =>
-              sum +
-              Math.max(
-                0,
-                toNumber(
-                  item.qtd_produtos_com_seguro
-                )
-              ),
-            0
-          );
-
-        store.seguros =
-          segurosValorLoja;
-
-        store.seguroPct =
-          qtdProdutosComSeguroLoja > 0
-            ? (
-                qtdSegurosLoja /
-                qtdProdutosComSeguroLoja
-              ) * 100
-            : weightedFromRows(
-                rows,
-                'pct_seguro'
-              );
-
-        store.vendedores = rows.length;
-
-        if (
-          store.faturamento <= 0 &&
-          rows.length
-        ) {
-          store.faturamento =
-            rows.reduce(
-              (
-                sum: number,
-                item: any
-              ) =>
-                sum +
-                toNumber(item.fat_atual),
-              0
-            );
-        }
-
-        storesMap.set(loja, store);
-      }
-
-      const stores = Array.from(storesMap.values())
-        .filter((item: any) => item.loja !== 'LOJA NÃO IDENTIFICADA')
-        .sort((a: any, b: any) => b.faturamento - a.faturamento);
-
-      const networkAverage = stores.length
-        ? stores.reduce((sum: number, item: any) => sum + toNumber(item.conversaoAcessorios), 0) / stores.length
-        : 0;
-
-      const radar: any[] = [];
-      if (hasNetworkScope) {
-        const bottomConversion = [...stores]
-          .filter((item: any) => item.quantidade > 0)
-          .sort((a: any, b: any) => a.conversaoAcessorios - b.conversaoAcessorios)
-          .slice(0, 3);
-
-        bottomConversion.forEach((item: any) => {
-          radar.push({
-            level: 'warning',
-            title: item.loja,
-            text: `Conversão de acessórios em ${toNumber(item.conversaoAcessorios).toFixed(1).replace('.', ',')}%.`,
-            metric: 'Conversão',
-          });
-        });
-
-        if (stores[0]) {
-          radar.unshift({
-            level: 'positive',
-            title: stores[0].loja,
-            text: `Maior faturamento do mês: ${toNumber(stores[0].faturamento).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}.`,
-            metric: 'Destaque',
-          });
-        }
-      } else if (stores[0]) {
-        const store = stores[0];
-        radar.push({
-          level: store.conversaoAcessorios >= networkAverage && networkAverage > 0 ? 'positive' : 'info',
-          title: store.loja,
-          text: `Sua conversão de acessórios está em ${toNumber(store.conversaoAcessorios).toFixed(1).replace('.', ',')}% neste mês.`,
-          metric: 'Sua unidade',
-        });
-      }
-
-      const scopeStores = hasNetworkScope ? stores.map((item: any) => item.loja) : allowedStores;
+      const period = homeResolvePeriod(req.query.startDate, req.query.endDate);
+      const snapshot = await homeBuildSnapshot({ userId, period });
+      const visibleStores = hasNetworkScope ? snapshot.stores : snapshot.stores.slice(0, 1);
 
       return res.json({
         success: true,
@@ -8672,44 +9243,27 @@ const isDailySupplement = (row: any) => {
         scope: {
           type: hasNetworkScope ? 'network' : 'store',
           label: hasNetworkScope ? 'Visão consolidada da rede' : 'Dados restritos à sua unidade',
-          stores: scopeStores,
+          stores: hasNetworkScope ? snapshot.stores.map((item: any) => item.loja) : allowedStores,
           canCompareStores: hasNetworkScope,
           canUseClark: isClarkDirector,
         },
-        period: { startDate: monthStart, endDate: today, label: 'Este mês' },
+        period: snapshot.period,
         kpis: {
-          faturamentoMes,
-          faturamentoAnterior,
-          crescimento,
-          tendenciaMes,
-          tendenciaAno:
-            yearProjection.tendenciaAno,
-          realizadoAno:
-            yearProjection.realizadoAno,
-          crescimentoTendencia,
-          pecasMes,
-          ticketMedio: pecasMes > 0 ? faturamentoMes / pecasMes : 0,
-          conversaoAcessorios:
-            conversaoAcessoriosRede,
-          conversaoPeliculas:
-            conversaoPeliculasRede,
-          seguroPct:
-            conversaoSeguroRede,
-          seguros: segurosValorRede,
-          lojasAtivas: hasNetworkScope ? stores.length : Math.min(1, stores.length),
+          ...snapshot.kpis,
+          lojasAtivas: hasNetworkScope ? snapshot.stores.length : Math.min(1, snapshot.stores.length),
         },
-        trend: Array.from(daily.values()).sort((a, b) => a.date.localeCompare(b.date)),
-        stores: hasNetworkScope ? stores : stores.slice(0, 1),
-        radar: radar.slice(0, 5),
-        clarkBriefing: hasNetworkScope
-          ? `A rede faturou ${faturamentoMes.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })} no mês. ${crescimento === null ? 'Ainda não há base suficiente para comparação.' : `A variação contra o mês anterior é de ${crescimento.toFixed(1).replace('.', ',')}%.`} A conversão de acessórios está em ${conversaoAcessoriosRede.toFixed(1).replace('.', ',')}%.`
-          : null,
+        trend: snapshot.trend,
+        stores: visibleStores,
+        operations: snapshot.operations,
+        radar: [],
+        clarkBriefing: null,
       });
     } catch (error: any) {
       console.error('❌ Erro /api/home/resumo:', error);
-      return res.status(500).json({ success: false, error: error?.message || 'Erro ao montar resumo da home.' });
-    } finally {
-      try { if (db) await db.close(); } catch {}
+      return res.status(500).json({
+        success: false,
+        error: error?.message || 'Erro ao montar resumo da home.',
+      });
     }
   });
 
@@ -8745,325 +9299,92 @@ function executivePct(value: any): string {
 }
 
 app.get('/api/home/store-detail', async (req, res) => {
-  let db: any;
+    try {
+      const userId = String(req.query.userId || '').trim();
+      const requestedStore = executiveNormalizeStoreName(req.query.store);
 
-  try {
-    const userId = String(req.query.userId || '').trim();
-    const requestedStore = executiveNormalizeStoreName(req.query.store);
+      if (!userId || !requestedStore) {
+        return res.status(400).json({
+          success: false,
+          error: 'Usuário e loja são obrigatórios.',
+        });
+      }
 
-    if (!userId || !requestedStore) {
-      return res.status(400).json({ success: false, error: 'Usuário e loja são obrigatórios.' });
-    }
+      const user = await prisma.user.findUnique({ where: { id: userId } });
+      if (!user) {
+        return res.status(401).json({ success: false, error: 'Usuário não encontrado.' });
+      }
 
-    const user = await prisma.user.findUnique({ where: { id: userId } });
-    if (!user) {
-      return res.status(401).json({ success: false, error: 'Usuário não encontrado.' });
-    }
+      const hasNetworkScope = userHasNetworkScope(user);
+      const allowedStores = getAllowedStoreNamesFromUser(user).map(executiveNormalizeStoreName);
 
-    const hasNetworkScope = userHasNetworkScope(user);
-    const allowedStores = getAllowedStoreNamesFromUser(user).map(executiveNormalizeStoreName);
+      if (!hasNetworkScope && !allowedStores.includes(requestedStore)) {
+        return res.status(403).json({
+          success: false,
+          error: 'Você não possui acesso a esta loja.',
+        });
+      }
 
-    if (!hasNetworkScope && !allowedStores.includes(requestedStore)) {
-      return res.status(403).json({ success: false, error: 'Você não possui acesso a esta loja.' });
-    }
+      const cnpj = getCnpjByName(requestedStore);
+      if (!cnpj) {
+        return res.status(404).json({
+          success: false,
+          error: 'Loja não encontrada no mapa oficial.',
+        });
+      }
 
-    const cnpj = getCnpjByName(requestedStore);
-    if (!cnpj) {
-      return res.status(404).json({ success: false, error: 'Loja não encontrada no mapa oficial.' });
-    }
+      const period = homeResolvePeriod(req.query.startDate, req.query.endDate);
+      const snapshot = await homeBuildSnapshot({
+        userId,
+        period,
+        cnpj,
+        store: requestedStore,
+      });
 
-    if (!fs.existsSync(GLOBAL_DB_PATH)) {
+      const sellers = period.isCurrentMonth
+        ? snapshot.kpiRows.map((row: any) => ({
+            vendedor: row.vendedor,
+            faturamento: homeToNumber(row.fat_atual),
+            pct_acessorios: homeWeightedMetric([row], 'pct_acessorios'),
+            conv_peliculas: homeWeightedMetric([row], 'conv_peliculas'),
+            pct_seguro: homeWeightedMetric([row], 'pct_seguro'),
+            seguros: homeToNumber(row.seguros),
+            qtd: homeToNumber(row.qtd),
+          }))
+        : homeBuildHistoricalSellers(snapshot.salesRows);
+
       return res.json({
         success: true,
         store: requestedStore,
-        kpis: {},
-        trend: [],
-        sellers: [],
+        period: snapshot.period,
+        kpis: {
+          faturamento: snapshot.kpis.faturamentoMes,
+          faturamentoAnterior: snapshot.kpis.faturamentoAnterior,
+          crescimento: snapshot.kpis.crescimento,
+          tendenciaMes: snapshot.kpis.tendenciaMes,
+          tendenciaAno: snapshot.kpis.tendenciaAno,
+          realizadoAno: snapshot.kpis.realizadoAno,
+          crescimentoTendencia: snapshot.kpis.crescimentoTendencia,
+          quantidade: snapshot.kpis.pecasMes,
+          ticketMedio: snapshot.kpis.ticketMedio,
+          conversaoAcessorios: snapshot.kpis.conversaoAcessorios,
+          conversaoPeliculas: snapshot.kpis.conversaoPeliculas,
+          seguroPct: snapshot.kpis.seguroPct,
+          seguros: snapshot.kpis.seguros,
+          vendedores: sellers.length,
+        },
+        trend: snapshot.trend,
+        operations: snapshot.operations,
+        sellers: sellers.slice(0, 20),
+      });
+    } catch (error: any) {
+      console.error('❌ Erro /api/home/store-detail:', error);
+      return res.status(500).json({
+        success: false,
+        error: error?.message || 'Erro ao carregar detalhes da loja.',
       });
     }
-
-    const { startDate, endDate } = getCurrentMonthRange();
-    db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
-          await ensureVendedoresInsuranceColumns(db);
-    const salesRows = await db.all(
-      `
-        SELECT
-          data_emissao,
-          COALESCE(familia, '') AS familia,
-          COALESCE(total_liquido, 0) AS total_liquido,
-          COALESCE(quantidade, 0) AS quantidade
-        FROM vendas
-        WHERE cnpj_empresa = ?
-          AND data_emissao >= ?
-          AND data_emissao <= ?
-        ORDER BY data_emissao ASC
-      `,
-      [cnpj, startDate, endDate]
-    );
-
-    let sellerRows: any[] = [];
-    try {
-      sellerRows = await db.all(
-        `
-          SELECT
-            vendedor,
-            COALESCE(fat_atual, 0) AS faturamento,
-            COALESCE(pct_acessorios, 0) AS pct_acessorios,
-            COALESCE(conv_peliculas, 0) AS conv_peliculas,
-            COALESCE(pct_seguro, 0) AS pct_seguro,
-            COALESCE(seguros, 0) AS seguros,
-            COALESCE(
-              qtd_seguros,
-              0
-            ) AS qtd_seguros,
-            COALESCE(
-              qtd_produtos_com_seguro,
-              0
-            ) AS qtd_produtos_com_seguro,
-            COALESCE(ticket, 0) AS ticket,
-            COALESCE(qtd, 0) AS qtd,
-            COALESCE(fat_anterior, 0) AS fat_anterior,
-            COALESCE(tendencia, 0) AS tendencia
-          FROM vendedores
-          WHERE
-            REPLACE(
-              REPLACE(
-                REPLACE(
-                  REPLACE(
-                    COALESCE(cnpj_empresa, ''),
-                    '.', ''
-                  ),
-                  '/', ''
-                ),
-                '-', ''
-              ),
-              ' ', ''
-            ) = ?
-            OR loja = ? COLLATE NOCASE
-          ORDER BY fat_atual DESC, vendedor ASC
-        `,
-        [
-          String(cnpj).replace(/\D/g, ''),
-          requestedStore
-        ]
-      );
-    } catch (error) {
-      console.warn('⚠️ Store detail: tabela vendedores indisponível:', error);
-      sellerRows = [];
-    }
-
-    const toNumber = (value: any) => {
-      const n = Number(value);
-      return Number.isFinite(n) ? n : 0;
-    };
-
-    const storeConversion =
-      homeEmptyConversionCounts();
-
-    for (const row of salesRows) {
-      homeAddConversionSale(
-        storeConversion,
-        row
-      );
-    }
-
-    const faturamento = salesRows.reduce((sum: number, row: any) => sum + toNumber(row.total_liquido), 0);
-    const quantidade = salesRows.reduce((sum: number, row: any) => sum + Math.max(0, toNumber(row.quantidade)), 0);
-
-    const now = new Date();
-
-    const diasNoMes =
-      new Date(
-        now.getFullYear(),
-        now.getMonth() + 1,
-        0
-      ).getDate();
-
-    const diaAtual =
-      Math.max(
-        1,
-        now.getDate()
-      );
-
-    const tendenciaMes =
-    faturamento > 0
-      ? (
-          faturamento /
-          diaAtual
-        ) * diasNoMes
-      : 0;
-
-    const faturamentoAnterior =
-      sellerRows.reduce(
-        (sum: number, row: any) =>
-          sum +
-          Math.max(
-            0,
-            toNumber(
-              row.fat_anterior
-            )
-          ),
-        0
-      );
-
-    const crescimentoTendencia =
-      faturamentoAnterior > 0
-        ? (
-            (
-              tendenciaMes -
-              faturamentoAnterior
-            ) /
-            faturamentoAnterior
-          ) * 100
-        : null;
-
-    const yearProjection =
-      await getExecutiveYearProjection({
-        userId,
-        currentMonthActual:
-          faturamento,
-        cnpj,
-        now,
-      });
-
-    const storeDetailPercentPoints = (value: any) => {
-    const n = toNumber(value);
-
-    return Math.abs(n) <= 5 ? n * 100 : n;
-    };
-
-    const weighted = (field: string) => {
-      let total = 0;
-      let weight = 0;
-      let simple = 0;
-      let valid = 0;
-
-      for (const row of sellerRows) {
-        const rawValue = toNumber(row[field]);
-        const qtd = Math.max(0, toNumber(row.qtd));
-
-        simple += rawValue;
-        valid += 1;
-
-        if (qtd > 0) {
-          total += rawValue * qtd;
-          weight += qtd;
-        }
-      }
-
-      const ratio =
-        weight > 0
-          ? total / weight
-          : valid > 0
-            ? simple / valid
-            : 0;
-
-      return storeDetailPercentPoints(ratio);
-    };
-
-    const conversaoAcessoriosLoja =
-      storeConversion.aparelhos > 0
-        ? homeConversionPercent(
-            storeConversion.acessorios,
-            storeConversion.aparelhos
-          )
-        : weighted(
-            'pct_acessorios'
-          );
-
-    const conversaoPeliculasLoja =
-      storeConversion.aparelhos > 0
-        ? homeConversionPercent(
-            storeConversion.peliculas,
-            storeConversion.aparelhos
-          )
-        : weighted(
-            'conv_peliculas'
-          );
-
-    const segurosValorLoja =
-      sellerRows.reduce(
-        (sum: number, row: any) =>
-          sum + toNumber(row.seguros),
-        0
-      );
-
-    const qtdSegurosLoja =
-      sellerRows.reduce(
-        (sum: number, row: any) =>
-          sum +
-          Math.max(
-            0,
-            toNumber(row.qtd_seguros)
-          ),
-        0
-      );
-
-    const qtdProdutosComSeguroLoja =
-      sellerRows.reduce(
-        (sum: number, row: any) =>
-          sum +
-          Math.max(
-            0,
-            toNumber(
-              row.qtd_produtos_com_seguro
-            )
-          ),
-        0
-      );
-
-    const conversaoSeguroLoja =
-      qtdProdutosComSeguroLoja > 0
-        ? (
-            qtdSegurosLoja /
-            qtdProdutosComSeguroLoja
-          ) * 100
-        : weighted('pct_seguro');
-
-    const daily = new Map<string, { date: string; faturamento: number; quantidade: number }>();
-    for (const row of salesRows) {
-      const date = String(row.data_emissao || '').slice(0, 10);
-      if (!date) continue;
-      const current = daily.get(date) || { date, faturamento: 0, quantidade: 0 };
-      current.faturamento += toNumber(row.total_liquido);
-      current.quantidade += Math.max(0, toNumber(row.quantidade));
-      daily.set(date, current);
-    }
-
-    return res.json({
-      success: true,
-      store: requestedStore,
-      period: { startDate, endDate, label: 'Este mês' },
-      kpis: {
-        faturamento,
-        faturamentoAnterior,
-        tendenciaMes,
-        tendenciaAno:
-          yearProjection.tendenciaAno,
-        realizadoAno:
-          yearProjection.realizadoAno,
-        crescimentoTendencia,
-        quantidade,
-        ticketMedio: quantidade > 0 ? faturamento / quantidade : 0,
-        conversaoAcessorios:
-          conversaoAcessoriosLoja,
-        conversaoPeliculas:
-          conversaoPeliculasLoja,
-        seguroPct:
-          conversaoSeguroLoja,
-        seguros: segurosValorLoja,
-        vendedores: sellerRows.length,
-      },
-      trend: Array.from(daily.values()).sort((a, b) => a.date.localeCompare(b.date)),
-      sellers: sellerRows.slice(0, 20),
-    });
-  } catch (error: any) {
-    console.error('❌ Erro /api/home/store-detail:', error);
-    return res.status(500).json({ success: false, error: error?.message || 'Erro ao carregar detalhes da loja.' });
-  } finally {
-    try { if (db) await db.close(); } catch {}
-  }
-});
+  });
 
 app.get('/api/global-search', async (req, res) => {
   let db: any;
