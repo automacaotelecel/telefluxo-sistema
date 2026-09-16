@@ -40,6 +40,7 @@ import ContractAnalyzer from './components/ContractAnalyzer';
 import OnlinePricesAgent from './components/OnlinePricesAgent';
 import InventoryAuditModule from './components/InventoryAuditModule';
 import InventoryAuditDashboard from './components/InventoryAuditDashboard';
+import SampleConferenceModule from './components/SampleConferenceModule';
 
 import {
   FileText,
@@ -96,6 +97,7 @@ const STORE_ALLOWED_VIEWS = new Set([
   'rh',
   'stock',
   'inventory_audit',
+  'sample_conference',
   'alertas_inteligentes',
   'estoque_detalhado',
   'estoque_vendas',
@@ -342,6 +344,7 @@ function App() {
     acesso_rapido_aparelhos: 'PAINEL DIRETORIA / ACESSO RÁPIDO',
     stock: 'CONTROLE DE ESTOQUE',
     inventory_audit: 'CONFERÊNCIA DE APARELHOS / BIPADOR',
+    sample_conference: 'CONFERÊNCIA DE AMOSTRAS',
     alertas_inteligentes: 'CENTRAL DE ALERTAS INTELIGENTES',
     estoque_detalhado: 'VISÃO DETALHADA DE ESTOQUE',
     estoque_vendas: 'ESTOQUE X VENDAS',
@@ -381,13 +384,13 @@ function App() {
     );
   }
 
-  const SubMenuItem = ({ label, view, active }: any) => {
+  const SubMenuItem = ({ label, view, active, nested = false }: any) => {
     if (isSidebarCollapsed) return null;
 
     return (
       <div
         onClick={() => handleNavigate(view)}
-        className={`pl-12 pr-4 py-2 cursor-pointer flex items-center gap-2 text-[11px] font-black uppercase tracking-tighter transition-all hover:text-white ${
+        className={`${nested ? 'pl-16 text-[10px]' : 'pl-12 text-[11px]'} pr-4 py-2 cursor-pointer flex items-center gap-2 font-black uppercase tracking-tighter transition-all hover:text-white ${
           active ? 'text-orange-500' : 'text-slate-500'
         }`}
       >
@@ -483,7 +486,8 @@ function App() {
     }
 
     if (view === 'stock') return <StockModule currentUser={user} />;
-    if (view === 'inventory_audit') return <InventoryAuditModule currentUser={user} />;
+    if (view === 'inventory_audit') return <InventoryAuditModule currentUser={user} onOpenSampleConference={() => handleNavigate('sample_conference')} />;
+    if (view === 'sample_conference') return <SampleConferenceModule currentUser={user} />;
     if (view === 'inventory_audit_dashboard' && canViewAuditDashboard) return <InventoryAuditDashboard currentUser={user} />;
 
     if (view.startsWith('dept_')) {
@@ -827,6 +831,7 @@ function App() {
                 active={[
                   'stock',
                   'inventory_audit',
+                  'sample_conference',
                   'inventory_audit_dashboard',
                   'alertas_inteligentes',
                   'estoque_vendas',
@@ -851,6 +856,7 @@ function App() {
                     view="inventory_audit"
                     active={currentView === 'inventory_audit'}
                   />
+
 
                   {canViewAuditDashboard && (
                     <SubMenuItem

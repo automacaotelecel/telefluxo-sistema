@@ -8785,6 +8785,11 @@ const isDailySupplement = (row: any) => {
     const endMonth = Number(params.endDate.slice(5, 7));
     const startYm = startYear * 100 + startMonth;
     const endYm = endYear * 100 + endMonth;
+    const startDay = Number(params.startDate.slice(8, 10));
+    const endDay = Number(params.endDate.slice(8, 10));
+    const endMonthLastDay = new Date(endYear, endMonth, 0).getDate();
+    const isWholeMonthRange =
+      startDay === 1 && endDay === endMonthLastDay;
 
     let db: any;
 
@@ -8834,6 +8839,53 @@ const isDailySupplement = (row: any) => {
           .join(', ')}, '${annualSqlText(fallback)}')`;
       };
 
+      const buildPeriodFilter = (columns: Set<string>) => {
+      // Para mês completo, ano + mês é a fonte mais segura.
+      // Evita depender do formato em que data_emissao foi gravada
+      // nos dados históricos.
+      if (isWholeMonthRange && columns.has('ano') && columns.has('mes')) {
+        return {
+          sql: ' AND ((ano * 100) + mes) BETWEEN ? AND ? ',
+          params: [startYm, endYm] as any[],
+        };
+      }
+
+    // Para períodos personalizados dentro do mês,
+    // precisamos trabalhar com a data exata.
+    if (columns.has('data_emissao')) {
+      const rawDate = `TRIM(COALESCE(data_emissao, ''))`;
+
+      const normalizedDate = `
+        CASE
+          WHEN substr(${rawDate}, 3, 1) = '/'
+            AND substr(${rawDate}, 6, 1) = '/'
+            THEN substr(${rawDate}, 7, 4)
+              || '-' || substr(${rawDate}, 4, 2)
+              || '-' || substr(${rawDate}, 1, 2)
+          ELSE substr(${rawDate}, 1, 10)
+        END
+      `;
+
+      return {
+          sql: ` AND (${normalizedDate}) >= ? AND (${normalizedDate}) <= ? `,
+          params: [params.startDate, params.endDate] as any[],
+        };
+      }
+
+      // Fallback caso a tabela não tenha data_emissao.
+      if (columns.has('ano') && columns.has('mes')) {
+        return {
+          sql: ' AND ((ano * 100) + mes) BETWEEN ? AND ? ',
+          params: [startYm, endYm] as any[],
+        };
+      }
+
+      return {
+        sql: '',
+        params: [] as any[],
+      };
+    };
+
       const mergeRows = (rows: any[]): boolean => {
         let useful = false;
 
@@ -8882,16 +8934,7 @@ const isDailySupplement = (row: any) => {
 
           const lojaExpr = textExpr(columns, ['loja']);
 
-          let periodSql = '';
-          const paramsSql: any[] = [];
-
-          if (columns.has('data_emissao')) {
-            periodSql = ' AND data_emissao >= ? AND data_emissao <= ? ';
-            paramsSql.push(params.startDate, params.endDate);
-          } else if (columns.has('ano') && columns.has('mes')) {
-            periodSql = ' AND ((ano * 100) + mes) BETWEEN ? AND ? ';
-            paramsSql.push(startYm, endYm);
-          }
+          const periodFilter = buildPeriodFilter(columns);
 
           const rows = await db.all(
             `
@@ -8903,12 +8946,12 @@ const isDailySupplement = (row: any) => {
               FROM seguros_anuais
               WHERE ${salesFilter}
                 ${storeSql}
-                ${periodSql}
+                ${periodFilter.sql}
               GROUP BY
                 COALESCE(cnpj_empresa, ''),
                 ${lojaExpr}
             `,
-            paramsSql
+            periodFilter.params
           );
 
           if (mergeRows(rows)) {
@@ -9006,15 +9049,7 @@ const isDailySupplement = (row: any) => {
               .join(' OR ');
 
             let periodSql = '';
-            const paramsSql: any[] = [];
-
-            if (columns.has('data_emissao')) {
-              periodSql = ' AND data_emissao >= ? AND data_emissao <= ? ';
-              paramsSql.push(params.startDate, params.endDate);
-            } else if (columns.has('ano') && columns.has('mes')) {
-              periodSql = ' AND ((ano * 100) + mes) BETWEEN ? AND ? ';
-              paramsSql.push(startYm, endYm);
-            }
+            const periodFilter = buildPeriodFilter(columns);
 
             const cancelClause = columns.has('cancelado')
               ? `
@@ -9037,14 +9072,14 @@ const isDailySupplement = (row: any) => {
                 FROM vendas_anuais_raw
                 WHERE ${salesFilter}
                   ${storeSql}
-                  ${periodSql}
+                  ${periodFilter.sql}
                   ${cancelClause}
                   AND (${insuranceSql})
                 GROUP BY
                   COALESCE(cnpj_empresa, ''),
                   ${lojaExpr}
               `,
-              paramsSql
+              periodFilter.params
             );
 
             if (mergeRows(rows)) {

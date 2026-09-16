@@ -6,6 +6,7 @@ import {
   CameraOff,
   Check,
   CheckCircle2,
+  ClipboardCheck,
   ChevronRight,
   AlertCircle,
   Clock3,
@@ -262,7 +263,7 @@ function KpiCard({
   );
 }
 
-export default function InventoryAuditModule({ currentUser }: { currentUser: CurrentUser }) {
+export default function InventoryAuditModule({ currentUser, onOpenSampleConference }: { currentUser: CurrentUser; onOpenSampleConference?: () => void }) {
   const API_URL = useMemo(() => getApiUrl(), []);
   const userId = String(currentUser?.id || '');
 
@@ -736,7 +737,13 @@ export default function InventoryAuditModule({ currentUser }: { currentUser: Cur
           <div className="inventory-audit-hero-copy">
             <div className="inventory-audit-eyebrow"><ShieldCheck size={14} /> TELEFLUXO • CONFERÊNCIA INTELIGENTE</div>
             <h1>Bipador de aparelhos</h1>
-            <p>Auditoria física de IMEI conectada diretamente ao estoque do Telefluxo. Sem planilha, sem importação e com divergências em tempo real.</p>
+            {onOpenSampleConference && (
+              <button type="button" className="inventory-audit-sample-link" onClick={onOpenSampleConference}>
+                <ClipboardCheck size={16} />
+                Conferência de amostras
+                <ChevronRight size={15} />
+              </button>
+            )}
           </div>
 
           <div className="inventory-audit-store-box">

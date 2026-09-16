@@ -26,9 +26,10 @@ import {
 } from 'lucide-react';
 import {
   Area,
-  AreaChart,
   CartesianGrid,
   Cell,
+  ComposedChart,
+  Line,
   Pie,
   PieChart,
   ResponsiveContainer,
@@ -369,29 +370,17 @@ function OperationalPanel({
   const categories = operations?.categorias || [];
   const regions = operations?.regioes || [];
   const maxCategory = Math.max(1, ...categories.map((item) => Number(item.faturamento || 0)));
+
   const regionChartData = useMemo(() => {
-  return regions
-    .map((item) => ({
-      name: String(
-        item.regiao || 'SEM REGIÃO'
-      ),
-      value: Math.max(
-        0,
-        Number(
-          item.faturamento || 0
-        )
-      ),
-    }))
-    .filter(
-      (item) =>
-        item.value > 0 &&
-        item.name !== 'SEM REGIÃO'
-    )
-    .sort(
-      (a, b) =>
-        b.value - a.value
-    );
+    return regions
+      .map((item) => ({
+        name: String(item.regiao || 'SEM REGIÃO'),
+        value: Math.max(0, Number(item.faturamento || 0)),
+      }))
+      .filter((item) => item.value > 0 && item.name !== 'SEM REGIÃO')
+      .sort((a, b) => b.value - a.value);
   }, [regions]);
+
   const regionTotal = regionChartData.reduce((sum, item) => sum + item.value, 0);
   const singleRegion = regionChartData.length === 1 ? regionChartData[0] : null;
 
@@ -420,76 +409,83 @@ function OperationalPanel({
     },
   ];
 
+  const cardClass =
+    'min-w-0 rounded-[24px] border border-slate-200/80 bg-white p-4 shadow-[0_14px_40px_rgba(15,23,42,0.05)] sm:rounded-[28px] sm:p-5';
+
   return (
-    <div className="min-w-0 rounded-[24px] border border-slate-200/80 bg-white p-4 shadow-[0_14px_40px_rgba(15,23,42,0.05)] sm:rounded-[28px] sm:p-5 md:p-6">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-[9px] font-black uppercase tracking-[0.16em] text-orange-600 sm:text-[10px] sm:tracking-[0.18em]">
-            Visão operacional
-          </p>
-          <h2 className="mt-1 text-lg font-black leading-tight tracking-tight text-slate-950 sm:text-xl">
-            O que está acontecendo na operação
-          </h2>
-        </div>
-        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-slate-950 text-white sm:h-10 sm:w-10 sm:rounded-2xl">
-          <BarChart3 size={17} />
-        </div>
-      </div>
-
-      <div className="mt-4 grid grid-cols-2 gap-2 sm:mt-5 sm:gap-2.5">
-        {mini.map(({ label, value, icon: Icon }) => (
-          <div key={label} className="min-w-0 rounded-2xl bg-slate-50 p-3 sm:p-3.5">
-            <div className="flex min-w-0 items-center gap-1.5 text-slate-400">
-              <Icon size={12} className="shrink-0" />
-              <span className="truncate text-[7px] font-black uppercase tracking-[0.1em] sm:text-[8px] sm:tracking-[0.12em]">
-                {label}
-              </span>
-            </div>
-            <p className="mt-2 truncate text-[13px] font-black tracking-tight text-slate-950 sm:text-[15px]">
-              {value}
-            </p>
-          </div>
-        ))}
-      </div>
-
-      {!storeMode && operations?.topLoja && (
-        <div className="mt-3 flex items-center justify-between gap-3 rounded-2xl border border-emerald-100 bg-emerald-50/70 px-3 py-3 sm:px-3.5">
+    <section className="mt-5 grid grid-cols-1 gap-5 lg:grid-cols-3">
+      <div className={cardClass}>
+        <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <p className="text-[7px] font-black uppercase tracking-[0.12em] text-emerald-700 sm:text-[8px] sm:tracking-[0.14em]">
-              Destaque do período
+            <p className="text-[9px] font-black uppercase tracking-[0.16em] text-orange-600 sm:text-[10px] sm:tracking-[0.18em]">
+              Visão operacional
             </p>
-            <p className="mt-1 truncate text-[10px] font-black text-slate-900 sm:text-[11px]">
-              {operations.topLoja.loja}
+            <h2 className="mt-1 text-lg font-black leading-tight tracking-tight text-slate-950 sm:text-xl">
+              O que está acontecendo na operação
+            </h2>
+          </div>
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-slate-950 text-white sm:h-10 sm:w-10 sm:rounded-2xl">
+            <BarChart3 size={17} />
+          </div>
+        </div>
+
+        <div className="mt-4 grid grid-cols-2 gap-2 sm:mt-5 sm:gap-2.5">
+          {mini.map(({ label, value, icon: Icon }) => (
+            <div key={label} className="min-w-0 rounded-2xl bg-slate-50 p-3 sm:p-3.5">
+              <div className="flex min-w-0 items-center gap-1.5 text-slate-400">
+                <Icon size={12} className="shrink-0" />
+                <span className="truncate text-[7px] font-black uppercase tracking-[0.1em] sm:text-[8px] sm:tracking-[0.12em]">
+                  {label}
+                </span>
+              </div>
+              <p className="mt-2 truncate text-[13px] font-black tracking-tight text-slate-950 sm:text-[15px]">
+                {value}
+              </p>
+            </div>
+          ))}
+        </div>
+
+        {!storeMode && operations?.topLoja && (
+          <div className="mt-3 flex items-center justify-between gap-3 rounded-2xl border border-emerald-100 bg-emerald-50/70 px-3 py-3 sm:px-3.5">
+            <div className="min-w-0">
+              <p className="text-[7px] font-black uppercase tracking-[0.12em] text-emerald-700 sm:text-[8px] sm:tracking-[0.14em]">
+                Destaque do período
+              </p>
+              <p className="mt-1 truncate text-[10px] font-black text-slate-900 sm:text-[11px]">
+                {operations.topLoja.loja}
+              </p>
+            </div>
+            <p className="shrink-0 text-[10px] font-black text-emerald-800 sm:text-[11px]">
+              {money(operations.topLoja.faturamento)}
             </p>
           </div>
-          <p className="shrink-0 text-[10px] font-black text-emerald-800 sm:text-[11px]">
-            {money(operations.topLoja.faturamento)}
-          </p>
-        </div>
-      )}
+        )}
+      </div>
 
-      <div className="mt-4 border-t border-slate-100 pt-4 sm:mt-5">
-        <div className="mb-3 flex items-center justify-between gap-3">
+      <div className={cardClass}>
+        <div className="flex items-start justify-between gap-3">
           <div>
-            <p className="text-[8px] font-black uppercase tracking-[0.14em] text-slate-400 sm:text-[9px] sm:tracking-[0.16em]">
+            <p className="text-[9px] font-black uppercase tracking-[0.16em] text-slate-400 sm:text-[10px] sm:tracking-[0.18em]">
               Categorias
             </p>
-            <p className="mt-0.5 text-[11px] font-black text-slate-900 sm:text-xs">
+            <h2 className="mt-1 text-lg font-black tracking-tight text-slate-950 sm:text-xl">
               Faturamento por categoria
-            </p>
+            </h2>
           </div>
-          <ShoppingBag size={15} className="text-orange-500" />
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-orange-50 text-orange-600 sm:h-10 sm:w-10 sm:rounded-2xl">
+            <ShoppingBag size={17} />
+          </div>
         </div>
 
-        <div className="space-y-2.5">
+        <div className="mt-5 space-y-3">
           {categories.length ? (
-            categories.slice(0, 5).map((item) => (
+            categories.slice(0, 6).map((item) => (
               <div key={item.categoria}>
-                <div className="mb-1 flex items-center justify-between gap-3">
-                  <span className="truncate text-[9px] font-bold text-slate-600 sm:text-[10px]">
+                <div className="mb-1.5 flex items-center justify-between gap-3">
+                  <span className="truncate text-[10px] font-bold text-slate-600 sm:text-[11px]">
                     {formatCategory(item.categoria)}
                   </span>
-                  <span className="shrink-0 text-[9px] font-black text-slate-900 sm:text-[10px]">
+                  <span className="shrink-0 text-[10px] font-black text-slate-900 sm:text-[11px]">
                     {money(item.faturamento)}
                   </span>
                 </div>
@@ -509,36 +505,40 @@ function OperationalPanel({
         </div>
       </div>
 
-      {regionChartData.length > 0 && (
-        <div className="mt-4 border-t border-slate-100 pt-4">
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <div>
-              <div className="flex items-center gap-2 text-slate-400">
-                <MapPin size={13} />
-                <span className="text-[8px] font-black uppercase tracking-[0.14em] sm:text-[9px] sm:tracking-[0.16em]">
-                  Participação regional
-                </span>
-              </div>
-              <p className="mt-1 text-[11px] font-black text-slate-900 sm:text-xs">
-                Faturamento por região
-              </p>
+      <div className={cardClass}>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2 text-slate-400">
+              <MapPin size={13} />
+              <span className="text-[9px] font-black uppercase tracking-[0.16em] sm:text-[10px] sm:tracking-[0.18em]">
+                Participação regional
+              </span>
             </div>
+            <h2 className="mt-1 text-lg font-black tracking-tight text-slate-950 sm:text-xl">
+              Faturamento por região
+            </h2>
           </div>
+        </div>
 
-          {singleRegion ? (
-            <div className="flex items-center justify-between gap-3 rounded-2xl bg-slate-50 px-4 py-3.5">
+        <div className="mt-4">
+          {!regionChartData.length ? (
+            <p className="rounded-2xl bg-slate-50 p-4 text-[11px] font-bold text-slate-400 sm:text-xs">
+              Sem regiões no período.
+            </p>
+          ) : singleRegion ? (
+            <div className="flex items-center justify-between gap-3 rounded-2xl bg-slate-50 px-4 py-4">
               <div className="min-w-0">
                 <p className="text-[8px] font-black uppercase tracking-[0.14em] text-slate-400">Região da loja</p>
                 <p className="mt-1 truncate text-sm font-black text-slate-900">{singleRegion.name}</p>
               </div>
               <div className="shrink-0 text-right">
-                <p className="text-lg font-black text-slate-950">100%</p>
+                <p className="text-xl font-black text-slate-950">100%</p>
                 <p className="text-[9px] font-bold text-slate-400">{money(singleRegion.value)}</p>
               </div>
             </div>
           ) : (
-            <div className="grid grid-cols-1 items-center gap-2 sm:grid-cols-[150px_minmax(0,1fr)] sm:gap-4">
-              <div className="mx-auto h-[150px] w-[150px] sm:h-[145px] sm:w-[145px]">
+            <div className="grid grid-cols-1 items-center gap-3 sm:grid-cols-[130px_minmax(0,1fr)] lg:grid-cols-1 xl:grid-cols-[130px_minmax(0,1fr)]">
+              <div className="mx-auto h-[140px] w-[140px]">
                 <ResponsiveContainer width="100%" height="100%">
                   <PieChart>
                     <Pie
@@ -547,8 +547,8 @@ function OperationalPanel({
                       nameKey="name"
                       cx="50%"
                       cy="50%"
-                      innerRadius={42}
-                      outerRadius={66}
+                      innerRadius={40}
+                      outerRadius={62}
                       paddingAngle={2}
                       stroke="none"
                     >
@@ -572,13 +572,14 @@ function OperationalPanel({
                 </ResponsiveContainer>
               </div>
 
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-1">
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-1 lg:grid-cols-2 xl:grid-cols-1">
                 {regionChartData.map((item, index) => {
                   const participation = regionTotal > 0 ? (item.value / regionTotal) * 100 : 0;
+
                   return (
                     <div
                       key={item.name}
-                      className="flex min-w-0 items-center justify-between gap-2 rounded-xl bg-slate-50 px-2.5 py-2 sm:bg-transparent sm:px-0 sm:py-1"
+                      className="flex min-w-0 items-center justify-between gap-2 rounded-xl bg-slate-50 px-2.5 py-2"
                     >
                       <div className="flex min-w-0 items-center gap-2">
                         <span
@@ -599,8 +600,8 @@ function OperationalPanel({
             </div>
           )}
         </div>
-      )}
-    </div>
+      </div>
+    </section>
   );
 }
 
@@ -1192,9 +1193,9 @@ export default function Home({ currentUser }: Props) {
           />
         </section>
 
-        <section className="mt-5 grid grid-cols-1 gap-5 xl:grid-cols-[1.65fr_0.85fr]">
+        <section className="mt-5">
           <div className="rounded-[24px] border border-slate-200/80 bg-white p-4 shadow-[0_14px_40px_rgba(15,23,42,0.05)] sm:rounded-[28px] sm:p-5 md:p-6">
-            <div className="mb-5 flex items-start justify-between gap-4">
+            <div className="mb-5 flex flex-wrap items-start justify-between gap-4">
               <div>
                 <p className="text-[10px] font-black uppercase tracking-[0.18em] text-orange-600">
                   Performance
@@ -1206,16 +1207,29 @@ export default function Home({ currentUser }: Props) {
                   {effectivePeriod?.label || 'Este mês'}
                 </p>
               </div>
-              <div className="hidden rounded-2xl bg-slate-50 px-4 py-2 text-right sm:block">
-                <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">Total</p>
-                <p className="text-sm font-black text-slate-900">{money(kpis.faturamentoMes)}</p>
+
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <div className="hidden rounded-2xl bg-slate-50 px-4 py-2 text-right sm:block">
+                  <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">Total</p>
+                  <p className="text-sm font-black text-slate-900">{money(kpis.faturamentoMes)}</p>
+                </div>
+                <div className="hidden items-center gap-3 rounded-2xl border border-slate-100 bg-white px-3 py-2 sm:flex">
+                  <span className="inline-flex items-center gap-1.5 text-[9px] font-black uppercase tracking-wide text-slate-500">
+                    <span className="h-2 w-2 rounded-full bg-orange-500" />
+                    Faturamento
+                  </span>
+                  <span className="inline-flex items-center gap-1.5 text-[9px] font-black uppercase tracking-wide text-slate-500">
+                    <span className="h-2 w-2 rounded-full bg-slate-900" />
+                    Peças vendidas
+                  </span>
+                </div>
               </div>
             </div>
 
-            <div className="h-[250px] w-full sm:h-[330px]">
+            <div className="h-[280px] w-full sm:h-[350px]">
               {trend.length ? (
                 <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={trend} margin={{ top: 12, right: 4, left: -24, bottom: 0 }}>
+                  <ComposedChart data={trend} margin={{ top: 12, right: 10, left: -18, bottom: 0 }}>
                     <defs>
                       <linearGradient id="telefluxoArea" x1="0" y1="0" x2="0" y2="1">
                         <stop offset="0%" stopColor="#f97316" stopOpacity={0.24} />
@@ -1230,13 +1244,27 @@ export default function Home({ currentUser }: Props) {
                       tick={{ fill: '#94a3b8', fontSize: 10, fontWeight: 700 }}
                     />
                     <YAxis
+                      yAxisId="revenue"
                       axisLine={false}
                       tickLine={false}
                       tick={{ fill: '#94a3b8', fontSize: 10, fontWeight: 700 }}
                       tickFormatter={(value) => `${Math.round(value / 1000)}k`}
                     />
+                    <YAxis
+                      yAxisId="sales"
+                      orientation="right"
+                      axisLine={false}
+                      tickLine={false}
+                      allowDecimals={false}
+                      width={34}
+                      tick={{ fill: '#64748b', fontSize: 9, fontWeight: 800 }}
+                    />
                     <Tooltip
-                      formatter={(value: any) => [money(value), 'Faturamento']}
+                      formatter={(value: any, name: string) =>
+                        name === 'Peças vendidas'
+                          ? [number(value), 'Peças vendidas']
+                          : [money(value), 'Faturamento']
+                      }
                       labelFormatter={(label) => `Dia ${label}`}
                       contentStyle={{
                         borderRadius: 16,
@@ -1245,13 +1273,25 @@ export default function Home({ currentUser }: Props) {
                       }}
                     />
                     <Area
+                      yAxisId="revenue"
                       type="monotone"
                       dataKey="faturamento"
+                      name="Faturamento"
                       stroke="#f97316"
                       strokeWidth={3}
                       fill="url(#telefluxoArea)"
                     />
-                  </AreaChart>
+                    <Line
+                      yAxisId="sales"
+                      type="monotone"
+                      dataKey="quantidade"
+                      name="Peças vendidas"
+                      stroke="#0f172a"
+                      strokeWidth={2}
+                      dot={{ r: 2.5, strokeWidth: 0, fill: '#0f172a' }}
+                      activeDot={{ r: 5 }}
+                    />
+                  </ComposedChart>
                 </ResponsiveContainer>
               ) : (
                 <div className="flex h-full items-center justify-center rounded-2xl bg-slate-50 text-sm font-bold text-slate-400">
@@ -1260,14 +1300,14 @@ export default function Home({ currentUser }: Props) {
               )}
             </div>
           </div>
-
-          <OperationalPanel
-            operations={operations}
-            kpis={kpis}
-            loading={viewLoading}
-            storeMode={isStoreAnalysis || dashboard?.scope?.type === 'store'}
-          />
         </section>
+
+        <OperationalPanel
+          operations={operations}
+          kpis={kpis}
+          loading={viewLoading}
+          storeMode={isStoreAnalysis || dashboard?.scope?.type === 'store'}
+        />
 
         <section className="mt-5 grid grid-cols-1 gap-5 xl:grid-cols-[1.25fr_0.75fr]">
           <div className="rounded-[24px] border border-slate-200/80 bg-white p-4 shadow-sm sm:rounded-[28px] sm:p-5 md:p-6">

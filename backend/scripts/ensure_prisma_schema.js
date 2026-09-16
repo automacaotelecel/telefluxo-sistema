@@ -118,9 +118,60 @@ async function ensureInventoryAuditTables() {
   }
 }
 
+async function ensureSampleConferenceTables() {
+  await prisma.$executeRawUnsafe(`
+    CREATE TABLE IF NOT EXISTS "SampleConferenceSession" (
+      "id" TEXT NOT NULL PRIMARY KEY,
+      "userId" TEXT NOT NULL,
+      "operatorName" TEXT NOT NULL,
+      "storeName" TEXT NOT NULL,
+      "status" TEXT NOT NULL DEFAULT 'ACTIVE',
+      "startedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      "completedAt" DATETIME,
+      "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  await prisma.$executeRawUnsafe(`
+    CREATE TABLE IF NOT EXISTS "SampleConferenceItem" (
+      "id" TEXT NOT NULL PRIMARY KEY,
+      "sessionId" TEXT NOT NULL,
+      "imei" TEXT NOT NULL,
+      "source" TEXT NOT NULL DEFAULT 'MANUAL',
+      "productCode" TEXT,
+      "reference" TEXT,
+      "description" TEXT,
+      "stockStore" TEXT,
+      "stockStatus" TEXT NOT NULL DEFAULT 'NOT_FOUND',
+      "hasDamage" INTEGER NOT NULL DEFAULT 0,
+      "damageType" TEXT,
+      "observation" TEXT,
+      "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      CONSTRAINT "SampleConferenceItem_sessionId_fkey"
+        FOREIGN KEY ("sessionId") REFERENCES "SampleConferenceSession" ("id")
+        ON DELETE CASCADE ON UPDATE CASCADE
+    )
+  `);
+
+  const statements = [
+    'CREATE INDEX IF NOT EXISTS "SampleConferenceSession_userId_storeName_status_idx" ON "SampleConferenceSession"("userId", "storeName", "status")',
+    'CREATE INDEX IF NOT EXISTS "SampleConferenceSession_storeName_startedAt_idx" ON "SampleConferenceSession"("storeName", "startedAt")',
+    'CREATE UNIQUE INDEX IF NOT EXISTS "SampleConferenceItem_sessionId_imei_key" ON "SampleConferenceItem"("sessionId", "imei")',
+    'CREATE INDEX IF NOT EXISTS "SampleConferenceItem_sessionId_createdAt_idx" ON "SampleConferenceItem"("sessionId", "createdAt")',
+    'CREATE INDEX IF NOT EXISTS "SampleConferenceItem_sessionId_hasDamage_idx" ON "SampleConferenceItem"("sessionId", "hasDamage")',
+    'CREATE INDEX IF NOT EXISTS "SampleConferenceItem_imei_idx" ON "SampleConferenceItem"("imei")',
+  ];
+
+  for (const statement of statements) {
+    await prisma.$executeRawUnsafe(statement);
+  }
+}
+
 async function main() {
   console.log('🔎 Verificando compatibilidade do banco Prisma...');
   await ensureInventoryAuditTables();
+  await ensureSampleConferenceTables();
 
   const integrity = await prisma.$queryRawUnsafe('PRAGMA integrity_check');
   const integrityResult = String(integrity?.[0]?.integrity_check || '');

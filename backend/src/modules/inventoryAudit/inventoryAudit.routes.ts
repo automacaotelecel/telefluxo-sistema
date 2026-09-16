@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { Router, type Request, type Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 
@@ -200,6 +201,478 @@ async function buildSessionPayload(sessionId: string) {
     recentScans: scans.slice(0, 30),
   };
 }
+
+type SampleConferenceSessionRow = {
+  id: string;
+  userId: string;
+  operatorName: string;
+  storeName: string;
+  status: 'ACTIVE' | 'COMPLETED' | 'CANCELLED';
+  startedAt: Date | string;
+  completedAt: Date | string | null;
+  updatedAt: Date | string;
+};
+
+type SampleConferenceItemRow = {
+  id: string;
+  sessionId: string;
+  imei: string;
+  source: string;
+  productCode: string | null;
+  reference: string | null;
+  description: string | null;
+  stockStore: string | null;
+  stockStatus: 'CURRENT_STORE' | 'OTHER_STORE' | 'NOT_FOUND';
+  hasDamage: number | boolean;
+  damageType: string | null;
+  observation: string | null;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+};
+
+function normalizeSampleItem(row: SampleConferenceItemRow) {
+  return {
+    ...row,
+    hasDamage: Boolean(row.hasDamage),
+  };
+}
+
+let sampleConferenceSchemaPromise: Promise<void> | null = null;
+
+function ensureSampleConferenceSchema(): Promise<void> {
+  if (!sampleConferenceSchemaPromise) {
+    sampleConferenceSchemaPromise = (async () => {
+      await prisma.$executeRawUnsafe(`
+        CREATE TABLE IF NOT EXISTS "SampleConferenceSession" (
+          "id" TEXT NOT NULL PRIMARY KEY,
+          "userId" TEXT NOT NULL,
+          "operatorName" TEXT NOT NULL,
+          "storeName" TEXT NOT NULL,
+          "status" TEXT NOT NULL DEFAULT 'ACTIVE',
+          "startedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          "completedAt" DATETIME,
+          "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+
+      await prisma.$executeRawUnsafe(`
+        CREATE TABLE IF NOT EXISTS "SampleConferenceItem" (
+          "id" TEXT NOT NULL PRIMARY KEY,
+          "sessionId" TEXT NOT NULL,
+          "imei" TEXT NOT NULL,
+          "source" TEXT NOT NULL DEFAULT 'MANUAL',
+          "productCode" TEXT,
+          "reference" TEXT,
+          "description" TEXT,
+          "stockStore" TEXT,
+          "stockStatus" TEXT NOT NULL DEFAULT 'NOT_FOUND',
+          "hasDamage" INTEGER NOT NULL DEFAULT 0,
+          "damageType" TEXT,
+          "observation" TEXT,
+          "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          CONSTRAINT "SampleConferenceItem_sessionId_fkey"
+            FOREIGN KEY ("sessionId") REFERENCES "SampleConferenceSession" ("id")
+            ON DELETE CASCADE ON UPDATE CASCADE
+        )
+      `);
+
+      const statements = [
+        'CREATE INDEX IF NOT EXISTS "SampleConferenceSession_userId_storeName_status_idx" ON "SampleConferenceSession"("userId", "storeName", "status")',
+        'CREATE INDEX IF NOT EXISTS "SampleConferenceSession_storeName_startedAt_idx" ON "SampleConferenceSession"("storeName", "startedAt")',
+        'CREATE UNIQUE INDEX IF NOT EXISTS "SampleConferenceItem_sessionId_imei_key" ON "SampleConferenceItem"("sessionId", "imei")',
+        'CREATE INDEX IF NOT EXISTS "SampleConferenceItem_sessionId_createdAt_idx" ON "SampleConferenceItem"("sessionId", "createdAt")',
+        'CREATE INDEX IF NOT EXISTS "SampleConferenceItem_sessionId_hasDamage_idx" ON "SampleConferenceItem"("sessionId", "hasDamage")',
+        'CREATE INDEX IF NOT EXISTS "SampleConferenceItem_imei_idx" ON "SampleConferenceItem"("imei")',
+      ];
+
+      for (const statement of statements) {
+        await prisma.$executeRawUnsafe(statement);
+      }
+    })().catch((error) => {
+      sampleConferenceSchemaPromise = null;
+      throw error;
+    });
+  }
+
+  return sampleConferenceSchemaPromise;
+}
+
+async function getSampleSession(sessionId: string): Promise<SampleConferenceSessionRow | null> {
+  const rows = await prisma.$queryRawUnsafe<SampleConferenceSessionRow[]>(
+    `SELECT * FROM "SampleConferenceSession" WHERE "id" = ? LIMIT 1`,
+    sessionId,
+  );
+  return rows[0] || null;
+}
+
+async function assertSampleSessionAccess(user: AuditUser, sessionId: string) {
+  const session = await getSampleSession(sessionId);
+  if (!session) return { session: null, allowed: false };
+  const allowed = canAccessStore(user, session.storeName) || session.userId === user.id;
+  return { session, allowed };
+}
+
+async function buildSampleConferencePayload(sessionId: string) {
+  const session = await getSampleSession(sessionId);
+  if (!session) return null;
+
+  const rows = await prisma.$queryRawUnsafe<SampleConferenceItemRow[]>(
+    `SELECT * FROM "SampleConferenceItem" WHERE "sessionId" = ? ORDER BY "createdAt" DESC`,
+    sessionId,
+  );
+  const items = rows.map(normalizeSampleItem);
+  const withDamage = items.filter((item) => item.hasDamage).length;
+  const outsideStore = items.filter((item) => item.stockStatus === 'OTHER_STORE').length;
+  const notFound = items.filter((item) => item.stockStatus === 'NOT_FOUND').length;
+
+  return {
+    session,
+    stats: {
+      total: items.length,
+      withDamage,
+      withoutDamage: Math.max(items.length - withDamage, 0),
+      outsideStore,
+      notFound,
+    },
+    items,
+  };
+}
+
+router.use('/sample-sessions', async (_req, res, next) => {
+  try {
+    await ensureSampleConferenceSchema();
+    next();
+  } catch (error: any) {
+    console.error('Erro ao preparar tabelas da conferência de amostras:', error);
+    return res.status(500).json({ error: 'Não foi possível preparar a conferência de amostras no banco de dados.' });
+  }
+});
+
+router.get('/sample-sessions', async (req: Request, res: Response) => {
+  try {
+    const user = await resolveUser(req.query.userId);
+    if (!user) return res.status(401).json({ error: 'Usuário não identificado.' });
+
+    const store = String(req.query.store || '').trim();
+    const limit = Math.min(Math.max(Number(req.query.limit || 30), 1), 100);
+
+    let sessions: SampleConferenceSessionRow[];
+    if (canSeeAllStores(user)) {
+      sessions = store
+        ? await prisma.$queryRawUnsafe<SampleConferenceSessionRow[]>(
+            `SELECT * FROM "SampleConferenceSession" WHERE "storeName" = ? ORDER BY "startedAt" DESC LIMIT ?`,
+            store,
+            limit,
+          )
+        : await prisma.$queryRawUnsafe<SampleConferenceSessionRow[]>(
+            `SELECT * FROM "SampleConferenceSession" ORDER BY "startedAt" DESC LIMIT ?`,
+            limit,
+          );
+    } else {
+      sessions = store
+        ? await prisma.$queryRawUnsafe<SampleConferenceSessionRow[]>(
+            `SELECT * FROM "SampleConferenceSession" WHERE "userId" = ? AND "storeName" = ? ORDER BY "startedAt" DESC LIMIT ?`,
+            user.id,
+            store,
+            limit,
+          )
+        : await prisma.$queryRawUnsafe<SampleConferenceSessionRow[]>(
+            `SELECT * FROM "SampleConferenceSession" WHERE "userId" = ? ORDER BY "startedAt" DESC LIMIT ?`,
+            user.id,
+            limit,
+          );
+    }
+
+    return res.json({ success: true, sessions });
+  } catch (error: any) {
+    console.error('Erro inventory-audit/sample-sessions:', error);
+    return res.status(500).json({ error: error?.message || 'Erro ao carregar conferências de amostras.' });
+  }
+});
+
+router.post('/sample-sessions', async (req: Request, res: Response) => {
+  try {
+    const user = await resolveUser(req.body?.userId);
+    if (!user) return res.status(401).json({ error: 'Usuário não identificado.' });
+
+    const requestedStore = String(req.body?.store || '').trim();
+    const store = await assertStoreAccess(user, requestedStore);
+    if (!store) return res.status(403).json({ error: 'Loja inválida ou sem permissão para este usuário.' });
+
+    const activeRows = await prisma.$queryRawUnsafe<SampleConferenceSessionRow[]>(
+      `SELECT * FROM "SampleConferenceSession" WHERE "userId" = ? AND "storeName" = ? AND "status" = 'ACTIVE' ORDER BY "startedAt" DESC LIMIT 1`,
+      user.id,
+      store,
+    );
+    const active = activeRows[0];
+
+    if (active && req.body?.forceNew !== true) {
+      const payload = await buildSampleConferencePayload(active.id);
+      return res.json({ success: true, reused: true, ...payload });
+    }
+
+    if (active) {
+      const now = new Date();
+      await prisma.$executeRawUnsafe(
+        `UPDATE "SampleConferenceSession" SET "status" = 'CANCELLED', "completedAt" = ?, "updatedAt" = ? WHERE "id" = ?`,
+        now,
+        now,
+        active.id,
+      );
+    }
+
+    const id = randomUUID();
+    const now = new Date();
+    await prisma.$executeRawUnsafe(
+      `INSERT INTO "SampleConferenceSession" ("id", "userId", "operatorName", "storeName", "status", "startedAt", "updatedAt") VALUES (?, ?, ?, ?, 'ACTIVE', ?, ?)`,
+      id,
+      user.id,
+      user.name,
+      store,
+      now,
+      now,
+    );
+
+    const payload = await buildSampleConferencePayload(id);
+    return res.status(201).json({ success: true, reused: false, ...payload });
+  } catch (error: any) {
+    console.error('Erro inventory-audit/create-sample-session:', error);
+    return res.status(500).json({ error: error?.message || 'Erro ao iniciar conferência de amostras.' });
+  }
+});
+
+router.get('/sample-sessions/:id', async (req: Request, res: Response) => {
+  try {
+    const user = await resolveUser(req.query.userId);
+    if (!user) return res.status(401).json({ error: 'Usuário não identificado.' });
+
+    const sessionId = String(req.params.id || '').trim();
+    const access = await assertSampleSessionAccess(user, sessionId);
+    if (!access.session) return res.status(404).json({ error: 'Conferência de amostras não encontrada.' });
+    if (!access.allowed) return res.status(403).json({ error: 'Sem acesso a esta conferência de amostras.' });
+
+    const payload = await buildSampleConferencePayload(sessionId);
+    return res.json({ success: true, ...payload });
+  } catch (error: any) {
+    console.error('Erro inventory-audit/sample-session:', error);
+    return res.status(500).json({ error: error?.message || 'Erro ao carregar conferência de amostras.' });
+  }
+});
+
+router.post('/sample-sessions/:id/scan', async (req: Request, res: Response) => {
+  try {
+    const user = await resolveUser(req.body?.userId);
+    if (!user) return res.status(401).json({ error: 'Usuário não identificado.' });
+
+    const sessionId = String(req.params.id || '').trim();
+    const access = await assertSampleSessionAccess(user, sessionId);
+    if (!access.session) return res.status(404).json({ error: 'Conferência de amostras não encontrada.' });
+    if (!access.allowed) return res.status(403).json({ error: 'Sem acesso a esta conferência de amostras.' });
+    if (access.session.status !== 'ACTIVE') return res.status(409).json({ error: 'Esta conferência de amostras já foi encerrada.' });
+
+    const rawValue = String(req.body?.rawValue ?? req.body?.imei ?? '').trim();
+    const source = String(req.body?.source || 'MANUAL').toUpperCase().slice(0, 20);
+    const imei = extractImei(rawValue);
+
+    if (!imei) {
+      const payload = await buildSampleConferencePayload(sessionId);
+      return res.json({
+        success: true,
+        read: {
+          imei: '',
+          result: 'INVALID',
+          title: 'Código inválido',
+          message: 'Não foi possível identificar um IMEI válido de 15 dígitos.',
+        },
+        ...payload,
+      });
+    }
+
+    const duplicateRows = await prisma.$queryRawUnsafe<SampleConferenceItemRow[]>(
+      `SELECT * FROM "SampleConferenceItem" WHERE "sessionId" = ? AND "imei" = ? LIMIT 1`,
+      sessionId,
+      imei,
+    );
+    const duplicate = duplicateRows[0];
+    if (duplicate) {
+      const payload = await buildSampleConferencePayload(sessionId);
+      return res.json({
+        success: true,
+        read: {
+          ...normalizeSampleItem(duplicate),
+          result: 'DUPLICATE',
+          title: 'Aparelho já bipado',
+          message: 'Este IMEI já faz parte desta conferência de amostras.',
+        },
+        ...payload,
+      });
+    }
+
+    const stockHit = await prisma.stock.findFirst({
+      where: { serial: imei, category: { equals: 'Smartphone' } },
+      select: {
+        storeName: true,
+        productCode: true,
+        reference: true,
+        description: true,
+        category: true,
+      },
+    });
+
+    const sameStore = stockHit && normalizeText(stockHit.storeName) === normalizeText(access.session.storeName);
+    const stockStatus: SampleConferenceItemRow['stockStatus'] = !stockHit
+      ? 'NOT_FOUND'
+      : sameStore
+        ? 'CURRENT_STORE'
+        : 'OTHER_STORE';
+
+    const itemId = randomUUID();
+    const now = new Date();
+    await prisma.$executeRawUnsafe(
+      `INSERT INTO "SampleConferenceItem" (
+        "id", "sessionId", "imei", "source", "productCode", "reference", "description", "stockStore", "stockStatus", "hasDamage", "createdAt", "updatedAt"
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+      itemId,
+      sessionId,
+      imei,
+      source,
+      stockHit?.productCode || null,
+      stockHit?.reference || null,
+      stockHit?.description || null,
+      stockHit?.storeName || null,
+      stockStatus,
+      now,
+      now,
+    );
+
+    const payload = await buildSampleConferencePayload(sessionId);
+    const savedItem = payload?.items.find((item) => item.id === itemId) || null;
+    const read = {
+      ...savedItem,
+      result: stockStatus,
+      title: stockStatus === 'CURRENT_STORE'
+        ? 'Amostra registrada'
+        : stockStatus === 'OTHER_STORE'
+          ? 'Amostra registrada — atenção à loja'
+          : 'Amostra registrada — IMEI fora da base',
+      message: stockStatus === 'CURRENT_STORE'
+        ? `${stockHit?.description || 'Aparelho'} adicionado à conferência.`
+        : stockStatus === 'OTHER_STORE'
+          ? `${stockHit?.description || 'Aparelho'} consta em ${stockHit?.storeName || 'outra loja'}.`
+          : 'O IMEI foi registrado na amostra, mas não consta no estoque atual do TeleFluxo.',
+    };
+
+    return res.json({ success: true, read, ...payload });
+  } catch (error: any) {
+    console.error('Erro inventory-audit/sample-scan:', error);
+    return res.status(500).json({ error: error?.message || 'Erro ao registrar amostra.' });
+  }
+});
+
+router.patch('/sample-sessions/:id/items/:itemId', async (req: Request, res: Response) => {
+  try {
+    const user = await resolveUser(req.body?.userId);
+    if (!user) return res.status(401).json({ error: 'Usuário não identificado.' });
+
+    const sessionId = String(req.params.id || '').trim();
+    const itemId = String(req.params.itemId || '').trim();
+    const access = await assertSampleSessionAccess(user, sessionId);
+    if (!access.session) return res.status(404).json({ error: 'Conferência de amostras não encontrada.' });
+    if (!access.allowed) return res.status(403).json({ error: 'Sem acesso a esta conferência de amostras.' });
+    if (access.session.status !== 'ACTIVE') return res.status(409).json({ error: 'Esta conferência de amostras já foi encerrada.' });
+
+    const itemRows = await prisma.$queryRawUnsafe<SampleConferenceItemRow[]>(
+      `SELECT * FROM "SampleConferenceItem" WHERE "id" = ? AND "sessionId" = ? LIMIT 1`,
+      itemId,
+      sessionId,
+    );
+    if (!itemRows[0]) return res.status(404).json({ error: 'Aparelho não encontrado nesta conferência.' });
+
+    const hasDamage = req.body?.hasDamage === true || req.body?.hasDamage === 1 || String(req.body?.hasDamage).toLowerCase() === 'true';
+    const damageType = hasDamage ? String(req.body?.damageType || '').trim().slice(0, 160) : '';
+    const observation = String(req.body?.observation || '').trim().slice(0, 1000);
+    const now = new Date();
+
+    await prisma.$executeRawUnsafe(
+      `UPDATE "SampleConferenceItem" SET "hasDamage" = ?, "damageType" = ?, "observation" = ?, "updatedAt" = ? WHERE "id" = ? AND "sessionId" = ?`,
+      hasDamage ? 1 : 0,
+      damageType || null,
+      observation || null,
+      now,
+      itemId,
+      sessionId,
+    );
+    await prisma.$executeRawUnsafe(
+      `UPDATE "SampleConferenceSession" SET "updatedAt" = ? WHERE "id" = ?`,
+      now,
+      sessionId,
+    );
+
+    const payload = await buildSampleConferencePayload(sessionId);
+    return res.json({ success: true, ...payload });
+  } catch (error: any) {
+    console.error('Erro inventory-audit/update-sample-item:', error);
+    return res.status(500).json({ error: error?.message || 'Erro ao salvar observação da amostra.' });
+  }
+});
+
+router.delete('/sample-sessions/:id/items/:itemId', async (req: Request, res: Response) => {
+  try {
+    const user = await resolveUser(req.query.userId);
+    if (!user) return res.status(401).json({ error: 'Usuário não identificado.' });
+
+    const sessionId = String(req.params.id || '').trim();
+    const itemId = String(req.params.itemId || '').trim();
+    const access = await assertSampleSessionAccess(user, sessionId);
+    if (!access.session) return res.status(404).json({ error: 'Conferência de amostras não encontrada.' });
+    if (!access.allowed) return res.status(403).json({ error: 'Sem acesso a esta conferência de amostras.' });
+    if (access.session.status !== 'ACTIVE') return res.status(409).json({ error: 'Esta conferência de amostras já foi encerrada.' });
+
+    await prisma.$executeRawUnsafe(
+      `DELETE FROM "SampleConferenceItem" WHERE "id" = ? AND "sessionId" = ?`,
+      itemId,
+      sessionId,
+    );
+    await prisma.$executeRawUnsafe(
+      `UPDATE "SampleConferenceSession" SET "updatedAt" = ? WHERE "id" = ?`,
+      new Date(),
+      sessionId,
+    );
+
+    const payload = await buildSampleConferencePayload(sessionId);
+    return res.json({ success: true, ...payload });
+  } catch (error: any) {
+    console.error('Erro inventory-audit/delete-sample-item:', error);
+    return res.status(500).json({ error: error?.message || 'Erro ao remover aparelho da amostra.' });
+  }
+});
+
+router.post('/sample-sessions/:id/complete', async (req: Request, res: Response) => {
+  try {
+    const user = await resolveUser(req.body?.userId);
+    if (!user) return res.status(401).json({ error: 'Usuário não identificado.' });
+
+    const sessionId = String(req.params.id || '').trim();
+    const access = await assertSampleSessionAccess(user, sessionId);
+    if (!access.session) return res.status(404).json({ error: 'Conferência de amostras não encontrada.' });
+    if (!access.allowed) return res.status(403).json({ error: 'Sem acesso a esta conferência de amostras.' });
+
+    const now = new Date();
+    await prisma.$executeRawUnsafe(
+      `UPDATE "SampleConferenceSession" SET "status" = 'COMPLETED', "completedAt" = ?, "updatedAt" = ? WHERE "id" = ?`,
+      now,
+      now,
+      sessionId,
+    );
+
+    const payload = await buildSampleConferencePayload(sessionId);
+    return res.json({ success: true, ...payload });
+  } catch (error: any) {
+    console.error('Erro inventory-audit/complete-sample-session:', error);
+    return res.status(500).json({ error: error?.message || 'Erro ao finalizar conferência de amostras.' });
+  }
+});
 
 router.get('/stores', async (req: Request, res: Response) => {
   try {
