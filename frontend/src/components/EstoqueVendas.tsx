@@ -85,10 +85,10 @@ export function EstoqueVendas() {
       <div className="p-6 bg-white border-b border-slate-200 flex justify-between items-center shrink-0 gap-4">
         <div>
             <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight flex items-center gap-2">
-                <Package className="text-cyan-600" /> Estoque x Vendas
+                <Package className="text-cyan-600" /> Ponto de Pedido
             </h2>
             <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1">
-                Sugestão de compra baseada em giro
+                Sugestão de compra baseada em vendas
             </p>
         </div>
         

@@ -1246,11 +1246,9 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
 
     const totalItems = base.length;
     const totalStockQty = base.reduce((acc, item) => acc + (Number(item.quantity) || 0), 0);
-    const totalStockValue = stockTypeView === 'ESTOQUE'
-      ? base.reduce((acc, item) => {
-          return acc + ((Number(item.quantity) || 0) * (getUnitCost(item)));
-        }, 0)
-      : 0;
+    const totalStockValue = base.reduce((acc, item) => {
+      return acc + ((Number(item.quantity) || 0) * (getUnitCost(item)));
+    }, 0);
     const exactCostQty = base.reduce(
       (acc, item) =>
         acc + (Number(item.exactCostQuantity) || 0),
@@ -1307,9 +1305,7 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
 
       const q = Number(item.quantity) || 0;
       storeStats[store].qty += q;
-      if (stockTypeView === 'ESTOQUE') {
-        storeStats[store].value += (getUnitCost(item)) * q;
-      }
+      storeStats[store].value += (getUnitCost(item)) * q;
       if (q > 0 && q < 3) storeStats[store].lowStockCount += 1;
     });
 
@@ -1539,7 +1535,7 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
               <div>
                 <h1 className="text-xl md:text-2xl font-black uppercase tracking-tight text-slate-800">
                   {moduleMode === 'stock'
-                    ? (expandedStore || (stockTypeView === 'ESTOQUE' ? 'Visão Estratégica de Estoque' : stockTypeView === 'AMOSTRA' ? 'Estoque de Amostras' : 'Estoque DOA'))
+                    ? (expandedStore || (stockTypeView === 'ESTOQUE' ? 'Controle de Estoque' : stockTypeView === 'AMOSTRA' ? 'Estoque de Amostras' : 'Estoque DOA'))
                     : moduleMode === 'redistribution' ? "Central de Remanejamento" :
                     moduleMode === 'analysis' ? "Análise de Estoque" :
                     "Controle de Compras"}
@@ -1547,7 +1543,7 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
                 <div className="flex items-center gap-2">
                   <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
                     {moduleMode === 'stock'
-                      ? (stockTypeView === 'ESTOQUE' ? 'Físico, giro e custo operacional' : 'Controle informativo separado do estoque normal')
+                      ? (stockTypeView === 'ESTOQUE' ? 'Estoque, vendas e custo operacional' : 'Exibição informativa separada do estoque normal')
                       : moduleMode === 'redistribution' ? "Inteligência de Distribuição" :
                       moduleMode === 'analysis' ? "Rastreabilidade por IMEI" :
                       "Gestão de Pedidos em Aberto"}
@@ -1565,13 +1561,6 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
                 {/* 👇 BOTÃO NOVO AQUI 👇 */}
                 <button onClick={() => setModuleMode('predictive')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all ${moduleMode === 'predictive' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-indigo-500'}`}>Ruptura</button>
               </div>
-
-              <button
-                onClick={() => setModuleMode('analysis')}
-                className={`px-4 py-2 rounded-xl text-xs font-bold uppercase transition-all shadow-md flex items-center gap-2 ${moduleMode === 'analysis' ? 'bg-purple-700 text-white' : 'bg-purple-600 text-white hover:bg-purple-700'}`}
-              >
-                <Activity size={14} /> Análise
-              </button>
 
               <button onClick={handleExport} className="p-2 bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 rounded-xl transition-all" title="Exportar Excel">
                 <Download size={18} />
@@ -1691,7 +1680,7 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
                         const isAtencao = item.daysInStore >= 30 && item.daysInStore <= 90;
 
                         const sales = getProductSales(item.storeName, item.description);
-                        let giroLabel = "Sem Giro";
+                        let giroLabel = "Sem Vendas";
                         let giroColor = "text-slate-400";
                         if (sales > 10) { giroLabel = `Alto (${sales}/período)`; giroColor = "text-emerald-600"; }
                         else if (sales > 3) { giroLabel = `Médio (${sales}/período)`; giroColor = "text-amber-600"; }
@@ -2201,23 +2190,119 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
           <>
             {!expandedStore && (
               <div className="space-y-4">
+                {/* FILTROS PRINCIPAIS: primeira linha abaixo do cabeçalho */}
                 <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-3">
+                  <div className="flex flex-col xl:flex-row xl:items-stretch gap-2">
+                    <div className="relative flex-1 min-w-[260px]">
+                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={17} />
+                      <input
+                        type="text"
+                        placeholder="BUSCAR PRODUTO OU CÓDIGO..."
+                        value={filter}
+                        onChange={(e) => setFilter(e.target.value)}
+                        className="w-full h-[42px] pl-10 pr-4 bg-slate-50 border border-slate-200 text-slate-700 text-[10px] md:text-xs font-bold uppercase rounded-xl outline-none focus:bg-white focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 transition-all"
+                      />
+                    </div>
+
+                    <div className="flex gap-2 flex-wrap xl:flex-nowrap xl:items-stretch z-20">
+                      <MultiSelectDropdown
+                        options={uniqueRegions}
+                        selected={regionFilter}
+                        onChange={setRegionFilter}
+                        placeholder="Todas Regiões"
+                      />
+                      <MultiSelectDropdown
+                        options={uniqueCategories}
+                        selected={categoryFilter}
+                        onChange={setCategoryFilter}
+                        placeholder="Todas Categorias"
+                      />
+                      <MultiSelectDropdown
+                        options={uniqueLines}
+                        selected={lineFilter}
+                        onChange={setLineFilter}
+                        placeholder="Todas Linhas"
+                      />
+                      <MultiSelectDropdown
+                        options={uniqueClusters}
+                        selected={clusterFilter}
+                        onChange={setClusterFilter}
+                        placeholder="Todos Clusters"
+                      />
+
+                      <select
+                        value={stockViewFilter}
+                        onChange={e => setStockViewFilter(e.target.value as any)}
+                        className="h-[42px] bg-white border border-slate-200 text-slate-600 text-[10px] md:text-xs font-bold uppercase px-3 rounded-xl outline-none cursor-pointer hover:border-indigo-300 shrink-0"
+                      >
+                        <option value="TODOS">Todas as Vendas</option>
+                        <option value="COM_GIRO">Com Vendas</option>
+                        <option value="SEM_GIRO">Sem Vendas</option>
+                        <option value="ESTOQUE_BAIXO">Estoque Baixo</option>
+                      </select>
+
+                      <div className="flex bg-slate-100 p-1 rounded-xl shrink-0 h-[42px]">
+                        <button
+                          onClick={() => setStoreViewMode('list')}
+                          className={`px-2.5 rounded-lg transition-all ${storeViewMode === 'list' ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-400 hover:text-slate-600'}`}
+                          title="Visualização em lista"
+                        >
+                          <ListIcon size={16} />
+                        </button>
+                        <button
+                          onClick={() => setStoreViewMode('grid')}
+                          className={`px-2.5 rounded-lg transition-all ${storeViewMode === 'grid' ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-400 hover:text-slate-600'}`}
+                          title="Visualização em cards"
+                        >
+                          <LayoutGrid size={16} />
+                        </button>
+                      </div>
+
+                      {(
+                        regionFilter.length > 0 ||
+                        categoryFilter.length > 0 ||
+                        lineFilter.length > 0 ||
+                        clusterFilter.length > 0 ||
+                        filter !== '' ||
+                        stockViewFilter !== 'TODOS'
+                      ) && (
+                        <button
+                          onClick={() => {
+                            setRegionFilter([]);
+                            setCategoryFilter([]);
+                            setLineFilter([]);
+                            setClusterFilter([]);
+                            setFilter('');
+                            setStockViewFilter('TODOS');
+                          }}
+                          className="h-[42px] bg-slate-50 border border-slate-200 text-slate-500 hover:bg-slate-100 hover:text-slate-700 text-[10px] md:text-xs font-black px-3 rounded-xl transition-colors flex items-center gap-1 shrink-0"
+                        >
+                          <X size={14} /> LIMPAR
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* TIPO DE ESTOQUE: seletor compacto */}
+                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm px-4 py-3">
                   <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
-                    <div>
-                      <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Tipo de estoque exibido</p>
-                      <p className={`text-xs font-bold mt-1 ${stockTypeView === 'ESTOQUE' ? 'text-emerald-700' : stockTypeView === 'AMOSTRA' ? 'text-amber-700' : 'text-red-700'}`}>
+                    <div className="min-w-0">
+                      <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">Tipo de estoque</p>
+                      <p className="text-[11px] font-semibold text-slate-500 mt-1">
                         {stockTypeView === 'ESTOQUE'
-                          ? 'Estoque normal: compõe custo e todos os cálculos operacionais.'
+                          ? 'Estoque normal com custo e cálculos operacionais.'
                           : stockTypeView === 'AMOSTRA'
-                            ? 'Amostras: exibição informativa. Não compõem custo, remanejamento, ruptura ou compras.'
-                            : 'DOA: exibição informativa. Não compõe custo, remanejamento, ruptura ou compras.'}
+                            ? 'Amostras com quantidade e custo para consulta.'
+                            : 'DOA com quantidade e custo para consulta.'}
                       </p>
                     </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 w-full lg:w-auto">
+
+                    <div className="inline-flex w-full lg:w-auto bg-slate-100 p-1 rounded-xl gap-1">
                       {([
-                        { type: 'ESTOQUE' as StockType, label: 'Estoque normal', qty: stockTypeTotals.ESTOQUE, active: 'border-emerald-500 bg-emerald-50 text-emerald-800 ring-2 ring-emerald-100' },
-                        { type: 'AMOSTRA' as StockType, label: 'Amostra', qty: stockTypeTotals.AMOSTRA, active: 'border-amber-500 bg-amber-50 text-amber-800 ring-2 ring-amber-100' },
-                        { type: 'DOA' as StockType, label: 'DOA', qty: stockTypeTotals.DOA, active: 'border-red-500 bg-red-50 text-red-800 ring-2 ring-red-100' }
+                        { type: 'ESTOQUE' as StockType, label: 'Estoque', qty: stockTypeTotals.ESTOQUE },
+                        { type: 'AMOSTRA' as StockType, label: 'Amostra', qty: stockTypeTotals.AMOSTRA },
+                        { type: 'DOA' as StockType, label: 'DOA', qty: stockTypeTotals.DOA }
                       ]).map(option => (
                         <button
                           key={option.type}
@@ -2228,120 +2313,77 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
                             setStockViewFilter('TODOS');
                             setFilter('');
                           }}
-                          className={`rounded-xl border px-4 py-2.5 text-left transition-all ${stockTypeView === option.type ? option.active : 'border-slate-200 bg-slate-50 text-slate-600 hover:border-slate-300'}`}
+                          className={`flex-1 lg:flex-none min-w-[128px] rounded-lg px-3 py-2 text-left transition-all ${
+                            stockTypeView === option.type
+                              ? 'bg-white text-indigo-700 shadow-sm ring-1 ring-slate-200'
+                              : 'text-slate-500 hover:text-slate-700'
+                          }`}
                         >
-                          <span className="block text-[9px] font-black uppercase tracking-widest">{option.label}</span>
-                          <span className="block text-lg font-black mt-0.5">{option.qty.toLocaleString('pt-BR')} un</span>
+                          <span className="block text-[9px] font-black uppercase tracking-wider">{option.label}</span>
+                          <span className="block text-sm font-black mt-0.5">{option.qty.toLocaleString('pt-BR')} un</span>
                         </button>
                       ))}
                     </div>
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
-                  <button
-                    onClick={() => setStockViewFilter('TODOS')}
-                    className={`bg-white rounded-2xl border p-4 text-left shadow-sm transition-all hover:-translate-y-0.5 ${
-                      stockViewFilter === 'TODOS' ? 'border-indigo-500 ring-2 ring-indigo-100' : 'border-slate-200'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-[10px] font-black uppercase text-slate-400">Produtos Visíveis</span>
-                      <Package size={16} className="text-slate-400" />
+                {/* RESUMO: somente os indicadores realmente úteis */}
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-12 gap-3">
+                  <div className="xl:col-span-3 bg-white rounded-2xl border border-slate-200 shadow-sm px-4 py-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">Peças em Estoque</p>
+                        <p className="text-2xl font-black text-slate-900 mt-2">
+                          {stockSummary.totalStockQty.toLocaleString('pt-BR')}
+                        </p>
+                        <p className="text-[10px] font-semibold text-slate-400 mt-1">Base atual filtrada</p>
+                      </div>
+                      <div className="w-9 h-9 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center shrink-0">
+                        <Box size={17} />
+                      </div>
                     </div>
-                    <div className="text-2xl font-black text-slate-800">{stockSummary.totalItems}</div>
-                    <div className="text-[10px] font-bold text-slate-400 uppercase mt-1">Clique para ver todos</div>
-                  </button>
-
-                  <button
-                    onClick={() => setStockViewFilter('TODOS')}
-                    className={`bg-white rounded-2xl border p-4 text-left shadow-sm transition-all hover:-translate-y-0.5 ${
-                      stockViewFilter === 'TODOS' ? 'border-indigo-500 ring-2 ring-indigo-100' : 'border-slate-200'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-[10px] font-black uppercase text-slate-400">Peças em Estoque</span>
-                      <Box size={16} className="text-indigo-500" />
-                    </div>
-                    <div className="text-2xl font-black text-slate-800">
-                      {stockSummary.totalStockQty.toLocaleString('pt-BR')}
-                    </div>
-                    <div className="text-[10px] font-bold text-slate-400 uppercase mt-1">Base atual filtrada</div>
-                  </button>
-
-                  <button
-                    onClick={() => setStockViewFilter('COM_GIRO')}
-                    className={`bg-white rounded-2xl border p-4 text-left shadow-sm transition-all hover:-translate-y-0.5 ${
-                      stockViewFilter === 'COM_GIRO' ? 'border-emerald-500 ring-2 ring-emerald-100' : 'border-slate-200'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-[10px] font-black uppercase text-slate-400">Vendas no Período</span>
-                      <TrendingUp size={16} className="text-emerald-500" />
-                    </div>
-                    <div className="text-2xl font-black text-emerald-600">
-                      {stockSummary.totalSalesQty.toLocaleString('pt-BR')}
-                    </div>
-                    <div className="text-[10px] font-bold text-slate-400 uppercase mt-1">Clique para ver com giro</div>
-                  </button>
-
-                  <button
-                    onClick={() => setStockViewFilter('ESTOQUE_BAIXO')}
-                    className={`bg-white rounded-2xl border p-4 text-left shadow-sm transition-all hover:-translate-y-0.5 ${
-                      stockViewFilter === 'ESTOQUE_BAIXO' ? 'border-red-500 ring-2 ring-red-100' : 'border-slate-200'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-[10px] font-black uppercase text-slate-400">Estoque Baixo</span>
-                      <AlertCircle size={16} className="text-red-500" />
-                    </div>
-                    <div className="text-2xl font-black text-red-600">{stockSummary.lowStockCount}</div>
-                    <div className="text-[10px] font-bold text-slate-400 uppercase mt-1">Clique para filtrar</div>
-                  </button>
-
-                  <button
-                    onClick={() => setStockViewFilter('SEM_GIRO')}
-                    className={`bg-white rounded-2xl border p-4 text-left shadow-sm transition-all hover:-translate-y-0.5 ${
-                      stockViewFilter === 'SEM_GIRO' ? 'border-amber-500 ring-2 ring-amber-100' : 'border-slate-200'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-[10px] font-black uppercase text-slate-400">Sem Giro</span>
-                      <Tag size={16} className="text-amber-500" />
-                    </div>
-                    <div className="text-2xl font-black text-amber-600">{stockSummary.noSalesCount}</div>
-                    <div className="text-[10px] font-bold text-slate-400 uppercase mt-1">Clique para filtrar</div>
-                  </button>
-                </div>
-
-                <div className={`rounded-2xl p-5 text-white shadow-lg flex flex-col md:flex-row justify-between gap-4 ${stockTypeView === 'ESTOQUE' ? 'bg-gradient-to-r from-slate-900 to-indigo-900' : stockTypeView === 'AMOSTRA' ? 'bg-gradient-to-r from-amber-700 to-orange-700' : 'bg-gradient-to-r from-red-800 to-rose-800'}`}>
-                  <div>
-                    <p className="text-[10px] font-black uppercase tracking-widest text-white/60">
-                      {stockTypeView === 'ESTOQUE' ? 'Valor Total em Estoque' : `Custo do estoque ${stockTypeView}`}
-                    </p>
-                    <h3 className="text-3xl font-black mt-2">
-                      {stockTypeView === 'ESTOQUE'
-                        ? `R$ ${stockSummary.totalStockValue.toLocaleString('pt-BR', { maximumFractionDigits: 0 })}`
-                        : 'NÃO COMPÕE'}
-                    </h3>
-                    <p className="text-[11px] text-white/70 mt-1">
-                      {stockTypeView === 'ESTOQUE'
-                        ? stockSummary.fallbackCostQty > 0
-                          ? `${stockSummary.exactCostQty.toLocaleString('pt-BR')} un. com custo serial exato e ${stockSummary.fallbackCostQty.toLocaleString('pt-BR')} un. com fallback.`
-                          : 'Total calculado integralmente com o custo serial de entrada.'
-                        : 'Esta categoria é informativa e está excluída dos cálculos financeiros e operacionais.'}
-                    </p>
                   </div>
 
-                  <div className="flex items-center">
-                    <button
-                      onClick={() => setShowInsightsPanel(prev => !prev)}
-                      className="bg-white/10 hover:bg-white/20 border border-white/10 px-4 py-2 rounded-xl text-xs font-black uppercase flex items-center gap-2 transition-all"
-                    >
-                      <BarChart3 size={14} />
-                      {showInsightsPanel ? 'Ocultar Insights' : 'Ver Insights'}
-                      {showInsightsPanel ? <EyeOff size={14} /> : <Eye size={14} />}
-                    </button>
+                  <div className="xl:col-span-3 bg-white rounded-2xl border border-slate-200 shadow-sm px-4 py-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">Vendas no Período</p>
+                        <p className="text-2xl font-black text-slate-900 mt-2">
+                          {stockSummary.totalSalesQty.toLocaleString('pt-BR')}
+                        </p>
+                        <p className="text-[10px] font-semibold text-slate-400 mt-1">Período selecionado no cabeçalho</p>
+                      </div>
+                      <div className="w-9 h-9 rounded-xl bg-slate-100 text-slate-600 flex items-center justify-center shrink-0">
+                        <TrendingUp size={17} />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="md:col-span-2 xl:col-span-6 rounded-2xl bg-slate-900 text-white shadow-sm px-5 py-4">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                      <div>
+                        <p className="text-[9px] font-black uppercase tracking-widest text-white/50">
+                          {stockTypeView === 'ESTOQUE' ? 'Valor Total em Estoque' : `Valor de Custo ${stockTypeView}`}
+                        </p>
+                        <p className="text-2xl md:text-3xl font-black mt-2">
+                          R$ {stockSummary.totalStockValue.toLocaleString('pt-BR', { maximumFractionDigits: 0 })}
+                        </p>
+                        <p className="text-[10px] font-semibold text-white/50 mt-1">
+                          {stockTypeView === 'ESTOQUE'
+                            ? 'Valor calculado sobre o estoque filtrado.'
+                            : 'Valor informativo para consulta.'}
+                        </p>
+                      </div>
+
+                      <button
+                        onClick={() => setShowInsightsPanel(prev => !prev)}
+                        className="h-[40px] bg-white/10 hover:bg-white/15 border border-white/10 px-4 rounded-xl text-[10px] font-black uppercase tracking-wide flex items-center justify-center gap-2 transition-all shrink-0"
+                      >
+                        <BarChart3 size={14} />
+                        {showInsightsPanel ? 'Ocultar Maiores Vendas' : 'Maiores Vendas'}
+                        {showInsightsPanel ? <EyeOff size={14} /> : <Eye size={14} />}
+                      </button>
+                    </div>
                   </div>
                 </div>
 
@@ -2351,10 +2393,10 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
                       <div>
                         <h3 className="text-sm font-black uppercase text-slate-800 flex items-center gap-2">
                           <Layers size={16} className="text-indigo-600" />
-                          Insights de Giro
+                          Maiores Vendas
                         </h3>
                         <p className="text-[10px] font-bold uppercase text-slate-400 mt-1">
-                          Ranking baseado no período, busca e filtros aplicados
+                          Ranking baseado no período e nos filtros aplicados
                         </p>
                       </div>
 
@@ -2431,96 +2473,6 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
               </div>
             )}
 
-            {!expandedStore && (
-              <div className="flex flex-col md:flex-row gap-3 mb-4 flex-wrap">
-                <div className="relative flex-1 min-w-[250px]">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-                  <input
-                    type="text"
-                    placeholder="BUSCAR POR PRODUTO OU CÓDIGO..."
-                    value={filter}
-                    onChange={(e) => setFilter(e.target.value)}
-                    className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 text-slate-700 text-[10px] md:text-xs font-bold uppercase rounded-xl outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-50/50 transition-all shadow-sm h-full"
-                  />
-                </div>
-                <div className="flex gap-2 flex-wrap md:flex-nowrap pb-2 md:pb-0 z-10 w-full md:w-auto">
-                  <MultiSelectDropdown
-                    options={uniqueRegions}
-                    selected={regionFilter}
-                    onChange={setRegionFilter}
-                    placeholder="Todas Regiões"
-                  />
-                  <MultiSelectDropdown
-                    options={uniqueCategories}
-                    selected={categoryFilter}
-                    onChange={setCategoryFilter}
-                    placeholder="Todas Categorias"
-                  />
-                  <MultiSelectDropdown
-                    options={uniqueLines}
-                    selected={lineFilter}
-                    onChange={setLineFilter}
-                    placeholder="Todas Linhas"
-                  />
-                  <MultiSelectDropdown
-                    options={uniqueClusters}
-                    selected={clusterFilter}
-                    onChange={setClusterFilter}
-                    placeholder="Todos Clusters"
-                  />
-
-                  <select 
-                    value={stockViewFilter} 
-                    onChange={e => setStockViewFilter(e.target.value as any)} 
-                    className="bg-white border border-slate-200 text-slate-600 text-[10px] md:text-xs font-bold uppercase px-3 md:px-4 py-2 md:py-2.5 rounded-xl outline-none cursor-pointer hover:border-indigo-300 shadow-sm shrink-0"
-                  >
-                    <option value="TODOS">Todos (Giro)</option>
-                    <option value="COM_GIRO">Com Giro</option>
-                    <option value="SEM_GIRO">Sem Giro</option>
-                    <option value="ESTOQUE_BAIXO">Estoque Baixo</option>
-                  </select>
-
-                  <div className="flex bg-slate-100 p-1 rounded-xl shrink-0 h-full">
-                    <button
-                      onClick={() => setStoreViewMode('list')}
-                      className={`p-2 rounded-lg transition-all ${storeViewMode === 'list' ? 'bg-white shadow text-indigo-600' : 'text-slate-400'}`}
-                    >
-                      <ListIcon size={16} />
-                    </button>
-                    <button
-                      onClick={() => setStoreViewMode('grid')}
-                      className={`p-2 rounded-lg transition-all ${storeViewMode === 'grid' ? 'bg-white shadow text-indigo-600' : 'text-slate-400'}`}
-                    >
-                      <LayoutGrid size={16} />
-                    </button>
-                  </div>
-
-                  {(
-                    regionFilter.length > 0 ||
-                    categoryFilter.length > 0 ||
-                    lineFilter.length > 0 ||
-                    clusterFilter.length > 0 ||
-                    filter !== '' ||
-                    stockViewFilter !== 'TODOS'
-                  ) && (
-                    <button
-                      onClick={() => {
-                        setRegionFilter([]);
-                        setCategoryFilter([]);
-                        setLineFilter([]);
-                        setClusterFilter([]);
-                        setFilter('');
-                        setStockViewFilter('TODOS');
-                      }}
-                      className="bg-red-50 border border-red-100 text-red-600 hover:bg-red-100 text-[10px] md:text-xs font-bold px-3 py-2 md:py-2.5 rounded-xl transition-colors shadow-sm flex items-center gap-1 shrink-0"
-                    >
-                      <X size={14} /> LIMPAR
-                    </button>
-                  )}
-                </div>
-              </div>
-            )}
-
             {expandedStore ? (
               <div className="space-y-4 animate-fadeIn">
                 <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
@@ -2536,8 +2488,8 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
                         <h2 className="text-2xl md:text-3xl font-black uppercase tracking-tight truncate">{expandedStore}</h2>
                         <p className="text-[11px] text-white/60 font-bold uppercase mt-1">
                           {stockTypeView === 'ESTOQUE'
-                            ? 'Produtos, estoque, giro e valor financeiro no período selecionado.'
-                            : `${stockTypeView}: quantidade informativa, excluída dos cálculos financeiros e operacionais.`}
+                            ? 'Produtos, estoque, vendas e valor financeiro no período selecionado.'
+                            : `${stockTypeView}: quantidade e custo visíveis apenas para consulta, sem impacto operacional.`}
                         </p>
                       </div>
 
@@ -2545,7 +2497,7 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
                         <div className="bg-white/10 border border-white/10 rounded-2xl p-3 min-w-[120px]"><p className="text-[9px] font-black uppercase text-white/50">Itens</p><p className="text-xl font-black">{storeDetailProducts.length}</p></div>
                         <div className="bg-white/10 border border-white/10 rounded-2xl p-3 min-w-[120px]"><p className="text-[9px] font-black uppercase text-white/50">Peças</p><p className="text-xl font-black">{storeDetailProducts.reduce((acc, i) => acc + (Number(i.quantity) || 0), 0).toLocaleString('pt-BR')}</p></div>
                         <div className="bg-white/10 border border-white/10 rounded-2xl p-3 min-w-[120px]"><p className="text-[9px] font-black uppercase text-white/50">Vendas</p><p className="text-xl font-black text-emerald-300">{storeDetailProducts.reduce((acc, i) => acc + getProductSales(i.storeName, i.description), 0).toLocaleString('pt-BR')}</p></div>
-                        <div className="bg-white/10 border border-white/10 rounded-2xl p-3 min-w-[120px]"><p className="text-[9px] font-black uppercase text-white/50">Custo considerado</p><p className="text-xl font-black">{stockTypeView === 'ESTOQUE' ? `R$ ${storeDetailProducts.reduce((acc, i) => acc + (getUnitCost(i) * (Number(i.quantity) || 0)), 0).toLocaleString('pt-BR', { notation: "compact", maximumFractionDigits: 1 })}` : 'NÃO COMPÕE'}</p></div>
+                        <div className="bg-white/10 border border-white/10 rounded-2xl p-3 min-w-[120px]"><p className="text-[9px] font-black uppercase text-white/50">Custo considerado</p><p className="text-xl font-black">{`R$ ${storeDetailProducts.reduce((acc, i) => acc + (getUnitCost(i) * (Number(i.quantity) || 0)), 0).toLocaleString('pt-BR', { notation: "compact", maximumFractionDigits: 1 })}`}</p></div>
                       </div>
                     </div>
                   </div>
@@ -2565,7 +2517,7 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
                       <div className="flex flex-col sm:flex-row gap-2">
                         <select value={storeDetailSort} onChange={e => setStoreDetailSort(e.target.value as any)} className="bg-white border border-slate-200 text-slate-600 text-xs font-black uppercase px-4 py-3 rounded-xl outline-none cursor-pointer">
                           <option value="ESTOQUE">Ordenar: Maior Estoque</option>
-                          <option value="GIRO">Ordenar: Maior Giro</option>
+                          <option value="GIRO">Ordenar: Maior Vendas</option>
                           <option value="VALOR">Ordenar: Maior Valor</option>
                           <option value="NOME">Ordenar: Nome</option>
                         </select>
@@ -2596,9 +2548,7 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
                           {storeDetailProducts.map((item, idx) => {
                             const stockQty = Number(item.quantity) || 0;
                             const soldQty = getProductSales(item.storeName, item.description);
-                            const totalCost = stockTypeView === 'ESTOQUE'
-                              ? (getUnitCost(item)) * stockQty
-                              : 0;
+                            const totalCost = (getUnitCost(item)) * stockQty;
                             const isLowStock = stockQty > 0 && stockQty < 3;
                             const isNoStock = stockQty === 0;
 
@@ -2621,12 +2571,12 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
                                 <td className="px-4 py-3 text-right"><span className={`text-sm font-black ${soldQty > 0 ? 'text-emerald-600' : 'text-slate-300'}`}>{soldQty.toLocaleString('pt-BR')}</span></td>
                                 <td className="px-4 py-3 text-right text-xs font-bold text-slate-600 whitespace-nowrap">R$ {getUnitCost(item).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</td>
                                 <td className="px-4 py-3 text-right text-xs font-black text-emerald-600 whitespace-nowrap">R$ {Number(item.salePrice || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</td>
-                                <td className="px-4 py-3 text-right text-xs font-black text-indigo-700 whitespace-nowrap">{stockTypeView === 'ESTOQUE' ? `R$ ${totalCost.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}` : 'NÃO COMPÕE'}</td>
+                                <td className="px-4 py-3 text-right text-xs font-black text-indigo-700 whitespace-nowrap">{`R$ ${totalCost.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`}</td>
                                 <td className="px-4 py-3 text-center">
                                   {isNoStock ? <span className="inline-flex rounded-full bg-red-50 text-red-600 border border-red-100 px-2 py-1 text-[9px] font-black uppercase">Zerado</span> :
                                     isLowStock ? <span className="inline-flex rounded-full bg-amber-50 text-amber-600 border border-amber-100 px-2 py-1 text-[9px] font-black uppercase">Baixo</span> :
-                                      soldQty > 0 ? <span className="inline-flex rounded-full bg-emerald-50 text-emerald-600 border border-emerald-100 px-2 py-1 text-[9px] font-black uppercase">Com Giro</span> :
-                                        <span className="inline-flex rounded-full bg-slate-100 text-slate-500 border border-slate-200 px-2 py-1 text-[9px] font-black uppercase">Sem Giro</span>}
+                                      soldQty > 0 ? <span className="inline-flex rounded-full bg-emerald-50 text-emerald-600 border border-emerald-100 px-2 py-1 text-[9px] font-black uppercase">Com Vendas</span> :
+                                        <span className="inline-flex rounded-full bg-slate-100 text-slate-500 border border-slate-200 px-2 py-1 text-[9px] font-black uppercase">Sem Vendas</span>}
                                 </td>
                               </tr>
                             );
@@ -2669,7 +2619,7 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
                               <div className="grid grid-cols-3 gap-2 mt-4">
                                 <div className="bg-slate-50 rounded-xl p-2"><p className="text-[8px] font-black text-slate-400 uppercase">Vendas</p><p className={`text-sm font-black ${soldQty > 0 ? 'text-emerald-600' : 'text-slate-300'}`}>{soldQty}</p></div>
                                 <div className="bg-slate-50 rounded-xl p-2"><p className="text-[8px] font-black text-slate-400 uppercase">Custo</p><p className="text-xs font-black text-slate-700">R$ {getUnitCost(item).toLocaleString('pt-BR', { notation: "compact", maximumFractionDigits: 1 })}</p></div>
-                                <div className="bg-slate-50 rounded-xl p-2"><p className="text-[8px] font-black text-slate-400 uppercase">Custo considerado</p><p className="text-xs font-black text-indigo-700">{stockTypeView === 'ESTOQUE' ? `R$ ${((getUnitCost(item)) * stockQty).toLocaleString('pt-BR', { notation: "compact", maximumFractionDigits: 1 })}` : 'NÃO COMPÕE'}</p></div>
+                                <div className="bg-slate-50 rounded-xl p-2"><p className="text-[8px] font-black text-slate-400 uppercase">Custo considerado</p><p className="text-xs font-black text-indigo-700">{`R$ ${((getUnitCost(item)) * stockQty).toLocaleString('pt-BR', { notation: "compact", maximumFractionDigits: 1 })}`}</p></div>
                               </div>
                             </div>
                           );
@@ -2716,7 +2666,7 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
                                 </div>
                                 <div className="flex justify-between items-end">
                                   <span className="text-[10px] font-bold text-slate-400 uppercase">Custo considerado</span>
-                                  <span className="text-sm font-bold text-indigo-600">{stockTypeView === 'ESTOQUE' ? `R$ ${store.value.toLocaleString('pt-BR', { notation: "compact", maximumFractionDigits: 1 })}` : 'NÃO COMPÕE'}</span>
+                                  <span className="text-sm font-bold text-indigo-600">{`R$ ${store.value.toLocaleString('pt-BR', { notation: "compact", maximumFractionDigits: 1 })}`}</span>
                                 </div>
                               </div>
                               <div className="absolute bottom-0 right-0 p-4 opacity-0 group-hover:opacity-100 transition-opacity transform translate-y-2 group-hover:translate-y-0"><ChevronRight className="text-indigo-600" size={20} /></div>
@@ -2758,9 +2708,7 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
                                      {store.qty.toLocaleString('pt-BR')} un
                                    </td>
                                    <td className="p-4 text-right text-sm font-bold text-indigo-600 whitespace-nowrap">
-                                     {stockTypeView === 'ESTOQUE'
-                                       ? `R$ ${store.value.toLocaleString('pt-BR', { notation: "compact", maximumFractionDigits: 1 })}`
-                                       : 'NÃO COMPÕE'}
+                                     {`R$ ${store.value.toLocaleString('pt-BR', { notation: "compact", maximumFractionDigits: 1 })}`}
                                    </td>
                                  </tr>
                                )

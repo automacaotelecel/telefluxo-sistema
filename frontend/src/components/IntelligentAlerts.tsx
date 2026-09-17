@@ -317,10 +317,10 @@ export default function IntelligentAlerts({ currentUser, onNavigateStock }: Prop
 
               <div>
                 <h1 className="text-2xl font-black uppercase tracking-tight text-slate-950 md:text-3xl">
-                  Central de Alertas Inteligentes
+                  Alertas
                 </h1>
                 <p className="mt-1 max-w-3xl text-sm font-semibold text-slate-500">
-                  Alertas automáticos gerados a partir de estoque, vendas, giro, risco de ruptura,
+                  Alertas automáticos gerados a partir de estoque, vendas, risco de ruptura,
                   excesso e oportunidades de remanejamento.
                 </p>
 

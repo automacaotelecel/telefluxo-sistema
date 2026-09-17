@@ -20,6 +20,7 @@ type ClarkMessage = {
   actions?: Array<{
     type: string;
     label: string;
+    payload?: any;
   }>;
 };
 
@@ -28,11 +29,8 @@ type ClarkProps = {
   placement?: "floating" | "header";
   onNavigateContracts?: () => void;
   onNavigateOnlinePrices?: () => void;
-};
-
-type QuickSuggestion = {
-  label: string;
-  prompt: string;
+  onNavigate?: (view: string) => void;
+  onOpenStore?: (store: string) => void;
 };
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
@@ -133,6 +131,8 @@ export default function Clark({
   placement = "floating",
   onNavigateContracts,
   onNavigateOnlinePrices,
+  onNavigate,
+  onOpenStore,
 }: ClarkProps) {
   const firstName = String(currentUser?.name || "Diretoria")
     .trim()
@@ -148,23 +148,6 @@ export default function Clark({
   const inputRef = useRef<HTMLInputElement | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
-  const suggestions: QuickSuggestion[] = [
-    {
-      label: "Resumo de hoje",
-      prompt:
-        "Me dê um resumo objetivo da operação de hoje, destacando somente os principais números e pontos que merecem atenção.",
-    },
-    {
-      label: "Comparar lojas",
-      prompt:
-        "Compare as lojas neste mês e destaque as melhores e as que mais precisam de atenção, usando os dados reais do TeleFluxo.",
-    },
-    {
-      label: "Conversão de acessórios",
-      prompt:
-        "Analise a conversão de acessórios deste mês por loja e destaque onde estão os melhores e os piores resultados.",
-    },
-  ];
 
   useEffect(() => {
     if (!isOpen) return;
@@ -181,7 +164,7 @@ export default function Clark({
     extras?: {
       dados?: any;
       perguntaOriginal?: string;
-      actions?: Array<{ type: string; label: string }>;
+      actions?: Array<{ type: string; label: string; payload?: any }>;
     },
   ) => {
     setMessages((prev) => [
@@ -236,6 +219,16 @@ export default function Clark({
         perguntaOriginal: pergunta,
         actions: data?.actions,
       });
+
+      const navigationAction = Array.isArray(data?.actions)
+        ? data.actions.find((action: any) =>
+            action?.type === "navigate" || action?.type === "open_store"
+          )
+        : null;
+
+      if (navigationAction) {
+        window.setTimeout(() => handleClarkAction(navigationAction), 350);
+      }
     } catch (error: any) {
       addMessage(
         "assistant",
@@ -262,6 +255,23 @@ export default function Clark({
   const handleOpenOnlinePrices = () => {
     closeChat();
     onNavigateOnlinePrices?.();
+  };
+
+  const handleClarkAction = (action: { type: string; label: string; payload?: any }) => {
+    if (action.type === "navigate" && action.payload?.view) {
+      closeChat();
+      onNavigate?.(String(action.payload.view));
+      return;
+    }
+
+    if (action.type === "open_store" && action.payload?.store) {
+      closeChat();
+      if (onOpenStore) {
+        onOpenStore(String(action.payload.store));
+      } else {
+        onNavigate?.("home");
+      }
+    }
   };
 
   const baixarExcelRelatorio = async (msg: ClarkMessage) => {
@@ -437,23 +447,11 @@ export default function Clark({
                       Bom dia, {firstName}. Como posso te ajudar hoje?
                     </p>
                     <p className="mt-1 text-[12px] font-medium leading-relaxed text-slate-500">
-                      Posso te ajudar com vendas, lojas, vendedores, estoque e desempenho da operação.
+                      Pergunte naturalmente sobre vendas, estoque, lojas, vendedores, produtos ou relatórios. Também posso abrir telas do TeleFluxo para você.
                     </p>
                   </div>
                 </div>
 
-                <div className="mt-5 flex flex-wrap gap-2 pl-11">
-                  {suggestions.map((item) => (
-                    <button
-                      key={item.label}
-                      onClick={() => sendQuestion(item.prompt)}
-                      disabled={loading}
-                      className="rounded-full border border-slate-200 bg-white px-3 py-2 text-[11px] font-semibold text-slate-600 shadow-sm transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-950 disabled:opacity-50"
-                    >
-                      {item.label}
-                    </button>
-                  ))}
-                </div>
               </div>
             )}
 
@@ -499,6 +497,23 @@ export default function Clark({
                                   {excelDownloadingId === msg.id
                                     ? "Gerando..."
                                     : action.label || "Baixar Excel"}
+                                </button>
+                              ))}
+                          </div>
+                        )}
+
+                      {!isUser &&
+                        msg.actions?.some((action) => action.type === "navigate" || action.type === "open_store") && (
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            {msg.actions
+                              .filter((action) => action.type === "navigate" || action.type === "open_store")
+                              .map((action, index) => (
+                                <button
+                                  key={`${msg.id}-${action.type}-${index}`}
+                                  onClick={() => handleClarkAction(action)}
+                                  className="inline-flex items-center gap-2 rounded-xl bg-slate-950 px-3 py-2 text-[10px] font-bold text-white transition hover:bg-orange-600"
+                                >
+                                  {action.label || "Abrir"}
                                 </button>
                               ))}
                           </div>

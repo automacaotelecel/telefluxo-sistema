@@ -2158,85 +2158,110 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
       ].filter(Boolean);
 
       return {
-        'ARQUIVO PDF': item.arquivo,
-        'REF. CAMPANHA': item.refCampanha,
-        'CAMPANHA': item.campanha,
-        'TIPO DA CARTA': item.tipoCampanha,
-        'TIPO DE INVESTIMENTO': investmentTypes.join(' + ') || 'NÃO IDENTIFICADO',
-        'DATA INICIAL': item.inicio,
-        'DATA FINAL': item.termino,
-        'PERÍODO': item.inicio && item.termino ? `${item.inicio} a ${item.termino}` : '-',
-        'MODELO NA CARTA': item.modeloPdf,
-        'BASIC MODEL': basicModel,
-        'MODELO TRADUZIDO': descricao,
-        'REFERÊNCIA': referencia,
-        'TIPO DE PRODUTO': productType,
-        'FATOR DA FÓRMULA': formulaFactor,
-        'QTD DISPONÍVEL NA CARTA': item.quantidadeCarta,
-        'QTD DISPONÍVEL EM ESTOQUE': stock?.quantidade || 0,
-        'PRICE REBATE': prices.priceRebate,
-        'DESCONTO REBATE': descontoRebate,
-        'PRICE TRADE IN': prices.priceTradeIn,
-        'DESCONTO TRADE IN': descontoTradeIn,
-        'PRICE BOGO': prices.priceBogo,
-        'DESCONTO BOGO': descontoBogo,
-        'PRICE SIP': prices.priceSip,
-        'DESCONTO SIP': descontoSip,
-        'PRICE TOTAL DA CARTA':
-          prices.priceRebate +
-          prices.priceTradeIn +
-          prices.priceBogo +
-          prices.priceSip,
-        'DESCONTO TOTAL CALCULADO':
-          descontoRebate +
-          descontoTradeIn +
-          descontoBogo +
-          descontoSip,
-        'VERBA TOTAL DA CARTA': item.verbaTotal,
-        'TRADUÇÃO ENCONTRADA': traducao ? 'SIM' : 'NÃO',
+        investmentTypes,
+        excelRow: {
+          'CAMPANHA': item.campanha,
+          'TIPO DA CARTA': item.tipoCampanha,
+          'TIPO DE INVESTIMENTO': investmentTypes.join(' + ') || 'NÃO IDENTIFICADO',
+          'PERÍODO': item.inicio && item.termino ? `${item.inicio} a ${item.termino}` : '-',
+          'MODELO NA CARTA': item.modeloPdf,
+          'MODELO TRADUZIDO': descricao,
+          'REFERÊNCIA': referencia,
+          'TIPO DE PRODUTO': productType,
+          'FATOR DA FÓRMULA': formulaFactor,
+          'QTD DISPONÍVEL NA CARTA': item.quantidadeCarta,
+          'QTD DISPONÍVEL EM ESTOQUE': stock?.quantidade || 0,
+          'PRICE REBATE': prices.priceRebate,
+          'DESCONTO REBATE': descontoRebate,
+          'PRICE TRADE IN': prices.priceTradeIn,
+          'DESCONTO TRADE IN': descontoTradeIn,
+          'PRICE BOGO': prices.priceBogo,
+          'DESCONTO BOGO': descontoBogo,
+          'PRICE SIP': prices.priceSip,
+          'DESCONTO SIP': descontoSip,
+          'PRICE TOTAL DA CARTA':
+            prices.priceRebate +
+            prices.priceTradeIn +
+            prices.priceBogo +
+            prices.priceSip,
+          'DESCONTO TOTAL CALCULADO':
+            descontoRebate +
+            descontoTradeIn +
+            descontoBogo +
+            descontoSip,
+          'VERBA TOTAL DA CARTA': item.verbaTotal,
+          'TRADUÇÃO ENCONTRADA': traducao ? 'SIM' : 'NÃO',
+        },
       };
     });
 
-    const worksheet = XLSX.utils.json_to_sheet(letterRows);
-    if (worksheet['!ref']) {
-      worksheet['!autofilter'] = { ref: worksheet['!ref'] };
-    }
-    worksheet['!cols'] = [
-      { wch: 28 },
-      { wch: 18 },
-      { wch: 36 },
-      { wch: 24 },
-      { wch: 22 },
-      { wch: 14 },
-      { wch: 14 },
-      { wch: 26 },
-      { wch: 22 },
-      { wch: 20 },
-      { wch: 42 },
-      { wch: 18 },
-      { wch: 20 },
-      { wch: 18 },
-      { wch: 24 },
-      { wch: 26 },
-      { wch: 16 },
-      { wch: 18 },
-      { wch: 18 },
-      { wch: 20 },
-      { wch: 16 },
-      { wch: 18 },
-      { wch: 14 },
-      { wch: 16 },
-      { wch: 22 },
-      { wch: 26 },
-      { wch: 22 },
-      { wch: 20 },
+    const workbook = XLSX.utils.book_new();
+
+    const sheetDefinitions: Array<{ key: string; label: string }> = [
+      { key: 'REBATE', label: 'Rebate' },
+      { key: 'TRADE IN', label: 'Trade In' },
+      { key: 'BOGO', label: 'Bogo' },
+      { key: 'SIP', label: 'SIP' },
+      { key: 'NÃO IDENTIFICADO', label: 'Outros' },
     ];
 
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Cartas Traduzidas');
+    const appendInvestmentSheet = (sheetName: string, rowsToExport: any[]) => {
+      if (!rowsToExport.length) return;
+
+      const worksheet = XLSX.utils.json_to_sheet(rowsToExport);
+
+      if (worksheet['!ref']) {
+        worksheet['!autofilter'] = { ref: worksheet['!ref'] };
+      }
+
+      worksheet['!cols'] = [
+        { wch: 38 }, // CAMPANHA
+        { wch: 27 }, // TIPO DA CARTA
+        { wch: 24 }, // TIPO DE INVESTIMENTO
+        { wch: 26 }, // PERÍODO
+        { wch: 24 }, // MODELO NA CARTA
+        { wch: 42 }, // MODELO TRADUZIDO
+        { wch: 18 }, // REFERÊNCIA
+        { wch: 20 }, // TIPO DE PRODUTO
+        { wch: 18 }, // FATOR DA FÓRMULA
+        { wch: 24 }, // QTD CARTA
+        { wch: 26 }, // QTD ESTOQUE
+        { wch: 16 }, // PRICE REBATE
+        { wch: 18 }, // DESCONTO REBATE
+        { wch: 18 }, // PRICE TRADE IN
+        { wch: 20 }, // DESCONTO TRADE IN
+        { wch: 16 }, // PRICE BOGO
+        { wch: 18 }, // DESCONTO BOGO
+        { wch: 14 }, // PRICE SIP
+        { wch: 16 }, // DESCONTO SIP
+        { wch: 22 }, // PRICE TOTAL
+        { wch: 26 }, // DESCONTO TOTAL
+        { wch: 22 }, // VERBA TOTAL
+        { wch: 20 }, // TRADUÇÃO
+      ];
+
+      XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
+    };
+
+    sheetDefinitions.forEach(({ key, label }) => {
+      const rowsForSheet = letterRows
+        .filter(({ investmentTypes }) =>
+          key === 'NÃO IDENTIFICADO'
+            ? investmentTypes.length === 0
+            : investmentTypes.includes(key)
+        )
+        .map(({ excelRow }) => excelRow);
+
+      appendInvestmentSheet(label, rowsForSheet);
+    });
+
+    // Salvaguarda: o XLSX exige pelo menos uma aba no arquivo.
+    if (workbook.SheetNames.length === 0) {
+      appendInvestmentSheet('Cartas', letterRows.map(({ excelRow }) => excelRow));
+    }
+
     XLSX.writeFile(workbook, `cartas_traduzidas_${Date.now()}.xlsx`);
   };
-
 
 
   const openSendToFlowModal = () => {
@@ -2335,7 +2360,7 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
         `}
       </style>
 
-      <div className="min-h-screen w-full bg-slate-50 pb-24">
+      <div className="h-full min-h-0 w-full overflow-y-auto bg-slate-50 pb-24">
       <div className="w-full max-w-none space-y-3 px-1.5 py-2 md:px-2">
         <div className="rounded-[22px] border border-slate-200 bg-white px-4 py-3 shadow-sm">
           <div className="flex flex-col gap-3 2xl:flex-row 2xl:items-center 2xl:justify-between">
@@ -2343,14 +2368,7 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
               <h1 className="text-[18px] font-black uppercase tracking-tight text-slate-900 md:text-[20px]">
                 Comparativo de Ofertas
               </h1>
-              <p className="mt-1 text-[11px] text-slate-500">
-                Importação de cartas, cruzamento com estoque, vendas, tabela de preço e guia de ofertas.
-              </p>
-              {apiInfo && (
-                <p className="mt-2 max-w-[1200px] truncate text-[10px] font-black uppercase tracking-widest text-emerald-600" title={apiInfo}>
-                  {apiInfo}
-                </p>
-              )}
+
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
@@ -2367,14 +2385,6 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
                 <input ref={fileInputRef} type="file" className="hidden" accept="application/pdf" multiple onChange={processFiles} />
               </div>
 
-              <button
-                type="button"
-                onClick={exportExcel}
-                className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-xs font-black text-white shadow-sm transition-colors hover:bg-emerald-700"
-              >
-                <FileSpreadsheet size={15} />
-                Exportar Excel
-              </button>
 
               <button
                 type="button"
@@ -2419,14 +2429,25 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
               Comparativo
             </h2>
 
-            <div className="relative w-full xl:w-[480px]">
-              <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-              <input
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                placeholder="Buscar por descrição, preço, status ou modelo"
-                className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2.5 pl-9 pr-4 text-xs outline-none focus:border-slate-400"
-              />
+            <div className="flex w-full flex-col gap-2 sm:flex-row sm:items-center xl:w-auto">
+              <button
+                type="button"
+                onClick={exportExcel}
+                className="inline-flex shrink-0 items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-xs font-black text-white shadow-sm transition-colors hover:bg-emerald-700"
+              >
+                <FileSpreadsheet size={15} />
+                Exportar comparativo
+              </button>
+
+              <div className="relative w-full sm:w-[480px]">
+                <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  placeholder="Buscar por descrição, preço, status ou modelo"
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2.5 pl-9 pr-4 text-xs outline-none focus:border-slate-400"
+                />
+              </div>
             </div>
           </div>
 

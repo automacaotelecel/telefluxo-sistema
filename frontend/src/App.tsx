@@ -21,7 +21,6 @@ import FinanceModule from "./components/FinanceModule";
 import ControleStone from "./components/ControleStone";
 import RecebimentoCartao from "./components/RecebimentoCartao";
 import StockModule from "./components/StockModule";
-import PriceTablePage from './components/PriceTablePage';
 import { EstoqueVendas } from './components/EstoqueVendas';
 import EstoqueInteligente from './components/EstoqueInteligente';
 import ComparativoAnual from './components/ComparativoAnual';
@@ -62,7 +61,6 @@ import {
   Package,
   Menu,
   X,
-  Tag,
   ShieldCheck,
 } from 'lucide-react';
 
@@ -105,7 +103,6 @@ const STORE_ALLOWED_VIEWS = new Set([
   'stockout',
   'sales_dash',
   'comparativo',
-  'price_table',
   'agenda',
   'solicitacoes',
 ]);
@@ -337,7 +334,6 @@ function App() {
     comparativos_fluxo: 'FLUXO COMPARATIVO',
     comparativos_cartas: 'LEITURA DE CARTAS',
     comparativo: 'VENDAS ANUAIS',
-    compras_vendas: 'COMPRAS X VENDAS',
     rh: 'RH',
     executive_dashboard: 'PAINEL DIRETORIA / RESUMO EXECUTIVO',
     avaliacoes_lojas: 'PAINEL DIRETORIA / AVALIAÇÕES DAS LOJAS',
@@ -345,12 +341,11 @@ function App() {
     stock: 'CONTROLE DE ESTOQUE',
     inventory_audit: 'CONFERÊNCIA DE APARELHOS / BIPADOR',
     sample_conference: 'CONFERÊNCIA DE AMOSTRAS',
-    alertas_inteligentes: 'CENTRAL DE ALERTAS INTELIGENTES',
-    estoque_detalhado: 'VISÃO DETALHADA DE ESTOQUE',
-    estoque_vendas: 'ESTOQUE X VENDAS',
+    alertas_inteligentes: 'ALERTAS',
+    estoque_detalhado: 'PREVISÃO ESTOQUE',
+    estoque_vendas: 'PONTO DE PEDIDO',
     estoque_inteligente: 'ESTOQUE INTELIGENTE',
     stockout: 'STOCKOUT',
-    auditoria_lojas: 'AUDITORIA DE LOJAS',
     contract_analyzer: 'LEITOR DE CONTRATOS (CLARK JURÍDICA)', // Título da Nova Tela
     online_prices: 'CLARK IA / PREÇOS ONLINE',
   };
@@ -525,7 +520,6 @@ function App() {
     if (view === 'estoque_detalhado') return <EstoqueDetalhado />;
     if (view === 'stockout') return <Stockout currentUser={user} />;
     if (view === 'auditoria_lojas') return <AuditoriaLojas currentUser={user} />;
-    if (view === 'price_table') return <PriceTablePage />;
 
     if (view === 'solicitacoes') {
       return <SolicitacoesModule currentUser={user} />;
@@ -836,10 +830,8 @@ function App() {
                   'alertas_inteligentes',
                   'estoque_vendas',
                   'estoque_inteligente',
-                  'auditoria_lojas',
                   'estoque_detalhado',
                   'stockout',
-                  'compras_vendas',
                 ].includes(currentView)}
                 onClick={() => handleSectionToggle('stock')}
                 hasChevron
@@ -867,30 +859,22 @@ function App() {
                   )}
 
                   <SubMenuItem
-                    label="Alertas Inteligentes"
+                    label="Alertas"
                     view="alertas_inteligentes"
                     active={currentView === 'alertas_inteligentes'}
                   />
 
                   <SubMenuItem
-                    label="Visão Detalhada"
+                    label="Previsão Estoque"
                     view="estoque_detalhado"
                     active={currentView === 'estoque_detalhado'}
                   />
 
                   <SubMenuItem
-                    label="Estoque x Vendas"
+                    label="Ponto de Pedido"
                     view="estoque_vendas"
                     active={currentView === 'estoque_vendas'}
                   />
-
-                  {isAdmin && !isStoreOnly && (
-                    <SubMenuItem
-                      label="Compras x Vendas"
-                      view="compras_vendas"
-                      active={currentView === 'compras_vendas'}
-                    />
-                  )}
 
                   <SubMenuItem
                     label="Estoque Inteligente"
@@ -903,14 +887,6 @@ function App() {
                     view="stockout"
                     active={currentView === 'stockout'}
                   />
-
-                  {!isStoreOnly && (
-                    <SubMenuItem
-                      label="Auditoria Lojas"
-                      view="auditoria_lojas"
-                      active={currentView === 'auditoria_lojas'}
-                    />
-                  )}
                 </div>
               )}
             </div>
@@ -937,15 +913,6 @@ function App() {
             </div>
           )}
 
-          {canViewSales && (
-            <NavButton
-              icon={Tag}
-              label="Tabelas de Preço"
-              active={currentView === 'price_table'}
-              onClick={() => handleNavigate('price_table')}
-              customClass="bg-indigo-500 text-white shadow-lg"
-            />
-          )}
 
           <NavButton
             icon={Calendar}
@@ -1065,14 +1032,21 @@ function App() {
                 }, 80);
               }}
             />
-            {canUseClarkDiretoria && (
-              <Clark
-                currentUser={user}
-                placement="header"
-                onNavigateContracts={() => handleNavigate('contract_analyzer')}
-                onNavigateOnlinePrices={() => handleNavigate('online_prices')}
-              />
-            )}
+            <Clark
+              currentUser={user}
+              placement="header"
+              onNavigate={handleNavigate}
+              onOpenStore={(store) => {
+                handleNavigate('home');
+                window.setTimeout(() => {
+                  window.dispatchEvent(
+                    new CustomEvent('telefluxo:open-store', { detail: { store } })
+                  );
+                }, 80);
+              }}
+              onNavigateContracts={canUseClarkDiretoria ? () => handleNavigate('contract_analyzer') : undefined}
+              onNavigateOnlinePrices={canUseClarkDiretoria ? () => handleNavigate('online_prices') : undefined}
+            />
             <AlertCenterBell
               currentUser={user}
               onOpenCenter={() => handleNavigate('alertas_inteligentes')}

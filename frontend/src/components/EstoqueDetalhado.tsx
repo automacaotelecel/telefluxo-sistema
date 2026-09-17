@@ -402,7 +402,7 @@ export default function EstoqueDetalhado() {
               </div>
               <div>
                 <h1 className="text-xl font-black uppercase tracking-tight text-slate-800 md:text-2xl">
-                  Visão Detalhada de Estoque
+                  Previsão Estoque
                 </h1>
                 <p className="mt-1 flex items-center gap-1 text-[10px] font-bold uppercase tracking-widest text-slate-400">
                   <TrendingUp size={12} /> Cobertura baseada em venda real por modelo
