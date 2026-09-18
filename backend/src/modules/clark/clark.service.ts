@@ -1,10 +1,10 @@
 import fs from 'fs';
-import path from 'path';
 import sqlite3 from 'sqlite3';
 import { open } from 'sqlite';
 import { GoogleGenAI } from '@google/genai';
 import { processarComClarkBrain } from './brain/clarkBrain.service';
 import { extrairRequisitosClark } from './brain/clarkRequirements.service';
+import { getAnnualSalesDbPath, getGlobalSalesDbPath } from '../data/databasePaths';
 
 import {
   ClarkAction,
@@ -42,13 +42,8 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3-flash-preview';
 const genAI = GEMINI_API_KEY ? new GoogleGenAI({ apiKey: GEMINI_API_KEY }) : null;
 
-const ROOT_DIR = process.cwd();
-const DATABASE_DIR = process.env.RENDER
-  ? path.join(__dirname, '../../../../database')
-  : path.join(ROOT_DIR, 'database');
-
-const GLOBAL_DB_PATH = path.join(DATABASE_DIR, 'samsung_vendas.db');
-const ANUAL_DB_PATH = path.join(DATABASE_DIR, 'samsung_vendas_anuais.db');
+const GLOBAL_DB_PATH = getGlobalSalesDbPath();
+const ANUAL_DB_PATH = getAnnualSalesDbPath();
 
 function safeJsonParse(text: string) {
   const raw = String(text || '').trim();

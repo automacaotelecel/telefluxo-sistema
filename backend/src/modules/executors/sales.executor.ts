@@ -24,6 +24,8 @@ type VendaClarkRow = {
   loja: string | null;
   cnpj_empresa: string | null;
   nome_vendedor: string | null;
+  codigo_produto?: string | null;
+  referencia?: string | null;
   descricao: string | null;
   familia: string | null;
   categoria?: string | null;
@@ -69,12 +71,9 @@ function normalizarDataClark(value: any): string | null {
 }
 
 function periodoInicioFim(periodo: ClarkPeriodo) {
-  const inicio = normalizarDataClark(periodo?.inicio);
-  const fim = normalizarDataClark(periodo?.fim);
-
   return {
-    inicio,
-    fim,
+    inicio: normalizarDataClark(periodo?.inicio),
+    fim: normalizarDataClark(periodo?.fim),
   };
 }
 
@@ -100,6 +99,8 @@ function deduplicarPorChave(rows: VendaClarkRow[]) {
       row.cnpj_empresa || '',
       row.loja || '',
       row.nome_vendedor || '',
+      row.codigo_produto || '',
+      row.referencia || '',
       row.descricao || '',
       row.familia || '',
       row.categoria || '',
@@ -141,12 +142,18 @@ function normalizarRow(row: any, origem: string): VendaClarkRow {
     loja: row?.loja || row?.nome_fantasia || row?.storeName || null,
     cnpj_empresa: row?.cnpj_empresa || row?.cnpj || null,
     nome_vendedor: row?.nome_vendedor || row?.vendedor || null,
+    codigo_produto: row?.codigo_produto || row?.CODIGO_PRODUTO || null,
+    referencia: row?.referencia || row?.REFERENCIA || null,
     descricao: row?.descricao || row?.produto || null,
-    familia: row?.familia || row?.categoria || null,
-    categoria: row?.categoria || row?.familia || null,
+    familia: row?.familia || row?.categoria_real || row?.categoria || null,
+    categoria: row?.categoria_real || row?.categoria || row?.familia || null,
     regiao: row?.regiao || null,
-    quantidade: safeNumberClark(row?.quantidade),
-    total_liquido: safeNumberClark(row?.total_liquido ?? row?.valor ?? row?.total),
+    quantidade: safeNumberClark(
+      row?.quantidade_real ?? row?.qtd_real ?? row?.quantidade,
+    ),
+    total_liquido: safeNumberClark(
+      row?.total_real_normalizado ?? row?.total_real ?? row?.total_liquido ?? row?.valor ?? row?.total,
+    ),
   };
 }
 
@@ -167,6 +174,8 @@ async function consultarVendasDetalhadasRaw(
           nome_fantasia AS loja,
           cnpj_empresa,
           nome_vendedor,
+          codigo_produto,
+          referencia,
           descricao,
           categoria,
           categoria AS familia,
@@ -182,6 +191,60 @@ async function consultarVendasDetalhadasRaw(
       .filter((row: VendaClarkRow) => rowDentroPeriodo(row, periodo));
   } catch (error) {
     console.warn('⚠️ Clark não conseguiu ler vendas_detalhadas_imei:', error);
+    return [];
+  }
+}
+
+async function consultarVendasAnuaisRawDetalhada(
+  ctx: ClarkDbContext,
+  periodo: ClarkPeriodo,
+): Promise<VendaClarkRow[]> {
+  if (!ctx.annualDb) return [];
+
+  const existe = await tabelaExiste(ctx.annualDb, 'vendas_anuais_raw');
+  if (!existe) return [];
+
+  try {
+    const rows = await ctx.annualDb.all(
+      `
+        SELECT
+          data_emissao,
+          ano,
+          mes,
+          loja,
+          cnpj_empresa,
+          nome_vendedor,
+          codigo_produto,
+          referencia,
+          descricao,
+          categoria,
+          categoria_real,
+          regiao,
+          quantidade,
+          qtd_real,
+          total_liquido,
+          total_real,
+          cancelado
+        FROM vendas_anuais_raw
+        WHERE COALESCE(cancelado, 'N') = 'N'
+      `,
+    );
+
+    return (rows || [])
+      .map((row: any) => normalizarRow({
+        ...row,
+        quantidade_real:
+          safeNumberClark(row?.qtd_real) !== 0
+            ? row?.qtd_real
+            : row?.quantidade,
+        total_real_normalizado:
+          safeNumberClark(row?.total_real) !== 0
+            ? row?.total_real
+            : row?.total_liquido,
+      }, 'vendas_anuais_raw'))
+      .filter((row: VendaClarkRow) => rowDentroPeriodo(row, periodo));
+  } catch (error) {
+    console.warn('⚠️ Clark não conseguiu ler vendas_anuais_raw:', error);
     return [];
   }
 }
@@ -281,6 +344,8 @@ async function consultarVendasGlobaisRaw(
           NULL AS loja,
           cnpj_empresa,
           nome_vendedor,
+          NULL AS codigo_produto,
+          familia AS referencia,
           descricao,
           familia,
           familia AS categoria,
@@ -300,44 +365,69 @@ async function consultarVendasGlobaisRaw(
   }
 }
 
-async function consultarVendasRawClark(
+/**
+ * Fonte canônica para resumos/rankings da Clark.
+ *
+ * Prioridade:
+ * 1) tabela `vendas` do samsung_vendas.db — mesma base da rota GET /sales;
+ * 2) anual RAW — histórico detalhado;
+ * 3) anual consolidada;
+ * 4) anual no banco global;
+ * 5) detalhada IMEI.
+ *
+ * Assim perguntas como "vendas de hoje" ficam alinhadas com a tela de vendas.
+ */
+export async function consultarVendasRawClark(
   ctx: ClarkDbContext,
   periodo: ClarkPeriodo,
   scope: ClarkUserScope,
   filtros: ClarkFiltros,
 ) {
+  if (!ctx.globalDb && !ctx.annualDb) {
+    throw new Error(
+      'Bancos de vendas indisponíveis. A Clark não pode confirmar vendas enquanto a base não estiver acessível.',
+    );
+  }
+
   const [
-    detalhadas,
+    globais,
+    anuaisRawDetalhada,
     anuaisSeparado,
     anuaisGlobal,
-    globais,
+    detalhadas,
   ] = await Promise.all([
-    consultarVendasDetalhadasRaw(ctx, periodo),
+    consultarVendasGlobaisRaw(ctx, periodo),
+    consultarVendasAnuaisRawDetalhada(ctx, periodo),
     consultarVendasAnuaisRaw(ctx, periodo),
     consultarVendasAnuaisNoBancoGlobalRaw(ctx, periodo),
-    consultarVendasGlobaisRaw(ctx, periodo),
+    consultarVendasDetalhadasRaw(ctx, periodo),
   ]);
 
   let fonte = 'nenhuma';
   let rows: VendaClarkRow[] = [];
 
-  if (detalhadas.length) {
-    fonte = 'vendas_detalhadas_imei';
-    rows = detalhadas;
+  // `vendas` é a fonte usada pela rota /sales e portanto é a primeira escolha
+  // para respostas factuais de resumo, loja, vendedor e categoria.
+  if (globais.length) {
+    fonte = 'vendas';
+    rows = globais;
+  } else if (anuaisRawDetalhada.length) {
+    fonte = 'vendas_anuais_raw';
+    rows = anuaisRawDetalhada;
   } else if (anuaisSeparado.length) {
     fonte = 'vendas_anuais';
     rows = anuaisSeparado;
   } else if (anuaisGlobal.length) {
     fonte = 'vendas_anuais_global';
     rows = anuaisGlobal;
-  } else if (globais.length) {
-    fonte = 'vendas';
-    rows = globais;
+  } else if (detalhadas.length) {
+    fonte = 'vendas_detalhadas_imei';
+    rows = detalhadas;
   }
 
-  const filtradas = deduplicarPorChave(rows)
-    .filter((row) => rowPermitidaClark(row, scope))
-    .filter((row) => rowCorrespondeLojaFiltroClark(row, filtros));
+  const deduplicadas = deduplicarPorChave(rows);
+  const permitidas = deduplicadas.filter((row) => rowPermitidaClark(row, scope));
+  const filtradas = permitidas.filter((row) => rowCorrespondeLojaFiltroClark(row, filtros));
 
   return {
     fonte,
@@ -345,11 +435,18 @@ async function consultarVendasRawClark(
     debug: {
       periodo,
       fonte_escolhida: fonte,
-      total_detalhadas: detalhadas.length,
+      database_global_disponivel: Boolean(ctx.globalDb),
+      database_anual_disponivel: Boolean(ctx.annualDb),
+      total_vendas_global: globais.length,
+      total_anuais_raw: anuaisRawDetalhada.length,
       total_anuais_separado: anuaisSeparado.length,
       total_anuais_global: anuaisGlobal.length,
-      total_vendas_global: globais.length,
+      total_detalhadas: detalhadas.length,
+      total_fonte_escolhida: rows.length,
+      total_apos_deduplicacao: deduplicadas.length,
+      total_apos_permissao: permitidas.length,
       total_apos_filtro: filtradas.length,
+      zero_confirmado: fonte !== 'nenhuma' && filtradas.length === 0,
     },
   };
 }

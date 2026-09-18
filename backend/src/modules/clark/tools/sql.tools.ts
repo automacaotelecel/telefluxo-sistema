@@ -5,26 +5,19 @@ import { open } from 'sqlite';
 
 import { ClarkToolResult } from '../agent/clarkAgent.types';
 import { ClarkToolContext } from './clarkTools.types';
+import { getAnnualSalesDbPath, getGlobalSalesDbPath } from '../../data/databasePaths';
 
 const FORBIDDEN_SQL = /\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|REPLACE|TRUNCATE|ATTACH|DETACH|VACUUM|PRAGMA|BEGIN|COMMIT|ROLLBACK)\b/i;
 const FORBIDDEN_SYSTEM_TABLES = /\b(SQLITE_MASTER|SQLITE_SCHEMA|SQLITE_TEMP_MASTER|PRISMA_MIGRATIONS)\b/i;
 
-function databaseDir() {
-  const rootDir = process.cwd();
-  return process.env.RENDER
-    ? '/var/data'
-    : path.join(rootDir, 'database');
-}
-
 function pickDatabase(args: Record<string, any>) {
   const requested = String(args.database || args.db || '').toLowerCase();
-  const dir = databaseDir();
 
   if (requested.includes('anual') || requested.includes('annual')) {
-    return path.join(dir, 'samsung_vendas_anuais.db');
+    return getAnnualSalesDbPath();
   }
 
-  return path.join(dir, 'samsung_vendas.db');
+  return getGlobalSalesDbPath();
 }
 
 function cleanSql(sql: string) {

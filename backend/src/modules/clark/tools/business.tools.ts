@@ -1,5 +1,4 @@
 import fs from 'fs';
-import path from 'path';
 import sqlite3 from 'sqlite3';
 import { open } from 'sqlite';
 import { PrismaClient } from '@prisma/client';
@@ -7,6 +6,8 @@ import { PrismaClient } from '@prisma/client';
 import { ClarkDbContext, ClarkFiltros, ClarkPeriodo } from '../clark.types';
 import { ClarkToolResult } from '../agent/clarkAgent.types';
 import { ClarkToolContext } from './clarkTools.types';
+import { getAnnualSalesDbPath, getGlobalSalesDbPath } from '../../data/databasePaths';
+import { consultarVendasRawClark } from '../../executors/sales.executor';
 
 import { extrairFiltrosClark, formatBRL, normalizarTextoClark, resolverNomeLojaClark, safeNumberClark } from '../../intent/extractFilters';
 import { extrairPeriodoClark } from '../../intent/extractPeriod';
@@ -21,22 +22,14 @@ import {
 
 const prisma = new PrismaClient();
 
-function dbDir() {
-  const rootDir = process.cwd();
-  return process.env.RENDER
-    ? path.join(__dirname, '../../../../database')
-    : path.join(rootDir, 'database');
-}
-
 async function abrirDbSeExistir(filename: string) {
   if (!fs.existsSync(filename)) return null;
   return open({ filename, driver: sqlite3.Database });
 }
 
 async function criarDbContext(): Promise<ClarkDbContext> {
-  const dir = dbDir();
-  const globalPath = path.join(dir, 'samsung_vendas.db');
-  const annualPath = path.join(dir, 'samsung_vendas_anuais.db');
+  const globalPath = getGlobalSalesDbPath();
+  const annualPath = getAnnualSalesDbPath();
 
   const [globalDb, annualDb] = await Promise.all([
     abrirDbSeExistir(globalPath),
@@ -253,77 +246,14 @@ async function consultarEstoqueProduto(args: Record<string, any>, ctxTool: Clark
   };
 }
 
-async function consultarVendasRaw(ctx: ClarkDbContext, periodo: ClarkPeriodo) {
-  const queries = [];
-
-  if (ctx.annualDb) {
-    queries.push(
-      ctx.annualDb.all(
-        `
-          SELECT
-            'anual' AS origem,
-            data_emissao,
-            loja,
-            cnpj_empresa,
-            nome_vendedor,
-            descricao,
-            familia,
-            regiao,
-            quantidade,
-            total_liquido
-          FROM vendas_anuais
-          WHERE data_emissao >= ?
-            AND data_emissao <= ?
-        `,
-        [periodo.inicio, periodo.fim],
-      ).catch(() => []),
-    );
-  }
-
-  if (ctx.globalDb) {
-    queries.push(
-      ctx.globalDb.all(
-        `
-          SELECT
-            'global' AS origem,
-            data_emissao,
-            NULL AS loja,
-            cnpj_empresa,
-            nome_vendedor,
-            descricao,
-            familia,
-            regiao,
-            quantidade,
-            total_liquido
-          FROM vendas
-          WHERE data_emissao >= ?
-            AND data_emissao <= ?
-        `,
-        [periodo.inicio, periodo.fim],
-      ).catch(() => []),
-    );
-  }
-
-  const results = await Promise.all(queries);
-  const rows = results.flat();
-
-  const map = new Map<string, any>();
-  for (const row of rows) {
-    const key = [
-      row.origem,
-      row.data_emissao,
-      row.cnpj_empresa,
-      row.loja,
-      row.nome_vendedor,
-      row.descricao,
-      row.familia,
-      row.quantidade,
-      row.total_liquido,
-    ].join('|');
-    if (!map.has(key)) map.set(key, row);
-  }
-
-  return Array.from(map.values());
+async function consultarVendasRaw(
+  ctx: ClarkDbContext,
+  periodo: ClarkPeriodo,
+  scope: any,
+  filtros: ClarkFiltros,
+) {
+  const consulta = await consultarVendasRawClark(ctx, periodo, scope, filtros);
+  return consulta.rows;
 }
 
 function vendaBateProduto(row: any, produto: ReturnType<typeof detectarProduto>) {
@@ -348,9 +278,7 @@ async function consultarVendasProduto(args: Record<string, any>, ctxTool: ClarkT
     const periodo = montarPeriodo(args);
     const filtros = montarFiltros(args);
     const scope = await obterEscopoUsuarioClark(ctxTool.userId);
-    const rows = (await consultarVendasRaw(db, periodo))
-      .filter((row) => rowPermitidaClark(row, scope))
-      .filter((row) => rowCorrespondeLojaFiltroClark(row, filtros))
+    const rows = (await consultarVendasRaw(db, periodo, scope, filtros))
       .filter((row) => vendaBateProduto(row, produto));
 
     const lojasMap = new Map<string, any>();
@@ -657,9 +585,7 @@ export async function toolConsultarModoDiretoria(args: Record<string, any>, ctx:
     const filtros = montarFiltros(args);
     const scope = await obterEscopoUsuarioClark(ctx.userId);
 
-    const vendasRows = (await consultarVendasRaw(db, periodo))
-      .filter((row) => rowPermitidaClark(row, scope))
-      .filter((row) => rowCorrespondeLojaFiltroClark(row, filtros));
+    const vendasRows = await consultarVendasRaw(db, periodo, scope, filtros);
 
     const totalVendas = vendasRows.reduce((acc, row) => acc + safeNumberClark(row.total_liquido), 0);
     const totalPecas = vendasRows.reduce((acc, row) => acc + safeNumberClark(row.quantidade), 0);

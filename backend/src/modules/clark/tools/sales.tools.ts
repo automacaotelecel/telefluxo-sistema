@@ -1,11 +1,16 @@
 import fs from 'fs';
-import path from 'path';
 import sqlite3 from 'sqlite3';
 import { open } from 'sqlite';
 
 import { ClarkDbContext, ClarkFiltros, ClarkPeriodo } from '../clark.types';
 import { ClarkToolResult } from '../agent/clarkAgent.types';
 import { ClarkToolContext } from './clarkTools.types';
+
+import {
+  getAnnualSalesDbPath,
+  getGlobalSalesDbPath,
+  getSalesDatabaseDiagnostics,
+} from '../../data/databasePaths';
 
 import { extrairFiltrosClark, formatBRL, resolverNomeLojaClark, safeNumberClark } from '../../intent/extractFilters';
 import { extrairPeriodoClark } from '../../intent/extractPeriod';
@@ -28,22 +33,14 @@ import { consultarRelatorioAnaliticoVendasClark } from '../../analytics/salesAna
 import { calcularCrescimentoMensalClark } from '../../analytics/growth';
 import { extractColor, extractStorage, getBaseModelFamily, normalizeProductText } from '../../productDictionary/productDictionary.utils';
 
-function dbDir() {
-  const rootDir = process.cwd();
-  return process.env.RENDER
-    ? path.join(__dirname, '../../../../database')
-    : path.join(rootDir, 'database');
-}
-
 async function abrirDbSeExistir(filename: string) {
   if (!fs.existsSync(filename)) return null;
   return open({ filename, driver: sqlite3.Database });
 }
 
 async function criarDbContext(): Promise<ClarkDbContext> {
-  const dir = dbDir();
-  const globalPath = path.join(dir, 'samsung_vendas.db');
-  const annualPath = path.join(dir, 'samsung_vendas_anuais.db');
+  const globalPath = getGlobalSalesDbPath();
+  const annualPath = getAnnualSalesDbPath();
 
   const [globalDb, annualDb] = await Promise.all([
     abrirDbSeExistir(globalPath),
@@ -56,6 +53,16 @@ async function criarDbContext(): Promise<ClarkDbContext> {
 async function fecharDbContext(ctx: ClarkDbContext) {
   try { if (ctx.globalDb) await ctx.globalDb.close(); } catch {}
   try { if (ctx.annualDb) await ctx.annualDb.close(); } catch {}
+}
+
+function assegurarBancoDisponivel(ctx: ClarkDbContext) {
+  if (ctx.globalDb || ctx.annualDb) return;
+
+  const diag = getSalesDatabaseDiagnostics();
+  throw new Error(
+    `Bancos de vendas indisponíveis. Diretório consultado: ${diag.databaseDir}. ` +
+    'A Clark não retornará R$ 0,00 quando não conseguir acessar a base.',
+  );
 }
 
 function perguntaVirtual(args: Record<string, any>) {
@@ -112,6 +119,7 @@ async function executarComContexto(
 ): Promise<ClarkToolResult> {
   const ctx = await criarDbContext();
   try {
+    assegurarBancoDisponivel(ctx);
     const periodo = montarPeriodo(args);
     const filtros = montarFiltros(args);
     const scope = await obterEscopoUsuarioClark(ctxTool.userId);
@@ -184,6 +192,22 @@ type ProdutoVendaSolicitado = {
   category: string | null;
 };
 
+type VendaProdutoRow = {
+  origem: string;
+  data_emissao: string | null;
+  loja: string | null;
+  cnpj_empresa: string | null;
+  nome_vendedor: string | null;
+  codigo_produto: string | null;
+  referencia: string | null;
+  descricao: string | null;
+  familia: string | null;
+  categoria: string | null;
+  regiao: string | null;
+  quantidade: number;
+  total_liquido: number;
+};
+
 function normalizarProdutoVendaSolicitado(input: any): ProdutoVendaSolicitado {
   const raw = String(input?.raw || input?.query || input?.family || input?.model || input || '').trim();
   const family = input?.family || getBaseModelFamily(raw) || null;
@@ -228,6 +252,13 @@ function normalizarDataVendaProduto(value: any): string | null {
   return null;
 }
 
+function proximoDiaIso(value: string): string {
+  const [year, month, day] = value.split('-').map(Number);
+  const date = new Date(Date.UTC(year || 1970, (month || 1) - 1, day || 1));
+  date.setUTCDate(date.getUTCDate() + 1);
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}`;
+}
+
 function vendaProdutoDentroPeriodo(row: any, periodo: ClarkPeriodo) {
   const date = normalizarDataVendaProduto(row?.data_emissao);
   const start = normalizarDataVendaProduto(periodo?.inicio);
@@ -248,30 +279,39 @@ async function tabelaExisteVendasProduto(db: any, table: string) {
   }
 }
 
-function normalizarVendaProdutoRow(row: any, origem: string) {
+function normalizarVendaProdutoRow(row: any, origem: string): VendaProdutoRow {
+  const qtdReal = safeNumberClark(row?.qtd_real);
+  const totalReal = safeNumberClark(row?.total_real);
+
   return {
     origem,
     data_emissao: normalizarDataVendaProduto(row?.data_emissao) || row?.data_emissao || null,
     loja: row?.loja || row?.nome_fantasia || row?.storeName || null,
     cnpj_empresa: row?.cnpj_empresa || row?.cnpj || null,
     nome_vendedor: row?.nome_vendedor || row?.vendedor || null,
+    codigo_produto: row?.codigo_produto || row?.CODIGO_PRODUTO || null,
+    referencia: row?.referencia || row?.REFERENCIA || row?.familia || null,
     descricao: row?.descricao || row?.produto || null,
-    familia: row?.familia || row?.categoria || null,
-    categoria: row?.categoria || row?.familia || null,
+    familia: row?.familia || row?.categoria_real || row?.categoria || null,
+    categoria: row?.categoria_real || row?.categoria || row?.familia || null,
     regiao: row?.regiao || null,
-    quantidade: safeNumberClark(row?.quantidade),
-    total_liquido: safeNumberClark(row?.total_liquido ?? row?.valor ?? row?.total),
+    quantidade: qtdReal !== 0 ? qtdReal : safeNumberClark(row?.quantidade),
+    total_liquido: totalReal !== 0
+      ? totalReal
+      : safeNumberClark(row?.total_liquido ?? row?.valor ?? row?.total),
   };
 }
 
-function deduplicarVendasProduto(rows: any[]) {
-  const map = new Map<string, any>();
+function deduplicarVendasProduto(rows: VendaProdutoRow[]) {
+  const map = new Map<string, VendaProdutoRow>();
   for (const row of rows) {
     const key = [
       normalizarDataVendaProduto(row?.data_emissao) || '',
       row?.cnpj_empresa || '',
       row?.loja || '',
       row?.nome_vendedor || '',
+      row?.codigo_produto || '',
+      row?.referencia || '',
       row?.descricao || '',
       row?.familia || '',
       row?.categoria || '',
@@ -283,67 +323,204 @@ function deduplicarVendasProduto(rows: any[]) {
   return Array.from(map.values());
 }
 
-async function carregarFonteVendasProduto(db: ClarkDbContext, periodo: ClarkPeriodo) {
-  let detalhadas: any[] = [];
-  let anuaisSeparado: any[] = [];
-  let anuaisGlobal: any[] = [];
-  let globais: any[] = [];
-
-  if (db.globalDb && await tabelaExisteVendasProduto(db.globalDb, 'vendas_detalhadas_imei')) {
-    detalhadas = await db.globalDb.all(`
-      SELECT data_emissao, nome_fantasia AS loja, cnpj_empresa, nome_vendedor,
-             descricao, categoria, categoria AS familia, regiao, quantidade, total_liquido
-      FROM vendas_detalhadas_imei
-    `).catch(() => []);
-    detalhadas = detalhadas.map((row: any) => normalizarVendaProdutoRow(row, 'vendas_detalhadas_imei')).filter((row: any) => vendaProdutoDentroPeriodo(row, periodo));
+async function carregarVendasAnuaisRawProduto(db: ClarkDbContext, periodo: ClarkPeriodo) {
+  if (!db.annualDb || !(await tabelaExisteVendasProduto(db.annualDb, 'vendas_anuais_raw'))) {
+    return [] as VendaProdutoRow[];
   }
 
-  if (db.annualDb && await tabelaExisteVendasProduto(db.annualDb, 'vendas_anuais')) {
-    anuaisSeparado = await db.annualDb.all(`
-      SELECT data_emissao, loja, cnpj_empresa, nome_vendedor, descricao, familia,
-             familia AS categoria, regiao, quantidade, total_liquido
-      FROM vendas_anuais
-    `).catch(() => []);
-    anuaisSeparado = anuaisSeparado.map((row: any) => normalizarVendaProdutoRow(row, 'vendas_anuais')).filter((row: any) => vendaProdutoDentroPeriodo(row, periodo));
-  }
+  const rows = await db.annualDb.all(`
+    SELECT
+      data_emissao,
+      loja,
+      cnpj_empresa,
+      nome_vendedor,
+      codigo_produto,
+      referencia,
+      descricao,
+      categoria,
+      categoria_real,
+      regiao,
+      quantidade,
+      qtd_real,
+      total_liquido,
+      total_real,
+      cancelado
+    FROM vendas_anuais_raw
+    WHERE COALESCE(cancelado, 'N') = 'N'
+  `).catch(() => []);
 
-  if (db.globalDb && await tabelaExisteVendasProduto(db.globalDb, 'vendas_anuais')) {
-    anuaisGlobal = await db.globalDb.all(`
-      SELECT data_emissao, loja, cnpj_empresa, nome_vendedor, descricao, familia,
-             familia AS categoria, regiao, quantidade, total_liquido
-      FROM vendas_anuais
-    `).catch(() => []);
-    anuaisGlobal = anuaisGlobal.map((row: any) => normalizarVendaProdutoRow(row, 'vendas_anuais_global')).filter((row: any) => vendaProdutoDentroPeriodo(row, periodo));
-  }
-
-  if (db.globalDb && await tabelaExisteVendasProduto(db.globalDb, 'vendas')) {
-    globais = await db.globalDb.all(`
-      SELECT data_emissao, NULL AS loja, cnpj_empresa, nome_vendedor, descricao, familia,
-             familia AS categoria, regiao, quantidade, total_liquido
-      FROM vendas
-    `).catch(() => []);
-    globais = globais.map((row: any) => normalizarVendaProdutoRow(row, 'vendas')).filter((row: any) => vendaProdutoDentroPeriodo(row, periodo));
-  }
-
-  // Mantém exatamente a mesma prioridade da camada principal de vendas do
-  // TeleFluxo. Assim a Clark e a tela de vendas usam a mesma fonte lógica.
-  if (detalhadas.length) return { fonte: 'vendas_detalhadas_imei', rows: deduplicarVendasProduto(detalhadas) };
-  if (anuaisSeparado.length) return { fonte: 'vendas_anuais', rows: deduplicarVendasProduto(anuaisSeparado) };
-  if (anuaisGlobal.length) return { fonte: 'vendas_anuais_global', rows: deduplicarVendasProduto(anuaisGlobal) };
-  if (globais.length) return { fonte: 'vendas', rows: deduplicarVendasProduto(globais) };
-  return { fonte: 'nenhuma', rows: [] };
+  return (rows as any[])
+    .map((row) => normalizarVendaProdutoRow(row, 'vendas_anuais_raw'))
+    .filter((row) => vendaProdutoDentroPeriodo(row, periodo));
 }
 
-async function consultarVendasRawProdutos(db: ClarkDbContext, periodo: ClarkPeriodo) {
-  return carregarFonteVendasProduto(db, periodo);
+async function carregarVendasDetalhadasProduto(
+  db: ClarkDbContext,
+  periodo: ClarkPeriodo,
+  startOverride?: string,
+) {
+  if (!db.globalDb || !(await tabelaExisteVendasProduto(db.globalDb, 'vendas_detalhadas_imei'))) {
+    return [] as VendaProdutoRow[];
+  }
+
+  const rows = await db.globalDb.all(`
+    SELECT
+      data_emissao,
+      nome_fantasia AS loja,
+      cnpj_empresa,
+      nome_vendedor,
+      codigo_produto,
+      referencia,
+      descricao,
+      categoria,
+      categoria AS familia,
+      regiao,
+      quantidade,
+      total_liquido
+    FROM vendas_detalhadas_imei
+  `).catch(() => []);
+
+  const start = startOverride || periodo.inicio;
+  const periodoEfetivo: ClarkPeriodo = {
+    ...periodo,
+    inicio: start,
+  };
+
+  return (rows as any[])
+    .map((row) => normalizarVendaProdutoRow(row, 'vendas_detalhadas_imei'))
+    .filter((row) => vendaProdutoDentroPeriodo(row, periodoEfetivo));
 }
 
-function vendaCombinaProduto(row: any, produto: ProdutoVendaSolicitado) {
-  const text = normalizeProductText([row.descricao, row.familia].filter(Boolean).join(' '));
+async function carregarVendasAnuaisConsolidadasProduto(db: ClarkDbContext, periodo: ClarkPeriodo) {
+  if (!db.annualDb || !(await tabelaExisteVendasProduto(db.annualDb, 'vendas_anuais'))) {
+    return [] as VendaProdutoRow[];
+  }
+
+  const rows = await db.annualDb.all(`
+    SELECT
+      data_emissao,
+      loja,
+      cnpj_empresa,
+      nome_vendedor,
+      NULL AS codigo_produto,
+      familia AS referencia,
+      descricao,
+      familia,
+      familia AS categoria,
+      regiao,
+      quantidade,
+      total_liquido
+    FROM vendas_anuais
+  `).catch(() => []);
+
+  return (rows as any[])
+    .map((row) => normalizarVendaProdutoRow(row, 'vendas_anuais'))
+    .filter((row) => vendaProdutoDentroPeriodo(row, periodo));
+}
+
+async function carregarVendasLegadoProduto(db: ClarkDbContext, periodo: ClarkPeriodo) {
+  if (!db.globalDb || !(await tabelaExisteVendasProduto(db.globalDb, 'vendas'))) {
+    return [] as VendaProdutoRow[];
+  }
+
+  const rows = await db.globalDb.all(`
+    SELECT
+      data_emissao,
+      NULL AS loja,
+      cnpj_empresa,
+      nome_vendedor,
+      NULL AS codigo_produto,
+      familia AS referencia,
+      descricao,
+      familia,
+      familia AS categoria,
+      regiao,
+      quantidade,
+      total_liquido
+    FROM vendas
+  `).catch(() => []);
+
+  return (rows as any[])
+    .map((row) => normalizarVendaProdutoRow(row, 'vendas'))
+    .filter((row) => vendaProdutoDentroPeriodo(row, periodo));
+}
+
+/**
+ * Monta uma base de produto sem duplicar histórico:
+ * - anual RAW até a última data disponível;
+ * - detalhada IMEI apenas depois dessa data;
+ * - anual consolidada como fallback se RAW não existir;
+ * - `vendas` legado fica separado e é usado por produto quando as bases
+ *   detalhadas não conseguem identificar aquele modelo.
+ */
+async function carregarFontesVendasProduto(db: ClarkDbContext, periodo: ClarkPeriodo) {
+  const annualRaw = await carregarVendasAnuaisRawProduto(db, periodo);
+
+  const datasAnnual = annualRaw
+    .map((row) => normalizarDataVendaProduto(row.data_emissao))
+    .filter((value): value is string => Boolean(value))
+    .sort();
+
+  const annualMaxDate = datasAnnual.length ? datasAnnual[datasAnnual.length - 1] : null;
+  const detailedStart = annualMaxDate ? proximoDiaIso(annualMaxDate) : periodo.inicio;
+
+  const detailed =
+    detailedStart <= periodo.fim
+      ? await carregarVendasDetalhadasProduto(db, periodo, detailedStart)
+      : [];
+
+  let principal: VendaProdutoRow[] = [];
+  let fontePrincipal = 'nenhuma';
+
+  if (annualRaw.length || detailed.length) {
+    principal = deduplicarVendasProduto([...annualRaw, ...detailed]);
+    fontePrincipal = [
+      annualRaw.length ? 'vendas_anuais_raw' : '',
+      detailed.length ? 'vendas_detalhadas_imei' : '',
+    ].filter(Boolean).join('+');
+  } else {
+    const annualConsolidada = await carregarVendasAnuaisConsolidadasProduto(db, periodo);
+    if (annualConsolidada.length) {
+      principal = deduplicarVendasProduto(annualConsolidada);
+      fontePrincipal = 'vendas_anuais';
+    }
+  }
+
+  const legacy = deduplicarVendasProduto(await carregarVendasLegadoProduto(db, periodo));
+
+  return {
+    principal,
+    legacy,
+    fontePrincipal,
+    annualMaxDate,
+    debug: {
+      annual_raw: annualRaw.length,
+      detalhadas_complementares: detailed.length,
+      principal: principal.length,
+      legacy: legacy.length,
+      annual_max_date: annualMaxDate,
+      detailed_start: detailedStart,
+    },
+  };
+}
+
+function textoVendaProduto(row: VendaProdutoRow) {
+  return normalizeProductText([
+    row.descricao,
+    row.familia,
+    row.categoria,
+    row.referencia,
+    row.codigo_produto,
+  ].filter(Boolean).join(' '));
+}
+
+function vendaCombinaProduto(row: VendaProdutoRow, produto: ProdutoVendaSolicitado) {
+  const text = textoVendaProduto(row);
   const familyRow = getBaseModelFamily(text) || normalizeProductText(row.familia || '');
 
   if (produto.family) {
-    if (familyRow !== produto.family && !text.includes(produto.family)) return false;
+    const familyNorm = normalizeProductText(produto.family);
+    if (familyRow !== produto.family && familyRow !== familyNorm && !text.includes(familyNorm)) return false;
   } else {
     const raw = normalizeProductText(produto.raw);
     if (raw && !text.includes(raw)) return false;
@@ -351,21 +528,32 @@ function vendaCombinaProduto(row: any, produto: ProdutoVendaSolicitado) {
 
   if (produto.storage) {
     const storageRow = extractStorage(text) || '';
-    if (storageRow !== produto.storage && !text.includes(produto.storage)) return false;
+    const storageNorm = normalizeProductText(produto.storage);
+    if (storageRow !== produto.storage && storageRow !== storageNorm && !text.includes(storageNorm)) return false;
   }
 
   if (produto.color) {
     const colorRow = extractColor(text) || '';
-    if (colorRow && colorRow !== produto.color) return false;
-    if (!colorRow && !text.includes(normalizeProductText(produto.color))) return false;
+    const colorNorm = normalizeProductText(produto.color);
+    if (colorRow && colorRow !== produto.color && colorRow !== colorNorm) return false;
+    if (!colorRow && !text.includes(colorNorm)) return false;
+  }
+
+  if (produto.category) {
+    const cat = normalizeProductText(produto.category);
+    if (cat && !text.includes(cat)) return false;
   }
 
   return true;
 }
 
-function consolidarVendaProduto(rows: any[], produto: ProdutoVendaSolicitado) {
+function consolidarVendaProduto(
+  rows: VendaProdutoRow[],
+  produto: ProdutoVendaSolicitado,
+  fonte: string,
+) {
   const lojas = new Map<string, { loja: string; total_vendas: number; total_pecas: number }>();
-  const variacoes = new Map<string, { descricao: string; total_vendas: number; total_pecas: number }>();
+  const variacoes = new Map<string, { descricao: string; referencia: string | null; total_vendas: number; total_pecas: number }>();
   let totalVendas = 0;
   let totalPecas = 0;
 
@@ -373,7 +561,7 @@ function consolidarVendaProduto(rows: any[], produto: ProdutoVendaSolicitado) {
     const valor = safeNumberClark(row.total_liquido);
     const qtd = safeNumberClark(row.quantidade);
     const loja = resolverNomeLojaClark(row);
-    const descricao = String(row.descricao || row.familia || produto.raw || 'Produto').trim();
+    const descricao = String(row.descricao || row.referencia || row.familia || produto.raw || 'Produto').trim();
 
     totalVendas += valor;
     totalPecas += qtd;
@@ -383,8 +571,13 @@ function consolidarVendaProduto(rows: any[], produto: ProdutoVendaSolicitado) {
     lojaItem.total_pecas += qtd;
     lojas.set(loja, lojaItem);
 
-    const variacaoKey = normalizeProductText(descricao) || descricao;
-    const variacao = variacoes.get(variacaoKey) || { descricao, total_vendas: 0, total_pecas: 0 };
+    const variacaoKey = normalizeProductText(`${row.referencia || ''}|${descricao}`) || descricao;
+    const variacao = variacoes.get(variacaoKey) || {
+      descricao,
+      referencia: row.referencia || null,
+      total_vendas: 0,
+      total_pecas: 0,
+    };
     variacao.total_vendas += valor;
     variacao.total_pecas += qtd;
     variacoes.set(variacaoKey, variacao);
@@ -405,6 +598,7 @@ function consolidarVendaProduto(rows: any[], produto: ProdutoVendaSolicitado) {
     storage: produto.storage,
     color: produto.color,
     matched: rows.length > 0,
+    fonte_dados: fonte,
     total_vendas: totalVendas,
     total_vendas_formatado: formatBRL(totalVendas),
     total_pecas: totalPecas,
@@ -417,9 +611,14 @@ function consolidarVendaProduto(rows: any[], produto: ProdutoVendaSolicitado) {
 }
 
 /**
- * Consulta factual de vendas por produto. Aceita products[] e SEMPRE devolve
- * uma entrada para cada produto solicitado, inclusive quando a venda foi zero.
- * Isso permite ao verificador provar que nenhum item da pergunta foi ignorado.
+ * Consulta factual de vendas por produto.
+ *
+ * Regras:
+ * - aceita products[] e devolve uma resposta para CADA item solicitado;
+ * - procura descrição + família + categoria + referência + código do produto;
+ * - usa base anual RAW + complemento diário sem duplicar datas;
+ * - se um produto não existir na base detalhada, tenta a tabela `vendas`;
+ * - indisponibilidade de banco vira erro, nunca R$ 0,00 falso.
  */
 export async function toolConsultarVendasProdutos(
   args: Record<string, any>,
@@ -429,6 +628,8 @@ export async function toolConsultarVendasProdutos(
   const db = await criarDbContext();
 
   try {
+    assegurarBancoDisponivel(db);
+
     const periodo = montarPeriodo(args);
     const filtros = montarFiltros(args);
     const scope = await obterEscopoUsuarioClark(ctxTool.userId);
@@ -462,18 +663,34 @@ export async function toolConsultarVendasProdutos(
       };
     }
 
-    const source = await consultarVendasRawProdutos(db, periodo);
-    const rawRows = source.rows
-      .filter((row: any) => rowPermitidaClark(row, scope))
-      .filter((row: any) => rowCorrespondeLojaFiltroClark(row, filtros));
+    const sources = await carregarFontesVendasProduto(db, periodo);
+
+    const filtrarEscopo = (rows: VendaProdutoRow[]) => rows
+      .filter((row) => rowPermitidaClark(row, scope))
+      .filter((row) => rowCorrespondeLojaFiltroClark(row, filtros));
+
+    const principal = filtrarEscopo(sources.principal);
+    const legacy = filtrarEscopo(sources.legacy);
 
     const results = uniqueProducts.map((product) => {
-      const rows = rawRows.filter((row) => vendaCombinaProduto(row, product));
-      return consolidarVendaProduto(rows, product);
+      const principalRows = principal.filter((row) => vendaCombinaProduto(row, product));
+
+      if (principalRows.length) {
+        return consolidarVendaProduto(
+          principalRows,
+          product,
+          sources.fontePrincipal || 'base_detalhada',
+        );
+      }
+
+      const legacyRows = legacy.filter((row) => vendaCombinaProduto(row, product));
+      return consolidarVendaProduto(legacyRows, product, legacyRows.length ? 'vendas' : 'nenhuma');
     });
 
     const totalVendas = results.reduce((acc, item) => acc + safeNumberClark(item.total_vendas), 0);
     const totalPecas = results.reduce((acc, item) => acc + safeNumberClark(item.total_pecas), 0);
+
+    const diagnostics = getSalesDatabaseDiagnostics();
 
     return {
       tool,
@@ -482,7 +699,7 @@ export async function toolConsultarVendasProdutos(
       result: {
         tipo: 'vendas_produtos',
         periodo,
-        fonte_dados: source.fonte,
+        fonte_dados: sources.fontePrincipal || (legacy.length ? 'vendas' : 'nenhuma'),
         requested_count: uniqueProducts.length,
         answered_count: results.length,
         matched_count: results.filter((item) => item.matched).length,
@@ -493,6 +710,15 @@ export async function toolConsultarVendasProdutos(
         total_pecas: totalPecas,
         ticket_medio: totalPecas > 0 ? totalVendas / totalPecas : 0,
         ticket_medio_formatado: formatBRL(totalPecas > 0 ? totalVendas / totalPecas : 0),
+        debug: {
+          ...sources.debug,
+          database_environment: diagnostics.environment,
+          database_dir: diagnostics.databaseDir,
+          global_db_exists: diagnostics.globalDbExists,
+          annual_db_exists: diagnostics.annualDbExists,
+          principal_apos_escopo: principal.length,
+          legacy_apos_escopo: legacy.length,
+        },
       },
     };
   } catch (error: any) {
