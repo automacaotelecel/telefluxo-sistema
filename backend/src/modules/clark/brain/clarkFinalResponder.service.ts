@@ -23,6 +23,9 @@ const TASKS_COM_RESPOSTA_DETERMINISTICA = new Set<string>([
   'stock_product_search',
   'stock_ranking',
   'sales_summary',
+  'sales_by_product',
+  'multi_product_sales',
+  'multi_product_stock',
   'sales_by_store',
   'sales_by_seller',
   'sales_by_category',
@@ -34,6 +37,7 @@ const TASKS_COM_RESPOSTA_DETERMINISTICA = new Set<string>([
   'insurance_by_store',
   'insurance_seller_ranking',
   'insurance_store_ranking',
+  'navigation',
   'help',
 ]);
 
@@ -375,11 +379,111 @@ function formatarModoDiretoria(first: any) {
   return linhas.join('\n');
 }
 
+
+function formatarVendasProdutos(first: any) {
+  const products = Array.isArray(first?.products) ? first.products : [];
+  const periodo = first?.periodo?.descricao || `${first?.periodo?.inicio || ''} até ${first?.periodo?.fim || ''}`.trim();
+
+  if (!products.length) {
+    return `Não encontrei produtos processados para a consulta de vendas${periodo ? ` no período ${periodo}` : ''}.`;
+  }
+
+  const linhas = products.map((item: any, index: number) => {
+    const nome = String(item.family || item.requested || item.model || `Produto ${index + 1}`).toUpperCase();
+    const filtro = [item.storage, item.color].filter(Boolean).join(' • ');
+    return [
+      `${index + 1}. ${nome}${filtro ? ` — ${filtro}` : ''}`,
+      `   Vendas: ${item.total_vendas_formatado || formatBRL(item.total_vendas)}`,
+      `   Peças vendidas: ${toNumber(item.total_pecas)}`,
+      `   Ticket médio: ${item.ticket_medio_formatado || formatBRL(item.ticket_medio)}`,
+      item.matched ? '' : '   Sem vendas encontradas no período.',
+    ].filter(Boolean).join('\n');
+  });
+
+  return [
+    `💰 Vendas por produto${periodo ? ` — ${periodo}` : ''}`,
+    '',
+    ...linhas,
+    '',
+    `Total dos produtos: ${first.total_vendas_formatado || formatBRL(first.total_vendas)} | ${toNumber(first.total_pecas)} peça(s)`,
+  ].join('\n');
+}
+
+function formatarEstoqueProdutos(first: any) {
+  const products = Array.isArray(first?.products) ? first.products : [];
+  if (!products.length) return 'Não encontrei produtos processados para a consulta de estoque.';
+
+  const blocos = products.map((entry: any, index: number) => {
+    const result = entry?.result || {};
+    const requested = String(entry?.requested || entry?.request?.family || `Produto ${index + 1}`).toUpperCase();
+    const itens = Array.isArray(result?.produtos) ? result.produtos : [];
+
+    if (!itens.length) {
+      return `${index + 1}. ${requested}\n   Sem estoque encontrado.`;
+    }
+
+    const total = itens.reduce((acc: number, item: any) => acc + toNumber(item?.quantidade_total), 0);
+    const lojas = new Map<string, number>();
+    for (const item of itens) {
+      for (const loja of item?.lojas || item?.principais_lojas || []) {
+        const nome = String(loja?.loja || '').trim();
+        if (!nome) continue;
+        lojas.set(nome, (lojas.get(nome) || 0) + toNumber(loja?.quantidade));
+      }
+    }
+
+    const lojasTexto = Array.from(lojas.entries())
+      .sort((a, b) => b[1] - a[1])
+      .map(([loja, qtd]) => `   • ${loja}: ${qtd} un.`)
+      .join('\n');
+
+    return [
+      `${index + 1}. ${requested}`,
+      `   Estoque total: ${total} un.`,
+      lojasTexto || '   Sem lojas com estoque positivo.',
+    ].join('\n');
+  });
+
+  return ['📦 Estoque por produto', '', ...blocos].join('\n');
+}
+
+function formatarVendasEEstoqueProdutos(sales: any, stock: any) {
+  const salesProducts = Array.isArray(sales?.products) ? sales.products : [];
+  const stockProducts = Array.isArray(stock?.products) ? stock.products : [];
+  const periodo = sales?.periodo?.descricao || `${sales?.periodo?.inicio || ''} até ${sales?.periodo?.fim || ''}`.trim();
+
+  const linhas = salesProducts.map((sale: any, index: number) => {
+    const stockEntry = stockProducts[index];
+    const stockItems = Array.isArray(stockEntry?.result?.produtos) ? stockEntry.result.produtos : [];
+    const stockTotal = stockItems.reduce((acc: number, item: any) => acc + toNumber(item?.quantidade_total), 0);
+    const nome = String(sale.family || sale.requested || `Produto ${index + 1}`).toUpperCase();
+
+    return [
+      `${index + 1}. ${nome}`,
+      `   Vendas: ${sale.total_vendas_formatado || formatBRL(sale.total_vendas)} | ${toNumber(sale.total_pecas)} peça(s)`,
+      `   Estoque atual: ${stockTotal} un.`,
+    ].join('\n');
+  });
+
+  return [
+    `📊 Vendas x estoque por produto${periodo ? ` — ${periodo}` : ''}`,
+    '',
+    ...linhas,
+  ].join('\n');
+}
+
 export function respostaLocalExecutiva(params: {
   plan: ClarkAgentPlan;
   results: ClarkToolResult[];
   periodo: ClarkPeriodo;
 }) {
+  const salesBatch = params.results.find((r) => r.tool === 'consultar_vendas_produtos' && r.ok)?.result;
+  const stockBatch = params.results.find((r) => r.tool === 'consultar_estoque_produtos' && r.ok)?.result;
+
+  if (salesBatch && stockBatch) {
+    return formatarVendasEEstoqueProdutos(salesBatch, stockBatch);
+  }
+
   const success = params.results.find((r) => r.ok && r.result);
   const first = success?.result;
   const tool = success?.tool;
@@ -397,6 +501,22 @@ export function respostaLocalExecutiva(params: {
       first.mensagem ||
       'Posso analisar vendas, estoque, lojas, vendedores, categorias, seguros, crescimento e relatórios executivos.'
     );
+  }
+
+  if (tool === 'responder_conversa') {
+    return first.mensagemFallback || 'Estou por aqui. Como posso ajudar?';
+  }
+
+  if (tool === 'navegar_modulo') {
+    return `Abrindo ${first.label || 'o módulo solicitado'} para você.`;
+  }
+
+  if (tool === 'consultar_vendas_produtos') {
+    return formatarVendasProdutos(first);
+  }
+
+  if (tool === 'consultar_estoque_produtos') {
+    return formatarEstoqueProdutos(first);
   }
 
   if (tool === 'consultar_ranking_estoque') {
@@ -661,6 +781,9 @@ ${params.fallback}
 
 REGRAS OBRIGATÓRIAS:
 - Nunca invente números, lojas, produtos, vendedores ou períodos.
+- Responda PRIMEIRO e EXATAMENTE ao que o usuário pediu. Não acrescente estoque se ele pediu apenas vendas; não acrescente vendas se ele pediu apenas estoque.
+- Quando houver vários produtos solicitados, mencione TODOS, inclusive os que tiveram zero resultado.
+- Nunca reduza uma lista de produtos ao primeiro item.
 - Nunca mostre JSON bruto, trace, candidates, score, args ou nome de ferramenta interna.
 - Nunca mostre referência técnica/código do produto, como "SM-A566EZKSZTO", salvo se o usuário pedir código/referência.
 - Para consulta de estoque de produto, mostre TODAS as lojas com estoque. Não use "+N lojas com estoque".

@@ -5,6 +5,8 @@ export type ClarkToolName =
   | 'consultar_estoque_produto'
   | 'consultar_ranking_estoque'
   | 'consultar_vendas_resumo'
+  | 'consultar_vendas_produtos'
+  | 'consultar_estoque_produtos'
   | 'consultar_vendas_por_loja'
   | 'consultar_vendas_por_vendedor'
   | 'consultar_vendas_por_categoria'
@@ -20,6 +22,8 @@ export type ClarkToolName =
   | 'consultar_excesso_estoque'
   | 'consultar_redistribuicao_estoque'
   | 'consultar_modo_diretoria'
+  | 'navegar_modulo'
+  | 'responder_conversa'
   | 'responder_ajuda';
 
 export type ClarkToolCall = {
@@ -32,6 +36,10 @@ export type ClarkAgentTaskType =
   | 'stock_product_search'
   | 'stock_ranking'
   | 'sales_summary'
+  | 'sales_by_product'
+  | 'multi_product_sales'
+  | 'multi_product_stock'
+  | 'multi_product_analysis'
   | 'sales_by_store'
   | 'sales_by_seller'
   | 'sales_by_category'
@@ -52,6 +60,8 @@ export type ClarkAgentTaskType =
   | 'excess_stock'
   | 'stock_redistribution'
   | 'director_mode'
+  | 'navigation'
+  | 'conversation'
   | 'help';
 
 export type ClarkAgentPlan = {
@@ -68,6 +78,15 @@ export type ClarkAgentPlan = {
       color?: string | null;
       category?: string | null;
     } | null;
+    products?: Array<{
+      raw?: string | null;
+      family?: string | null;
+      model?: string | null;
+      storage?: string | null;
+      color?: string | null;
+      category?: string | null;
+    }>;
+    requestedMetrics?: string[];
     store?: string | null;
     seller?: string | null;
     category?: string | null;

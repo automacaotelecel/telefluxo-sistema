@@ -10,6 +10,7 @@ type SqliteDb = Awaited<ReturnType<typeof open>>;
 export type ClarkExecutiveMemory = {
   userId: string;
   lastProduct: string | null;
+  lastProducts: string[];
   lastStore: string | null;
   lastPeriodStart: string | null;
   lastPeriodEnd: string | null;
@@ -59,6 +60,7 @@ async function openMemoryDb(): Promise<SqliteDb> {
     CREATE TABLE IF NOT EXISTS ${MEMORY_TABLE} (
       userId TEXT PRIMARY KEY,
       lastProduct TEXT,
+      lastProducts TEXT,
       lastStore TEXT,
       lastPeriodStart TEXT,
       lastPeriodEnd TEXT,
@@ -71,6 +73,13 @@ async function openMemoryDb(): Promise<SqliteDb> {
       updatedAt TEXT NOT NULL
     )
   `);
+
+  // Migração leve para instalações que já possuíam a tabela antes do suporte
+  // a múltiplos produtos no contexto.
+  const columns = await db.all(`PRAGMA table_info(${MEMORY_TABLE})`);
+  if (!columns.some((col: any) => String(col?.name) === 'lastProducts')) {
+    await db.exec(`ALTER TABLE ${MEMORY_TABLE} ADD COLUMN lastProducts TEXT`);
+  }
 
   return db;
 }
@@ -104,6 +113,7 @@ function normalizarMemoria(row: any): ClarkExecutiveMemory | null {
   return {
     userId: String(row.userId),
     lastProduct: row.lastProduct || null,
+    lastProducts: (() => { try { const parsed = JSON.parse(String(row.lastProducts || '[]')); return Array.isArray(parsed) ? parsed.map(String).filter(Boolean).slice(0, 20) : []; } catch { return []; } })(),
     lastStore: row.lastStore || null,
     lastPeriodStart: row.lastPeriodStart || null,
     lastPeriodEnd: row.lastPeriodEnd || null,
@@ -200,6 +210,37 @@ function extrairProdutoDaResposta(resposta: ClarkResposta): string | null {
   return null;
 }
 
+function extrairProdutosDaResposta(resposta: ClarkResposta): string[] {
+  const dados: any = resposta?.dados || {};
+  const plan: any = dados?.plan || {};
+  const toolResults: any[] = Array.isArray(dados?.toolResults) ? dados.toolResults : [];
+  const values: string[] = [];
+
+  const planProducts = Array.isArray(plan?.entities?.products) ? plan.entities.products : [];
+  for (const item of planProducts) {
+    const candidate = pickFirstString(
+      item?.raw,
+      [item?.family, item?.storage, item?.color].filter(Boolean).join(' '),
+    );
+    if (candidate) values.push(candidate);
+  }
+
+  for (const item of toolResults) {
+    const result = item?.result || {};
+    const products = Array.isArray(result?.products) ? result.products : [];
+    for (const product of products) {
+      const candidate = pickFirstString(
+        product?.requested,
+        [product?.family, product?.storage, product?.color].filter(Boolean).join(' '),
+        product?.request?.raw,
+      );
+      if (candidate) values.push(candidate);
+    }
+  }
+
+  return Array.from(new Set(values.map((v) => String(v).trim()).filter(Boolean))).slice(0, 20);
+}
+
 function extrairLojaDaResposta(resposta: ClarkResposta): string | null {
   const dados: any = resposta?.dados || {};
   const plan: any = dados?.plan || {};
@@ -229,7 +270,7 @@ export function montarHistoricoComMemoriaClark(
   if (!memoria) return historico;
 
   const partes = [
-    memoria.lastProduct ? `último produto consultado: ${memoria.lastProduct}` : null,
+    memoria.lastProducts.length ? `últimos produtos consultados: ${memoria.lastProducts.join(', ')}` : memoria.lastProduct ? `último produto consultado: ${memoria.lastProduct}` : null,
     memoria.lastStore ? `última loja consultada: ${memoria.lastStore}` : null,
     memoria.lastPeriodLabel ? `último período: ${memoria.lastPeriodLabel}` : null,
     memoria.lastIntent ? `última intenção: ${memoria.lastIntent}` : null,
@@ -282,12 +323,14 @@ export function aplicarMemoriaNaPerguntaClark(
     upper.includes('PECAS') ||
     upper.includes('PEÇAS');
 
-  if (!temProdutoNaPergunta && memoria.lastProduct && falaVendas) {
-    return `Com base no último produto consultado (${memoria.lastProduct}), responda: ${pergunta}`;
+  const produtosContexto = memoria.lastProducts.length ? memoria.lastProducts : (memoria.lastProduct ? [memoria.lastProduct] : []);
+
+  if (!temProdutoNaPergunta && produtosContexto.length && falaVendas) {
+    return `Com base nos últimos produtos consultados (${produtosContexto.join(', ')}), responda: ${pergunta}`;
   }
 
-  if (!temProdutoNaPergunta && memoria.lastProduct && falaEstoque) {
-    return `Com base no último produto consultado (${memoria.lastProduct}), responda: ${pergunta}`;
+  if (!temProdutoNaPergunta && produtosContexto.length && falaEstoque) {
+    return `Com base nos últimos produtos consultados (${produtosContexto.join(', ')}), responda: ${pergunta}`;
   }
 
   if (memoria.lastStore && /^(E\s+)?(NO|NA)\s+/i.test(pergunta)) {
@@ -309,15 +352,18 @@ export async function atualizarMemoriaExecutivaClark(params: {
   const resposta = params.resposta;
   const atual = await obterMemoriaExecutivaClark(userId);
 
-  const lastProduct = extrairProdutoDaResposta(resposta) || atual?.lastProduct || null;
+  const extractedProducts = extrairProdutosDaResposta(resposta);
+  const lastProducts = extractedProducts.length ? extractedProducts : (atual?.lastProducts || []);
+  const lastProduct = lastProducts[0] || extrairProdutoDaResposta(resposta) || atual?.lastProduct || null;
   const lastStore = extrairLojaDaResposta(resposta) || atual?.lastStore || null;
   const lastTool = extrairToolPrincipal(resposta) || atual?.lastTool || null;
-  const periodo = resposta?.periodo || {};
+  const periodo: any = resposta?.periodo || {};
   const updatedAt = new Date().toISOString();
 
   const next: ClarkExecutiveMemory = {
     userId,
     lastProduct,
+    lastProducts,
     lastStore,
     lastPeriodStart: periodo.inicio || atual?.lastPeriodStart || null,
     lastPeriodEnd: periodo.fim || atual?.lastPeriodEnd || null,
@@ -339,6 +385,7 @@ export async function atualizarMemoriaExecutivaClark(params: {
       `INSERT INTO ${MEMORY_TABLE} (
         userId,
         lastProduct,
+        lastProducts,
         lastStore,
         lastPeriodStart,
         lastPeriodEnd,
@@ -349,9 +396,10 @@ export async function atualizarMemoriaExecutivaClark(params: {
         lastAnswerSummary,
         interactionCount,
         updatedAt
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(userId) DO UPDATE SET
         lastProduct = excluded.lastProduct,
+        lastProducts = excluded.lastProducts,
         lastStore = excluded.lastStore,
         lastPeriodStart = excluded.lastPeriodStart,
         lastPeriodEnd = excluded.lastPeriodEnd,
@@ -365,6 +413,7 @@ export async function atualizarMemoriaExecutivaClark(params: {
       [
         next.userId,
         next.lastProduct,
+        JSON.stringify(next.lastProducts || []),
         next.lastStore,
         next.lastPeriodStart,
         next.lastPeriodEnd,

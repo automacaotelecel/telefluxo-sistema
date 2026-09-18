@@ -11,11 +11,12 @@ import {
 } from './clarkExecutiveMemory.service';
 import { CLARK_SCHEMA_CONTEXT } from './clarkSchemaContext';
 import { ClarkBrainContext } from './clarkBrain.types';
-import { planejarClark } from './clarkPlanner.service';
+import { planejarClark, repararPlanoClark } from './clarkPlanner.service';
 import { executarFerramentasClark } from './clarkToolExecutor.service';
 import { validarResultadoClark } from './clarkVerifier.service';
 import { responderFinalClark } from './clarkFinalResponder.service';
 import { ClarkAgentPlan } from '../agent/clarkAgent.types';
+import { extrairRequisitosClark } from './clarkRequirements.service';
 
 const CLARK_PROVIDER = String(process.env.CLARK_PROVIDER || '').trim().toLowerCase();
 
@@ -30,11 +31,11 @@ function filtrosVazios(): ClarkFiltros {
 function intentFromPlan(plan: ClarkAgentPlan): ClarkIntent {
   const first = plan.toolCalls?.find((c) => c.tool !== 'resolver_produto')?.tool || plan.toolCalls?.[0]?.tool;
   if (first === 'consultar_ranking_estoque') return 'ranking_estoque_produtos';
-  if (first === 'consultar_estoque_produto') return 'estoque_produto_lojas';
+  if (first === 'consultar_estoque_produto' || first === 'consultar_estoque_produtos') return 'estoque_produto_lojas';
   if (first === 'consultar_vendas_por_loja') return 'ranking_lojas_vendas';
   if (first === 'consultar_vendas_por_vendedor') return 'ranking_vendedores_vendas';
   if (first === 'consultar_vendas_por_categoria') return 'ranking_categorias_vendas';
-  if (first === 'consultar_vendas_resumo') return 'vendas_resumo';
+  if (first === 'consultar_vendas_resumo' || first === 'consultar_vendas_produtos') return 'vendas_resumo';
   if (first === 'consultar_crescimento_mensal') return 'crescimento_mensal';
   if (
     first === 'consultar_relatorio_vendas' ||
@@ -101,6 +102,11 @@ export async function processarComClarkBrain(input: ClarkPerguntaInput): Promise
   const periodo = extrairPeriodoClark(perguntaExpandida);
   const filtros = extrairFiltrosClark(perguntaExpandida);
   const scope = await obterEscopoUsuarioClark(userId);
+  const requirements = extrairRequisitosClark({
+    perguntaOriginal,
+    perguntaExpandida,
+    filtros,
+  });
 
   const context: ClarkBrainContext = {
     userId,
@@ -111,11 +117,31 @@ export async function processarComClarkBrain(input: ClarkPerguntaInput): Promise
     filtros,
     scope,
     schemaContext: CLARK_SCHEMA_CONTEXT,
+    requirements,
   };
 
   const { plan: planned, usedGemini: usedGeminiPlanner } = await planejarClark(context);
-  const { plan, results } = await executarFerramentasClark(planned, context);
-  const verifier = validarResultadoClark(plan, results);
+
+  let execution = await executarFerramentasClark(planned, context);
+  let plan = execution.plan;
+  let results = execution.results;
+  let verifier = validarResultadoClark(plan, results, requirements);
+  let repaired = false;
+
+  // A Clark nunca finaliza uma resposta parcial quando consegue reconstruir um
+  // plano seguro. Fazemos uma única tentativa de reparo determinístico para não
+  // criar loops infinitos.
+  if (!verifier.ok && ['needs_retry', 'wrong_intent'].includes(verifier.verdict)) {
+    const repairPlan = repararPlanoClark(context, plan);
+    if (repairPlan) {
+      execution = await executarFerramentasClark(repairPlan, context);
+      plan = execution.plan;
+      results = execution.results;
+      verifier = validarResultadoClark(plan, results, requirements);
+      repaired = true;
+    }
+  }
+
   const { text, usedGemini: usedGeminiResponder } = await responderFinalClark({ pergunta: perguntaOriginal, plan, results, verifier, periodo });
 
   const respostaFinal: ClarkResposta = {
@@ -130,10 +156,12 @@ export async function processarComClarkBrain(input: ClarkPerguntaInput): Promise
       toolResults: results,
       verifier,
       brain: {
-        version: 'v9-memory-executive',
+        version: 'v10-requirements-agent',
         usedGeminiPlanner,
         usedGeminiResponder,
         memoryBefore: memoriaExecutiva,
+        requirements,
+        repaired,
       },
     },
     resposta_origem:
@@ -148,6 +176,18 @@ export async function processarComClarkBrain(input: ClarkPerguntaInput): Promise
       'Filtrar por loja ou vendedor',
     ],
   };
+
+  const navigation = results.find((r) => r.tool === 'navegar_modulo' && r.ok)?.result;
+  if (navigation?.view) {
+    respostaFinal.actions = [
+      ...(Array.isArray(respostaFinal.actions) ? respostaFinal.actions : []),
+      {
+        type: 'navigate',
+        label: `Abrir ${navigation.label || 'módulo'}`,
+        payload: { view: navigation.view },
+      },
+    ];
+  }
 
   const memoriaAtualizada = await atualizarMemoriaExecutivaClark({
     userId,

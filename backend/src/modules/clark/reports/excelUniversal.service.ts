@@ -646,6 +646,105 @@ function criarAbaModoDiretoria(workbook: ExcelJS.Workbook, result: any) {
   aplicarEstiloTabela(wsAlertas);
 }
 
+
+function criarAbaVendasProdutos(workbook: ExcelJS.Workbook, result: any) {
+  const products = Array.isArray(result?.products) ? result.products : [];
+
+  const ws = criarAbaComColunas(workbook, 'Vendas por Produto', [
+    { header: 'Produto solicitado', key: 'requested', width: 32 },
+    { header: 'Família', key: 'family', width: 26 },
+    { header: 'Memória', key: 'storage', width: 14 },
+    { header: 'Cor', key: 'color', width: 16 },
+    { header: 'Encontrado', key: 'matched', width: 12 },
+    { header: 'Total vendas', key: 'total_vendas', width: 18 },
+    { header: 'Total vendas formatado', key: 'total_vendas_formatado', width: 24 },
+    { header: 'Peças vendidas', key: 'total_pecas', width: 16 },
+    { header: 'Ticket médio', key: 'ticket_medio', width: 18 },
+    { header: 'Ticket médio formatado', key: 'ticket_medio_formatado', width: 24 },
+  ]);
+
+  for (const item of products) {
+    ws.addRow({
+      requested: item?.requested || '',
+      family: item?.family || '',
+      storage: item?.storage || '',
+      color: item?.color || '',
+      matched: item?.matched ? 'Sim' : 'Não',
+      total_vendas: safeNumber(item?.total_vendas),
+      total_vendas_formatado: item?.total_vendas_formatado || '',
+      total_pecas: safeNumber(item?.total_pecas),
+      ticket_medio: safeNumber(item?.ticket_medio),
+      ticket_medio_formatado: item?.ticket_medio_formatado || '',
+    });
+  }
+  aplicarEstiloTabela(ws);
+
+  const wsLojas = criarAbaComColunas(workbook, 'Vendas Produto Loja', [
+    { header: 'Produto solicitado', key: 'requested', width: 32 },
+    { header: 'Loja', key: 'loja', width: 34 },
+    { header: 'Total vendas', key: 'total_vendas', width: 18 },
+    { header: 'Total vendas formatado', key: 'total_vendas_formatado', width: 24 },
+    { header: 'Peças vendidas', key: 'total_pecas', width: 16 },
+  ]);
+
+  for (const item of products) {
+    const lojas = Array.isArray(item?.lojas) ? item.lojas : [];
+    for (const loja of lojas) {
+      wsLojas.addRow({
+        requested: item?.requested || item?.family || '',
+        loja: loja?.loja || '',
+        total_vendas: safeNumber(loja?.total_vendas),
+        total_vendas_formatado: loja?.total_vendas_formatado || '',
+        total_pecas: safeNumber(loja?.total_pecas),
+      });
+    }
+  }
+  aplicarEstiloTabela(wsLojas);
+}
+
+function criarAbaEstoqueProdutos(workbook: ExcelJS.Workbook, result: any) {
+  const entries = Array.isArray(result?.products) ? result.products : [];
+
+  const ws = criarAbaComColunas(workbook, 'Estoque Produtos', [
+    { header: 'Produto solicitado', key: 'requested', width: 32 },
+    { header: 'Variação', key: 'variacao', width: 45 },
+    { header: 'Quantidade total', key: 'quantidade_total', width: 18 },
+    { header: 'Total lojas', key: 'total_lojas', width: 16 },
+  ]);
+
+  const wsLojas = criarAbaComColunas(workbook, 'Estoque Produtos Loja', [
+    { header: 'Produto solicitado', key: 'requested', width: 32 },
+    { header: 'Variação', key: 'variacao', width: 45 },
+    { header: 'Loja', key: 'loja', width: 34 },
+    { header: 'Quantidade', key: 'quantidade', width: 14 },
+  ]);
+
+  for (const entry of entries) {
+    const produtos = Array.isArray(entry?.result?.produtos) ? entry.result.produtos : [];
+    for (const produto of produtos) {
+      const lojas = Array.isArray(produto?.lojas) ? produto.lojas : Array.isArray(produto?.principais_lojas) ? produto.principais_lojas : [];
+      const variacao = limparDescricaoProduto(produto?.descricao || produto?.variacao);
+      ws.addRow({
+        requested: entry?.requested || '',
+        variacao,
+        quantidade_total: safeNumber(produto?.quantidade_total),
+        total_lojas: lojas.length,
+      });
+      for (const loja of lojas) {
+        wsLojas.addRow({
+          requested: entry?.requested || '',
+          variacao,
+          loja: loja?.loja || '',
+          quantidade: safeNumber(loja?.quantidade),
+        });
+      }
+    }
+  }
+
+  aplicarEstiloTabela(ws);
+  aplicarEstiloTabela(wsLojas);
+}
+
 function criarAbaDadosBrutos(workbook: ExcelJS.Workbook, nome: string, result: any) {
   const ws = criarAbaComColunas(workbook, nome || 'Dados Brutos', [
     { header: 'Campo', key: 'campo', width: 40 },
@@ -682,12 +781,20 @@ function processarToolResult(workbook: ExcelJS.Workbook, toolResult: ToolResultN
       criarAbaEstoqueProduto(workbook, result);
       return;
 
+    case 'consultar_estoque_produtos':
+      criarAbaEstoqueProdutos(workbook, result);
+      return;
+
     case 'consultar_ranking_estoque':
       criarAbaRankingEstoque(workbook, result);
       return;
 
     case 'consultar_vendas_resumo':
       criarAbaVendasResumo(workbook, result);
+      return;
+
+    case 'consultar_vendas_produtos':
+      criarAbaVendasProdutos(workbook, result);
       return;
 
     case 'consultar_vendas_por_loja':

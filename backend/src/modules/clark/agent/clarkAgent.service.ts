@@ -19,6 +19,7 @@ import { verificarRespostaClark } from '../tools/answerVerifier';
 import { normalizarTextoClark } from '../../intent/extractFilters';
 import { extrairPeriodoClark } from '../../intent/extractPeriod';
 import { extractColor, extractStorage, getBaseModelFamily } from '../../productDictionary/productDictionary.utils';
+import { extrairRequisitosClark } from '../brain/clarkRequirements.service';
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '';
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3-flash-preview';
@@ -101,6 +102,22 @@ function planoLocal(pergunta: string): ClarkAgentPlan {
   const limite = numeroLimite(pergunta, 10);
   const periodo = extrairPeriodoClark(pergunta);
   const perguntaArgs = { pergunta, startDate: periodo.inicio, endDate: periodo.fim, label: periodo.descricao, limit: limite };
+  const requirements = extrairRequisitosClark({ perguntaOriginal: pergunta, perguntaExpandida: pergunta });
+
+  if (requirements.products.length && requirements.salesOnly) {
+    const products = requirements.products;
+    return {
+      ...planoBase(pergunta),
+      taskType: products.length > 1 ? 'multi_product_sales' : 'sales_by_product',
+      mode: 'analitico',
+      confidence: 0.99,
+      entities: { products, product: products.length === 1 ? (products[0] ?? null) : null, requestedMetrics: requirements.metrics, period: { startDate: periodo.inicio, endDate: periodo.fim, label: periodo.descricao } },
+      toolCalls: [{ tool: 'consultar_vendas_produtos', reason: 'Consultar todos os produtos citados.', args: { ...perguntaArgs, products, limit: 500 } }],
+      validationRules: ['Responder todos os produtos citados.', 'Não acrescentar estoque quando o usuário pediu somente vendas.'],
+      answerStyle: { shouldExplainUncertainty: true, shouldIncludeTables: true, shouldIncludeInsights: false, shouldIncludeSuggestions: false },
+    };
+  }
+
 
   const falaEstoque = t.includes('ESTOQUE') || t.includes('TEM') || t.includes('POSSUEM') || t.includes('MODELOS QUE MAIS TEMOS') || t.includes('MODELOS QUE MAIS');
   const rankingEstoque = falaEstoque && (t.includes('RANKING') || t.includes('TOP') || t.includes('MAIORES') || t.includes('MODELOS QUE MAIS') || t.includes('MAIOR ESTOQUE'));
@@ -311,6 +328,16 @@ function respostaLocalFinal(plan: ClarkAgentPlan, toolResults: ClarkToolResult[]
 
   if (firstOk.tool === 'consultar_estoque_produto') return respostaEstoqueProduto(r);
   if (firstOk.tool === 'consultar_ranking_estoque') return respostaRankingEstoque(r);
+
+  if (firstOk.tool === 'consultar_vendas_produtos') {
+    const products = Array.isArray(r?.products) ? r.products : [];
+    if (!products.length) return `Não encontrei produtos processados no período ${r?.periodo?.descricao || 'solicitado'}.`;
+    const linhas = products.map((item: any, idx: number) => {
+      const nome = String(item?.family || item?.requested || `Produto ${idx + 1}`).toUpperCase();
+      return `${idx + 1}. ${nome} | vendas: ${item?.total_vendas_formatado || 'R$ 0,00'} | peças: ${Number(item?.total_pecas || 0)}${item?.matched ? '' : ' | sem vendas no período'}`;
+    });
+    return [`Vendas por produto — ${r?.periodo?.descricao || 'período solicitado'}:`, '', ...linhas, '', `Total: ${r?.total_vendas_formatado || 'R$ 0,00'} | ${Number(r?.total_pecas || 0)} peça(s)`].join('\n');
+  }
 
   if (firstOk.tool === 'consultar_vendas_resumo') {
     if (!r?.quantidade_registros) return `Não encontrei vendas no período ${r?.periodo?.descricao || 'solicitado'}.`;

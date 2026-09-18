@@ -254,3 +254,82 @@ export async function toolConsultarRankingEstoque(
     };
   }
 }
+/**
+ * Consulta estoque para vários produtos em uma única solicitação. Cada produto
+ * é executado de forma independente para que a Clark nunca descarte itens de
+ * uma pergunta composta (ex.: S26, A17 e A37).
+ */
+export async function toolConsultarEstoqueProdutos(
+  args: Record<string, any>,
+  ctx: ClarkToolContext,
+): Promise<ClarkToolResult> {
+  const tool: ClarkToolResult['tool'] = 'consultar_estoque_produtos';
+
+  try {
+    const rawProducts = Array.isArray(args.products)
+      ? args.products
+      : args.product
+        ? [args.product]
+        : [];
+
+    if (!rawProducts.length) {
+      return {
+        tool,
+        ok: false,
+        args,
+        result: null,
+        error: 'Nenhum produto foi informado para a consulta de estoque.',
+      };
+    }
+
+    const products: any[] = [];
+
+    for (const product of rawProducts) {
+      const query = String(product?.raw || product?.query || product?.family || product?.model || product || '').trim();
+      const filtros = montarFiltrosEstoque(
+        {
+          ...args,
+          query,
+          family: product?.family,
+          model: product?.model,
+          storage: product?.storage,
+          color: product?.color,
+          category: product?.category || args.category || args.categoria || 'SMARTPHONES',
+          limit: args.limit || 100,
+        },
+        ctx,
+      );
+
+      const result = await consultarLojasProdutoEstoqueClark(ctx.userId, filtros);
+
+      products.push({
+        requested: query,
+        request: product,
+        found: Array.isArray(result?.produtos) && result.produtos.length > 0,
+        result,
+      });
+    }
+
+    return {
+      tool,
+      ok: true,
+      args,
+      result: {
+        tipo: 'estoque_produtos',
+        requested_count: rawProducts.length,
+        answered_count: products.length,
+        matched_count: products.filter((item) => item.found).length,
+        missing_products: products.filter((item) => !item.found).map((item) => item.requested),
+        products,
+      },
+    };
+  } catch (error: any) {
+    return {
+      tool,
+      ok: false,
+      args,
+      result: null,
+      error: error?.message || 'Erro ao consultar estoque dos produtos.',
+    };
+  }
+}

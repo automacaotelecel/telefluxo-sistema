@@ -146,6 +146,35 @@ function verificarRankingEstoque(
   };
 }
 
+
+function verificarVendasProdutos(
+  plan: ClarkAgentPlan,
+  toolResults: ClarkToolResult[]
+): ClarkVerificationResult {
+  const tool = toolResults.find((r) => r.tool === 'consultar_vendas_produtos');
+  if (!tool || !tool.ok) {
+    return {
+      ok: false,
+      verdict: 'missing_data',
+      problems: ['A ferramenta de vendas por produto não retornou dados válidos.'],
+      retrySuggestion: 'Consultar novamente as vendas de todos os produtos solicitados.',
+    };
+  }
+
+  const expected = Array.isArray(plan.entities.products) ? plan.entities.products.length : 1;
+  const products = Array.isArray(tool.result?.products) ? tool.result.products : [];
+  if (products.length < expected) {
+    return {
+      ok: false,
+      verdict: 'needs_retry',
+      problems: [`Foram solicitados ${expected} produto(s), mas apenas ${products.length} foram processados.`],
+      retrySuggestion: 'Reexecutar com o array completo de produtos.',
+    };
+  }
+
+  return { ok: true, verdict: 'answered', problems: [] };
+}
+
 export function verificarRespostaClark(
   plan: ClarkAgentPlan,
   toolResults: ClarkToolResult[]
@@ -156,6 +185,10 @@ export function verificarRespostaClark(
 
   if (plan.taskType === 'stock_ranking') {
     return verificarRankingEstoque(plan, toolResults);
+  }
+
+  if (plan.taskType === 'sales_by_product' || plan.taskType === 'multi_product_sales') {
+    return verificarVendasProdutos(plan, toolResults);
   }
 
   return {

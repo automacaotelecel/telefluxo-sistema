@@ -3,6 +3,7 @@ import { ClarkToolRegistry } from './clarkTools.types';
 import {
   toolConsultarEstoqueProduto,
   toolConsultarRankingEstoque,
+  toolConsultarEstoqueProdutos,
   toolResolverProduto,
 } from './stock.tools';
 
@@ -15,6 +16,7 @@ import {
   toolConsultarVendasPorLoja,
   toolConsultarVendasPorVendedor,
   toolConsultarVendasResumo,
+  toolConsultarVendasProdutos,
 } from './sales.tools';
 
 import {
@@ -28,13 +30,16 @@ import {
 
 import { toolExecutarSqlAnalitico } from './sql.tools';
 import { toolGerarRelatorioExecutivo } from './report.tools';
+import { toolNavegarModulo, toolResponderConversa } from './navigation.tools';
 
 export const clarkToolsRegistry: ClarkToolRegistry = {
   resolver_produto: toolResolverProduto,
   consultar_estoque_produto: toolConsultarEstoqueProduto,
   consultar_ranking_estoque: toolConsultarRankingEstoque,
+  consultar_estoque_produtos: toolConsultarEstoqueProdutos,
 
   consultar_vendas_resumo: toolConsultarVendasResumo,
+  consultar_vendas_produtos: toolConsultarVendasProdutos,
   consultar_vendas_por_loja: toolConsultarVendasPorLoja,
   consultar_vendas_por_vendedor: toolConsultarVendasPorVendedor,
   consultar_vendas_por_categoria: toolConsultarVendasPorCategoria,
@@ -53,6 +58,9 @@ export const clarkToolsRegistry: ClarkToolRegistry = {
   consultar_excesso_estoque: toolConsultarExcessoEstoque,
   consultar_redistribuicao_estoque: toolConsultarRedistribuicaoEstoque,
   consultar_modo_diretoria: toolConsultarModoDiretoria,
+
+  navegar_modulo: toolNavegarModulo,
+  responder_conversa: toolResponderConversa,
 
   responder_ajuda: async (args) => ({
     tool: 'responder_ajuda',

@@ -49,6 +49,10 @@ REGRAS DE NEGÓCIO:
 - Preto não pode retornar cinza/azul/verde.
 - Se não houver produto exato, informe claramente que não encontrou.
 - Nunca mostre JSON bruto, trace, score ou candidates ao usuário final.
+- Perguntas com vários produtos devem preservar TODOS os produtos citados.
+- Pergunta somente de vendas não deve receber estoque, cobertura, ruptura ou excesso, salvo se o usuário pedir.
+- Produto com zero vendas deve aparecer explicitamente com zero; não pode ser omitido.
+- Antes de responder, valide cobertura dos requisitos: produtos, métrica, período e agrupamento.
 - Para diretoria, responda com resumo, ranking, insight e recomendação quando houver dados.
 - Não invente números. Toda métrica deve vir de ferramenta ou SQL SELECT.
 `;

@@ -1,6 +1,7 @@
 import { ClarkFiltros, ClarkHistoricoMensagem, ClarkPeriodo, ClarkResposta } from '../clark.types';
 import { ClarkAgentPlan, ClarkToolResult, ClarkVerificationResult } from '../agent/clarkAgent.types';
 import { ClarkUserScope } from '../clark.types';
+import { ClarkQuestionRequirements } from './clarkRequirements.service';
 
 export type ClarkBrainInput = {
   userId: string;
@@ -17,6 +18,7 @@ export type ClarkBrainContext = {
   filtros: ClarkFiltros;
   scope: ClarkUserScope;
   schemaContext: string;
+  requirements: ClarkQuestionRequirements;
 };
 
 export type ClarkBrainOutput = ClarkResposta;

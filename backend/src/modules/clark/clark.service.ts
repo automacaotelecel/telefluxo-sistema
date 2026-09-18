@@ -4,6 +4,7 @@ import sqlite3 from 'sqlite3';
 import { open } from 'sqlite';
 import { GoogleGenAI } from '@google/genai';
 import { processarComClarkBrain } from './brain/clarkBrain.service';
+import { extrairRequisitosClark } from './brain/clarkRequirements.service';
 
 import {
   ClarkAction,
@@ -326,6 +327,7 @@ function respostaBase(params: {
 function planoBase(pergunta: string, periodo: ClarkPeriodo, filtros: ClarkFiltros): ClarkAgentPlan {
   const texto = normalizarTextoClark(pergunta);
   const limite = detectarLimite(pergunta, filtros.limite || 10);
+  const requirements = extrairRequisitosClark({ perguntaOriginal: pergunta, perguntaExpandida: pergunta, filtros });
 
   const call = (tool: ClarkToolName, args: Record<string, any> = {}, reason = ''): ClarkToolCall => ({
     tool,
@@ -338,6 +340,34 @@ function planoBase(pergunta: string, periodo: ClarkPeriodo, filtros: ClarkFiltro
       ...args,
     },
   });
+
+  if (requirements.products.length && requirements.salesOnly) {
+    const products = requirements.products;
+    return {
+      understoodQuestion: pergunta,
+      taskType: products.length > 1 ? 'multi_product_sales' : 'sales_by_product',
+      mode: 'analitico',
+      confidence: 0.99,
+      entities: { products, product: products.length === 1 ? (products[0] ?? null) : null, requestedMetrics: requirements.metrics, period: periodo },
+      toolCalls: [call('consultar_vendas_produtos', { products, store: requirements.store || undefined, limit: 500 }, 'Consultar vendas de todos os produtos citados.')],
+      validationRules: ['Responder todos os produtos citados.', 'Não acrescentar estoque quando o usuário pediu somente vendas.'],
+      answerStyle: { shouldExplainUncertainty: true, shouldIncludeTables: true, shouldIncludeInsights: false, shouldIncludeSuggestions: false },
+    };
+  }
+
+  if (requirements.products.length > 1 && requirements.stockOnly) {
+    const products = requirements.products;
+    return {
+      understoodQuestion: pergunta,
+      taskType: 'multi_product_stock',
+      mode: 'analitico',
+      confidence: 0.99,
+      entities: { products, requestedMetrics: requirements.metrics, period: periodo },
+      toolCalls: [call('consultar_estoque_produtos', { products, category: requirements.category || 'SMARTPHONES', limit: 200 }, 'Consultar estoque de todos os produtos citados.')],
+      validationRules: ['Responder todos os produtos citados.'],
+      answerStyle: { shouldExplainUncertainty: true, shouldIncludeTables: true, shouldIncludeInsights: false, shouldIncludeSuggestions: false },
+    };
+  }
 
   const falaEstoque =
     texto.includes('ESTOQUE') ||
@@ -477,6 +507,8 @@ Ferramentas disponíveis:
 - consultar_estoque_produto
 - consultar_ranking_estoque
 - consultar_vendas_resumo
+- consultar_vendas_produtos
+- consultar_estoque_produtos
 - consultar_vendas_por_loja
 - consultar_vendas_por_vendedor
 - consultar_vendas_por_categoria
@@ -1000,9 +1032,11 @@ function temDadosExportaveisExcel(resposta: ClarkResposta): boolean {
 
   const ferramentasExportaveis = new Set([
     'consultar_estoque_produto',
+    'consultar_estoque_produtos',
     'consultar_ranking_estoque',
 
     'consultar_vendas_resumo',
+    'consultar_vendas_produtos',
     'consultar_vendas_por_loja',
     'consultar_vendas_por_vendedor',
     'consultar_vendas_por_categoria',

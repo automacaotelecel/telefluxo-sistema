@@ -16,6 +16,8 @@ const VALID_TOOL_NAMES = new Set<ClarkToolName>([
   'consultar_estoque_produto',
   'consultar_ranking_estoque',
   'consultar_vendas_resumo',
+  'consultar_vendas_produtos',
+  'consultar_estoque_produtos',
   'consultar_vendas_por_loja',
   'consultar_vendas_por_vendedor',
   'consultar_vendas_por_categoria',
@@ -31,29 +33,45 @@ const VALID_TOOL_NAMES = new Set<ClarkToolName>([
   'consultar_excesso_estoque',
   'consultar_redistribuicao_estoque',
   'consultar_modo_diretoria',
+  'navegar_modulo',
+  'responder_conversa',
   'responder_ajuda',
 ]);
 
 const VALID_TASK_TYPES = new Set<string>([
   'stock_product_search', 'stock_ranking', 'sales_summary',
+  'sales_by_product', 'multi_product_sales', 'multi_product_stock', 'multi_product_analysis',
   'sales_by_store', 'sales_by_seller', 'sales_by_category',
   'sales_store_ranking', 'sales_seller_ranking', 'sales_category_ranking',
   'sales_report', 'sales_growth',
   'insurance_by_seller', 'insurance_by_store',
   'insurance_seller_ranking', 'insurance_store_ranking',
   'sql_analytics', 'product_commercial_analysis', 'stock_sales_cross',
-  'stockout_risk', 'excess_stock', 'stock_redistribution', 'director_mode', 'help',
+  'stockout_risk', 'excess_stock', 'stock_redistribution', 'director_mode', 'navigation', 'conversation', 'help',
 ]);
 
 const TASKS_DETERMINISTICAS = new Set<string>([
-  'stock_product_search', 'stock_ranking', 'sales_summary',
-  'sales_by_store', 'sales_by_seller', 'sales_by_category',
-  'sales_store_ranking', 'sales_seller_ranking', 'sales_category_ranking',
-  'sales_report', 'sales_growth',
-  'insurance_by_seller', 'insurance_by_store',
-  'insurance_seller_ranking', 'insurance_store_ranking',
-  'product_commercial_analysis', 'stock_sales_cross', 'stockout_risk',
-  'excess_stock', 'stock_redistribution', 'director_mode',
+  // Consultas factuais com parâmetros claros ficam determinísticas para não
+  // permitir que o LLM troque métrica, produto ou filtro.
+  'stock_product_search',
+  'stock_ranking',
+  'sales_summary',
+  'sales_by_product',
+  'multi_product_sales',
+  'multi_product_stock',
+  'multi_product_analysis',
+  'sales_by_store',
+  'sales_by_seller',
+  'sales_by_category',
+  'sales_store_ranking',
+  'sales_seller_ranking',
+  'sales_category_ranking',
+  'insurance_by_seller',
+  'insurance_by_store',
+  'insurance_seller_ranking',
+  'insurance_store_ranking',
+  'navigation',
+  'conversation',
 ]);
 
 function safeJsonParse(text: string) {
@@ -284,7 +302,153 @@ function ferramentaComercialProduto(pergunta: string): { tool: ClarkToolName; ta
   };
 }
 
+
+function perguntaEhConversaNatural(pergunta: string) {
+  const texto = normalizarTextoClark(pergunta);
+  if (!texto) return false;
+
+  const saudacaoOuConversa =
+    /^(OI|OLA|OLÁ|BOM DIA|BOA TARDE|BOA NOITE|OBRIGADO|OBRIGADA|VALEU|TUDO BEM|COMO VOCE ESTA|COMO VOCÊ ESTÁ)\b/.test(texto) ||
+    texto.includes('O QUE VOCE CONSEGUE FAZER') ||
+    texto.includes('O QUE VOCÊ CONSEGUE FAZER');
+
+  const falaDados =
+    texto.includes('VENDA') || texto.includes('ESTOQUE') || texto.includes('LOJA') ||
+    texto.includes('VENDEDOR') || texto.includes('SEGURO') || texto.includes('RELATORIO') ||
+    texto.includes('RELATÓRIO') || texto.includes('COMPARATIVO');
+
+  return saudacaoOuConversa && !falaDados;
+}
+
+function planProdutosArgs(ctx: ClarkBrainContext) {
+  return ctx.requirements.products.map((p) => ({
+    raw: p.raw,
+    family: p.family,
+    model: p.model,
+    storage: p.storage,
+    color: p.color,
+    category: p.category || ctx.requirements.category || 'SMARTPHONES',
+  }));
+}
+
+function planoFactualProdutos(ctx: ClarkBrainContext, pergunta: string): ClarkAgentPlan | null {
+  const req = ctx.requirements;
+  if (!req.products.length) return null;
+
+  const products = planProdutosArgs(ctx);
+  const singleProduct = products[0] ?? null;
+  const period = { inicio: ctx.periodo.inicio, fim: ctx.periodo.fim, descricao: ctx.periodo.descricao };
+  const commonEntities = {
+    product: products.length === 1 ? singleProduct : null,
+    products,
+    requestedMetrics: req.metrics,
+    store: req.store,
+    category: req.category || 'SMARTPHONES',
+    period,
+    limit: Math.max(20, products.length * 20),
+  };
+
+  if (req.salesOnly) {
+    return {
+      understoodQuestion: pergunta,
+      taskType: products.length > 1 ? 'multi_product_sales' : 'sales_by_product',
+      mode: 'analitico',
+      confidence: 0.99,
+      entities: commonEntities,
+      toolCalls: [
+        call(
+          'consultar_vendas_produtos',
+          { products, store: req.store || undefined, category: req.category || undefined, limit: 500 },
+          'Consultar exatamente as vendas de TODOS os produtos citados, sem acrescentar estoque porque o usuário pediu somente vendas.',
+          ctx.periodo,
+          pergunta,
+        ),
+      ],
+      validationRules: [
+        `Responder aos ${products.length} produto(s) solicitados, sem descartar nenhum.`,
+        'Usar somente métricas de vendas solicitadas ou diretamente derivadas das vendas.',
+        'Não acrescentar estoque, cobertura, excesso ou ruptura quando o usuário pediu apenas vendas.',
+        'Mesmo quando um produto tiver zero vendas, ele deve aparecer explicitamente na resposta com zero.',
+      ],
+      answerStyle: { shouldExplainUncertainty: true, shouldIncludeTables: true, shouldIncludeInsights: false, shouldIncludeSuggestions: false },
+    };
+  }
+
+  if (req.stockOnly) {
+    return {
+      understoodQuestion: pergunta,
+      taskType: products.length > 1 ? 'multi_product_stock' : 'stock_product_search',
+      mode: 'analitico',
+      confidence: 0.99,
+      entities: commonEntities,
+      toolCalls: products.length > 1
+        ? [call('consultar_estoque_produtos', { products, category: req.category || 'SMARTPHONES', limit: 200 }, 'Consultar estoque de todos os produtos citados.', ctx.periodo, pergunta)]
+        : singleProduct
+          ? [
+              call('resolver_produto', { ...singleProduct, query: singleProduct.raw, category: singleProduct.category || 'SMARTPHONES' }, 'Resolver produto solicitado.', ctx.periodo, pergunta),
+              call('consultar_estoque_produto', { ...singleProduct, query: singleProduct.raw, category: singleProduct.category || 'SMARTPHONES', strict: true, limit: 200 }, 'Consultar estoque do produto solicitado.', ctx.periodo, pergunta),
+            ]
+          : [],
+      validationRules: [
+        `Responder aos ${products.length} produto(s) solicitados.`,
+        'Não trocar família, memória ou cor por produto semelhante.',
+      ],
+      answerStyle: { shouldExplainUncertainty: true, shouldIncludeTables: true, shouldIncludeInsights: false, shouldIncludeSuggestions: false },
+    };
+  }
+
+  if (req.wantsSales && req.wantsStock) {
+    return {
+      understoodQuestion: pergunta,
+      taskType: 'multi_product_analysis',
+      mode: 'analitico',
+      confidence: 0.98,
+      entities: commonEntities,
+      toolCalls: [
+        call('consultar_vendas_produtos', { products, store: req.store || undefined, limit: 500 }, 'Consultar vendas de todos os produtos solicitados.', ctx.periodo, pergunta),
+        call('consultar_estoque_produtos', { products, category: req.category || 'SMARTPHONES', limit: 200 }, 'Consultar estoque de todos os produtos solicitados.', ctx.periodo, pergunta),
+      ],
+      validationRules: [
+        `Cruzar os mesmos ${products.length} produto(s) em vendas e estoque.`,
+        'Não descartar produto sem venda ou sem estoque; mostrar zero/ausência explicitamente.',
+      ],
+      answerStyle: { shouldExplainUncertainty: true, shouldIncludeTables: true, shouldIncludeInsights: true, shouldIncludeSuggestions: true },
+    };
+  }
+
+  return null;
+}
+
 export function planejarLocalClark(ctx: ClarkBrainContext): ClarkAgentPlan {
+  if (ctx.requirements.wantsNavigation && ctx.requirements.navigationTarget) {
+    return {
+      understoodQuestion: ctx.perguntaOriginal,
+      taskType: 'navigation',
+      mode: 'simples',
+      confidence: 0.99,
+      entities: {},
+      toolCalls: [call('navegar_modulo', { view: ctx.requirements.navigationTarget }, 'Navegar para o módulo solicitado pelo usuário.', ctx.periodo, ctx.perguntaOriginal)],
+      validationRules: ['Navegar somente para um módulo conhecido do TeleFluxo.'],
+      answerStyle: { shouldExplainUncertainty: false, shouldIncludeTables: false, shouldIncludeInsights: false, shouldIncludeSuggestions: false },
+    };
+  }
+
+  if (perguntaEhConversaNatural(ctx.perguntaOriginal)) {
+    return {
+      understoodQuestion: ctx.perguntaOriginal,
+      taskType: 'conversation',
+      mode: 'simples',
+      confidence: 0.95,
+      entities: {},
+      toolCalls: [call('responder_conversa', {}, 'Responder naturalmente sem forçar uma consulta de dados.', ctx.periodo, ctx.perguntaOriginal)],
+      validationRules: [],
+      answerStyle: { shouldExplainUncertainty: false, shouldIncludeTables: false, shouldIncludeInsights: false, shouldIncludeSuggestions: false },
+    };
+  }
+
+  const planoProdutos = planoFactualProdutos(ctx, ctx.perguntaOriginal);
+  if (planoProdutos) return planoProdutos;
+
   const perguntaAtualProduto = deveForcarBuscaProduto(ctx);
   const perguntaAtualRanking = perguntaAtualPedeRankingEstoque(ctx.perguntaOriginal);
 
@@ -495,6 +659,7 @@ Pergunta com contexto: ${ctx.perguntaExpandida}
 Histórico recente: ${JSON.stringify(ctx.historico)}
 Período detectado pelo backend: ${JSON.stringify(ctx.periodo)}
 Filtros detectados pelo backend: ${JSON.stringify(ctx.filtros)}
+REQUISITOS EXTRAÍDOS E AUTORITATIVOS: ${JSON.stringify(ctx.requirements)}
 
 ${CLARK_SCHEMA_CONTEXT}
 
@@ -503,6 +668,8 @@ Ferramentas disponíveis:
 - consultar_estoque_produto
 - consultar_ranking_estoque
 - consultar_vendas_resumo
+- consultar_vendas_produtos
+- consultar_estoque_produtos
 - consultar_vendas_por_loja
 - consultar_vendas_por_vendedor
 - consultar_vendas_por_categoria
@@ -518,16 +685,25 @@ Ferramentas disponíveis:
 - consultar_redistribuicao_estoque
 - consultar_modo_diretoria
 - executar_sql_analitico
+- navegar_modulo
+- responder_conversa
 - responder_ajuda
 
 Use executar_sql_analitico quando a pergunta exigir cruzar dados ou algo fora das ferramentas prontas. O SQL deve ser SELECT e usar LIMIT.
 
 Plano local sugerido pelo backend: ${JSON.stringify(planoLocal)}
 
+REGRAS CRÍTICAS:
+- Os requisitos extraídos pelo backend são autoritativos. Nunca descarte produtos explicitamente citados.
+- Se products contém 3 itens, o plano deve responder aos 3.
+- Se salesOnly=true, não use ferramenta de estoque nem análise comercial; use consultar_vendas_produtos.
+- Se stockOnly=true e houver vários produtos, use consultar_estoque_produtos.
+- Não transforme pergunta factual de vendas em análise de estoque/cobertura.
+
 Retorne SOMENTE JSON válido neste formato:
 {
   "understoodQuestion": string,
-  "taskType": "stock_product_search" | "stock_ranking" | "sales_summary" | "sales_store_ranking" | "sales_seller_ranking" | "sales_category_ranking" | "sales_report" | "sales_growth" | "insurance_seller_ranking" | "insurance_store_ranking" | "sql_analytics" | "product_commercial_analysis" | "stock_sales_cross" | "stockout_risk" | "excess_stock" | "stock_redistribution" | "director_mode" | "help",
+  "taskType": "stock_product_search" | "stock_ranking" | "sales_summary" | "sales_by_product" | "multi_product_sales" | "multi_product_stock" | "multi_product_analysis" | "sales_store_ranking" | "sales_seller_ranking" | "sales_category_ranking" | "sales_report" | "sales_growth" | "insurance_seller_ranking" | "insurance_store_ranking" | "sql_analytics" | "product_commercial_analysis" | "stock_sales_cross" | "stockout_risk" | "excess_stock" | "stock_redistribution" | "director_mode" | "navigation" | "conversation" | "help",
   "mode": "simples" | "analitico",
   "confidence": number,
   "entities": object,
@@ -569,6 +745,7 @@ export async function planejarClark(ctx: ClarkBrainContext): Promise<{ plan: Cla
           args: {
             ...rawArgs,
             ...(limit ? { limit } : {}),
+            ...(ctx.requirements.products.length ? { products: planProdutosArgs(ctx) } : {}),
             // Campos abaixo são autoritativos do backend. A IA não pode trocar
             // pergunta, período ou filtros detectados pelo sistema.
             originalQuestion: ctx.perguntaOriginal,
@@ -593,6 +770,8 @@ export async function planejarClark(ctx: ClarkBrainContext): Promise<{ plan: Cla
       entities: {
         ...local.entities,
         ...(parsed?.entities && typeof parsed.entities === 'object' ? parsed.entities : {}),
+        ...(ctx.requirements.products.length ? { products: planProdutosArgs(ctx), product: ctx.requirements.products.length === 1 ? planProdutosArgs(ctx)[0] : null } : {}),
+        requestedMetrics: ctx.requirements.metrics,
         ...(ctx.filtros.lojaCanonica ? { store: ctx.filtros.lojaCanonica } : {}),
         ...(ctx.filtros.categoriaCanonica ? { category: ctx.filtros.categoriaCanonica } : {}),
         period: { inicio: ctx.periodo.inicio, fim: ctx.periodo.fim, descricao: ctx.periodo.descricao },
@@ -634,4 +813,36 @@ export async function planejarClark(ctx: ClarkBrainContext): Promise<{ plan: Cla
     console.warn('⚠️ Planner Gemini falhou. Usando planner local:', error);
     return { plan: local, usedGemini: false };
   }
+}
+
+/**
+ * Plano de reparo determinístico. É usado quando o verificador detecta que a
+ * execução não cobriu todos os requisitos da pergunta. O objetivo é evitar que
+ * uma resposta parcial seja enviada ao usuário.
+ */
+export function repararPlanoClark(
+  ctx: ClarkBrainContext,
+  planoAnterior: ClarkAgentPlan,
+): ClarkAgentPlan | null {
+  const req = ctx.requirements;
+
+  if (req.products.length && (req.salesOnly || req.stockOnly || (req.wantsSales && req.wantsStock))) {
+    const repaired = planoFactualProdutos(ctx, ctx.perguntaOriginal);
+    if (repaired) {
+      return {
+        ...repaired,
+        confidence: 1,
+        validationRules: [
+          ...repaired.validationRules,
+          'Plano reconstruído automaticamente após falha de validação; não finalizar até cobrir todos os requisitos.',
+        ],
+      };
+    }
+  }
+
+  if (planoAnterior.taskType !== 'help' && planoAnterior.toolCalls.every((c) => c.tool === 'responder_ajuda')) {
+    return planejarLocalClark(ctx);
+  }
+
+  return null;
 }
