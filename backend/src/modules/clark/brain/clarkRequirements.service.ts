@@ -68,7 +68,10 @@ function canonicalProduct(raw: string): ClarkRequestedProduct {
     model,
     storage,
     color,
-    category: 'SMARTPHONES',
+    // A categoria só deve ser aplicada quando o usuário pedir explicitamente.
+    // Forçar SMARTPHONES aqui fazia a busca de vendas rejeitar linhas cuja
+    // categoria vinha como APARELHOS, SMARTPHONE, CELULAR etc.
+    category: null,
   };
 }
 

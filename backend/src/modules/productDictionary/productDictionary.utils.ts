@@ -109,7 +109,11 @@ export function getBaseModelFamily(value: any) {
     return m[0].replace(/\s+/g, ' ').trim();
   }
 
-  const samsungRef = str.match(/\bSM-([A-Z]?\d{3})\b/);
+  // SKU Samsung normalmente continua depois do código-base (ex.:
+  // SM-S942BZVSZTO e SM-A176BZAUZTO). O \b antigo depois dos 3 dígitos
+  // impedia qualquer match porque a próxima letra ainda é um word-char.
+  // Aceitamos também o prefixo BSM- usado em algumas planilhas internas.
+  const samsungRef = str.match(/\b(?:SM-|BSM-)([A-Z]?\d{3})/);
 
   if (samsungRef?.[1]) {
     const code = samsungRef[1];

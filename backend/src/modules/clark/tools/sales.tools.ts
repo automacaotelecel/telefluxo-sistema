@@ -514,13 +514,69 @@ function textoVendaProduto(row: VendaProdutoRow) {
   ].filter(Boolean).join(' '));
 }
 
+const ACCESSORY_REFERENCE_PREFIXES = [
+  'EF-', 'EP-', 'GP-', 'EE-', 'ET-', 'EO-', 'EJ-', 'EB-', 'VG-', 'GH-',
+];
+
+const ACCESSORY_TERMS = /\b(CAPA|CASE|PELICULA|PROTETOR|PROTETORA|CARREGADOR|CABO|ADAPTADOR|FONE|BUDS|WATCH|RELOGIO|PULSEIRA|SUPORTE|ACESSORIO|ACESSORIOS)\b/;
+
+function referenciaCompactaVenda(row: VendaProdutoRow) {
+  return normalizeProductText(row.referencia || '')
+    .replace(/\s+/g, '')
+    .toUpperCase();
+}
+
+function linhaPareceAcessorio(row: VendaProdutoRow) {
+  const ref = referenciaCompactaVenda(row);
+  if (ACCESSORY_REFERENCE_PREFIXES.some((prefix) => ref.startsWith(prefix))) return true;
+
+  const text = normalizeProductText([
+    row.descricao,
+    row.categoria,
+    row.familia,
+  ].filter(Boolean).join(' '));
+
+  return ACCESSORY_TERMS.test(text) && !ref.startsWith('SM-');
+}
+
+function categoriaProdutoConfere(row: VendaProdutoRow, categoriaSolicitada: string | null) {
+  if (!categoriaSolicitada) return true;
+
+  const solicitada = normalizeProductText(categoriaSolicitada);
+  const rowText = normalizeProductText([
+    row.categoria,
+    row.familia,
+    row.descricao,
+    row.referencia,
+  ].filter(Boolean).join(' '));
+
+  // A mesma categoria pode chegar da origem com nomes diferentes.
+  if (['SMARTPHONE', 'SMARTPHONES', 'APARELHO', 'APARELHOS', 'CELULAR', 'CELULARES'].includes(solicitada)) {
+    if (linhaPareceAcessorio(row)) return false;
+    if (referenciaCompactaVenda(row).startsWith('SM-')) return true;
+    if (getBaseModelFamily(rowText)) return true;
+    return /\b(SMARTPHONE|SMARTPHONES|APARELHO|APARELHOS|CELULAR|CELULARES)\b/.test(rowText);
+  }
+
+  if (solicitada === 'TABLETS' || solicitada === 'TABLET') {
+    return /\bTABLETS?\b/.test(rowText) || /\bGALAXY TAB\b/.test(rowText);
+  }
+
+  return rowText.includes(solicitada);
+}
+
 function vendaCombinaProduto(row: VendaProdutoRow, produto: ProdutoVendaSolicitado) {
   const text = textoVendaProduto(row);
   const familyRow = getBaseModelFamily(text) || normalizeProductText(row.familia || '');
 
+  // Evita contar capa/película/acessório cuja descrição também contenha "S26",
+  // "A17" etc. quando o usuário perguntou pelo aparelho.
+  if (produto.family && linhaPareceAcessorio(row)) return false;
+
   if (produto.family) {
     const familyNorm = normalizeProductText(produto.family);
-    if (familyRow !== produto.family && familyRow !== familyNorm && !text.includes(familyNorm)) return false;
+    const familyRowNorm = normalizeProductText(familyRow || '');
+    if (familyRowNorm !== familyNorm && !text.includes(familyNorm)) return false;
   } else {
     const raw = normalizeProductText(produto.raw);
     if (raw && !text.includes(raw)) return false;
@@ -529,20 +585,17 @@ function vendaCombinaProduto(row: VendaProdutoRow, produto: ProdutoVendaSolicita
   if (produto.storage) {
     const storageRow = extractStorage(text) || '';
     const storageNorm = normalizeProductText(produto.storage);
-    if (storageRow !== produto.storage && storageRow !== storageNorm && !text.includes(storageNorm)) return false;
+    if (normalizeProductText(storageRow) !== storageNorm && !text.includes(storageNorm)) return false;
   }
 
   if (produto.color) {
     const colorRow = extractColor(text) || '';
     const colorNorm = normalizeProductText(produto.color);
-    if (colorRow && colorRow !== produto.color && colorRow !== colorNorm) return false;
+    if (colorRow && normalizeProductText(colorRow) !== colorNorm) return false;
     if (!colorRow && !text.includes(colorNorm)) return false;
   }
 
-  if (produto.category) {
-    const cat = normalizeProductText(produto.category);
-    if (cat && !text.includes(cat)) return false;
-  }
+  if (!categoriaProdutoConfere(row, produto.category)) return false;
 
   return true;
 }
@@ -674,23 +727,44 @@ export async function toolConsultarVendasProdutos(
 
     const results = uniqueProducts.map((product) => {
       const principalRows = principal.filter((row) => vendaCombinaProduto(row, product));
-
-      if (principalRows.length) {
-        return consolidarVendaProduto(
-          principalRows,
-          product,
-          sources.fontePrincipal || 'base_detalhada',
-        );
-      }
-
       const legacyRows = legacy.filter((row) => vendaCombinaProduto(row, product));
-      return consolidarVendaProduto(legacyRows, product, legacyRows.length ? 'vendas' : 'nenhuma');
+
+      const selectedRows = principalRows.length ? principalRows : legacyRows;
+      const selectedSource = principalRows.length
+        ? (sources.fontePrincipal || 'base_detalhada')
+        : (legacyRows.length ? 'vendas' : 'nenhuma');
+
+      return {
+        ...consolidarVendaProduto(selectedRows, product, selectedSource),
+        debug_match: {
+          principal_candidatos: principal.length,
+          principal_encontrados: principalRows.length,
+          legacy_candidatos: legacy.length,
+          legacy_encontrados: legacyRows.length,
+        },
+      };
     });
 
     const totalVendas = results.reduce((acc, item) => acc + safeNumberClark(item.total_vendas), 0);
     const totalPecas = results.reduce((acc, item) => acc + safeNumberClark(item.total_pecas), 0);
 
     const diagnostics = getSalesDatabaseDiagnostics();
+
+    console.log('[Clark][consultar_vendas_produtos]', {
+      periodo,
+      fontePrincipal: sources.fontePrincipal,
+      principal: principal.length,
+      legacy: legacy.length,
+      requested: uniqueProducts.map((item) => item.family || item.raw),
+      matches: results.map((item) => ({
+        produto: item.family || item.requested,
+        matched: item.matched,
+        fonte: item.fonte_dados,
+        registros: item.registros,
+        pecas: item.total_pecas,
+      })),
+      databaseDir: diagnostics.databaseDir,
+    });
 
     return {
       tool,

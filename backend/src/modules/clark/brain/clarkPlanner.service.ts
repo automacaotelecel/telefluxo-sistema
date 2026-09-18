@@ -327,7 +327,9 @@ function planProdutosArgs(ctx: ClarkBrainContext) {
     model: p.model,
     storage: p.storage,
     color: p.color,
-    category: p.category || ctx.requirements.category || 'SMARTPHONES',
+    // Em vendas, não inventar categoria. O modelo/família já identifica o produto.
+    // Categoria só entra quando foi explicitamente extraída da pergunta.
+    category: p.category || ctx.requirements.category || null,
   }));
 }
 
@@ -343,7 +345,7 @@ function planoFactualProdutos(ctx: ClarkBrainContext, pergunta: string): ClarkAg
     products,
     requestedMetrics: req.metrics,
     store: req.store,
-    category: req.category || 'SMARTPHONES',
+    category: req.category || null,
     period,
     limit: Math.max(20, products.length * 20),
   };
