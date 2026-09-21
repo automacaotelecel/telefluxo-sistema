@@ -398,13 +398,6 @@ function InsuranceRankingCard({
         qtdAparelhosSeguro: Math.max(0, Number(store.qtdAparelhosSeguro || 0)),
         seguroPct: Math.max(0, Number(store.seguroPct || 0)),
       }))
-      .filter(
-        (store) =>
-          store.seguros > 0 ||
-          store.qtdSeguros > 0 ||
-          store.qtdAparelhosSeguro > 0 ||
-          store.seguroPct > 0,
-      )
       .sort((a, b) => {
         if (mode === 'revenue') {
           return b.seguros - a.seguros || b.seguroPct - a.seguroPct;
@@ -470,15 +463,15 @@ function InsuranceRankingCard({
         </div>
       </div>
 
-      <div className="max-h-[560px] overflow-auto rounded-2xl border border-slate-100">
-        <table className="w-full min-w-[610px] border-collapse text-left">
-          <thead className="sticky top-0 z-10 bg-slate-50">
-            <tr className="text-[8px] font-black uppercase tracking-[0.12em] text-slate-500">
-              <th className="px-3 py-3">Loja</th>
-              <th className="px-2 py-3 text-right">Qtd. Seguro</th>
-              <th className="px-2 py-3 text-right">Valor Venda Seguro</th>
-              <th className="px-2 py-3 text-right">Qnt Aparelhos</th>
-              <th className="px-3 py-3 text-right">Conversão QTD Vendas</th>
+      <div className="overflow-hidden rounded-2xl border border-slate-100">
+        <table className="w-full table-fixed border-collapse text-left">
+          <thead className="bg-slate-50">
+            <tr className="text-[7px] font-black uppercase tracking-[0.10em] text-slate-500 sm:text-[8px]">
+              <th className="w-[34%] px-2 py-3 sm:px-3">Loja</th>
+              <th className="w-[12%] px-1 py-3 text-right">Qtd. Seguro</th>
+              <th className="w-[20%] px-1 py-3 text-right">Valor Venda Seguro</th>
+              <th className="w-[14%] px-1 py-3 text-right">Qnt Aparelhos</th>
+              <th className="w-[20%] px-2 py-3 text-right sm:px-3">Conversão QTD Vendas</th>
             </tr>
           </thead>
           <tbody>
@@ -492,22 +485,24 @@ function InsuranceRankingCard({
               ranking.map((store, index) => (
                 <tr
                   key={store.loja}
-                  className="border-t border-slate-100 text-[10px] font-bold text-slate-600 hover:bg-orange-50/50"
+                  className="border-t border-slate-100 text-[9px] font-bold text-slate-600 hover:bg-orange-50/50 sm:text-[10px]"
                 >
-                  <td className="px-3 py-3">
-                    <div className="flex items-center gap-2">
+                  <td className="px-2 py-3.5 sm:px-3">
+                    <div className="flex min-w-0 items-center gap-2">
                       <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-[8px] font-black text-slate-500">
                         {String(index + 1).padStart(2, '0')}
                       </span>
-                      <span className="font-black text-slate-900">{store.loja}</span>
+                      <span className="truncate font-black text-slate-900" title={store.loja}>
+                        {store.loja}
+                      </span>
                     </div>
                   </td>
-                  <td className="px-2 py-3 text-right">{number(store.qtdSeguros)}</td>
-                  <td className="px-2 py-3 text-right font-black text-slate-900">
+                  <td className="px-1 py-3.5 text-right">{number(store.qtdSeguros)}</td>
+                  <td className="px-1 py-3.5 text-right font-black text-slate-900">
                     {money(store.seguros)}
                   </td>
-                  <td className="px-2 py-3 text-right">{number(store.qtdAparelhosSeguro)}</td>
-                  <td className="px-3 py-3 text-right">
+                  <td className="px-1 py-3.5 text-right">{number(store.qtdAparelhosSeguro)}</td>
+                  <td className="px-2 py-3.5 text-right sm:px-3">
                     <span
                       className={`inline-flex min-w-[54px] justify-center rounded-full px-2 py-1 font-black ${
                         mode === 'conversion'
@@ -529,7 +524,7 @@ function InsuranceRankingCard({
             )}
           </tbody>
           {ranking.length > 0 && (
-            <tfoot className="sticky bottom-0 bg-slate-950 text-white">
+            <tfoot className="bg-slate-950 text-white">
               <tr className="text-[10px] font-black">
                 <td className="px-3 py-3 uppercase">Total Geral</td>
                 <td className="px-2 py-3 text-right">{number(totals.qtdSeguros)}</td>
@@ -1507,7 +1502,7 @@ export default function Home({ currentUser }: Props) {
           storeMode={isStoreAnalysis || dashboard?.scope?.type === 'store'}
         />
 
-        <section className="mt-5 grid grid-cols-1 gap-5 xl:grid-cols-[1.25fr_0.75fr]">
+        <section className="mt-5 grid grid-cols-1 items-start gap-5 xl:grid-cols-2">
           <div className="rounded-[24px] border border-slate-200/80 bg-white p-4 shadow-sm sm:rounded-[28px] sm:p-5 md:p-6">
             <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
               <div>
@@ -1618,7 +1613,7 @@ export default function Home({ currentUser }: Props) {
               )}
             </div>
 
-            <div className="hidden max-h-[560px] overflow-auto md:block">
+            <div className="hidden md:block">
               <table className="w-full min-w-[690px] border-separate border-spacing-y-2 text-left">
                 <thead>
                   <tr className="text-[9px] font-black uppercase tracking-[0.16em] text-slate-400">

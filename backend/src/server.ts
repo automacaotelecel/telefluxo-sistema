@@ -8081,11 +8081,13 @@ const isDailySupplement = (row: any) => {
 
   function homeIsInsuranceEligibleCategory(value: any): boolean {
     const categoria = homeNormalizeCategory(value);
+
+    // Para o ranking Samsung Care+, "aparelhos" significa smartphones.
+    // Tablets, wearables e notebooks não entram no denominador.
     return (
       categoria.includes('APARELH') ||
-      categoria.includes('TABLET') ||
-      categoria.includes('WEAR') ||
-      categoria.includes('NOTEBOOK')
+      categoria.includes('SMARTPHONE') ||
+      categoria.includes('CELULAR')
     );
   }
 
@@ -9204,14 +9206,12 @@ const isDailySupplement = (row: any) => {
       ? await homeLoadCurrentKpiRows({ userId, cnpj, store: params.store ?? null })
       : [];
 
-    const annualInsurance = period.isHistorical
-      ? await homeLoadAnnualInsurance({
-          userId,
-          startDate: period.startDate,
-          endDate: period.endDate,
-          cnpj,
-        })
-      : new Map<string, HomeInsuranceAggregate>();
+    const annualInsurance = await homeLoadAnnualInsurance({
+        userId,
+        startDate: period.startDate,
+        endDate: period.endDate,
+        cnpj,
+      });
 
     const faturamentoMes = salesRows.reduce(
       (sum: number, row: any) => sum + homeToNumber(row.total_liquido),
@@ -9276,37 +9276,87 @@ const isDailySupplement = (row: any) => {
       (sum: number, row: any) => sum + homeToNumber(row.seguros),
       0
     );
+
     const kpiInsuranceQty = kpiRows.reduce(
-      (sum: number, row: any) => sum + Math.max(0, homeToNumber(row.qtd_seguros)),
-      0
-    );
-    const kpiInsuranceEligible = kpiRows.reduce(
-      (sum: number, row: any) => sum + Math.max(0, homeToNumber(row.qtd_produtos_com_seguro)),
-      0
-    );
-
-    const annualInsuranceTotal = Array.from(annualInsurance.values()).reduce(
-      (sum, item) => ({ valor: sum.valor + item.valor, qtd: sum.qtd + item.qtd }),
-      { valor: 0, qtd: 0 }
-    );
-
-    const historicalEligibleQty = salesRows.reduce(
       (sum: number, row: any) =>
-        sum + (homeIsInsuranceEligibleCategory(row.familia) ? Math.max(0, homeToNumber(row.quantidade)) : 0),
+        sum + Math.max(0, homeToNumber(row.qtd_seguros)),
       0
     );
 
-    const segurosValorRede = period.isCurrentMonth
-      ? kpiInsuranceValue
-      : annualInsuranceTotal.valor;
+    const annualInsuranceTotal = Array.from(
+      annualInsurance.values()
+    ).reduce(
+      (sum, item) => ({
+        valor: sum.valor + item.valor,
+        qtd: sum.qtd + item.qtd,
+      }),
+      {
+        valor: 0,
+        qtd: 0,
+      }
+    );
 
-    const conversaoSeguroRede = period.isCurrentMonth
-      ? kpiInsuranceEligible > 0
-        ? homeConversionPercent(kpiInsuranceQty, kpiInsuranceEligible)
-        : homeWeightedMetric(kpiRows, 'pct_seguro')
-      : historicalEligibleQty > 0
-        ? homeConversionPercent(annualInsuranceTotal.qtd, historicalEligibleQty)
-        : 0;
+    // Quantidade de smartphones vendidos.
+    // É essa quantidade que deve aparecer como "Qnt Aparelhos".
+    const smartphonesRede = salesRows.reduce(
+      (sum: number, row: any) =>
+        sum +
+        (
+          homeIsInsuranceEligibleCategory(row.familia)
+            ? Math.max(
+                0,
+                homeToNumber(row.quantidade)
+              )
+            : 0
+        ),
+      0
+    );
+
+    // Percentual que já vem do KPI atual.
+    const kpiSeguroPctRede = homeWeightedMetric(
+      kpiRows,
+      'pct_seguro'
+    );
+
+    // Quantidade de seguros:
+    //
+    // 1. Prioridade: quantidade real encontrada na base anual/raw.
+    // 2. Depois: qtd_seguros recebida no KPI.
+    // 3. Último fallback: reconstrói pela conversão já existente.
+    const segurosQtdRede =
+      annualInsuranceTotal.qtd > 0
+        ? annualInsuranceTotal.qtd
+        : kpiInsuranceQty > 0
+          ? kpiInsuranceQty
+          : smartphonesRede > 0 &&
+              kpiSeguroPctRede > 0
+            ? Math.round(
+                (
+                  smartphonesRede *
+                  kpiSeguroPctRede
+                ) / 100
+              )
+            : 0;
+
+    // Para valor de seguro, o KPI atual continua sendo a prioridade
+    // porque é a fonte que já está alimentando corretamente o card.
+    const segurosValorRede =
+      period.isCurrentMonth &&
+      kpiInsuranceValue > 0
+        ? kpiInsuranceValue
+        : annualInsuranceTotal.valor;
+
+    // Conversão da rede.
+    const conversaoSeguroRede =
+      smartphonesRede > 0 &&
+      segurosQtdRede > 0
+        ? homeConversionPercent(
+            segurosQtdRede,
+            smartphonesRede
+          )
+        : period.isCurrentMonth
+          ? kpiSeguroPctRede
+          : 0;
 
     const daily = new Map<string, { date: string; faturamento: number; quantidade: number }>();
     const categoryMap = new Map<string, { categoria: string; faturamento: number; quantidade: number }>();
@@ -9400,16 +9450,123 @@ const isDailySupplement = (row: any) => {
         ? homeConversionPercent(store.conversao.peliculas, store.conversao.aparelhos)
         : homeWeightedMetric(rows, 'conv_peliculas');
 
-      if (period.isCurrentMonth) {
-        const seguroValor = rows.reduce((sum: number, item: any) => sum + homeToNumber(item.seguros), 0);
-        const seguroQtd = rows.reduce((sum: number, item: any) => sum + Math.max(0, homeToNumber(item.qtd_seguros)), 0);
-        const eligible = rows.reduce((sum: number, item: any) => sum + Math.max(0, homeToNumber(item.qtd_produtos_com_seguro)), 0);
-        store.seguros = seguroValor;
-        store.seguroPct = eligible > 0
-          ? homeConversionPercent(seguroQtd, eligible)
-          : homeWeightedMetric(rows, 'pct_seguro');
-        store.vendedores = rows.length;
-      } else {
+        if (period.isCurrentMonth) {
+          const key =
+            String(store.cnpj || '')
+              .replace(/\D/g, '') ||
+            normStore(loja);
+
+          const insurance =
+            annualInsurance.get(key) || {
+              valor: 0,
+              qtd: 0,
+            };
+
+          // Valor de seguros que já vem corretamente
+          // da tabela vendedores.
+          const seguroValorKpi = rows.reduce(
+            (sum: number, item: any) =>
+              sum + homeToNumber(item.seguros),
+            0
+          );
+
+          // Caso o sincronizador já esteja enviando
+          // quantidade de seguros, utilizamos também.
+          const seguroQtdKpi = rows.reduce(
+            (sum: number, item: any) =>
+              sum +
+              Math.max(
+                0,
+                homeToNumber(item.qtd_seguros)
+              ),
+            0
+          );
+
+          // Conversão de seguro que atualmente
+          // já está aparecendo corretamente na Home.
+          const seguroPctKpi = homeWeightedMetric(
+            rows,
+            'pct_seguro'
+          );
+
+          // =====================================================
+          // QUANTIDADE DE APARELHOS
+          // =====================================================
+          // Busca diretamente nas vendas da loja.
+          // homeIsInsuranceEligibleCategory agora considera
+          // somente smartphones.
+          const qtdSmartphones = salesRows
+            .filter(
+              (row: any) =>
+                homeStoreNameFromRow(row) === loja &&
+                homeIsInsuranceEligibleCategory(
+                  row.familia
+                )
+            )
+            .reduce(
+              (sum: number, row: any) =>
+                sum +
+                Math.max(
+                  0,
+                  homeToNumber(row.quantidade)
+                ),
+              0
+            );
+
+          // =====================================================
+          // QUANTIDADE DE SEGUROS
+          // =====================================================
+          //
+          // Prioridade:
+          //
+          // 1) quantidade real encontrada na base anual/raw
+          // 2) quantidade recebida no KPI
+          // 3) reconstrução pela conversão existente
+          //
+          const qtdSeguros =
+            insurance.qtd > 0
+              ? insurance.qtd
+              : seguroQtdKpi > 0
+                ? seguroQtdKpi
+                : qtdSmartphones > 0 &&
+                    seguroPctKpi > 0
+                  ? Math.round(
+                      (
+                        qtdSmartphones *
+                        seguroPctKpi
+                      ) / 100
+                    )
+                  : 0;
+
+          // O faturamento de seguro já estava correto.
+          // Mantemos o KPI como primeira fonte.
+          store.seguros =
+            seguroValorKpi > 0
+              ? seguroValorKpi
+              : insurance.valor;
+
+          // Estes são exatamente os dois campos
+          // utilizados pelo novo Ranking de Seguros.
+          store.qtdSeguros = qtdSeguros;
+          store.qtdAparelhosSeguro =
+            qtdSmartphones;
+
+          // Se conseguimos as quantidades, calculamos
+          // novamente a conversão real.
+          // Caso contrário, mantemos o percentual
+          // que já vem do KPI.
+          store.seguroPct =
+            qtdSmartphones > 0 &&
+            qtdSeguros > 0
+              ? homeConversionPercent(
+                  qtdSeguros,
+                  qtdSmartphones
+                )
+              : seguroPctKpi;
+
+          store.vendedores = rows.length;
+
+        } else {
         const key = String(store.cnpj || '').replace(/\D/g, '') || normStore(loja);
         const insurance = annualInsurance.get(key) || { valor: 0, qtd: 0 };
         const eligible = salesRows
