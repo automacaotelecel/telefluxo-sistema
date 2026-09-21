@@ -103,8 +103,8 @@ const MONTH_FULL: Record<number, string> = {
 
 const CHART_COLORS = {
   yearA: '#1428A0',
-  yearBReal: '#7DD3FC',
-  yearBProjection: '#0F766E',
+  yearBReal: '#F97316',
+  yearBProjection: '#FDBA74',
 };
 
 const PIE_COLORS = ['#1428A0', '#2563EB', '#0EA5E9', '#14B8A6', '#F59E0B', '#EF4444', '#8B5CF6', '#64748B'];
@@ -831,7 +831,7 @@ export default function ComparativoAnual() {
           <div className="flex items-center gap-2 mb-1">
             <div className="p-2 bg-[#1428A0] rounded text-white"><Activity size={18} /></div>
             <h1 className="text-lg font-black uppercase tracking-tight text-[#1428A0]">
-              Comparativo Anual ({yearA || '—'} x {yearB || '—'})
+              Comparativo Anual ({yearB || '—'} x {yearA || '—'})
             </h1>
           </div>
           <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-10">
@@ -974,19 +974,19 @@ export default function ComparativoAnual() {
         <>
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 mb-6">
             <SmallMetricCard
-              title={`Card 1 · ${yearA}`}
+              title={`Card 1 · ${yearB}`}
+              icon={<Store size={16} className="text-orange-600" />}
+              value={formatMoney(computed.totalB)}
+              valueClass="text-orange-600"
+              subtitle={`Melhor loja: ${computed.bestB.nome}\n${formatMoney(computed.bestB.total)}`}
+            />
+
+            <SmallMetricCard
+              title={`Card 2 · ${yearA}`}
               icon={<Calendar size={16} className="text-indigo-600" />}
               value={formatMoney(computed.totalA)}
               valueClass="text-indigo-900"
               subtitle={`${computed.cutoffLabel}: ${formatMoney(computed.totalAUntilCurrentMonth)}`}
-            />
-
-            <SmallMetricCard
-              title={`Card 2 · ${yearB}`}
-              icon={<Store size={16} className="text-sky-600" />}
-              value={formatMoney(computed.totalB)}
-              valueClass="text-sky-700"
-              subtitle={`Melhor loja: ${computed.bestB.nome}\n${formatMoney(computed.bestB.total)}`}
             />
 
             <SmallMetricCard
@@ -1035,7 +1035,7 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
               title="Card 6 · Regiões"
               icon={<PieChart size={16} className="text-slate-400" />}
             >
-              <div className="grid grid-cols-[90px_1fr] gap-3 items-center h-[86px]">
+              <div className="grid grid-cols-[100px_1fr] gap-3 items-center min-h-[118px]">
                 <ResponsiveContainer width="100%" height="100%">
                   <RechartsPieChart>
                     <Pie
@@ -1054,7 +1054,7 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
                   </RechartsPieChart>
                 </ResponsiveContainer>
                 <div className="space-y-1 min-w-0">
-                  {regionPieData.length ? regionPieData.slice(0, 4).map((item, index) => (
+                  {regionPieData.length ? regionPieData.map((item, index) => (
                     <div key={item.name} className="flex items-center justify-between gap-2 text-[9px] font-black uppercase text-slate-500">
                       <span className="flex items-center gap-1 min-w-0">
                         <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: PIE_COLORS[index % PIE_COLORS.length] }} />
@@ -1073,7 +1073,7 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
           <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm h-[380px] mb-6">
             <div className="flex items-center gap-2 mb-6">
               <Activity size={16} className="text-indigo-600" />
-              <h3 className="font-black text-slate-700 uppercase text-xs">Vendas por Mês ({yearA} x {yearB})</h3>
+              <h3 className="font-black text-slate-700 uppercase text-xs">Vendas por Mês ({yearB} x {yearA})</h3>
             </div>
 
             <div className="h-[300px] min-h-[300px] w-full min-w-0">
@@ -1093,22 +1093,38 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
                     formatter={(val: any, name: string) => [formatMoney(Number(val) || 0), chartLegendNameMap[name] || name]}
                   />
                   <Legend formatter={(value) => <span style={{ color: '#334155', fontWeight: 700 }}>{chartLegendNameMap[value] || value}</span>} />
+                  <Bar
+                    dataKey={`${yearB}_real`}
+                    name={chartLegendNameMap[`${yearB}_real`]}
+                    stackId="yearB"
+                    fill={CHART_COLORS.yearBReal}
+                    radius={[4, 4, 0, 0]}
+                  >
+                    <LabelList
+                      dataKey={`${yearB}_real`}
+                      position="top"
+                      formatter={(val: any) => (Number(val) > 0 ? formatMoneyShort(Number(val)) : '')}
+                      fill={CHART_COLORS.yearBReal}
+                      fontSize={10}
+                      fontWeight={900}
+                    />
+                  </Bar>
+                  <Bar
+                    dataKey={`${yearB}_proj`}
+                    name={chartLegendNameMap[`${yearB}_proj`]}
+                    stackId="yearB"
+                    fill={CHART_COLORS.yearBProjection}
+                    radius={[4, 4, 0, 0]}
+                  />
+
                   <Bar dataKey={yearA} name={chartLegendNameMap[yearA]} fill={CHART_COLORS.yearA} radius={[4, 4, 0, 0]}>
                     <LabelList
                       dataKey={yearA}
                       position="top"
                       formatter={(val: any) => (Number(val) > 0 ? formatMoneyShort(Number(val)) : '')}
-                      style={{ fontSize: '10px', fill: CHART_COLORS.yearA, fontWeight: 900 }}
-                    />
-                  </Bar>
-
-                  <Bar dataKey={`${yearB}_real`} name={chartLegendNameMap[`${yearB}_real`]} stackId="yearB" fill={CHART_COLORS.yearBReal} radius={[4, 4, 0, 0]} />
-                  <Bar dataKey={`${yearB}_proj`} name={chartLegendNameMap[`${yearB}_proj`]} stackId="yearB" fill={CHART_COLORS.yearBProjection} radius={[4, 4, 0, 0]}>
-                    <LabelList
-                      dataKey={(row: AnyRow) => (Number(row[`${yearB}_real`] || 0) + Number(row[`${yearB}_proj`] || 0))}
-                      position="top"
-                      formatter={(val: any) => (Number(val) > 0 ? formatMoneyShort(Number(val)) : '')}
-                      style={{ fontSize: '10px', fill: CHART_COLORS.yearBProjection, fontWeight: 900 }}
+                      fill={CHART_COLORS.yearA}
+                      fontSize={10}
+                      fontWeight={900}
                     />
                   </Bar>
                 </BarChart>
@@ -1121,21 +1137,21 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
       {activeTab === 'produtos' && (
         <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="bg-white p-5 rounded-2xl border border-orange-100 shadow-sm flex items-center gap-4">
+              <div className="p-3 bg-orange-50 text-orange-600 rounded-xl"><Package size={24} /></div>
+              <div className="overflow-hidden">
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest truncate">Mais vendido ({yearB})</p>
+                <h3 className="text-sm font-black text-slate-800 mt-1 truncate" title={topProductB?.desc}>{topProductB?.desc || 'N/D'}</h3>
+                <p className="text-xs text-orange-600 font-bold mt-0.5">{topProductB ? formatMoney(topProductB.totalB) : 'R$ 0'}</p>
+              </div>
+            </div>
+
             <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-4">
               <div className="p-3 bg-indigo-50 text-indigo-600 rounded-xl"><Package size={24} /></div>
               <div className="overflow-hidden">
                 <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest truncate">Mais vendido ({yearA})</p>
                 <h3 className="text-sm font-black text-slate-800 mt-1 truncate" title={topProductA?.desc}>{topProductA?.desc || 'N/D'}</h3>
                 <p className="text-xs text-indigo-600 font-bold mt-0.5">{topProductA ? formatMoney(topProductA.totalA) : 'R$ 0'}</p>
-              </div>
-            </div>
-
-            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-4">
-              <div className="p-3 bg-sky-50 text-sky-600 rounded-xl"><Package size={24} /></div>
-              <div className="overflow-hidden">
-                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest truncate">Mais vendido ({yearB})</p>
-                <h3 className="text-sm font-black text-slate-800 mt-1 truncate" title={topProductB?.desc}>{topProductB?.desc || 'N/D'}</h3>
-                <p className="text-xs text-sky-600 font-bold mt-0.5">{topProductB ? formatMoney(topProductB.totalB) : 'R$ 0'}</p>
               </div>
             </div>
 
@@ -1177,11 +1193,11 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
                   <tr>
                     <th className="p-3 text-center text-[9px] font-black text-slate-400 uppercase">#</th>
                     <th className="p-3 text-[9px] font-black text-slate-400 uppercase">Produto</th>
+                    <th className="p-3 text-center border-l border-slate-200 bg-orange-50/50 text-orange-700 text-[10px] font-black uppercase" colSpan={2}>
+                      {yearB}
+                    </th>
                     <th className="p-3 text-center border-l border-slate-200 bg-indigo-50/30 text-indigo-800 text-[10px] font-black uppercase" colSpan={2}>
                       {yearA}
-                    </th>
-                    <th className="p-3 text-center border-l border-slate-200 bg-sky-50/30 text-sky-800 text-[10px] font-black uppercase" colSpan={2}>
-                      {yearB}
                     </th>
                     <th className="p-3 text-right border-l border-slate-200 text-[9px] font-black text-slate-400 uppercase">
                       Crescimento
@@ -1211,10 +1227,10 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
                           </span>
                         </td>
                         <td className="p-3 uppercase text-[10px] max-w-[200px] truncate" title={p.desc}>{p.desc}</td>
+                        <td className="p-3 text-center border-l border-slate-50 text-slate-600 bg-orange-50/20 group-hover:bg-orange-50/50 transition-colors">{p.qtdB}</td>
+                        <td className="p-3 text-right font-mono text-orange-700 font-black bg-orange-50/20 group-hover:bg-orange-50/50 transition-colors">{formatMoney(p.totalB)}</td>
                         <td className="p-3 text-center border-l border-slate-50 text-slate-500 bg-indigo-50/10 group-hover:bg-indigo-50/30 transition-colors">{p.qtdA}</td>
                         <td className="p-3 text-right font-mono text-indigo-700 bg-indigo-50/10 group-hover:bg-indigo-50/30 transition-colors">{formatMoney(p.totalA)}</td>
-                        <td className="p-3 text-center border-l border-slate-50 bg-sky-50/10 group-hover:bg-sky-50/30 transition-colors">{p.qtdB}</td>
-                        <td className="p-3 text-right font-mono text-sky-700 font-black bg-sky-50/10 group-hover:bg-sky-50/30 transition-colors">{formatMoney(p.totalB)}</td>
                         <td className="p-3 text-right border-l border-slate-50">
                           <div className="flex justify-end">
                             <div className={`flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-black ${

@@ -9188,6 +9188,15 @@ const isDailySupplement = (row: any) => {
       cnpj,
     });
 
+    const todayIso = getBrazilTodayIso();
+
+    const todayLoad = await homeLoadSalesRows({
+      userId,
+      startDate: todayIso,
+      endDate: todayIso,
+      cnpj,
+    });
+
     const salesRows = selectedLoad.rows;
     const previousRows = previousLoad.rows;
 
@@ -9205,6 +9214,11 @@ const isDailySupplement = (row: any) => {
       : new Map<string, HomeInsuranceAggregate>();
 
     const faturamentoMes = salesRows.reduce(
+      (sum: number, row: any) => sum + homeToNumber(row.total_liquido),
+      0
+    );
+
+    const vendasDia = todayLoad.rows.reduce(
       (sum: number, row: any) => sum + homeToNumber(row.total_liquido),
       0
     );
@@ -9334,6 +9348,8 @@ const isDailySupplement = (row: any) => {
         conversaoPeliculas: 0,
         seguroPct: 0,
         seguros: 0,
+        qtdSeguros: 0,
+        qtdAparelhosSeguro: 0,
         vendedores: 0,
       };
 
@@ -9366,6 +9382,8 @@ const isDailySupplement = (row: any) => {
           conversaoPeliculas: 0,
           seguroPct: 0,
           seguros: 0,
+          qtdSeguros: 0,
+          qtdAparelhosSeguro: 0,
           vendedores: 0,
         });
       }
@@ -9398,7 +9416,13 @@ const isDailySupplement = (row: any) => {
           .filter((row: any) => homeStoreNameFromRow(row) === loja && homeIsInsuranceEligibleCategory(row.familia))
           .reduce((sum: number, row: any) => sum + Math.max(0, homeToNumber(row.quantidade)), 0);
         store.seguros = insurance.valor;
-        store.seguroPct = eligible > 0 ? homeConversionPercent(insurance.qtd, eligible) : 0;
+        store.qtdSeguros = insurance.qtd;
+        store.qtdAparelhosSeguro = eligible;
+
+        store.seguroPct =
+          eligible > 0
+            ? homeConversionPercent(insurance.qtd, eligible)
+            : 0;
         store.vendedores = new Set(
           salesRows
             .filter((row: any) => homeStoreNameFromRow(row) === loja)
@@ -9438,6 +9462,7 @@ const isDailySupplement = (row: any) => {
       period,
       kpis: {
         faturamentoMes,
+        vendasDia,
         faturamentoAnterior,
         crescimento,
         tendenciaMes,
@@ -9616,6 +9641,7 @@ app.get('/api/home/store-detail', async (req, res) => {
         period: snapshot.period,
         kpis: {
           faturamento: snapshot.kpis.faturamentoMes,
+          vendasDia: snapshot.kpis.vendasDia,
           faturamentoAnterior: snapshot.kpis.faturamentoAnterior,
           crescimento: snapshot.kpis.crescimento,
           tendenciaMes: snapshot.kpis.tendenciaMes,
