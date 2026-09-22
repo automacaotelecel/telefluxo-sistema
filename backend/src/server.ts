@@ -8082,12 +8082,15 @@ const isDailySupplement = (row: any) => {
   function homeIsInsuranceEligibleCategory(value: any): boolean {
     const categoria = homeNormalizeCategory(value);
 
-    // Para o ranking Samsung Care+, "aparelhos" significa smartphones.
-    // Tablets, wearables e notebooks não entram no denominador.
     return (
-      categoria.includes('APARELH') ||
+      categoria.includes('APARELHO') ||
       categoria.includes('SMARTPHONE') ||
-      categoria.includes('CELULAR')
+      categoria.includes('CELULAR') ||
+      categoria.includes('TABLET') ||
+      categoria.includes('WEAR') ||
+      categoria.includes('BUDS') ||
+      categoria.includes('FONE') ||
+      categoria.includes('EARBUD')
     );
   }
 
@@ -9296,8 +9299,6 @@ const isDailySupplement = (row: any) => {
       }
     );
 
-    // Quantidade de smartphones vendidos.
-    // É essa quantidade que deve aparecer como "Qnt Aparelhos".
     const smartphonesRede = salesRows.reduce(
       (sum: number, row: any) =>
         sum +
