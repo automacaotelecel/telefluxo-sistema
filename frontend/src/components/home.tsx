@@ -242,23 +242,23 @@ function KpiCard({
     <button
       type="button"
       onClick={onClick}
-      className="group min-w-0 rounded-[20px] border border-slate-200/80 bg-white p-3.5 text-left shadow-[0_12px_35px_rgba(15,23,42,0.05)] transition hover:-translate-y-0.5 hover:border-orange-200 hover:shadow-[0_16px_42px_rgba(15,23,42,0.08)] sm:rounded-[24px] sm:p-5"
+      className="group min-w-0 rounded-[18px] border border-slate-200/80 bg-white p-3 text-left shadow-[0_10px_28px_rgba(15,23,42,0.045)] transition hover:-translate-y-0.5 hover:border-orange-200 hover:shadow-[0_14px_34px_rgba(15,23,42,0.07)] sm:rounded-[22px] sm:p-4"
     >
-      <div className="mb-3 flex items-start justify-between gap-2 sm:mb-5 sm:gap-3">
+      <div className="mb-2.5 flex items-start justify-between gap-2 sm:mb-3.5 sm:gap-2.5">
         <div>
           <p className="text-[8px] font-black uppercase tracking-[0.12em] text-slate-400 sm:text-[10px] sm:tracking-[0.16em]">{title}</p>
-          <p className="mt-2 break-words text-[18px] font-black leading-tight tracking-tight text-slate-900 sm:text-[26px]">{value}</p>
+          <p className="mt-1.5 break-words text-[17px] font-black leading-tight tracking-tight text-slate-900 sm:text-[23px]">{value}</p>
         </div>
-        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-slate-950 text-white transition group-hover:bg-orange-600 sm:h-10 sm:w-10 sm:rounded-2xl">
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-slate-950 text-white transition group-hover:bg-orange-600 sm:h-9 sm:w-9 sm:rounded-xl">
           <Icon size={18} />
         </div>
       </div>
 
-      <div className="flex min-h-6 items-center justify-between gap-3">
+      <div className="flex min-h-5 items-center justify-between gap-2">
         <p className="line-clamp-2 text-[9px] font-semibold leading-snug text-slate-400 sm:text-[11px]">{subtitle}</p>
         {typeof change === 'number' && Number.isFinite(change) && (
           <span
-            className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-black ${
+            className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[9px] font-black ${
               positive ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-600'
             }`}
           >
@@ -330,15 +330,15 @@ function ConversionCard({
   ];
 
   return (
-    <div className="min-w-0 rounded-[20px] border border-slate-200/80 bg-white p-3.5 shadow-[0_12px_35px_rgba(15,23,42,0.05)] sm:rounded-[24px] sm:p-5">
-      <div className="mb-3 flex items-start justify-between gap-2 sm:mb-4 sm:gap-3">
+    <div className="min-w-0 rounded-[18px] border border-slate-200/80 bg-white p-3 shadow-[0_10px_28px_rgba(15,23,42,0.045)] sm:rounded-[22px] sm:p-4">
+      <div className="mb-2.5 flex items-start justify-between gap-2 sm:mb-3 sm:gap-2.5">
         <div>
           <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Conversões</p>
           <p className="mt-1 text-[11px] font-semibold text-slate-400">
             Acessórios, películas e seguro
           </p>
         </div>
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-slate-950 text-white">
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-slate-950 text-white sm:h-9 sm:w-9">
           <BarChart3 size={18} />
         </div>
       </div>
@@ -350,7 +350,7 @@ function ConversionCard({
             type="button"
             onClick={() => key && onSelectMetric(key)}
             disabled={!key}
-            className={`rounded-2xl bg-slate-50 px-2.5 py-3 text-left transition ${
+            className={`rounded-xl bg-slate-50 px-2.5 py-2.5 text-left transition ${
               key ? 'hover:bg-orange-50' : 'cursor-default'
             }`}
           >
@@ -358,7 +358,7 @@ function ConversionCard({
               <Icon size={12} />
               <span className="truncate text-[8px] font-black uppercase tracking-wide">{label}</span>
             </div>
-            <p className="mt-2 break-words text-[13px] font-black leading-tight tracking-tight text-slate-950 sm:text-[17px]">
+            <p className="mt-1.5 break-words text-[12px] font-black leading-tight tracking-tight text-slate-950 sm:text-[15px]">
               {loading
                 ? '—'
                 : format === 'money'
@@ -422,26 +422,28 @@ function InsuranceRankingCard({
     totals.aparelhos > 0 ? (totals.qtdSeguros / totals.aparelhos) * 100 : 0;
 
   return (
-    <div className="rounded-[24px] border border-slate-200/80 bg-white p-4 shadow-sm sm:rounded-[28px] sm:p-5">
-      <div className="mb-4 flex flex-col gap-3">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <p className="text-[10px] font-black uppercase tracking-[0.18em] text-orange-600">
+    <div className="rounded-[20px] border border-slate-200/80 bg-white p-3 shadow-sm sm:rounded-[24px] sm:p-4">
+      <div className="mb-3 flex flex-col gap-2.5">
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <p className="text-[9px] font-black uppercase tracking-[0.16em] text-orange-600">
               Samsung Care+
             </p>
-            <h2 className="mt-1 text-lg font-black text-slate-950">Ranking de seguros</h2>
-            <p className="mt-1 text-[9px] font-bold uppercase tracking-wide text-slate-400">
+            <h2 className="mt-0.5 text-[17px] font-black leading-tight text-slate-950 sm:text-lg">
+              Ranking de seguros
+            </h2>
+            <p className="mt-0.5 text-[8px] font-bold uppercase tracking-wide text-slate-400">
               Meta mín. R$ 20.000,00{periodLabel ? ` • ${periodLabel}` : ''}
             </p>
           </div>
-          <ShieldCheck size={19} className="shrink-0 text-orange-500" />
+          <ShieldCheck size={17} className="mt-0.5 shrink-0 text-orange-500" />
         </div>
 
-        <div className="grid grid-cols-2 rounded-2xl bg-slate-100 p-1">
+        <div className="grid grid-cols-2 rounded-xl bg-slate-100 p-0.5">
           <button
             type="button"
             onClick={() => setMode('conversion')}
-            className={`rounded-xl px-3 py-2 text-[9px] font-black uppercase tracking-wide transition ${
+            className={`rounded-[10px] px-2 py-1.5 text-[8px] font-black uppercase tracking-wide transition sm:text-[9px] ${
               mode === 'conversion'
                 ? 'bg-white text-slate-950 shadow-sm'
                 : 'text-slate-400 hover:text-slate-700'
@@ -452,7 +454,7 @@ function InsuranceRankingCard({
           <button
             type="button"
             onClick={() => setMode('revenue')}
-            className={`rounded-xl px-3 py-2 text-[9px] font-black uppercase tracking-wide transition ${
+            className={`rounded-[10px] px-2 py-1.5 text-[8px] font-black uppercase tracking-wide transition sm:text-[9px] ${
               mode === 'revenue'
                 ? 'bg-white text-slate-950 shadow-sm'
                 : 'text-slate-400 hover:text-slate-700'
@@ -463,21 +465,85 @@ function InsuranceRankingCard({
         </div>
       </div>
 
-      <div className="overflow-hidden rounded-2xl border border-slate-100">
+      {/* Mobile: lista compacta, sem sacrificar as informações principais. */}
+      <div className="space-y-1.5 md:hidden">
+        {loading ? (
+          <div className="rounded-xl bg-slate-50 px-3 py-6 text-center text-[10px] font-bold text-slate-400">
+            Carregando ranking...
+          </div>
+        ) : ranking.length ? (
+          <>
+            {ranking.map((store, index) => (
+              <div
+                key={store.loja}
+                className="rounded-xl border border-slate-100 bg-slate-50/80 px-2.5 py-2"
+              >
+                <div className="flex min-w-0 items-center gap-2">
+                  <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-white text-[7px] font-black text-slate-500 ring-1 ring-slate-200">
+                    {String(index + 1).padStart(2, '0')}
+                  </span>
+                  <p className="min-w-0 flex-1 truncate text-[10px] font-black text-slate-900" title={store.loja}>
+                    {store.loja}
+                  </p>
+                  <span
+                    className={`inline-flex min-w-[44px] shrink-0 justify-center rounded-full px-1.5 py-1 text-[9px] font-black ${
+                      mode === 'conversion'
+                        ? 'bg-amber-100 text-amber-800'
+                        : 'bg-white text-slate-700 ring-1 ring-slate-200'
+                    }`}
+                  >
+                    {number(store.seguroPct, 0)}%
+                  </span>
+                </div>
+
+                <div className="mt-1.5 grid grid-cols-3 gap-1 border-t border-slate-200/70 pt-1.5 text-center">
+                  <div>
+                    <p className="text-[6px] font-black uppercase tracking-wide text-slate-400">Seguros</p>
+                    <p className="mt-0.5 text-[9px] font-black text-slate-800">{number(store.qtdSeguros)}</p>
+                  </div>
+                  <div>
+                    <p className="text-[6px] font-black uppercase tracking-wide text-slate-400">Elegíveis</p>
+                    <p className="mt-0.5 text-[9px] font-black text-slate-800">{number(store.qtdAparelhosSeguro)}</p>
+                  </div>
+                  <div>
+                    <p className="text-[6px] font-black uppercase tracking-wide text-slate-400">Faturamento</p>
+                    <p className="mt-0.5 truncate text-[9px] font-black text-slate-900">{money(store.seguros)}</p>
+                  </div>
+                </div>
+              </div>
+            ))}
+
+            <div className="grid grid-cols-[1.25fr_.7fr_1.15fr_.7fr_.7fr] items-center rounded-xl bg-slate-950 px-2.5 py-2 text-[8px] font-black text-white">
+              <span className="uppercase">Total geral</span>
+              <span className="text-right">{number(totals.qtdSeguros)}</span>
+              <span className="text-right">{money(totals.valor)}</span>
+              <span className="text-right">{number(totals.aparelhos)}</span>
+              <span className="text-right">{number(totalConversion, 0)}%</span>
+            </div>
+          </>
+        ) : (
+          <div className="rounded-xl bg-slate-50 px-3 py-6 text-center text-[10px] font-bold text-slate-400">
+            Sem dados de seguros para o período.
+          </div>
+        )}
+      </div>
+
+      {/* Tablet/desktop: tabela mais densa e alinhada. */}
+      <div className="hidden overflow-hidden rounded-xl border border-slate-100 md:block">
         <table className="w-full table-fixed border-collapse text-left">
           <thead className="bg-slate-50">
-            <tr className="text-[7px] font-black uppercase tracking-[0.10em] text-slate-500 sm:text-[8px]">
-              <th className="w-[34%] px-2 py-3 sm:px-3">Loja</th>
-              <th className="w-[12%] px-1 py-3 text-right">Qtd. Seguro</th>
-              <th className="w-[20%] px-1 py-3 text-right">Valor Venda Seguro</th>
-              <th className="w-[14%] px-1 py-3 text-right">Qnt Aparelhos</th>
-              <th className="w-[20%] px-2 py-3 text-right sm:px-3">Conversão QTD Vendas</th>
+            <tr className="text-[7px] font-black uppercase tracking-[0.09em] text-slate-500 lg:text-[8px]">
+              <th className="w-[34%] px-2.5 py-2">Loja</th>
+              <th className="w-[12%] px-1 py-2 text-right">Qtd. Seguro</th>
+              <th className="w-[20%] px-1 py-2 text-right">Valor Seguro</th>
+              <th className="w-[14%] px-1 py-2 text-right">Qnt Elegíveis</th>
+              <th className="w-[20%] px-2.5 py-2 text-right">Conversão</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={5} className="px-4 py-8 text-center text-xs font-bold text-slate-400">
+                <td colSpan={5} className="px-4 py-6 text-center text-[10px] font-bold text-slate-400">
                   Carregando ranking...
                 </td>
               </tr>
@@ -485,11 +551,11 @@ function InsuranceRankingCard({
               ranking.map((store, index) => (
                 <tr
                   key={store.loja}
-                  className="border-t border-slate-100 text-[9px] font-bold text-slate-600 hover:bg-orange-50/50 sm:text-[10px]"
+                  className="border-t border-slate-100 text-[9px] font-bold text-slate-600 hover:bg-orange-50/50 lg:text-[10px]"
                 >
-                  <td className="px-2 py-3.5 sm:px-3">
-                    <div className="flex min-w-0 items-center gap-2">
-                      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-[8px] font-black text-slate-500">
+                  <td className="px-2.5 py-2.5">
+                    <div className="flex min-w-0 items-center gap-1.5">
+                      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-slate-100 text-[7px] font-black text-slate-500">
                         {String(index + 1).padStart(2, '0')}
                       </span>
                       <span className="truncate font-black text-slate-900" title={store.loja}>
@@ -497,14 +563,14 @@ function InsuranceRankingCard({
                       </span>
                     </div>
                   </td>
-                  <td className="px-1 py-3.5 text-right">{number(store.qtdSeguros)}</td>
-                  <td className="px-1 py-3.5 text-right font-black text-slate-900">
+                  <td className="px-1 py-2.5 text-right">{number(store.qtdSeguros)}</td>
+                  <td className="px-1 py-2.5 text-right font-black text-slate-900">
                     {money(store.seguros)}
                   </td>
-                  <td className="px-1 py-3.5 text-right">{number(store.qtdAparelhosSeguro)}</td>
-                  <td className="px-2 py-3.5 text-right sm:px-3">
+                  <td className="px-1 py-2.5 text-right">{number(store.qtdAparelhosSeguro)}</td>
+                  <td className="px-2.5 py-2.5 text-right">
                     <span
-                      className={`inline-flex min-w-[54px] justify-center rounded-full px-2 py-1 font-black ${
+                      className={`inline-flex min-w-[46px] justify-center rounded-full px-1.5 py-0.5 font-black ${
                         mode === 'conversion'
                           ? 'bg-amber-100 text-amber-800'
                           : 'bg-slate-100 text-slate-700'
@@ -517,7 +583,7 @@ function InsuranceRankingCard({
               ))
             ) : (
               <tr>
-                <td colSpan={5} className="px-4 py-8 text-center text-xs font-bold text-slate-400">
+                <td colSpan={5} className="px-4 py-6 text-center text-[10px] font-bold text-slate-400">
                   Sem dados de seguros para o período.
                 </td>
               </tr>
@@ -525,12 +591,12 @@ function InsuranceRankingCard({
           </tbody>
           {ranking.length > 0 && (
             <tfoot className="bg-slate-950 text-white">
-              <tr className="text-[10px] font-black">
-                <td className="px-3 py-3 uppercase">Total Geral</td>
-                <td className="px-2 py-3 text-right">{number(totals.qtdSeguros)}</td>
-                <td className="px-2 py-3 text-right">{money(totals.valor)}</td>
-                <td className="px-2 py-3 text-right">{number(totals.aparelhos)}</td>
-                <td className="px-3 py-3 text-right">{number(totalConversion, 0)}%</td>
+              <tr className="text-[9px] font-black">
+                <td className="px-2.5 py-2 uppercase">Total Geral</td>
+                <td className="px-1 py-2 text-right">{number(totals.qtdSeguros)}</td>
+                <td className="px-1 py-2 text-right">{money(totals.valor)}</td>
+                <td className="px-1 py-2 text-right">{number(totals.aparelhos)}</td>
+                <td className="px-2.5 py-2 text-right">{number(totalConversion, 0)}%</td>
               </tr>
             </tfoot>
           )}
@@ -1126,10 +1192,10 @@ export default function Home({ currentUser }: Props) {
 
   return (
     <div className="flex-1 overflow-y-auto bg-[#f5f7fb]">
-      <div className="mx-auto w-full max-w-[1540px] px-3 py-4 sm:px-5 sm:py-6 md:px-8 lg:px-10 lg:py-8">
-        <section className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+      <div className="mx-auto w-full max-w-[1540px] px-2.5 py-3 sm:px-4 sm:py-4 md:px-6 lg:px-8 lg:py-5">
+        <section className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
           <div>
-            <div className="mb-2 flex flex-wrap items-center gap-2">
+            <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
               <span className="inline-flex items-center gap-2 rounded-full bg-orange-50 px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.16em] text-orange-700">
                 <Activity size={13} /> TeleFluxo Intelligence
               </span>
@@ -1153,16 +1219,16 @@ export default function Home({ currentUser }: Props) {
                 </button>
               )}
             </div>
-            <h1 className="text-[28px] font-black leading-none tracking-[-0.04em] text-slate-950 sm:text-3xl md:text-4xl">
+            <h1 className="text-[25px] font-black leading-none tracking-[-0.04em] text-slate-950 sm:text-[28px] md:text-[34px]">
               Olá, {firstName}. <span className="text-orange-500">👋</span>
             </h1>
-            <p className="mt-2 text-[11px] font-semibold text-slate-400">
+            <p className="mt-1.5 text-[10px] font-semibold text-slate-400">
               {effectivePeriod?.label || 'Este mês'}
               {isStoreAnalysis ? ` • ${storeFilter}` : ''}
             </p>
           </div>
 
-          <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:items-center">
+          <div className="grid w-full grid-cols-2 gap-1.5 sm:flex sm:w-auto sm:flex-wrap sm:items-center sm:gap-2">
             <div className="relative col-span-2 sm:col-span-1">
               <button
                 type="button"
@@ -1337,7 +1403,7 @@ export default function Home({ currentUser }: Props) {
           </div>
         )}
 
-        <section className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-5">
+        <section className="grid grid-cols-2 gap-2 sm:gap-3 xl:grid-cols-5">
           <KpiCard
             title="Vendas do dia"
             value={viewLoading ? '—' : money(kpis.vendasDia)}
@@ -1384,14 +1450,14 @@ export default function Home({ currentUser }: Props) {
           />
         </section>
 
-        <section className="mt-5">
-          <div className="rounded-[24px] border border-slate-200/80 bg-white p-4 shadow-[0_14px_40px_rgba(15,23,42,0.05)] sm:rounded-[28px] sm:p-5 md:p-6">
-            <div className="mb-5 flex flex-wrap items-start justify-between gap-4">
+        <section className="mt-4">
+          <div className="rounded-[20px] border border-slate-200/80 bg-white p-3 shadow-[0_12px_34px_rgba(15,23,42,0.045)] sm:rounded-[24px] sm:p-4 md:p-5">
+            <div className="mb-3 flex flex-wrap items-start justify-between gap-2.5">
               <div>
                 <p className="text-[10px] font-black uppercase tracking-[0.18em] text-orange-600">
                   Performance
                 </p>
-                <h2 className="mt-1 text-xl font-black tracking-tight text-slate-950">
+                <h2 className="mt-1 text-lg font-black tracking-tight text-slate-950 sm:text-xl">
                   {isStoreAnalysis ? `Faturamento diário • ${storeFilter}` : 'Faturamento diário'}
                 </h2>
                 <p className="mt-1 text-[10px] font-semibold text-slate-400">
@@ -1413,7 +1479,7 @@ export default function Home({ currentUser }: Props) {
               </div>
             </div>
 
-            <div className="h-[280px] w-full sm:h-[350px]">
+            <div className="h-[235px] w-full sm:h-[300px] lg:h-[320px]">
               {trend.length ? (
                 <ResponsiveContainer width="100%" height="100%">
                   <ComposedChart data={trend} margin={{ top: 30, right: 10, left: -18, bottom: 0 }}>
@@ -1502,14 +1568,14 @@ export default function Home({ currentUser }: Props) {
           storeMode={isStoreAnalysis || dashboard?.scope?.type === 'store'}
         />
 
-        <section className="mt-5 grid grid-cols-1 items-start gap-5 xl:grid-cols-2">
-          <div className="rounded-[24px] border border-slate-200/80 bg-white p-4 shadow-sm sm:rounded-[28px] sm:p-5 md:p-6">
-            <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+        <section className="mt-4 grid grid-cols-1 items-start gap-3 sm:gap-4 xl:grid-cols-2">
+          <div className="rounded-[20px] border border-slate-200/80 bg-white p-3 shadow-sm sm:rounded-[24px] sm:p-4 md:p-4.5">
+            <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
               <div>
                 <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">
                   {isNetworkView ? 'Rede' : 'Sua unidade'}
                 </p>
-                <h2 className="mt-1 text-xl font-black text-slate-950">
+                <h2 className="mt-1 text-lg font-black text-slate-950 sm:text-xl">
                   {isNetworkView ? 'Performance das lojas' : 'Resumo da loja'}
                 </h2>
               </div>
@@ -1528,7 +1594,7 @@ export default function Home({ currentUser }: Props) {
               </div>
             </div>
 
-            <div className="space-y-3 md:hidden">
+            <div className="space-y-1.5 md:hidden">
               {visibleStores.length ? (
                 visibleStores.map((store, index) => {
                   const active =
@@ -1540,7 +1606,7 @@ export default function Home({ currentUser }: Props) {
                       key={store.loja}
                       type="button"
                       onClick={() => selectStoreForAnalysis(store.loja)}
-                      className={`w-full rounded-[20px] border p-3.5 text-left transition ${
+                      className={`w-full rounded-[16px] border px-2.5 py-2.5 text-left transition ${
                         active
                           ? 'border-orange-200 bg-orange-50 shadow-sm'
                           : 'border-slate-100 bg-slate-50/80'
@@ -1558,8 +1624,8 @@ export default function Home({ currentUser }: Props) {
                               </span>
                             )}
                           </div>
-                          <p className="mt-1 truncate text-[13px] font-black text-slate-950">{store.loja}</p>
-                          <p className="mt-1 text-[16px] font-black tracking-tight text-slate-900">
+                          <p className="mt-0.5 truncate text-[12px] font-black text-slate-950">{store.loja}</p>
+                          <p className="mt-0.5 text-[14px] font-black tracking-tight text-slate-900">
                             {money(store.faturamento)}
                           </p>
                         </div>
@@ -1576,32 +1642,26 @@ export default function Home({ currentUser }: Props) {
                               setSelectedStore(store.loja);
                             }
                           }}
-                          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white text-slate-400 shadow-sm ring-1 ring-slate-200"
+                          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-white text-slate-400 shadow-sm ring-1 ring-slate-200"
                           title="Abrir detalhes da loja"
                         >
                           <ChevronRight size={15} />
                         </span>
                       </div>
 
-                      <div className="mt-3 grid grid-cols-3 gap-2">
-                        <div className="rounded-xl bg-white/80 px-2 py-2">
-                          <p className="text-[7px] font-black uppercase tracking-wide text-slate-400">Acessórios</p>
-                          <p className="mt-1 text-[11px] font-black text-slate-900">
-                            {number(store.conversaoAcessorios, 1)}%
-                          </p>
-                        </div>
-                        <div className="rounded-xl bg-white/80 px-2 py-2">
-                          <p className="text-[7px] font-black uppercase tracking-wide text-slate-400">Películas</p>
-                          <p className="mt-1 text-[11px] font-black text-slate-900">
-                            {number(store.conversaoPeliculas, 1)}%
-                          </p>
-                        </div>
-                        <div className="rounded-xl bg-white/80 px-2 py-2">
-                          <p className="text-[7px] font-black uppercase tracking-wide text-slate-400">Seguro</p>
-                          <p className="mt-1 text-[11px] font-black text-slate-900">
-                            {number(store.seguroPct, 1)}%
-                          </p>
-                        </div>
+                      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-slate-200/70 pt-2 text-[9px] font-bold text-slate-500">
+                        <span>
+                          <span className="text-[7px] font-black uppercase tracking-wide text-slate-400">Acess.</span>{' '}
+                          <strong className="text-slate-800">{number(store.conversaoAcessorios, 1)}%</strong>
+                        </span>
+                        <span>
+                          <span className="text-[7px] font-black uppercase tracking-wide text-slate-400">Pelíc.</span>{' '}
+                          <strong className="text-slate-800">{number(store.conversaoPeliculas, 1)}%</strong>
+                        </span>
+                        <span>
+                          <span className="text-[7px] font-black uppercase tracking-wide text-slate-400">Seguro</span>{' '}
+                          <strong className="text-slate-800">{number(store.seguroPct, 1)}%</strong>
+                        </span>
                       </div>
                     </button>
                   );
@@ -1614,11 +1674,11 @@ export default function Home({ currentUser }: Props) {
             </div>
 
             <div className="hidden md:block">
-              <table className="w-full min-w-[690px] border-separate border-spacing-y-2 text-left">
+              <table className="w-full min-w-[650px] border-separate border-spacing-y-1 text-left">
                 <thead>
-                  <tr className="text-[9px] font-black uppercase tracking-[0.16em] text-slate-400">
-                    <th className="px-3 py-2">{isNetworkView ? '#' : 'Escopo'}</th>
-                    <th className="px-3 py-2">Loja</th>
+                  <tr className="text-[8px] font-black uppercase tracking-[0.14em] text-slate-400">
+                    <th className="px-2.5 py-1.5">{isNetworkView ? '#' : 'Escopo'}</th>
+                    <th className="px-2.5 py-1.5">Loja</th>
                     <th className="px-3 py-2 text-right">Faturamento</th>
                     <th className="px-3 py-2 text-right">Acessórios</th>
                     <th className="px-3 py-2 text-right">Películas</th>
@@ -1637,20 +1697,20 @@ export default function Home({ currentUser }: Props) {
                         <tr
                           key={store.loja}
                           onClick={() => selectStoreForAnalysis(store.loja)}
-                          className={`cursor-pointer text-xs font-bold text-slate-700 transition ${
+                          className={`cursor-pointer text-[11px] font-bold text-slate-700 transition ${
                             active
                               ? 'bg-orange-50 ring-1 ring-inset ring-orange-200'
                               : 'bg-slate-50/80 hover:bg-orange-50'
                           }`}
                         >
-                          <td className="rounded-l-2xl px-3 py-3.5 text-slate-400">
+                          <td className="rounded-l-xl px-2.5 py-2.5 text-slate-400">
                             {isNetworkView ? (
                               String(index + 1).padStart(2, '0')
                             ) : (
                               <ShieldCheck size={15} className="text-emerald-600" />
                             )}
                           </td>
-                          <td className="px-3 py-3.5 font-black text-slate-900">
+                          <td className="px-2.5 py-2.5 font-black text-slate-900">
                             <div className="flex items-center gap-2">
                               <span>{store.loja}</span>
                               {active && (
@@ -1660,22 +1720,22 @@ export default function Home({ currentUser }: Props) {
                               )}
                             </div>
                           </td>
-                          <td className="px-3 py-3.5 text-right">{money(store.faturamento)}</td>
-                          <td className="px-3 py-3.5 text-right">
+                          <td className="px-2.5 py-2.5 text-right">{money(store.faturamento)}</td>
+                          <td className="px-2.5 py-2.5 text-right">
                             {number(store.conversaoAcessorios, 1)}%
                           </td>
-                          <td className="px-3 py-3.5 text-right">
+                          <td className="px-2.5 py-2.5 text-right">
                             {number(store.conversaoPeliculas, 1)}%
                           </td>
-                          <td className="px-3 py-3.5 text-right">{number(store.seguroPct, 1)}%</td>
-                          <td className="rounded-r-2xl px-3 py-3.5 text-right">
+                          <td className="px-2.5 py-2.5 text-right">{number(store.seguroPct, 1)}%</td>
+                          <td className="rounded-r-xl px-2.5 py-2.5 text-right">
                             <button
                               type="button"
                               onClick={(event) => {
                                 event.stopPropagation();
                                 setSelectedStore(store.loja);
                               }}
-                              className="inline-flex h-8 w-8 items-center justify-center rounded-xl bg-white text-slate-400 shadow-sm ring-1 ring-slate-200 transition hover:text-orange-600"
+                              className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-white text-slate-400 shadow-sm ring-1 ring-slate-200 transition hover:text-orange-600"
                               title="Abrir detalhes da loja"
                             >
                               <ChevronRight size={14} />
@@ -1696,7 +1756,7 @@ export default function Home({ currentUser }: Props) {
             </div>
           </div>
 
-          <div className="space-y-5">
+          <div className="space-y-3 sm:space-y-4">
             {isNetworkView && (
               <InsuranceRankingCard
                 stores={stores}
@@ -1705,7 +1765,7 @@ export default function Home({ currentUser }: Props) {
               />
             )}
 
-            <div className="rounded-[24px] border border-slate-200/80 bg-white p-4 shadow-sm sm:rounded-[28px] sm:p-5 md:p-6">
+            <div className="rounded-[20px] border border-slate-200/80 bg-white p-3 shadow-sm sm:rounded-[24px] sm:p-4">
               <div className="mb-4 flex items-center justify-between">
                 <div>
                   <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">
