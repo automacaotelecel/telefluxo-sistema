@@ -6,6 +6,7 @@ import {
   BarChart3,
   Bell,
   CalendarDays,
+  Download,
   ChevronDown,
   ChevronRight,
   CircleDollarSign,
@@ -37,6 +38,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
+import * as XLSX from 'xlsx';
 import ExecutiveReportButton from './ExecutiveReportButton';
 import KpiDrilldownDrawer from './KpiDrilldownDrawer';
 import StoreDetailDrawer from './StoreDetailDrawer';
@@ -389,161 +391,232 @@ function InsuranceRankingCard({
 }) {
   const [mode, setMode] = useState<'conversion' | 'revenue'>('conversion');
 
-  const ranking = useMemo(() => {
-    return [...stores]
-      .map((store) => ({
+  const normalizedStores = useMemo(
+    () =>
+      [...stores].map((store) => ({
         ...store,
         seguros: Math.max(0, Number(store.seguros || 0)),
         qtdSeguros: Math.max(0, Number(store.qtdSeguros || 0)),
         qtdAparelhosSeguro: Math.max(0, Number(store.qtdAparelhosSeguro || 0)),
         seguroPct: Math.max(0, Number(store.seguroPct || 0)),
-      }))
-      .sort((a, b) => {
-        if (mode === 'revenue') {
+      })),
+    [stores],
+  );
+
+  const sortRanking = useCallback(
+    (rankingMode: 'conversion' | 'revenue') =>
+      [...normalizedStores].sort((a, b) => {
+        if (rankingMode === 'revenue') {
           return b.seguros - a.seguros || b.seguroPct - a.seguroPct;
         }
         return b.seguroPct - a.seguroPct || b.seguros - a.seguros;
-      });
-  }, [mode, stores]);
+      }),
+    [normalizedStores],
+  );
+
+  const ranking = useMemo(() => sortRanking(mode), [mode, sortRanking]);
 
   const totals = useMemo(() => {
-    return ranking.reduce(
+    return normalizedStores.reduce(
       (acc, store) => {
         acc.qtdSeguros += store.qtdSeguros;
         acc.valor += store.seguros;
-        acc.aparelhos += store.qtdAparelhosSeguro;
+        acc.produtos += store.qtdAparelhosSeguro;
         return acc;
       },
-      { qtdSeguros: 0, valor: 0, aparelhos: 0 },
+      { qtdSeguros: 0, valor: 0, produtos: 0 },
     );
-  }, [ranking]);
+  }, [normalizedStores]);
 
   const totalConversion =
-    totals.aparelhos > 0 ? (totals.qtdSeguros / totals.aparelhos) * 100 : 0;
+    totals.produtos > 0 ? (totals.qtdSeguros / totals.produtos) * 100 : 0;
+
+  const exportInsuranceExcel = useCallback(() => {
+    const workbook = XLSX.utils.book_new();
+
+    const createSheet = (rankingMode: 'conversion' | 'revenue') => {
+      const items = sortRanking(rankingMode);
+      const rows: Array<Array<string | number>> = [
+        ['Posição', 'Loja', 'Qtd. Seguro', 'Valor Venda Seguro', 'Qtd produtos', 'Conversão'],
+        ...items.map((store, index) => [
+          index + 1,
+          store.loja,
+          store.qtdSeguros,
+          store.seguros,
+          store.qtdAparelhosSeguro,
+          store.seguroPct / 100,
+        ]),
+        ['TOTAL GERAL', '', totals.qtdSeguros, totals.valor, totals.produtos, totalConversion / 100],
+      ];
+
+      const worksheet = XLSX.utils.aoa_to_sheet(rows);
+      worksheet['!cols'] = [
+        { wch: 10 },
+        { wch: 30 },
+        { wch: 14 },
+        { wch: 20 },
+        { wch: 14 },
+        { wch: 12 },
+      ];
+
+      const lastRow = rows.length;
+      for (let row = 2; row <= lastRow; row += 1) {
+        const moneyCell = worksheet[`D${row}`];
+        const percentCell = worksheet[`F${row}`];
+        if (moneyCell) moneyCell.z = 'R$ #,##0.00';
+        if (percentCell) percentCell.z = '0%';
+      }
+
+      return worksheet;
+    };
+
+    XLSX.utils.book_append_sheet(workbook, createSheet('conversion'), 'Conversão');
+    XLSX.utils.book_append_sheet(workbook, createSheet('revenue'), 'Faturamento');
+
+    const filePeriod = String(periodLabel || localIsoDate())
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-zA-Z0-9_-]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+
+    XLSX.writeFile(workbook, `ranking-seguros-${filePeriod || localIsoDate()}.xlsx`);
+  }, [periodLabel, sortRanking, totalConversion, totals]);
 
   return (
-    <div className="rounded-[20px] border border-slate-200/80 bg-white p-3 shadow-sm sm:rounded-[24px] sm:p-4">
-      <div className="mb-3 flex flex-col gap-2.5">
-        <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0">
-            <p className="text-[9px] font-black uppercase tracking-[0.16em] text-orange-600">
-              Samsung Care+
-            </p>
-            <h2 className="mt-0.5 text-[17px] font-black leading-tight text-slate-950 sm:text-lg">
+    <div className="rounded-[18px] border border-slate-200/80 bg-white p-2.5 shadow-sm sm:rounded-[22px] sm:p-3.5">
+      <div className="mb-2.5 flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="text-[8px] font-black uppercase tracking-[0.14em] text-orange-600">
+            Samsung Care+
+          </p>
+          <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
+            <h2 className="text-[16px] font-black leading-tight text-slate-950 sm:text-lg">
               Ranking de seguros
             </h2>
-            <p className="mt-0.5 text-[8px] font-bold uppercase tracking-wide text-slate-400">
-              Meta mín. R$ 20.000,00{periodLabel ? ` • ${periodLabel}` : ''}
-            </p>
+            <button
+              type="button"
+              onClick={exportInsuranceExcel}
+              disabled={loading || normalizedStores.length === 0}
+              className="inline-flex h-7 items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 text-[7px] font-black uppercase tracking-wide text-slate-600 shadow-sm transition hover:border-orange-200 hover:text-orange-700 disabled:cursor-not-allowed disabled:opacity-40 sm:h-8 sm:px-2.5 sm:text-[8px]"
+              title="Gerar Excel do ranking de seguros"
+            >
+              <Download size={11} />
+              Excel
+            </button>
           </div>
-          <ShieldCheck size={17} className="mt-0.5 shrink-0 text-orange-500" />
+          <p className="mt-0.5 text-[7px] font-bold uppercase tracking-wide text-slate-400 sm:text-[8px]">
+            Meta mín. R$ 20.000,00{periodLabel ? ` • ${periodLabel}` : ''}
+          </p>
         </div>
-
-        <div className="grid grid-cols-2 rounded-xl bg-slate-100 p-0.5">
-          <button
-            type="button"
-            onClick={() => setMode('conversion')}
-            className={`rounded-[10px] px-2 py-1.5 text-[8px] font-black uppercase tracking-wide transition sm:text-[9px] ${
-              mode === 'conversion'
-                ? 'bg-white text-slate-950 shadow-sm'
-                : 'text-slate-400 hover:text-slate-700'
-            }`}
-          >
-            Conversão
-          </button>
-          <button
-            type="button"
-            onClick={() => setMode('revenue')}
-            className={`rounded-[10px] px-2 py-1.5 text-[8px] font-black uppercase tracking-wide transition sm:text-[9px] ${
-              mode === 'revenue'
-                ? 'bg-white text-slate-950 shadow-sm'
-                : 'text-slate-400 hover:text-slate-700'
-            }`}
-          >
-            Faturamento
-          </button>
-        </div>
+        <ShieldCheck size={16} className="mt-0.5 shrink-0 text-orange-500" />
       </div>
 
-      {/* Mobile: lista compacta, sem sacrificar as informações principais. */}
-      <div className="space-y-1.5 md:hidden">
+      <div className="mb-2 grid grid-cols-2 rounded-[10px] bg-slate-100 p-0.5">
+        <button
+          type="button"
+          onClick={() => setMode('conversion')}
+          className={`rounded-[8px] px-2 py-1.5 text-[7px] font-black uppercase tracking-wide transition sm:text-[8px] ${
+            mode === 'conversion'
+              ? 'bg-white text-slate-950 shadow-sm'
+              : 'text-slate-400 hover:text-slate-700'
+          }`}
+        >
+          Conversão
+        </button>
+        <button
+          type="button"
+          onClick={() => setMode('revenue')}
+          className={`rounded-[8px] px-2 py-1.5 text-[7px] font-black uppercase tracking-wide transition sm:text-[8px] ${
+            mode === 'revenue'
+              ? 'bg-white text-slate-950 shadow-sm'
+              : 'text-slate-400 hover:text-slate-700'
+          }`}
+        >
+          Faturamento
+        </button>
+      </div>
+
+      {/* Mobile: uma linha principal + resumo inferior. Evita cinco colunas comprimidas. */}
+      <div className="overflow-hidden rounded-xl border border-slate-100 md:hidden">
         {loading ? (
-          <div className="rounded-xl bg-slate-50 px-3 py-6 text-center text-[10px] font-bold text-slate-400">
+          <div className="bg-slate-50 px-3 py-5 text-center text-[9px] font-bold text-slate-400">
             Carregando ranking...
           </div>
         ) : ranking.length ? (
           <>
-            {ranking.map((store, index) => (
-              <div
-                key={store.loja}
-                className="rounded-xl border border-slate-100 bg-slate-50/80 px-2.5 py-2"
-              >
-                <div className="flex min-w-0 items-center gap-2">
-                  <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-white text-[7px] font-black text-slate-500 ring-1 ring-slate-200">
-                    {String(index + 1).padStart(2, '0')}
-                  </span>
-                  <p className="min-w-0 flex-1 truncate text-[10px] font-black text-slate-900" title={store.loja}>
-                    {store.loja}
-                  </p>
-                  <span
-                    className={`inline-flex min-w-[44px] shrink-0 justify-center rounded-full px-1.5 py-1 text-[9px] font-black ${
-                      mode === 'conversion'
-                        ? 'bg-amber-100 text-amber-800'
-                        : 'bg-white text-slate-700 ring-1 ring-slate-200'
-                    }`}
-                  >
-                    {number(store.seguroPct, 0)}%
-                  </span>
-                </div>
+            <div className="divide-y divide-slate-100">
+              {ranking.map((store, index) => (
+                <div key={store.loja} className="bg-white px-2 py-1.5">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-slate-100 text-[6px] font-black text-slate-500">
+                      {String(index + 1).padStart(2, '0')}
+                    </span>
+                    <p className="min-w-0 flex-1 truncate text-[9px] font-black leading-tight text-slate-900" title={store.loja}>
+                      {store.loja}
+                    </p>
+                    <span
+                      className={`inline-flex min-w-[38px] shrink-0 justify-center rounded-full px-1.5 py-0.5 text-[8px] font-black ${
+                        mode === 'conversion'
+                          ? 'bg-amber-100 text-amber-800'
+                          : 'bg-slate-100 text-slate-700'
+                      }`}
+                    >
+                      {number(store.seguroPct, 0)}%
+                    </span>
+                  </div>
 
-                <div className="mt-1.5 grid grid-cols-3 gap-1 border-t border-slate-200/70 pt-1.5 text-center">
-                  <div>
-                    <p className="text-[6px] font-black uppercase tracking-wide text-slate-400">Seguros</p>
-                    <p className="mt-0.5 text-[9px] font-black text-slate-800">{number(store.qtdSeguros)}</p>
-                  </div>
-                  <div>
-                    <p className="text-[6px] font-black uppercase tracking-wide text-slate-400">Elegíveis</p>
-                    <p className="mt-0.5 text-[9px] font-black text-slate-800">{number(store.qtdAparelhosSeguro)}</p>
-                  </div>
-                  <div>
-                    <p className="text-[6px] font-black uppercase tracking-wide text-slate-400">Faturamento</p>
-                    <p className="mt-0.5 truncate text-[9px] font-black text-slate-900">{money(store.seguros)}</p>
+                  <div className="mt-1 flex min-w-0 items-center gap-x-2.5 pl-[26px] text-[7px] font-bold leading-none text-slate-500">
+                    <span className="whitespace-nowrap">
+                      <strong className="text-slate-800">{number(store.qtdSeguros)}</strong> seguros
+                    </span>
+                    <span className="whitespace-nowrap">
+                      <strong className="text-slate-800">{number(store.qtdAparelhosSeguro)}</strong> produtos
+                    </span>
+                    <span className="ml-auto truncate whitespace-nowrap font-black text-slate-900">
+                      {money(store.seguros)}
+                    </span>
                   </div>
                 </div>
+              ))}
+            </div>
+
+            <div className="bg-slate-950 px-2 py-2 text-white">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[7px] font-black uppercase tracking-wide">Total geral</span>
+                <span className="rounded-full bg-white/10 px-1.5 py-0.5 text-[8px] font-black">
+                  {number(totalConversion, 0)}%
+                </span>
               </div>
-            ))}
-
-            <div className="grid grid-cols-[1.25fr_.7fr_1.15fr_.7fr_.7fr] items-center rounded-xl bg-slate-950 px-2.5 py-2 text-[8px] font-black text-white">
-              <span className="uppercase">Total geral</span>
-              <span className="text-right">{number(totals.qtdSeguros)}</span>
-              <span className="text-right">{money(totals.valor)}</span>
-              <span className="text-right">{number(totals.aparelhos)}</span>
-              <span className="text-right">{number(totalConversion, 0)}%</span>
+              <div className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[7px] font-bold text-slate-300">
+                <span><strong className="text-white">{number(totals.qtdSeguros)}</strong> seguros</span>
+                <span><strong className="text-white">{number(totals.produtos)}</strong> produtos</span>
+                <span className="ml-auto font-black text-white">{money(totals.valor)}</span>
+              </div>
             </div>
           </>
         ) : (
-          <div className="rounded-xl bg-slate-50 px-3 py-6 text-center text-[10px] font-bold text-slate-400">
+          <div className="bg-slate-50 px-3 py-5 text-center text-[9px] font-bold text-slate-400">
             Sem dados de seguros para o período.
           </div>
         )}
       </div>
 
-      {/* Tablet/desktop: tabela mais densa e alinhada. */}
+      {/* Tablet/desktop */}
       <div className="hidden overflow-hidden rounded-xl border border-slate-100 md:block">
         <table className="w-full table-fixed border-collapse text-left">
           <thead className="bg-slate-50">
-            <tr className="text-[7px] font-black uppercase tracking-[0.09em] text-slate-500 lg:text-[8px]">
-              <th className="w-[34%] px-2.5 py-2">Loja</th>
-              <th className="w-[12%] px-1 py-2 text-right">Qtd. Seguro</th>
-              <th className="w-[20%] px-1 py-2 text-right">Valor Seguro</th>
-              <th className="w-[14%] px-1 py-2 text-right">Qnt Elegíveis</th>
-              <th className="w-[20%] px-2.5 py-2 text-right">Conversão</th>
+            <tr className="text-[7px] font-black uppercase tracking-[0.08em] text-slate-500 lg:text-[8px]">
+              <th className="w-[34%] px-2 py-1.5">Loja</th>
+              <th className="w-[12%] px-1 py-1.5 text-right">Qtd. Seguro</th>
+              <th className="w-[20%] px-1 py-1.5 text-right">Valor Seguro</th>
+              <th className="w-[14%] px-1 py-1.5 text-right">Qtd produtos</th>
+              <th className="w-[20%] px-2 py-1.5 text-right">Conversão</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={5} className="px-4 py-6 text-center text-[10px] font-bold text-slate-400">
+                <td colSpan={5} className="px-4 py-5 text-center text-[9px] font-bold text-slate-400">
                   Carregando ranking...
                 </td>
               </tr>
@@ -553,7 +626,7 @@ function InsuranceRankingCard({
                   key={store.loja}
                   className="border-t border-slate-100 text-[9px] font-bold text-slate-600 hover:bg-orange-50/50 lg:text-[10px]"
                 >
-                  <td className="px-2.5 py-2.5">
+                  <td className="px-2 py-2">
                     <div className="flex min-w-0 items-center gap-1.5">
                       <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-slate-100 text-[7px] font-black text-slate-500">
                         {String(index + 1).padStart(2, '0')}
@@ -563,14 +636,14 @@ function InsuranceRankingCard({
                       </span>
                     </div>
                   </td>
-                  <td className="px-1 py-2.5 text-right">{number(store.qtdSeguros)}</td>
-                  <td className="px-1 py-2.5 text-right font-black text-slate-900">
+                  <td className="px-1 py-2 text-right">{number(store.qtdSeguros)}</td>
+                  <td className="px-1 py-2 text-right font-black text-slate-900">
                     {money(store.seguros)}
                   </td>
-                  <td className="px-1 py-2.5 text-right">{number(store.qtdAparelhosSeguro)}</td>
-                  <td className="px-2.5 py-2.5 text-right">
+                  <td className="px-1 py-2 text-right">{number(store.qtdAparelhosSeguro)}</td>
+                  <td className="px-2 py-2 text-right">
                     <span
-                      className={`inline-flex min-w-[46px] justify-center rounded-full px-1.5 py-0.5 font-black ${
+                      className={`inline-flex min-w-[44px] justify-center rounded-full px-1.5 py-0.5 font-black ${
                         mode === 'conversion'
                           ? 'bg-amber-100 text-amber-800'
                           : 'bg-slate-100 text-slate-700'
@@ -583,7 +656,7 @@ function InsuranceRankingCard({
               ))
             ) : (
               <tr>
-                <td colSpan={5} className="px-4 py-6 text-center text-[10px] font-bold text-slate-400">
+                <td colSpan={5} className="px-4 py-5 text-center text-[9px] font-bold text-slate-400">
                   Sem dados de seguros para o período.
                 </td>
               </tr>
@@ -592,11 +665,11 @@ function InsuranceRankingCard({
           {ranking.length > 0 && (
             <tfoot className="bg-slate-950 text-white">
               <tr className="text-[9px] font-black">
-                <td className="px-2.5 py-2 uppercase">Total Geral</td>
-                <td className="px-1 py-2 text-right">{number(totals.qtdSeguros)}</td>
-                <td className="px-1 py-2 text-right">{money(totals.valor)}</td>
-                <td className="px-1 py-2 text-right">{number(totals.aparelhos)}</td>
-                <td className="px-2.5 py-2 text-right">{number(totalConversion, 0)}%</td>
+                <td className="px-2 py-1.5 uppercase">Total Geral</td>
+                <td className="px-1 py-1.5 text-right">{number(totals.qtdSeguros)}</td>
+                <td className="px-1 py-1.5 text-right">{money(totals.valor)}</td>
+                <td className="px-1 py-1.5 text-right">{number(totals.produtos)}</td>
+                <td className="px-2 py-1.5 text-right">{number(totalConversion, 0)}%</td>
               </tr>
             </tfoot>
           )}
@@ -1191,8 +1264,8 @@ export default function Home({ currentUser }: Props) {
   const allowedStoreOptions = dashboard?.scope?.stores || stores.map((item) => item.loja);
 
   return (
-    <div className="flex-1 overflow-y-auto bg-[#f5f7fb]">
-      <div className="mx-auto w-full max-w-[1540px] px-2.5 py-3 sm:px-4 sm:py-4 md:px-6 lg:px-8 lg:py-5">
+    <div className="flex-1 overflow-y-auto bg-[#f5f7fb]" style={{ touchAction: 'pan-x pan-y pinch-zoom' }}>
+      <div className="mx-auto w-full max-w-[1540px] px-2 py-2.5 sm:px-4 sm:py-4 md:px-6 lg:px-8 lg:py-5">
         <section className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
@@ -1568,7 +1641,7 @@ export default function Home({ currentUser }: Props) {
           storeMode={isStoreAnalysis || dashboard?.scope?.type === 'store'}
         />
 
-        <section className="mt-4 grid grid-cols-1 items-start gap-3 sm:gap-4 xl:grid-cols-2">
+        <section className="mt-3 grid grid-cols-1 items-start gap-2.5 sm:mt-4 sm:gap-4 xl:grid-cols-2">
           <div className="rounded-[20px] border border-slate-200/80 bg-white p-3 shadow-sm sm:rounded-[24px] sm:p-4 md:p-4.5">
             <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
               <div>
