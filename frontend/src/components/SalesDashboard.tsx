@@ -51,6 +51,30 @@ const normalizeText = (value: any) =>
         .trim()
         .toUpperCase();
 
+const getSaleFamily = (sale: any) =>
+    normalizeText(
+        sale?.FAMILIA ||
+        sale?.familia ||
+        sale?.categoria ||
+        sale?.grupo ||
+        ''
+    );
+
+const isDeviceSale = (sale: any) => {
+    const family = getSaleFamily(sale);
+    return (
+        family.includes('APARELH') ||
+        family.includes('SMARTPHONE') ||
+        family.includes('CELULAR')
+    );
+};
+
+const isAccessorySale = (sale: any) =>
+    getSaleFamily(sale).includes('ACESS');
+
+const isFilmSale = (sale: any) =>
+    getSaleFamily(sale).includes('PELIC');
+
 const buildSellerKey = (sellerName: any, storeName: any) =>
     `${normalizeText(storeName)}__${normalizeText(sellerName)}`;
 
@@ -287,6 +311,108 @@ export default function SalesDashboard() {
       });
   }, [rawData, startDate, endDate, selectedStores, categoryFilter]);
 
+  // Base exclusiva para as conversões da aba LOJAS.
+  // Importante: ela respeita período e lojas selecionadas, mas ignora o filtro
+  // de categoria. A conversão precisa enxergar ao mesmo tempo aparelhos,
+  // acessórios e películas para que o cálculo não seja distorcido quando o
+  // usuário seleciona uma categoria no topo da tela.
+  const storeConversionSales = useMemo(() => {
+      return rawData.filter((sale: any) => {
+          const dataVenda = String(sale.data_emissao || '');
+          let dataISO = dataVenda;
+
+          if (dataVenda.includes('/')) {
+              const parts = dataVenda.split('/');
+              if (parts.length === 3) dataISO = `${parts[2]}-${parts[1]}-${parts[0]}`;
+          } else if (dataVenda.includes('-')) {
+              dataISO = dataVenda.substring(0, 10);
+          }
+
+          if (dataISO < startDate || dataISO > endDate) return false;
+
+          if (selectedStores.length > 0) {
+              const rawLoja = sale.cnpj_empresa || sale.loja || '';
+              const nomeLoja = getStoreName(rawLoja);
+              if (!selectedStores.includes(nomeLoja)) return false;
+          }
+
+          return true;
+      });
+  }, [rawData, startDate, endDate, selectedStores]);
+
+  const storeSalesConversions = useMemo(() => {
+      const byStore = new Map<string, {
+          aparelhos: number;
+          acessorios: number;
+          peliculas: number;
+      }>();
+
+      let totalAparelhos = 0;
+      let totalAcessorios = 0;
+      let totalPeliculas = 0;
+
+      storeConversionSales.forEach((sale: any) => {
+          const rawLoja = sale.cnpj_empresa || sale.loja || '';
+          const loja = getStoreName(rawLoja);
+          if (!loja || loja === 'N/D') return;
+
+          const quantidade = Number(sale.quantidade || 0);
+          if (!Number.isFinite(quantidade) || quantidade === 0) return;
+
+          const current = byStore.get(loja) || {
+              aparelhos: 0,
+              acessorios: 0,
+              peliculas: 0,
+          };
+
+          if (isDeviceSale(sale)) {
+              current.aparelhos += quantidade;
+              totalAparelhos += quantidade;
+          } else if (isAccessorySale(sale)) {
+              current.acessorios += quantidade;
+              totalAcessorios += quantidade;
+          } else if (isFilmSale(sale)) {
+              current.peliculas += quantidade;
+              totalPeliculas += quantidade;
+          }
+
+          byStore.set(loja, current);
+      });
+
+      const storeMap = new Map<string, any>();
+
+      byStore.forEach((values, loja) => {
+          storeMap.set(loja, {
+              ...values,
+              pct_acessorios:
+                  values.aparelhos > 0
+                      ? values.acessorios / values.aparelhos
+                      : 0,
+              conv_peliculas:
+                  values.aparelhos > 0
+                      ? values.peliculas / values.aparelhos
+                      : 0,
+          });
+      });
+
+      return {
+          byStore: storeMap,
+          network: {
+              aparelhos: totalAparelhos,
+              acessorios: totalAcessorios,
+              peliculas: totalPeliculas,
+              pct_acessorios:
+                  totalAparelhos > 0
+                      ? totalAcessorios / totalAparelhos
+                      : 0,
+              conv_peliculas:
+                  totalAparelhos > 0
+                      ? totalPeliculas / totalAparelhos
+                      : 0,
+          },
+      };
+  }, [storeConversionSales]);
+
   const groupedFlowData = useMemo(() => {
       const filtered = flowRawData.filter(item => {
           const dataItem = item.data || "";
@@ -490,19 +616,11 @@ setRanking(finalRanking);
                   rs_acessorio: 0,
                   rs_tablet: 0,
                   rs_wearable: 0,
-                  peso_conversao: 0,
-                  acessorios_ponderado: 0,
-                  peliculas_ponderado: 0,
-                  acessorios_soma_simples: 0,
-                  peliculas_soma_simples: 0,
-                  conversoes_validas: 0,
               });
           }
 
           const group = groups.get(loja);
           const qtd = Math.max(0, Number(seller.qtd) || 0);
-          const convAcessorios = Number(seller.pct_acessorios) || 0;
-          const convPeliculas = Number(seller.conv_peliculas) || 0;
 
           group.vendedores += 1;
           group.faturamento += Number(seller.faturamento) || 0;
@@ -516,36 +634,22 @@ setRanking(finalRanking);
           group.rs_acessorio += Number(seller.rs_acessorio) || 0;
           group.rs_tablet += Number(seller.rs_tablet) || 0;
           group.rs_wearable += Number(seller.rs_wearable) || 0;
-
-          group.acessorios_soma_simples += convAcessorios;
-          group.peliculas_soma_simples += convPeliculas;
-          group.conversoes_validas += 1;
-
-          // A taxa por loja precisa ser consolidada, não uma média simples das
-          // porcentagens dos vendedores. Usamos QTD como peso operacional, que
-          // é o denominador disponível no KPI já sincronizado por vendedor.
-          if (qtd > 0) {
-              group.peso_conversao += qtd;
-              group.acessorios_ponderado += convAcessorios * qtd;
-              group.peliculas_ponderado += convPeliculas * qtd;
-          }
       });
 
       return Array.from(groups.values())
           .map((group: any) => {
-              const fallbackDivisor = Math.max(1, group.conversoes_validas);
-              const pctAcessorios = group.peso_conversao > 0
-                  ? group.acessorios_ponderado / group.peso_conversao
-                  : group.acessorios_soma_simples / fallbackDivisor;
-              const convPeliculas = group.peso_conversao > 0
-                  ? group.peliculas_ponderado / group.peso_conversao
-                  : group.peliculas_soma_simples / fallbackDivisor;
-              // Crescimento da tabela de lojas deve comparar a projeção do mês
-              // (tendência) com o mês anterior. Comparar o realizado parcial com
-              // um mês completo gera quedas artificiais como -70%.
+              // Acessórios e películas agora vêm diretamente da rota de vendas.
+              // Para cada loja:
+              //   conv. acessórios = qtd acessórios / qtd aparelhos
+              //   conv. películas  = qtd películas  / qtd aparelhos
+              // Isso respeita o período selecionado e elimina a média ponderada
+              // dos percentuais dos vendedores.
+              const salesConversion = storeSalesConversions.byStore.get(group.loja);
+
               const crescimento = group.mes_anterior > 0
                   ? (group.tendencia - group.mes_anterior) / group.mes_anterior
                   : 0;
+
               const pctSeguro = group.qtd_produtos_com_seguro > 0
                   ? group.qtd_seguros / group.qtd_produtos_com_seguro
                   : 0;
@@ -553,51 +657,37 @@ setRanking(finalRanking);
               return {
                   ...group,
                   crescimento,
-                  pct_acessorios: pctAcessorios,
-                  conv_peliculas: convPeliculas,
+                  pct_acessorios: salesConversion?.pct_acessorios ?? 0,
+                  conv_peliculas: salesConversion?.conv_peliculas ?? 0,
+                  qtd_aparelhos_vendas: salesConversion?.aparelhos ?? 0,
+                  qtd_acessorios_vendas: salesConversion?.acessorios ?? 0,
+                  qtd_peliculas_vendas: salesConversion?.peliculas ?? 0,
                   pct_seguro: pctSeguro,
               };
           })
           .sort((a: any, b: any) => b.faturamento - a.faturamento);
-  }, [ranking]);
+  }, [ranking, storeSalesConversions]);
 
   const storeKpiNetworkSummary = useMemo(() => {
-      let peso = 0;
-      let acessoriosPonderado = 0;
-      let peliculasPonderado = 0;
-      let acessoriosSimples = 0;
-      let peliculasSimples = 0;
       let qtdSeguros = 0;
       let qtdProdutosComSeguro = 0;
       let segurosValor = 0;
-      let lojas = 0;
 
       storeKpiRanking.forEach((item: any) => {
-          const qtd = Math.max(0, Number(item.qtd) || 0);
-          const convAcessorios = Number(item.pct_acessorios) || 0;
-          const convPeliculas = Number(item.conv_peliculas) || 0;
-
-          acessoriosSimples += convAcessorios;
-          peliculasSimples += convPeliculas;
           qtdSeguros += Math.max(0, Number(item.qtd_seguros) || 0);
           qtdProdutosComSeguro += Math.max(0, Number(item.qtd_produtos_com_seguro) || 0);
           segurosValor += Math.max(0, Number(item.seguros) || 0);
-          lojas += 1;
-
-          if (qtd > 0) {
-              peso += qtd;
-              acessoriosPonderado += convAcessorios * qtd;
-              peliculasPonderado += convPeliculas * qtd;
-          }
       });
 
       return {
-          pct_acessorios: peso > 0 ? acessoriosPonderado / peso : acessoriosSimples / Math.max(1, lojas),
-          conv_peliculas: peso > 0 ? peliculasPonderado / peso : peliculasSimples / Math.max(1, lojas),
+          // Rede calculada diretamente sobre todas as vendas do período:
+          // total acessórios / total aparelhos e total películas / total aparelhos.
+          pct_acessorios: storeSalesConversions.network.pct_acessorios,
+          conv_peliculas: storeSalesConversions.network.conv_peliculas,
           pct_seguro: qtdProdutosComSeguro > 0 ? qtdSeguros / qtdProdutosComSeguro : 0,
           seguros: segurosValor,
       };
-  }, [storeKpiRanking]);
+  }, [storeKpiRanking, storeSalesConversions]);
 
   const totalTendencia = useMemo(() => {
       if (diasPassados === 0) return summary.total_vendas;
@@ -1061,7 +1151,7 @@ setRanking(finalRanking);
                         <Store size={14} className="text-slate-500"/>
                         <h3 className="font-black text-slate-700 uppercase text-xs">Conversão consolidada por loja</h3>
                     </div>
-                    <span className="text-[9px] font-bold text-slate-400 uppercase">Taxas ponderadas pela quantidade (QTD) dos vendedores da loja</span>
+                    <span className="text-[9px] font-bold text-slate-400 uppercase">Acessórios e películas calculados pelas vendas reais da loja no período selecionado</span>
                 </div>
                 <div className="overflow-x-auto max-h-[700px]">
                     <table className="w-full text-left border-collapse">
