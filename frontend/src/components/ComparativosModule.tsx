@@ -215,6 +215,18 @@ const normalizeDesc = (value: string) =>
     .replace(/\s+/g, ' ')
     .trim();
 
+// Exibição padronizada do modelo: quando houver capacidade, corta tudo
+// que vier depois de GB/TB. Ex.: "Galaxy A06 128GB Branco" -> "Galaxy A06 128GB".
+// A descrição completa continua sendo usada internamente para localizar
+// preço, estoque, tipo de produto e demais dados antes desta formatação.
+const formatModelWithoutColor = (value: string) => {
+  const text = normalizeLine(value || '');
+  if (!text) return '';
+
+  const storageMatch = text.match(/^(.*?\b\d+(?:[.,]\d+)?\s*(?:GB|TB)\b)/i);
+  return storageMatch?.[1]?.trim() || text;
+};
+
 const parseMoneyBR = (value: string) => {
   if (!value) return 0;
   return Number(String(value).replace(/\./g, '').replace(',', '.').replace(/[^\d.-]/g, '')) || 0;
@@ -1779,7 +1791,7 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
         // Estoque zero e COMPUTER já nascem em "Desconsiderados".
         isSelected: !shouldIgnoreAutomatically,
         comparativoKind: kind,
-        descricao: resolvedDescription,
+        descricao: formatModelWithoutColor(resolvedDescription),
         referencia,
         precoSamsung,
         precoTelecel,
@@ -2111,7 +2123,32 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
     const traducaoMap = buildTraducaoMap(pendingData.traducaoRows);
     const stockMap = buildStockMap(pendingData.stockRows);
 
-    const letterRows = pendingData.pdfItems.map((item) => {
+    type LetterInvestmentType = 'REBATE' | 'TRADE IN' | 'BOGO' | 'SIP' | 'NÃO IDENTIFICADO';
+
+    const getProductTypeLabel = (productType: DiscountProductType) => {
+      if (productType === 'SMART PHONE') return 'SMARTPHONE';
+      if (productType === 'ACCESSORY') return 'ACESSÓRIO';
+      if (productType === 'HA : HTS') return 'HTS';
+      if (productType === 'CTV : COLOR TV') return 'TV';
+      if (productType === 'UNKNOWN') return '';
+      return productType;
+    };
+
+    const getInvestmentTypeLabel = (
+      investmentType: LetterInvestmentType,
+      productType: DiscountProductType,
+      fallbackType: string
+    ) => {
+      const productLabel = getProductTypeLabel(productType);
+
+      if (investmentType === 'NÃO IDENTIFICADO') {
+        return normalizeLine(fallbackType || productLabel || 'NÃO IDENTIFICADO').toUpperCase();
+      }
+
+      return [investmentType, productLabel].filter(Boolean).join(' ').trim();
+    };
+
+    const letterRows = pendingData.pdfItems.flatMap((item) => {
       const basicModel = normalizeBasicModel(item.modeloPdf);
       const traducao = traducaoMap.get(basicModel);
       const descricao =
@@ -2133,71 +2170,58 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
       const formulaFactor = getDiscountFormulaFactor(productType);
       const prices = getCampaignPriceFields(item);
 
-      const descontoRebate = calculateDiscountFromPrice(
-        prices.priceRebate,
-        formulaFactor
-      );
-      const descontoTradeIn = calculateDiscountFromPrice(
-        prices.priceTradeIn,
-        formulaFactor
-      );
-      const descontoBogo = calculateDiscountFromPrice(
-        prices.priceBogo,
-        formulaFactor
-      );
-      const descontoSip = calculateDiscountFromPrice(
-        prices.priceSip,
-        formulaFactor
-      );
-
-      const investmentTypes = [
-        prices.priceRebate > 0 ? 'REBATE' : '',
-        prices.priceTradeIn > 0 ? 'TRADE IN' : '',
-        prices.priceBogo > 0 ? 'BOGO' : '',
-        prices.priceSip > 0 ? 'SIP' : '',
-      ].filter(Boolean);
-
-      return {
-        investmentTypes,
-        excelRow: {
-          'CAMPANHA': item.campanha,
-          'TIPO DA CARTA': item.tipoCampanha,
-          'TIPO DE INVESTIMENTO': investmentTypes.join(' + ') || 'NÃO IDENTIFICADO',
-          'PERÍODO': item.inicio && item.termino ? `${item.inicio} a ${item.termino}` : '-',
-          'MODELO NA CARTA': item.modeloPdf,
-          'MODELO TRADUZIDO': descricao,
-          'REFERÊNCIA': referencia,
-          'TIPO DE PRODUTO': productType,
-          'FATOR DA FÓRMULA': formulaFactor,
-          'QTD DISPONÍVEL NA CARTA': item.quantidadeCarta,
-          'QTD DISPONÍVEL EM ESTOQUE': stock?.quantidade || 0,
-          'PRICE REBATE': prices.priceRebate,
-          'DESCONTO REBATE': descontoRebate,
-          'PRICE TRADE IN': prices.priceTradeIn,
-          'DESCONTO TRADE IN': descontoTradeIn,
-          'PRICE BOGO': prices.priceBogo,
-          'DESCONTO BOGO': descontoBogo,
-          'PRICE SIP': prices.priceSip,
-          'DESCONTO SIP': descontoSip,
-          'PRICE TOTAL DA CARTA':
-            prices.priceRebate +
-            prices.priceTradeIn +
-            prices.priceBogo +
-            prices.priceSip,
-          'DESCONTO TOTAL CALCULADO':
-            descontoRebate +
-            descontoTradeIn +
-            descontoBogo +
-            descontoSip,
-          'VERBA TOTAL DA CARTA': item.verbaTotal,
-          'TRADUÇÃO ENCONTRADA': traducao ? 'SIM' : 'NÃO',
-        },
+      const discounts: Record<Exclude<LetterInvestmentType, 'NÃO IDENTIFICADO'>, number> = {
+        REBATE: calculateDiscountFromPrice(prices.priceRebate, formulaFactor),
+        'TRADE IN': calculateDiscountFromPrice(prices.priceTradeIn, formulaFactor),
+        BOGO: calculateDiscountFromPrice(prices.priceBogo, formulaFactor),
+        SIP: calculateDiscountFromPrice(prices.priceSip, formulaFactor),
       };
+
+      const activeInvestments: LetterInvestmentType[] = [
+        ...(prices.priceRebate > 0 ? (['REBATE'] as LetterInvestmentType[]) : []),
+        ...(prices.priceTradeIn > 0 ? (['TRADE IN'] as LetterInvestmentType[]) : []),
+        ...(prices.priceBogo > 0 ? (['BOGO'] as LetterInvestmentType[]) : []),
+        ...(prices.priceSip > 0 ? (['SIP'] as LetterInvestmentType[]) : []),
+      ];
+
+      const investments = activeInvestments.length
+        ? activeInvestments
+        : (['NÃO IDENTIFICADO'] as LetterInvestmentType[]);
+
+      return investments.map((investmentType) => {
+        const desconto =
+          investmentType === 'NÃO IDENTIFICADO'
+            ? 0
+            : discounts[investmentType];
+
+        return {
+          investmentType,
+          excelRow: {
+            'CONDICION': item.refCampanha || '',
+            'CAMPANHA': item.campanha || '',
+            'TIPO': getInvestmentTypeLabel(
+              investmentType,
+              productType,
+              item.tipoCampanha
+            ),
+            'VIGÊNCIA':
+              item.inicio && item.termino
+                ? `${item.inicio} À ${item.termino}`
+                : item.inicio || item.termino || '',
+            'NOMENCLATURA CARTA': item.modeloPdf || '',
+            'MODELO': formatModelWithoutColor(resolvedDescription || descricao),
+            'SKU': referencia || '',
+            'VERBA UNIT.': Number(item.verbaUnitaria || 0),
+            'TARGET': Number(item.quantidadeCarta || 0),
+            'DESCONTO': Number(desconto || 0),
+          },
+        };
+      });
     });
 
     const workbook = XLSX.utils.book_new();
 
-    const sheetDefinitions: Array<{ key: string; label: string }> = [
+    const sheetDefinitions: Array<{ key: LetterInvestmentType; label: string }> = [
       { key: 'REBATE', label: 'Rebate' },
       { key: 'TRADE IN', label: 'Trade In' },
       { key: 'BOGO', label: 'Bogo' },
@@ -2208,48 +2232,58 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
     const appendInvestmentSheet = (sheetName: string, rowsToExport: any[]) => {
       if (!rowsToExport.length) return;
 
-      const worksheet = XLSX.utils.json_to_sheet(rowsToExport);
+      const worksheet = XLSX.utils.json_to_sheet(rowsToExport, {
+        header: [
+          'CONDICION',
+          'CAMPANHA',
+          'TIPO',
+          'VIGÊNCIA',
+          'NOMENCLATURA CARTA',
+          'MODELO',
+          'SKU',
+          'VERBA UNIT.',
+          'TARGET',
+          'DESCONTO',
+        ],
+      });
 
       if (worksheet['!ref']) {
         worksheet['!autofilter'] = { ref: worksheet['!ref'] };
       }
 
       worksheet['!cols'] = [
-        { wch: 38 }, // CAMPANHA
-        { wch: 27 }, // TIPO DA CARTA
-        { wch: 24 }, // TIPO DE INVESTIMENTO
-        { wch: 26 }, // PERÍODO
-        { wch: 24 }, // MODELO NA CARTA
-        { wch: 42 }, // MODELO TRADUZIDO
-        { wch: 18 }, // REFERÊNCIA
-        { wch: 20 }, // TIPO DE PRODUTO
-        { wch: 18 }, // FATOR DA FÓRMULA
-        { wch: 24 }, // QTD CARTA
-        { wch: 26 }, // QTD ESTOQUE
-        { wch: 16 }, // PRICE REBATE
-        { wch: 18 }, // DESCONTO REBATE
-        { wch: 18 }, // PRICE TRADE IN
-        { wch: 20 }, // DESCONTO TRADE IN
-        { wch: 16 }, // PRICE BOGO
-        { wch: 18 }, // DESCONTO BOGO
-        { wch: 14 }, // PRICE SIP
-        { wch: 16 }, // DESCONTO SIP
-        { wch: 22 }, // PRICE TOTAL
-        { wch: 26 }, // DESCONTO TOTAL
-        { wch: 22 }, // VERBA TOTAL
-        { wch: 20 }, // TRADUÇÃO
+        { wch: 22 }, // CONDICION
+        { wch: 58 }, // CAMPANHA
+        { wch: 24 }, // TIPO
+        { wch: 27 }, // VIGÊNCIA
+        { wch: 26 }, // NOMENCLATURA CARTA
+        { wch: 36 }, // MODELO
+        { wch: 18 }, // SKU
+        { wch: 14 }, // VERBA UNIT.
+        { wch: 10 }, // TARGET
+        { wch: 14 }, // DESCONTO
       ];
+
+      // Mantém os valores numéricos como número no Excel e aplica formato monetário.
+      const range = worksheet['!ref'] ? XLSX.utils.decode_range(worksheet['!ref']) : null;
+      if (range) {
+        for (let rowIndex = range.s.r + 1; rowIndex <= range.e.r; rowIndex += 1) {
+          const verbaCell = worksheet[XLSX.utils.encode_cell({ r: rowIndex, c: 7 })];
+          const targetCell = worksheet[XLSX.utils.encode_cell({ r: rowIndex, c: 8 })];
+          const descontoCell = worksheet[XLSX.utils.encode_cell({ r: rowIndex, c: 9 })];
+
+          if (verbaCell) verbaCell.z = 'R$ #,##0.00';
+          if (targetCell) targetCell.z = '0';
+          if (descontoCell) descontoCell.z = 'R$ #,##0.00';
+        }
+      }
 
       XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
     };
 
     sheetDefinitions.forEach(({ key, label }) => {
       const rowsForSheet = letterRows
-        .filter(({ investmentTypes }) =>
-          key === 'NÃO IDENTIFICADO'
-            ? investmentTypes.length === 0
-            : investmentTypes.includes(key)
-        )
+        .filter(({ investmentType }) => investmentType === key)
         .map(({ excelRow }) => excelRow);
 
       appendInvestmentSheet(label, rowsForSheet);
@@ -2257,12 +2291,14 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
 
     // Salvaguarda: o XLSX exige pelo menos uma aba no arquivo.
     if (workbook.SheetNames.length === 0) {
-      appendInvestmentSheet('Cartas', letterRows.map(({ excelRow }) => excelRow));
+      appendInvestmentSheet(
+        'Cartas',
+        letterRows.map(({ excelRow }) => excelRow)
+      );
     }
 
     XLSX.writeFile(workbook, `cartas_traduzidas_${Date.now()}.xlsx`);
   };
-
 
   const openSendToFlowModal = () => {
     if (!rows.length) {

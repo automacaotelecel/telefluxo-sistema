@@ -62,6 +62,7 @@ import {
   Menu,
   X,
   ShieldCheck,
+  ExternalLink,
 } from 'lucide-react';
 
 const DEFAULT_EXPANDED = {
@@ -1032,6 +1033,18 @@ function App() {
                 }, 80);
               }}
             />
+
+            <a
+              href="https://cronograma-topaz.vercel.app/"
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Abrir Demandas e projetos"
+              className="inline-flex h-10 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-[10px] font-black uppercase tracking-wide text-slate-600 shadow-sm transition-all hover:border-orange-300 hover:bg-orange-50 hover:text-orange-600 md:px-4"
+            >
+              <ExternalLink size={15} className="shrink-0" />
+              <span className="hidden xl:inline">Demandas e projetos</span>
+            </a>
+
             <Clark
               currentUser={user}
               placement="header"
