@@ -1,6 +1,6 @@
 
 import React, { useMemo, useRef, useState } from 'react';
-import { AlertCircle, Bot, FileSpreadsheet, Link2, RefreshCw, Search, UploadCloud, X } from 'lucide-react';
+import { AlertCircle, Bot, FileSpreadsheet, Link2, Search, UploadCloud, X } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
 import * as XLSX from 'xlsx';
 import OnlinePricesAgent from './OnlinePricesAgent';
@@ -95,8 +95,6 @@ type PendingComparativoData = {
   priceRows: any[];
   priceGuideRows: any[];
   salesRows: any[];
-  onlineRows: any[];
-  onlineGeneratedAt?: string;
 };
 
 
@@ -139,10 +137,6 @@ type LinhaTabela = {
   ofertaAtual: number;
   lojas: string;
   status: string;
-  precoOnline: number | null;
-  lojaOnline: string;
-  tituloOnline: string;
-  atualizadoOnline: string;
 };
 
 const formatMoney = (value: number | null | undefined) => {
@@ -215,16 +209,43 @@ const normalizeDesc = (value: string) =>
     .replace(/\s+/g, ' ')
     .trim();
 
-// Exibição padronizada do modelo: quando houver capacidade, corta tudo
-// que vier depois de GB/TB. Ex.: "Galaxy A06 128GB Branco" -> "Galaxy A06 128GB".
+// Exibição padronizada do modelo:
+// 1) quando houver capacidade, corta tudo que vier depois de GB/TB;
+// 2) para wearables, buds e demais produtos sem memória, remove somente
+//    sufixos de cor no final da descrição.
 // A descrição completa continua sendo usada internamente para localizar
 // preço, estoque, tipo de produto e demais dados antes desta formatação.
+const COLOR_SUFFIX_WORDS = [
+  'PRETO', 'PRETA', 'BLACK', 'JET',
+  'BRANCO', 'BRANCA', 'WHITE',
+  'AZUL', 'BLUE', 'NAVY', 'ICY',
+  'CINZA', 'GRAY', 'GREY', 'GRAFITE', 'GRAPHITE',
+  'VERDE', 'GREEN', 'MINT',
+  'VIOLETA', 'PURPLE', 'ROXO', 'ROXA', 'LILAS', 'LILÁS', 'LAVANDA', 'LAVENDER',
+  'PRATA', 'SILVER', 'SHADOW',
+  'DOURADO', 'DOURADA', 'GOLD',
+  'ROSA', 'ROSE', 'PINK',
+  'BEGE', 'BEIGE', 'CREME', 'CREAM', 'SAND',
+  'VERMELHO', 'VERMELHA', 'RED', 'BORDO', 'BORDÔ', 'BURGUNDY',
+  'LARANJA', 'ORANGE', 'CORAL',
+  'AMARELO', 'AMARELA', 'YELLOW',
+  'MARROM', 'BROWN', 'MOCHA',
+  'TITANIUM', 'TITANIO', 'TITÂNIO',
+];
+
+const COLOR_SUFFIX_PATTERN = new RegExp(
+  `(?:\\s*[-/|]\\s*|\\s+)(?:${COLOR_SUFFIX_WORDS.join('|')})(?:\\s+(?:${COLOR_SUFFIX_WORDS.join('|')}))*\\s*$`,
+  'i'
+);
+
 const formatModelWithoutColor = (value: string) => {
   const text = normalizeLine(value || '');
   if (!text) return '';
 
   const storageMatch = text.match(/^(.*?\b\d+(?:[.,]\d+)?\s*(?:GB|TB)\b)/i);
-  return storageMatch?.[1]?.trim() || text;
+  if (storageMatch?.[1]) return storageMatch[1].trim();
+
+  return text.replace(COLOR_SUFFIX_PATTERN, '').trim();
 };
 
 const parseMoneyBR = (value: string) => {
@@ -626,9 +647,13 @@ const buildPriceGuideMap = (rows: any[]) => {
     const descontoTelecel = toNumber(
       getCandidate(row, [
         'DESC. TELECEL',
+        'DESC.TELECEL',
         'DESC TELECEL',
         'DESCONTO TELECEL',
         'TOTAL DESCONTO TELECEL',
+        // Fallback pela estrutura atual da planilha: a coluna de
+        // DESC. TELECEL vem logo após PREÇO SSG. O cabeçalho sempre
+        // tem prioridade; a letra fica apenas como salvaguarda.
         '__colE',
       ])
     );
@@ -882,24 +907,6 @@ const parseCampaignFromPdf = async (file: File): Promise<PdfItem[]> => {
   }));
 };
 
-
-const buildOnlinePriceMap = (rows: any[]) => {
-  const map = new Map<string, { preco: number; loja: string; titulo: string }>();
-  rows.forEach((item) => {
-    const status = String(item?.disponibilidade || '').toLowerCase();
-    const preco = toNumber(item?.precoAvistaOnline);
-    if (status !== 'encontrado' || preco <= 0) return;
-    [normalizeDesc(item?.modelo || ''), familyFromReference(item?.modelo || '')]
-      .filter(Boolean)
-      .forEach((key) => {
-        const current = map.get(key);
-        if (!current || preco < current.preco) {
-          map.set(key, { preco, loja: String(item?.loja || '').trim(), titulo: String(item?.titulo || item?.modelo || '').trim() });
-        }
-      });
-  });
-  return map;
-};
 
 const buildTraducaoMap = (rows: any[]) => {
   const map = new Map<string, TraducaoMkt>();
@@ -1491,8 +1498,21 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
   ]);
   const [showPriceDetails, setShowPriceDetails] = useState(false);
   const [showOfferDetails, setShowOfferDetails] = useState(false);
+  const [showIgnoredRows, setShowIgnoredRows] = useState(false);
   const [draggedRowKey, setDraggedRowKey] = useState<string | null>(null);
   const [columnWidths, setColumnWidths] = useState<Record<string, number>>(() => DEFAULT_COLUMN_WIDTHS);
+  const [tableViewportHeight, setTableViewportHeight] = useState(() => {
+    if (typeof window === 'undefined') return 460;
+
+    try {
+      const saved = Number(window.localStorage.getItem('telefluxo_comparativo_table_height'));
+      if (Number.isFinite(saved) && saved >= 220) return saved;
+    } catch {
+      // mantém o tamanho padrão quando o navegador bloquear localStorage
+    }
+
+    return Math.max(320, Math.min(520, Math.round(window.innerHeight * 0.48)));
+  });
 
   const activeDiscountFields = useMemo(
     () => DISCOUNT_COLUMN_OPTIONS.map((item) => item.key).filter((key) => visibleDiscountFields.includes(key)),
@@ -1544,6 +1564,46 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
     };
 
     document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+  };
+
+
+  const startTableHeightResize = (event: React.MouseEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const startY = event.clientY;
+    const startHeight = tableViewportHeight;
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      const maxHeight = Math.max(360, window.innerHeight - 180);
+      const nextHeight = Math.min(
+        maxHeight,
+        Math.max(220, startHeight + moveEvent.clientY - startY)
+      );
+
+      setTableViewportHeight(nextHeight);
+
+      try {
+        window.localStorage.setItem(
+          'telefluxo_comparativo_table_height',
+          String(Math.round(nextHeight))
+        );
+      } catch {
+        // mantém o redimensionamento apenas nesta sessão quando necessário
+      }
+    };
+
+    const handleMouseUp = () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+
+    document.body.style.cursor = 'row-resize';
     document.body.style.userSelect = 'none';
     window.addEventListener('mousemove', handleMouseMove);
     window.addEventListener('mouseup', handleMouseUp);
@@ -1693,7 +1753,6 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
     const priceMap = buildPriceMap(data.priceRows);
     const priceGuideMap = buildPriceGuideMap(data.priceGuideRows);
     const salesMap = buildSalesMap(data.salesRows);
-    const onlineMap = buildOnlinePriceMap(data.onlineRows);
 
     const getSalesQuantity = (descricao: string, referencia: string) => {
       const capacity = extractStorageCapacity(descricao);
@@ -1749,15 +1808,20 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
       const precoTabelaTelecel = price?.precoTelecel || 0;
       const ofertaAtual = priceGuide?.ofertaAtual || price?.ofertaAtual || 0;
 
-      // Desconto Telecel é exclusivamente a diferença entre o preço Samsung
-      // e o preço de tabela Telecel. Os investimentos das cartas não entram aqui.
-      const totalDescontoTelecel =
-        precoSamsung > 0 && precoTabelaTelecel > 0
+      // DESC. TELECEL deve vir da planilha TABELA DE PREÇOS SAMSUNG.
+      // Importante: zero também é um valor válido da planilha, portanto,
+      // quando encontramos o produto no priceGuide, não recalculamos o
+      // desconto pela diferença entre preços.
+      const totalDescontoTelecel = priceGuide
+        ? Math.max(Number(priceGuide.descontoTelecel || 0), 0)
+        : precoSamsung > 0 && precoTabelaTelecel > 0
           ? Math.max(precoSamsung - precoTabelaTelecel, 0)
           : 0;
 
-      // Regra explícita do comparativo:
-      // Preço Telecel = Preço Samsung - Desconto Telecel.
+      // Regra do comparativo:
+      // Preço Telecel = Preço Samsung - DESC. TELECEL da planilha.
+      // Se o modelo não existir no priceGuide, preserva o preço vindo
+      // da tabela interna como fallback.
       const precoTelecel =
         precoSamsung > 0
           ? Math.max(precoSamsung - totalDescontoTelecel, 0)
@@ -1778,12 +1842,6 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
       const effectivePriceTradeIn = hasOferta ? (campaignPrices?.priceTradeIn || 0) : 0;
       const effectivePriceBogo = hasOferta ? (campaignPrices?.priceBogo || 0) : 0;
       const effectivePriceSip = hasOferta ? (campaignPrices?.priceSip || 0) : 0;
-
-      const online =
-        onlineMap.get(normalizeDesc(resolvedDescription)) ||
-        onlineMap.get(normalizeDesc(descricao)) ||
-        onlineMap.get(referencia) ||
-        null;
 
       const baseRow: LinhaTabela = {
         rowKey,
@@ -1829,10 +1887,6 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
         ofertaAtual,
         lojas: stock?.lojas.join(' | ') || '-',
         status: stock?.status || '-',
-        precoOnline: online?.preco ?? null,
-        lojaOnline: online?.loja || '-',
-        tituloOnline: online?.titulo || '',
-        atualizadoOnline: data.onlineGeneratedAt || '',
       };
 
       return recalculateRow(baseRow);
@@ -1933,7 +1987,7 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
     return {
       finalRows,
       apiInfoText:
-        `Google Sheets: ${traducaoMap.size} modelos · Online: ${onlineMap.size} chaves · Cartas: ${selectedPdfItems.length} itens · Guia preços: ${priceGuideMap.byDesc.size + priceGuideMap.byVariant.size} chaves · Estoque: ${stockMap.size} variantes · Vendas mês: ${salesMap.byVariant.size} variantes · Preços sistema: ${priceMap.byDesc.size + priceMap.byVariant.size} chaves`,
+        `Google Sheets: ${traducaoMap.size} modelos · Cartas: ${selectedPdfItems.length} itens · Guia preços: ${priceGuideMap.byDesc.size + priceGuideMap.byVariant.size} chaves · Estoque: ${stockMap.size} variantes · Vendas mês: ${salesMap.byVariant.size} variantes · Preços sistema: ${priceMap.byDesc.size + priceMap.byVariant.size} chaves`,
     };
   };
 
@@ -1960,7 +2014,7 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
       const pdfItems = (await Promise.all(pdfFiles.map((file) => parseCampaignFromPdf(file)))).flat();
       const { startDate, endDate } = getCurrentMonthRange();
       const userId = String(currentUser?.id || getCurrentUserId() || '');
-      const [baseResp, stockResp, priceResp, priceGuideResp, salesResp, onlineResp] = await Promise.all([
+      const [baseResp, stockResp, priceResp, priceGuideResp, salesResp] = await Promise.all([
         fetchJsonFromCandidates('/api/comparativos/mkt-base'),
         fetchJsonFromCandidates(`/stock?userId=${encodeURIComponent(userId)}`),
         fetchJsonFromCandidates('/price-table?category=Aparelhos'),
@@ -1968,20 +2022,14 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
         userId && startDate && endDate
           ? fetchJsonFromCandidates(`/api/comparativos/vendas-modelos?userId=${encodeURIComponent(userId)}&startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}`)
           : Promise.resolve({ url: '', data: { sales: [] } }),
-        userId
-          ? fetchJsonFromCandidates(`/api/online-prices/latest?userId=${encodeURIComponent(userId)}`).catch(() => ({ url: '', data: { latest: null } }))
-          : Promise.resolve({ url: '', data: { latest: null } }),
       ]);
       const traducaoRows = Array.isArray(baseResp.data?.rows) ? baseResp.data.rows : Array.isArray(baseResp.data) ? baseResp.data : [];
-      const latestOnline = onlineResp.data?.latest || null;
       const nextPendingData: PendingComparativoData = {
         pdfItems, traducaoRows,
         stockRows: Array.isArray(stockResp.data) ? stockResp.data : [],
         priceRows: Array.isArray(priceResp.data) ? priceResp.data : [],
         priceGuideRows: Array.isArray(priceGuideResp.data) ? priceGuideResp.data : [],
         salesRows: Array.isArray(salesResp.data?.sales) ? salesResp.data.sales : [],
-        onlineRows: Array.isArray(latestOnline?.results) ? latestOnline.results : [],
-        onlineGeneratedAt: String(latestOnline?.createdAt || ''),
       };
       setPendingData(nextPendingData); setCompareKindDraft('REBATE_TRADEIN'); setShowCompareModal(true);
       setApiInfo(`Cartas lidas: ${pdfItems.length} itens. Escolha o tipo de comparativo para tratar.`);
@@ -2050,6 +2098,43 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
     vendida: filteredRows.reduce((sum, r) => sum + r.qtdVendida, 0),
     verba: filteredRows.reduce((sum, r) => sum + r.verbaTotal, 0),
   }), [filteredRows]);
+
+
+  const onlineComparativoModels = useMemo(() => {
+    const seen = new Set<string>();
+
+    return rows
+      // ONLINE = todos os modelos vindos das cartas + todos os modelos
+      // que permanecem na aba "Sem ofertas".
+      .filter((row) => row.hasOferta || (!row.hasOferta && row.isSelected))
+      .filter((row) => {
+        const key = [
+          normalizeDesc(row.descricao || ''),
+          normalizeReference(row.referencia || ''),
+          normalizeBasicModel(row.basicModel || row.modeloPdf || ''),
+        ].join('|');
+
+        if (!key.replace(/\|/g, '')) return false;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .map((row) => ({
+        descricao: row.descricao,
+        referencia: row.referencia,
+        basicModel: row.basicModel,
+        modeloPdf: row.modeloPdf,
+        // O preço mostrado no ONLINE acompanha o preço promocional do
+        // comparativo em tempo real. Se ainda não houver promoção calculada,
+        // usa o preço Telecel de tabela como fallback.
+        precoTelecel:
+          Number(row.precoPromocional || 0) > 0
+            ? Number(row.precoPromocional || 0)
+            : Number(row.precoTelecel || 0),
+        hasOferta: row.hasOferta,
+        rowKey: row.rowKey,
+      }));
+  }, [rows]);
 
   const buildExportData = (sourceRows: LinhaTabela[]) =>
     sourceRows
@@ -2438,7 +2523,7 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
                 className="inline-flex items-center gap-2 rounded-xl bg-orange-600 px-4 py-2.5 text-xs font-black text-white shadow-sm transition-colors hover:bg-orange-700"
               >
                 <Bot size={15} />
-                Preços Online
+                Online
               </button>
 
               <button
@@ -2518,7 +2603,7 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
                 onClick={() => setActiveTab('online')}
                 className={`rounded-xl px-4 py-2 text-xs font-black uppercase tracking-widest transition ${activeTab === 'online' ? 'bg-orange-600 text-white shadow-sm' : 'bg-orange-50 text-orange-700 hover:bg-orange-100'}`}
               >
-                <span className="inline-flex items-center gap-1"><Link2 size={13} /> Online ({rows.filter((row) => Number(row.precoOnline || 0) > 0).length})</span>
+                <span className="inline-flex items-center gap-1"><Link2 size={13} /> Online ({onlineComparativoModels.length})</span>
               </button>
             </div>
 
@@ -2530,38 +2615,15 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
           </div>
 
           {activeTab === 'online' && (
-            <div className="mb-3 overflow-hidden rounded-2xl border border-orange-200 bg-white shadow-sm">
-              <div className="flex items-center justify-between border-b border-orange-100 bg-orange-50 px-4 py-3">
-                <div>
-                  <h3 className="text-sm font-black uppercase text-orange-800">Menor preço online por produto</h3>
-                  <p className="text-[10px] font-semibold text-orange-700">Fonte: última execução do Comparativo Online.</p>
-                </div>
-                <button type="button" onClick={() => setShowOnlinePricesModal(true)} className="inline-flex items-center gap-2 rounded-xl bg-orange-600 px-3 py-2 text-[10px] font-black uppercase text-white"><RefreshCw size={13} /> Atualizar pesquisa</button>
-              </div>
-              <div className="max-h-[520px] overflow-auto">
-                <table className="w-full min-w-[900px] text-left text-xs">
-                  <thead className="sticky top-0 bg-slate-100 text-[10px] font-black uppercase text-slate-500">
-                    <tr><th className="px-4 py-3">Produto</th><th className="px-4 py-3">Referência</th><th className="px-4 py-3 text-right">Preço Telecel</th><th className="px-4 py-3 text-right">Menor online</th><th className="px-4 py-3 text-right">Diferença</th><th className="px-4 py-3">Loja</th></tr>
-                  </thead>
-                  <tbody>
-                    {filteredRows.map((row) => {
-                      const onlinePrice = Number(row.precoOnline || 0);
-                      const diff = onlinePrice > 0 && row.precoTelecel > 0 ? row.precoTelecel - onlinePrice : null;
-                      return <tr key={`online-${row.rowKey}`} className="border-t border-slate-100">
-                        <td className="px-4 py-3 font-black text-slate-800">{row.descricao}</td>
-                        <td className="px-4 py-3 font-bold text-slate-500">{row.referencia || '-'}</td>
-                        <td className="px-4 py-3 text-right font-bold">{formatMoney(row.precoTelecel)}</td>
-                        <td className="px-4 py-3 text-right font-black text-orange-700">{onlinePrice > 0 ? formatMoney(onlinePrice) : 'Não encontrado'}</td>
-                        <td className={`px-4 py-3 text-right font-black ${diff !== null && diff > 0 ? 'text-red-600' : 'text-emerald-600'}`}>{diff === null ? '-' : formatMoney(diff)}</td>
-                        <td className="px-4 py-3 font-bold text-slate-600">{row.lojaOnline || '-'}</td>
-                      </tr>;
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
+            <OnlinePricesAgent
+              currentUser={currentUser}
+              comparativoModels={onlineComparativoModels}
+              embedded
+            />
           )}
 
+          {activeTab !== 'online' && (
+            <>
           <div className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
             <div
               ref={topScrollRef}
@@ -2574,8 +2636,13 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
             <div
               ref={tableScrollRef}
               onScroll={() => syncHorizontalScroll('table')}
-              className="comparativo-scroll max-h-[50vh] min-h-[220px] w-full overflow-x-scroll overflow-y-auto rounded-xl pb-3"
-              style={{ scrollbarGutter: 'stable both-edges' }}
+              className="comparativo-scroll w-full overflow-x-scroll overflow-y-auto rounded-xl pb-3"
+              style={{
+                scrollbarGutter: 'stable both-edges',
+                height: tableViewportHeight,
+                minHeight: 220,
+                maxHeight: 'calc(100vh - 180px)',
+              }}
             >
               <table style={tableWidthStyle} className="table-fixed border-separate border-spacing-0 bg-white">
                 <colgroup>
@@ -2719,7 +2786,7 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
                               className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
                               title="Desmarcar e mover para o campo desconsiderados"
                             />
-                            <span className="truncate" title={row.descricao || '-'}>{row.descricao || '-'}</span>
+                            <span className="truncate uppercase" title={(row.descricao || '-').toUpperCase()}>{(row.descricao || '-').toUpperCase()}</span>
                           </div>
                         </TableCell>
 
@@ -2814,22 +2881,49 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
                 </tbody>
               </table>
             </div>
+
+            <div
+              role="separator"
+              aria-orientation="horizontal"
+              title="Arraste para aumentar ou diminuir a altura do comparativo"
+              onMouseDown={startTableHeightResize}
+              onDoubleClick={() => setTableViewportHeight(460)}
+              className="group flex h-4 cursor-row-resize select-none items-center justify-center border-t border-slate-100 bg-slate-50/80 hover:bg-slate-100"
+            >
+              <div className="flex items-center gap-2 text-[9px] font-black uppercase tracking-[0.16em] text-slate-400 group-hover:text-slate-600">
+                <span className="h-[2px] w-10 rounded-full bg-slate-300" />
+                <span>↕ Ajustar altura</span>
+                <span className="h-[2px] w-10 rounded-full bg-slate-300" />
+              </div>
+            </div>
           </div>
 
           {filteredIgnoredRows.length > 0 && (
             <div className="mt-3 rounded-2xl border border-orange-300 bg-orange-50/90 shadow-sm">
-              <div className="flex flex-wrap items-center justify-between gap-2 rounded-t-2xl border-b border-orange-200 bg-orange-100/95 px-3 py-2">
-                <div>
+              <div className={`flex flex-wrap items-center justify-between gap-2 bg-orange-100/95 px-3 py-2 ${showIgnoredRows ? 'rounded-t-2xl border-b border-orange-200' : 'rounded-2xl'}`}>
+                <div className="min-w-0">
                   <h3 className="text-xs font-black uppercase tracking-[0.18em] text-orange-800">Campo desconsiderados</h3>
                   <p className="mt-0.5 text-[11px] font-semibold text-orange-700">
                     Aparelhos presentes na carta, mas fora do comparativo principal, do Excel e do envio para análise.
                   </p>
                 </div>
-                <span className="rounded-full bg-white px-3 py-1 text-[11px] font-black text-orange-700 shadow-sm">
-                  {filteredIgnoredRows.length} itens
-                </span>
+
+                <div className="flex items-center gap-2">
+                  <span className="rounded-full bg-white px-3 py-1 text-[11px] font-black text-orange-700 shadow-sm">
+                    {filteredIgnoredRows.length} itens
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setShowIgnoredRows((current) => !current)}
+                    className="inline-flex items-center gap-2 rounded-lg border border-orange-300 bg-white px-3 py-1.5 text-[10px] font-black uppercase tracking-wider text-orange-700 shadow-sm transition hover:bg-orange-50"
+                  >
+                    <span>{showIgnoredRows ? 'Recolher' : 'Ver itens'}</span>
+                    <span className="text-sm leading-none">{showIgnoredRows ? '▴' : '▾'}</span>
+                  </button>
+                </div>
               </div>
 
+              {showIgnoredRows && (
               <div className="comparativo-scroll w-full overflow-x-auto p-2">
                 <table className="w-full min-w-[1320px] table-fixed border-separate border-spacing-0 overflow-hidden rounded-xl bg-white text-[11px]">
                   <thead>
@@ -2853,7 +2947,7 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
                       return (
                         <tr key={row.rowKey} className={idx % 2 === 0 ? 'bg-white' : 'bg-orange-50/40'}>
                           <td className="border-b border-orange-100 px-3 py-2 font-black uppercase text-slate-900">
-                            <div className="truncate" title={row.descricao}>{row.descricao}</div>
+                            <div className="truncate uppercase" title={(row.descricao || '').toUpperCase()}>{(row.descricao || '').toUpperCase()}</div>
                             <div className="mt-0.5 text-[10px] font-semibold normal-case text-orange-700">
                               Desconsiderado — não entra no comparativo, Excel ou envio para análise.
                             </div>
@@ -2882,7 +2976,10 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
                   </tbody>
                 </table>
               </div>
+              )}
             </div>
+          )}
+            </>
           )}
         </div>
       </div>
@@ -3026,8 +3123,10 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
           <div className="mx-auto flex h-full max-w-[1500px] flex-col overflow-hidden rounded-3xl bg-slate-50 shadow-2xl">
             <div className="flex items-center justify-between border-b border-slate-200 bg-white px-5 py-3">
               <div>
-                <p className="text-[10px] font-black uppercase tracking-[0.22em] text-orange-600">Clark IA</p>
-                <h2 className="text-lg font-black uppercase text-slate-900">Agente Preços Online</h2>
+                <h2 className="text-lg font-black uppercase text-slate-900">Online</h2>
+                <p className="mt-0.5 text-[11px] font-semibold text-slate-500">
+                  Base do Google Sheets filtrada pelos modelos das cartas do comparativo.
+                </p>
               </div>
               <button
                 type="button"
@@ -3038,7 +3137,10 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
               </button>
             </div>
             <div className="min-h-0 flex-1 overflow-auto">
-              <OnlinePricesAgent currentUser={currentUser} />
+              <OnlinePricesAgent
+                currentUser={currentUser}
+                comparativoModels={onlineComparativoModels}
+              />
             </div>
           </div>
         </div>

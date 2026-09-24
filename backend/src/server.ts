@@ -1503,7 +1503,183 @@ async function loadGoogleSheetTranslations(): Promise<TranslationRow[]> {
   }
 
   return rows;
-}
+    }
+
+    const COMPARATIVO_ONLINE_SHEET_ID =
+      '16CRVacxj0DeV8VLEL4toDE7eA85kI_BIrifh50DwTbw';
+
+    const COMPARATIVO_ONLINE_SHEET_URL =
+      `https://docs.google.com/spreadsheets/d/16CRVacxj0DeV8VLEL4toDE7eA85kI_BIrifh50DwTbw/edit?gid=0#gid=0`;
+
+    const COMPARATIVO_ONLINE_TAB_GROUPS = [
+      ['ONLINE APARELHOS'],
+      ['ONLINE - WEARABLES E DEMAIS', 'ONLINE - REARABLES E DEMAIS'],
+    ] as const;
+
+    type ComparativoOnlineSheetPayload = {
+      name: string;
+      rows: any[][];
+    };
+
+    let comparativoOnlineCache: {
+      expiresAt: number;
+      generatedAt: string;
+      sheets: ComparativoOnlineSheetPayload[];
+    } | null = null;
+
+    function comparativoOnlineCsvUrl(sheetName: string) {
+      return (
+        `https://docs.google.com/spreadsheets/d/${COMPARATIVO_ONLINE_SHEET_ID}` +
+        `/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}`
+      );
+    }
+
+    function trimComparativoOnlineRows(rows: any[][]) {
+      const meaningfulRows = (rows || []).filter((row) =>
+        (row || []).some((cell) => String(cell ?? '').trim() !== '')
+      );
+
+      let maxColumn = 0;
+
+      for (const row of meaningfulRows) {
+        for (let index = (row?.length || 0) - 1; index >= 0; index -= 1) {
+          if (String(row?.[index] ?? '').trim() !== '') {
+            maxColumn = Math.max(maxColumn, index + 1);
+            break;
+          }
+        }
+      }
+
+      if (maxColumn <= 0) return [];
+
+      return meaningfulRows.map((row) =>
+        Array.from({ length: maxColumn }, (_, index) => row?.[index] ?? '')
+      );
+    }
+
+    async function loadComparativoOnlineSheetTab(
+        sheetNames: readonly string[]
+      ): Promise<ComparativoOnlineSheetPayload> {
+        let lastError: any = null;
+
+        for (const sheetName of sheetNames) {
+          try {
+            const csvText = await fetchText(comparativoOnlineCsvUrl(sheetName));
+            const workbook = XLSX.read(csvText, { type: 'string' });
+            const firstSheetName = workbook.SheetNames[0];
+
+            if (!firstSheetName) {
+              lastError = new Error(`Aba ${sheetName} retornou sem conteúdo.`);
+              continue;
+            }
+
+            const sheet = workbook.Sheets[firstSheetName];
+            if (!sheet) {
+              lastError = new Error(`Não consegui ler a aba ${sheetName}.`);
+              continue;
+            }
+
+            const rawRows = XLSX.utils.sheet_to_json(sheet, {
+              header: 1,
+              defval: '',
+              blankrows: false,
+              raw: false,
+            }) as any[][];
+
+            const rows = trimComparativoOnlineRows(rawRows);
+
+            if (!looksLikeComparativoOnlinePriceSheet(rows)) {
+              lastError = new Error(
+                `A aba solicitada "${sheetName}" não retornou a grade ONLINE de preços. ` +
+                `Vou tentar o próximo nome configurado.`
+              );
+              continue;
+            }
+
+            console.log(`✅ Comparativo ONLINE carregado: ${sheetName}`);
+
+            return {
+              name: sheetName,
+              rows,
+            };
+          } catch (error) {
+            lastError = error;
+          }
+        }
+
+        throw lastError || new Error(
+          `Não consegui carregar a aba ONLINE: ${sheetNames.join(' / ')}`
+        );
+      }
+
+    async function loadComparativoOnlineSheets(forceRefresh = false) {
+      const now = Date.now();
+
+      if (
+        !forceRefresh &&
+        comparativoOnlineCache &&
+        comparativoOnlineCache.expiresAt > now
+      ) {
+        return comparativoOnlineCache;
+      }
+
+      const sheets = await Promise.all(
+        COMPARATIVO_ONLINE_TAB_GROUPS.map((sheetNames) =>
+          loadComparativoOnlineSheetTab(sheetNames)
+        )
+      );
+
+      comparativoOnlineCache = {
+        expiresAt: now + 5 * 60 * 1000,
+        generatedAt: new Date().toISOString(),
+        sheets,
+      };
+
+      return comparativoOnlineCache;
+    }
+
+
+    function looksLikeComparativoOnlinePriceSheet(rows: any[][]): boolean {
+      const firstRows = (rows || []).slice(0, 12);
+      const normalized = firstRows
+        .flatMap((row) => row || [])
+        .map((cell) =>
+          String(cell ?? '')
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .toUpperCase()
+            .replace(/\s+/g, ' ')
+            .trim()
+        )
+        .filter(Boolean);
+
+      const joined = normalized.join(' | ');
+
+      const hasModel =
+        joined.includes('MODELO') ||
+        joined.includes('MODEL') ||
+        joined.includes('PRODUTO');
+
+      const onlineSignals = [
+        'MERCADO LIVRE',
+        'CARREFOUR',
+        'MAGALU',
+        'FAST SHOP',
+        'AMAZON',
+        'SITE SAMSUNG',
+        'A VISTA',
+        '12X',
+      ];
+
+      const signalCount = onlineSignals.filter((signal) =>
+        joined.includes(signal)
+      ).length;
+
+      // Evita aceitar por engano a aba MODELOS, que contém BASIC MODEL,
+      // MARKETING NAME, DESCRIÇÃO 2 e REFERÊNCIA 2, mas não possui a grade
+      // de preços por loja.
+      return hasModel && signalCount >= 2;
+    }
 
 // ==========================================
 // 1. SISTEMA OPERACIONAL (USUÁRIOS E LOGIN)
@@ -11280,6 +11456,29 @@ app.get('/api/comparativos/mkt-base', async (_req, res) => {
     res.status(500).json({
       success: false,
       error: error?.message || 'Erro ao carregar base do Google Sheets.',
+    });
+  }
+});
+
+app.get('/api/comparativos/online-sheet', async (req, res) => {
+  try {
+    const forceRefresh = String(req.query.refresh || '') === '1';
+    const payload = await loadComparativoOnlineSheets(forceRefresh);
+
+    return res.json({
+      ok: true,
+      sourceUrl: COMPARATIVO_ONLINE_SHEET_URL,
+      generatedAt: payload.generatedAt,
+      sheets: payload.sheets,
+    });
+  } catch (error: any) {
+    console.error('Erro ao carregar abas ONLINE do Google Sheets:', error);
+
+    return res.status(500).json({
+      ok: false,
+      error:
+        error?.message ||
+        'Erro ao carregar as abas ONLINE do Google Sheets.',
     });
   }
 });
