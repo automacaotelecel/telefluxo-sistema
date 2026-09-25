@@ -13091,6 +13091,1405 @@ const normalizeKeys = (rows: any[]) => {
 };
 
 // ==========================================
+// 📦 PONTO DE PEDIDO 2.0 - GOOGLE SHEETS + VENDAS + ESTOQUE + PEDIDOS
+// ==========================================
+
+const PONTO_PEDIDO_SHEET_ID = '1D3BpE__wEiw48CmsMEfkQwMeeTzV13p45ZgKhgci4bA';
+const PONTO_PEDIDO_SHEET_URL =
+  `https://docs.google.com/spreadsheets/d/${PONTO_PEDIDO_SHEET_ID}/edit?usp=sharing`;
+const PONTO_PEDIDO_CACHE_MS = 5 * 60 * 1000;
+
+type PontoPedidoWorkbookCache = {
+  expiresAt: number;
+  loadedAt: string;
+  workbook: XLSX.WorkBook;
+};
+
+let pontoPedidoWorkbookCache: PontoPedidoWorkbookCache | null = null;
+
+function pontoPedidoBrazilTodayIso(): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Sao_Paulo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date());
+
+  const values: Record<string, string> = {};
+  parts.forEach((part) => {
+    if (part.type !== 'literal') values[part.type] = part.value;
+  });
+
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
+function pontoPedidoNormalizeHeader(value: any): string {
+  return String(value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .replace(/\u00A0/g, ' ')
+    .replace(/[‐‑–—−]/g, '-')
+    .replace(/[^A-Z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function pontoPedidoIsPlanningSheet(value: any): boolean {
+  const normalized = pontoPedidoNormalizeHeader(value);
+
+  return (
+    normalized.startsWith('APA') ||
+    normalized === 'API CABEDELO' ||
+    normalized === 'AP FORTALEZA'
+  );
+}
+
+function pontoPedidoPlanningTabLabel(value: any): string {
+  const raw = String(value ?? '').trim();
+  const normalized = pontoPedidoNormalizeHeader(raw);
+
+  if (normalized === 'API CABEDELO') {
+    return 'JOÃO PESSOA';
+  }
+
+  if (normalized === 'AP FORTALEZA') {
+    return 'FORTALEZA';
+  }
+
+  return raw;
+}
+
+function pontoPedidoProductKey(value: any): string {
+  return String(value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .replace(/\u00A0/g, ' ')
+    .replace(/[‐‑–—−]/g, '-')
+    .replace(/\bSAMSUNG\b/g, ' ')
+    .replace(/\bSMARTPHONE\b/g, ' ')
+    .replace(/\bCELULAR\b/g, ' ')
+    .replace(/\bAPARELHO\b/g, ' ')
+    .replace(/(\d+)\s*(GB|TB)\b/g, '$1$2')
+    .replace(/\b(4|5)\s*G\b/g, '$1G')
+    .replace(/[^A-Z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function pontoPedidoNumber(value: any): number {
+  if (value === null || value === undefined || value === '') return 0;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+
+  let raw = String(value)
+    .replace(/\u00A0/g, ' ')
+    .replace(/R\$/gi, '')
+    .replace(/\s/g, '')
+    .trim();
+
+  if (!raw || raw === '-' || raw === '—') return 0;
+
+  if (raw.includes(',')) {
+    raw = raw.replace(/\./g, '').replace(',', '.');
+  } else {
+    raw = raw.replace(/[^0-9.-]/g, '');
+  }
+
+  const parsed = Number(raw.replace(/[^0-9.-]/g, ''));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function pontoPedidoSqlDateExpr(column: string): string {
+  return `
+    CASE
+      WHEN ${column} GLOB '____-__-__*' THEN substr(${column}, 1, 10)
+      WHEN ${column} GLOB '__/__/____*' THEN
+        substr(${column}, 7, 4) || '-' || substr(${column}, 4, 2) || '-' || substr(${column}, 1, 2)
+      ELSE substr(${column}, 1, 10)
+    END
+  `;
+}
+
+function pontoPedidoDateAddDays(iso: string, days: number): string {
+  const date = new Date(`${iso}T12:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+function pontoPedidoIsoWeek(dateInput: string | Date): { year: number; week: number } {
+  const date =
+    typeof dateInput === 'string'
+      ? new Date(`${dateInput}T12:00:00Z`)
+      : new Date(dateInput.getTime());
+
+  const target = new Date(Date.UTC(
+    date.getUTCFullYear(),
+    date.getUTCMonth(),
+    date.getUTCDate()
+  ));
+
+  const day = target.getUTCDay() || 7;
+  target.setUTCDate(target.getUTCDate() + 4 - day);
+
+  const yearStart = new Date(Date.UTC(target.getUTCFullYear(), 0, 1));
+  const week = Math.ceil((((target.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
+
+  return { year: target.getUTCFullYear(), week };
+}
+
+function pontoPedidoIsoWeekMonday(year: number, week: number): Date {
+  const jan4 = new Date(Date.UTC(year, 0, 4));
+  const jan4Day = jan4.getUTCDay() || 7;
+  const monday = new Date(jan4);
+  monday.setUTCDate(jan4.getUTCDate() - jan4Day + 1 + (week - 1) * 7);
+  monday.setUTCHours(12, 0, 0, 0);
+  return monday;
+}
+
+function pontoPedidoFormatDateBr(date: Date): string {
+  const dd = String(date.getUTCDate()).padStart(2, '0');
+  const mm = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const yyyy = date.getUTCFullYear();
+  return `${dd}/${mm}/${yyyy}`;
+}
+
+function pontoPedidoDateOnly(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+function pontoPedidoWeekRefFromDate(date: Date) {
+  const { year, week } = pontoPedidoIsoWeek(date);
+  const monday = pontoPedidoIsoWeekMonday(year, week);
+
+  // Ex.: W39/2026 = 20/09/2026 a 27/09/2026.
+  const sundayStart = new Date(monday);
+  sundayStart.setUTCDate(monday.getUTCDate() - 1);
+
+  const sundayEnd = new Date(monday);
+  sundayEnd.setUTCDate(monday.getUTCDate() + 6);
+
+  const label = `W${String(week).padStart(2, '0')}`;
+
+  return {
+    year,
+    week,
+    key: `${year}-${label}`,
+    label,
+    displayLabel:
+      `Semana ${label} de ${pontoPedidoFormatDateBr(sundayStart)} ` +
+      `a ${pontoPedidoFormatDateBr(sundayEnd)}`,
+    startDate: pontoPedidoDateOnly(sundayStart),
+    endDate: pontoPedidoDateOnly(sundayEnd),
+    monday,
+    sundayStart,
+    sundayEnd,
+  };
+}
+
+function pontoPedidoWeekRefs(todayIso: string, count = 5) {
+  const current = pontoPedidoIsoWeek(todayIso);
+  const currentMonday = pontoPedidoIsoWeekMonday(
+    current.year,
+    current.week
+  );
+
+  return Array.from({ length: count }, (_, index) => {
+    const monday = new Date(currentMonday);
+    monday.setUTCDate(
+      currentMonday.getUTCDate() + index * 7
+    );
+    return pontoPedidoWeekRefFromDate(monday);
+  });
+}
+
+function pontoPedidoParseWeek(value: any, currentYear: number): { year: number; week: number; monday: Date } | null {
+  const text = String(value ?? '').toUpperCase().trim();
+  if (!text) return null;
+
+  // Exemplos aceitos:
+  // Shopping Recife 2_A_LJ_26W33
+  // 26W33
+  // W33 (assume o ano ISO atual)
+  const match = text.match(/(?:(\d{2}|\d{4}))?W(\d{1,2})\s*$/i);
+  if (!match) return null;
+
+  const rawYear = match[1];
+  const week = Number(match[2]);
+  if (!Number.isFinite(week) || week < 1 || week > 53) return null;
+
+  let year = currentYear;
+  if (rawYear) {
+    year = rawYear.length === 2 ? 2000 + Number(rawYear) : Number(rawYear);
+  }
+
+  if (!Number.isFinite(year) || year < 2000 || year > 2200) return null;
+
+  return {
+    year,
+    week,
+    monday: pontoPedidoIsoWeekMonday(year, week),
+  };
+}
+
+function pontoPedidoFindHeaderRow(rows: any[][], wanted: string[]): number {
+  const wantedNormalized = wanted.map(pontoPedidoNormalizeHeader);
+
+  let bestIndex = -1;
+  let bestScore = 0;
+
+  rows.slice(0, 30).forEach((row, index) => {
+    const normalizedCells = (row || []).map(pontoPedidoNormalizeHeader);
+    const score = wantedNormalized.reduce((sum, target) => {
+      const found = normalizedCells.some(
+        (cell) => cell === target || cell.includes(target) || target.includes(cell)
+      );
+      return sum + (found ? 1 : 0);
+    }, 0);
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestIndex = index;
+    }
+  });
+
+  return bestScore >= 2 ? bestIndex : 0;
+}
+
+function pontoPedidoFindColumn(headers: any[], candidates: string[], fallback = -1): number {
+  const normalizedHeaders = headers.map(pontoPedidoNormalizeHeader);
+  const normalizedCandidates = candidates.map(pontoPedidoNormalizeHeader);
+
+  for (const candidate of normalizedCandidates) {
+    const exact = normalizedHeaders.findIndex((header) => header === candidate);
+    if (exact >= 0) return exact;
+  }
+
+  for (const candidate of normalizedCandidates) {
+    const partial = normalizedHeaders.findIndex(
+      (header) => header.includes(candidate) || candidate.includes(header)
+    );
+    if (partial >= 0) return partial;
+  }
+
+  return fallback;
+}
+
+function pontoPedidoSheetRows(workbook: XLSX.WorkBook, sheetName: string): any[][] {
+  const sheet = workbook.Sheets[sheetName];
+  if (!sheet) return [];
+
+  return XLSX.utils.sheet_to_json(sheet, {
+    header: 1,
+    defval: '',
+    blankrows: false,
+    raw: false,
+  }) as any[][];
+}
+
+async function pontoPedidoLoadWorkbook(forceRefresh = false): Promise<PontoPedidoWorkbookCache> {
+  const now = Date.now();
+
+  if (
+    !forceRefresh &&
+    pontoPedidoWorkbookCache &&
+    pontoPedidoWorkbookCache.expiresAt > now
+  ) {
+    return pontoPedidoWorkbookCache;
+  }
+
+  let buffer: Buffer | null = null;
+  let publicError = '';
+
+  // 1) Tenta exportar diretamente. Funciona quando o Sheets está compartilhado
+  //    para leitura por link.
+  try {
+    const exportUrl =
+      `https://docs.google.com/spreadsheets/d/1D3BpE__wEiw48CmsMEfkQwMeeTzV13p45ZgKhgci4bA/export?format=xlsx`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+
+    let response: globalThis.Response;
+
+    try {
+      response = await fetch(exportUrl, {
+        redirect: 'follow',
+        headers: { 'User-Agent': 'TeleFluxo/1.0' },
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    if (response.ok) {
+      const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+      const candidate = Buffer.from(await response.arrayBuffer());
+
+      if (candidate.length > 1000 && !contentType.includes('text/html')) {
+        buffer = candidate;
+      } else {
+        publicError = `Export público retornou conteúdo inválido (${contentType || 'sem content-type'}).`;
+      }
+    } else {
+      publicError = `Export público retornou HTTP ${response.status}.`;
+    }
+  } catch (error: any) {
+    publicError = error?.message || 'Falha no export público.';
+  }
+
+  // 2) Fallback usando a mesma conta Google já conectada ao TeleFluxo.
+  //    Basta que o arquivo esteja compartilhado com essa conta.
+  if (!buffer) {
+    try {
+      const exported = await drive.files.export(
+          {
+            fileId: PONTO_PEDIDO_SHEET_ID,
+            mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          },
+          {
+            responseType: 'arraybuffer',
+            timeout: 20000,
+          }
+        );
+
+      buffer = Buffer.from(exported.data as ArrayBuffer);
+    } catch (error: any) {
+      throw new Error(
+        `Não consegui ler o Google Sheets do Ponto de Pedido. ` +
+        `Export público: ${publicError || 'indisponível'}. ` +
+        `Drive conectado: ${error?.message || 'sem acesso ao arquivo'}.`
+      );
+    }
+  }
+
+  const workbook = XLSX.read(buffer, {
+    type: 'buffer',
+    cellDates: false,
+    cellNF: false,
+    cellText: true,
+  });
+
+  const planningTabs = workbook.SheetNames.filter(pontoPedidoIsPlanningSheet);
+  if (!planningTabs.length) {
+    throw new Error('A planilha foi carregada, mas nenhuma aba de Ponto de Pedido foi encontrada.');
+  }
+
+  const consolidated = workbook.SheetNames.find(
+    (name) => pontoPedidoNormalizeHeader(name) === 'CONSOLIDADO PEDIDOS'
+  );
+
+  if (!consolidated) {
+    throw new Error('A aba CONSOLIDADO_PEDIDOS não foi encontrada na planilha.');
+  }
+
+  pontoPedidoWorkbookCache = {
+    expiresAt: now + PONTO_PEDIDO_CACHE_MS,
+    loadedAt: new Date().toISOString(),
+    workbook,
+  };
+
+  return pontoPedidoWorkbookCache;
+}
+
+type PontoPedidoSalesMetric = {
+  descricao: string;
+  key: string;
+  vendas15: number;
+  vendas30: number;
+  vendas45: number;
+  vendas60: number;
+};
+
+async function pontoPedidoLoadSalesMetrics(todayIso: string): Promise<PontoPedidoSalesMetric[]> {
+  const start15 = pontoPedidoDateAddDays(todayIso, -14);
+  const start30 = pontoPedidoDateAddDays(todayIso, -29);
+  const start45 = pontoPedidoDateAddDays(todayIso, -44);
+  const start60 = pontoPedidoDateAddDays(todayIso, -59);
+
+  const combined = new Map<string, PontoPedidoSalesMetric>();
+  let annualMaxDate = '';
+
+  const addRows = (rows: any[]) => {
+    (rows || []).forEach((row) => {
+      const descricao = String(row.descricao || row.DESCRICAO || '').trim();
+      const key = pontoPedidoProductKey(descricao);
+      if (!key) return;
+
+      const target = combined.get(key) || {
+        descricao,
+        key,
+        vendas15: 0,
+        vendas30: 0,
+        vendas45: 0,
+        vendas60: 0,
+      };
+
+      target.vendas15 += pontoPedidoNumber(row.vendas15);
+      target.vendas30 += pontoPedidoNumber(row.vendas30);
+      target.vendas45 += pontoPedidoNumber(row.vendas45);
+      target.vendas60 += pontoPedidoNumber(row.vendas60);
+      combined.set(key, target);
+    });
+  };
+
+  // Histórico anual = fonte principal, pois cobre integralmente os 60 dias.
+  if (fs.existsSync(ANUAL_DB_PATH)) {
+    let annualDb: any;
+
+    try {
+      annualDb = await open({ filename: ANUAL_DB_PATH, driver: sqlite3.Database });
+      const exists = await annualDb.get(`
+        SELECT name FROM sqlite_master
+        WHERE type='table' AND name='vendas_anuais_raw'
+      `);
+
+      if (exists?.name) {
+        const dateExpr = pontoPedidoSqlDateExpr('data_emissao');
+
+        const maxDateRow = await annualDb.get(`
+          SELECT MAX(${dateExpr}) AS max_date
+          FROM vendas_anuais_raw
+          WHERE ${dateExpr} >= ? AND ${dateExpr} <= ?
+            AND (
+              cancelado IS NULL OR
+              UPPER(TRIM(CAST(cancelado AS TEXT))) NOT IN
+              ('S', 'SIM', 'TRUE', '1', 'CANCELADO', 'CANCELADA')
+            )
+        `, [start60, todayIso]);
+
+        annualMaxDate = String(maxDateRow?.max_date || '').slice(0, 10);
+
+        const rows = await annualDb.all(`
+          SELECT
+            descricao,
+            SUM(CASE WHEN ${dateExpr} >= ? THEN COALESCE(NULLIF(qtd_real, 0), quantidade, 0) ELSE 0 END) AS vendas15,
+            SUM(CASE WHEN ${dateExpr} >= ? THEN COALESCE(NULLIF(qtd_real, 0), quantidade, 0) ELSE 0 END) AS vendas30,
+            SUM(CASE WHEN ${dateExpr} >= ? THEN COALESCE(NULLIF(qtd_real, 0), quantidade, 0) ELSE 0 END) AS vendas45,
+            SUM(CASE WHEN ${dateExpr} >= ? THEN COALESCE(NULLIF(qtd_real, 0), quantidade, 0) ELSE 0 END) AS vendas60
+          FROM vendas_anuais_raw
+          WHERE ${dateExpr} >= ? AND ${dateExpr} <= ?
+            AND (
+              cancelado IS NULL OR
+              UPPER(TRIM(CAST(cancelado AS TEXT))) NOT IN
+              ('S', 'SIM', 'TRUE', '1', 'CANCELADO', 'CANCELADA')
+            )
+          GROUP BY descricao
+        `, [start15, start30, start45, start60, start60, todayIso]);
+
+        addRows(rows);
+      }
+    } catch (error) {
+      console.error('Ponto de Pedido: falha ao ler vendas anuais:', error);
+    } finally {
+      if (annualDb) {
+        try { await annualDb.close(); } catch {}
+      }
+    }
+  }
+
+  // Complementa com a base mensal apenas depois da última data disponível
+  // no histórico anual, evitando duplicidade.
+  let globalDb: any;
+  try {
+    globalDb = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+    const dateExpr = pontoPedidoSqlDateExpr('data_emissao');
+    const dailyStart = annualMaxDate
+      ? pontoPedidoDateAddDays(annualMaxDate, 1)
+      : start60;
+
+    if (dailyStart <= todayIso) {
+      const rows = await globalDb.all(`
+        SELECT
+          descricao,
+          SUM(CASE WHEN ${dateExpr} >= ? THEN COALESCE(quantidade, 0) ELSE 0 END) AS vendas15,
+          SUM(CASE WHEN ${dateExpr} >= ? THEN COALESCE(quantidade, 0) ELSE 0 END) AS vendas30,
+          SUM(CASE WHEN ${dateExpr} >= ? THEN COALESCE(quantidade, 0) ELSE 0 END) AS vendas45,
+          SUM(CASE WHEN ${dateExpr} >= ? THEN COALESCE(quantidade, 0) ELSE 0 END) AS vendas60
+        FROM vendas
+        WHERE ${dateExpr} >= ? AND ${dateExpr} <= ?
+        GROUP BY descricao
+      `, [start15, start30, start45, start60, dailyStart, todayIso]);
+
+      addRows(rows);
+    }
+  } catch (error) {
+    console.error('Ponto de Pedido: falha ao complementar vendas mensais:', error);
+  } finally {
+    if (globalDb) {
+      try { await globalDb.close(); } catch {}
+    }
+  }
+
+  return Array.from(combined.values()).map((item) => ({
+    ...item,
+    vendas15: Math.max(0, item.vendas15),
+    vendas30: Math.max(0, item.vendas30),
+    vendas45: Math.max(0, item.vendas45),
+    vendas60: Math.max(0, item.vendas60),
+  }));
+}
+
+type PontoPedidoStockMetric = {
+  descricao: string;
+  key: string;
+  estoque: number;
+};
+
+async function pontoPedidoLoadStockMetrics(): Promise<PontoPedidoStockMetric[]> {
+  const rows = await prisma.stock.findMany({
+    where: { stockType: 'ESTOQUE' },
+    select: {
+      description: true,
+      quantity: true,
+    },
+  });
+
+  const map = new Map<string, PontoPedidoStockMetric>();
+
+  rows.forEach((row: any) => {
+    const descricao = String(row.description || '').trim();
+    const key = pontoPedidoProductKey(descricao);
+    if (!key) return;
+
+    const current = map.get(key) || { descricao, key, estoque: 0 };
+    current.estoque += pontoPedidoNumber(row.quantity);
+    map.set(key, current);
+  });
+
+  return Array.from(map.values()).map((item) => ({
+    ...item,
+    estoque: Math.max(0, item.estoque),
+  }));
+}
+
+function pontoPedidoMetricForModel<T extends { key: string }>(
+  metrics: T[],
+  colorKey: string,
+  baseKey: string,
+  allowBaseFallback: boolean
+): T | null {
+  if (!colorKey && !baseKey) return null;
+
+  const exact = metrics.find((item) => item.key === colorKey);
+  if (exact) return exact;
+
+  if (colorKey) {
+    const candidates = metrics
+      .filter((item) =>
+        item.key.includes(colorKey) ||
+        (item.key.length >= 8 && colorKey.includes(item.key))
+      )
+      .sort((a, b) => b.key.length - a.key.length);
+
+    if (candidates.length) return candidates[0] ?? null;
+  }
+
+  if (allowBaseFallback && baseKey) {
+    const exactBase = metrics.find((item) => item.key === baseKey);
+    if (exactBase) return exactBase;
+
+    const candidates = metrics
+      .filter((item) =>
+        item.key.includes(baseKey) ||
+        (item.key.length >= 8 && baseKey.includes(item.key))
+      )
+      .sort((a, b) => b.key.length - a.key.length);
+
+    if (candidates.length) return candidates[0] ?? null;
+  }
+
+  return null;
+}
+
+type PontoPedidoOrderRow = {
+  searchKey: string;
+  weekRaw: string;
+  quantity: number;
+};
+
+function pontoPedidoLoadOpenOrders(workbook: XLSX.WorkBook): PontoPedidoOrderRow[] {
+  const sheetName = workbook.SheetNames.find(
+    (name) => pontoPedidoNormalizeHeader(name) === 'CONSOLIDADO PEDIDOS'
+  );
+
+  if (!sheetName) return [];
+
+  const rows = pontoPedidoSheetRows(workbook, sheetName);
+  if (!rows.length) return [];
+
+  const headerIndex = pontoPedidoFindHeaderRow(rows, [
+    'SEMANA', 'MODELO', 'PRODUTO', 'QUANTIDADE', 'QTD'
+  ]);
+  const headers = rows[headerIndex] || [];
+
+  // Regra do arquivo atual informada pelo usuário:
+  // D = SEMANA e L = quantidade ainda em aberto para chegar.
+  // Só usamos o cabeçalho como fallback caso a estrutura venha menor que essas colunas.
+  const weekIndex = headers.length > 3
+    ? 3
+    : pontoPedidoFindColumn(headers, ['SEMANA'], 3);
+  const qtyIndex = headers.length > 11
+    ? 11
+    : pontoPedidoFindColumn(
+        headers,
+        ['QTD ABERTO', 'QTD. ABERTO', 'QUANTIDADE ABERTA', 'QUANTIDADE', 'QTD', 'SALDO'],
+        11
+      );
+
+  const preferredModelIndexes = [
+    pontoPedidoFindColumn(headers, ['MODELO COM COR']),
+    pontoPedidoFindColumn(headers, ['MODELO']),
+    pontoPedidoFindColumn(headers, ['DESCRICAO', 'DESCRIÇÃO']),
+    pontoPedidoFindColumn(headers, ['PRODUTO']),
+    pontoPedidoFindColumn(headers, ['ITEM']),
+    pontoPedidoFindColumn(headers, ['SKU']),
+  ].filter((index, position, values) => index >= 0 && values.indexOf(index) === position);
+
+  return rows
+    .slice(headerIndex + 1)
+    .map((row) => {
+      const quantity = pontoPedidoNumber(row?.[qtyIndex]);
+      const weekRaw = String(row?.[weekIndex] ?? '').trim();
+
+      const preferredText = preferredModelIndexes
+        .map((index) => String(row?.[index] ?? '').trim())
+        .filter(Boolean)
+        .join(' ');
+
+      // Fallback: usa a linha inteira. Isso deixa a integração resiliente caso
+      // o nome da coluna de produto mude no CONSOLIDADO_PEDIDOS.
+      const fallbackText = (row || [])
+        .filter((_, index) => index !== weekIndex && index !== qtyIndex)
+        .map((cell) => String(cell ?? '').trim())
+        .filter(Boolean)
+        .join(' ');
+
+      return {
+        quantity,
+        weekRaw,
+        searchKey: pontoPedidoProductKey(preferredText || fallbackText),
+      };
+    })
+    .filter((row) => row.quantity > 0 && row.searchKey);
+}
+
+function pontoPedidoOrdersForModel(
+  orders: PontoPedidoOrderRow[],
+  colorKey: string,
+  baseKey: string,
+  allowBaseFallback: boolean
+): PontoPedidoOrderRow[] {
+  return orders.filter((order) => {
+    if (colorKey && (order.searchKey.includes(colorKey) || colorKey.includes(order.searchKey))) {
+      return true;
+    }
+
+    if (
+      allowBaseFallback &&
+      baseKey &&
+      (order.searchKey.includes(baseKey) || baseKey.includes(order.searchKey))
+    ) {
+      return true;
+    }
+
+    return false;
+  });
+}
+
+function pontoPedidoParseApaSheet(workbook: XLSX.WorkBook, sheetName: string) {
+  const rows = pontoPedidoSheetRows(workbook, sheetName);
+  if (!rows.length) return [];
+
+  const headerIndex = pontoPedidoFindHeaderRow(rows, [
+    'MODELO',
+    'MODELO COM COR',
+    'PRECO SAMSUNG',
+    'PRECO TELECEL',
+    'PRECO FINAL',
+    'SELL IN',
+  ]);
+
+  const headers = rows[headerIndex] || [];
+  const idxModelo = pontoPedidoFindColumn(headers, ['MODELO']);
+  const idxModeloCor = pontoPedidoFindColumn(headers, ['MODELO COM COR']);
+  const idxSamsung = pontoPedidoFindColumn(headers, ['PRECO SAMSUNG', 'PREÇO SAMSUNG']);
+  const idxTelecel = pontoPedidoFindColumn(headers, ['PRECO TELECEL', 'PREÇO TELECEL']);
+  const idxDesc = pontoPedidoFindColumn(headers, ['DESC', 'DESCONTO']);
+  const idxFinal = pontoPedidoFindColumn(headers, ['PRECO FINAL', 'PREÇO FINAL']);
+  const idxSellIn = pontoPedidoFindColumn(headers, ['SELL IN', 'SELLIN']);
+  const idxAlteracao = pontoPedidoFindColumn(headers, ['ALTERACAO', 'ALTERAÇÃO']);
+
+  if (idxModelo < 0 && idxModeloCor < 0) {
+    throw new Error(`A aba ${sheetName} não possui coluna MODELO/MODELO COM COR reconhecível.`);
+  }
+
+  return rows
+    .slice(headerIndex + 1)
+    .map((row, rowIndex) => {
+      const modelo = String(row?.[idxModelo] ?? '').trim();
+      const modeloComCor = String(row?.[idxModeloCor] ?? modelo).trim();
+
+      if (!modelo && !modeloComCor) return null;
+
+      return {
+        sourceRow: headerIndex + rowIndex + 2,
+        modelo: modelo || modeloComCor,
+        modeloComCor: modeloComCor || modelo,
+        precoSamsung: pontoPedidoNumber(row?.[idxSamsung]),
+        precoTelecel: pontoPedidoNumber(row?.[idxTelecel]),
+        desc: pontoPedidoNumber(row?.[idxDesc]),
+        precoFinal: pontoPedidoNumber(row?.[idxFinal]),
+        sellIn: pontoPedidoNumber(row?.[idxSellIn]),
+        alteracao: idxAlteracao >= 0 ? String(row?.[idxAlteracao] ?? '').trim() : '',
+      };
+    })
+    .filter(Boolean) as Array<{
+      sourceRow: number;
+      modelo: string;
+      modeloComCor: string;
+      precoSamsung: number;
+      precoTelecel: number;
+      desc: number;
+      precoFinal: number;
+      sellIn: number;
+      alteracao: string;
+    }>;
+}
+
+    app.get('/api/ponto-pedido/meta', async (req, res) => {
+      try {
+        const startedAt = Date.now();
+              console.log('📦 [PONTO PEDIDO META] iniciando...');
+        const forceRefresh = String(req.query.refresh || '') === '1';
+        const cache = await pontoPedidoLoadWorkbook(forceRefresh);
+        console.log(
+          `📦 [PONTO PEDIDO META] workbook carregado em ${Date.now() - startedAt}ms`,
+          cache.workbook.SheetNames
+        );
+        const tabs = cache.workbook.SheetNames
+          .filter(pontoPedidoIsPlanningSheet)
+          .map((name) => ({ id: name, label: pontoPedidoPlanningTabLabel(name) }));
+          
+          if (!tabs.length) {
+              console.error('Ponto de Pedido: nenhuma aba de planejamento encontrada.', {
+                sheetNames: cache.workbook.SheetNames,
+              });
+
+              return res.status(422).json({
+                ok: false,
+                error:
+                  'A planilha foi lida, mas nenhuma aba de Ponto de Pedido foi encontrada. ' +
+                  'Esperado: abas APA*, API-CABEDELO ou AP - FORTALEZA.',
+                sheetNames: cache.workbook.SheetNames,
+              });
+            }
+
+        const today = pontoPedidoBrazilTodayIso();
+        const weekRefs = pontoPedidoWeekRefs(today, 5);
+
+        return res.json({
+          ok: true,
+          sourceUrl: PONTO_PEDIDO_SHEET_URL,
+          loadedAt: cache.loadedAt,
+          today,
+
+          // ✅ FALTAVA ISTO
+          tabs,
+
+          currentWeek: weekRefs[0]?.label || '',
+
+          weeks: weekRefs.map((week) => ({
+            key: week.key,
+            label: week.label,
+            displayLabel: week.displayLabel,
+            startDate: week.startDate,
+            endDate: week.endDate,
+            year: week.year,
+            week: week.week,
+          })),
+        });
+      } catch (error: any) {
+        console.error('Erro /api/ponto-pedido/meta:', error);
+        
+        return res.status(500).json({ ok: false, error: error?.message || 'Falha ao carregar Ponto de Pedido.' });
+      }
+    });
+
+    app.get('/api/ponto-pedido', async (req, res) => {
+      let manualDb: any;
+
+      try {
+        const requestedSheet = String(req.query.aba || '').trim();
+        const forceRefresh = String(req.query.refresh || '') === '1';
+        const cache = await pontoPedidoLoadWorkbook(forceRefresh);
+        const workbook = cache.workbook;
+
+        const planningTabs = workbook.SheetNames.filter(pontoPedidoIsPlanningSheet);
+        const sheetName = requestedSheet && planningTabs.includes(requestedSheet)
+          ? requestedSheet
+          : planningTabs[0];
+
+        if (!sheetName) {
+          return res.status(404).json({
+            ok: false,
+            error: 'Nenhuma aba de Ponto de Pedido disponível.',
+          });
+        }
+
+        const today = pontoPedidoBrazilTodayIso();
+        const currentIsoWeek = pontoPedidoIsoWeek(today);
+        const weekRefs = pontoPedidoWeekRefs(today, 5);
+        const currentMonday = weekRefs[0]?.monday || pontoPedidoIsoWeekMonday(currentIsoWeek.year, currentIsoWeek.week);
+        const horizon60 = new Date(`${pontoPedidoDateAddDays(today, 60)}T12:00:00Z`);
+
+        const [sheetRows, salesMetrics, stockMetrics] = await Promise.all([
+          Promise.resolve(pontoPedidoParseApaSheet(workbook, sheetName)),
+          pontoPedidoLoadSalesMetrics(today),
+          pontoPedidoLoadStockMetrics(),
+        ]);
+
+        const openOrders = pontoPedidoLoadOpenOrders(workbook);
+
+        const baseCounts = new Map<string, number>();
+        sheetRows.forEach((row) => {
+          const baseKey = pontoPedidoProductKey(row.modelo);
+          if (baseKey) baseCounts.set(baseKey, (baseCounts.get(baseKey) || 0) + 1);
+        });
+
+        manualDb = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+        const manualRows = await manualDb.all(`
+          SELECT modelo, regiao_aba, pedido_rufino
+          FROM sugestao_compras_manual
+          WHERE regiao_aba = ?
+        `, [sheetName]);
+
+        const manualMap = new Map<string, number>();
+        manualRows.forEach((row: any) => {
+          manualMap.set(pontoPedidoProductKey(row.modelo), pontoPedidoNumber(row.pedido_rufino));
+        });
+
+        const result = sheetRows.map((row) => {
+          const colorKey = pontoPedidoProductKey(row.modeloComCor || row.modelo);
+          const baseKey = pontoPedidoProductKey(row.modelo);
+          const allowBaseFallback = Boolean(baseKey) && (baseCounts.get(baseKey) || 0) === 1;
+
+          const sales = pontoPedidoMetricForModel(
+            salesMetrics,
+            colorKey,
+            baseKey,
+            allowBaseFallback
+          );
+          const stock = pontoPedidoMetricForModel(
+            stockMetrics,
+            colorKey,
+            baseKey,
+            allowBaseFallback
+          );
+          const orders = pontoPedidoOrdersForModel(
+            openOrders,
+            colorKey,
+            baseKey,
+            allowBaseFallback
+          );
+
+          const vendas15 = Math.max(0, pontoPedidoNumber((sales as any)?.vendas15));
+          const vendas30 = Math.max(0, pontoPedidoNumber((sales as any)?.vendas30));
+          const vendas45 = Math.max(0, pontoPedidoNumber((sales as any)?.vendas45));
+          const vendas60 = Math.max(0, pontoPedidoNumber((sales as any)?.vendas60));
+          const estoque = Math.max(0, pontoPedidoNumber((stock as any)?.estoque));
+
+          const vmd15 = vendas15 / 15;
+          const vmd30 = vendas30 / 30;
+          const vmd45 = vendas45 / 45;
+          const vmd60 = vendas60 / 60;
+
+          // Média diária ponderada: dá mais peso ao comportamento recente sem
+          // ignorar a tendência de 60 dias.
+          const vmdPonderada =
+            vmd15 * 0.40 +
+            vmd30 * 0.30 +
+            vmd45 * 0.20 +
+            vmd60 * 0.10;
+
+          const weekQty: Record<string, number> = {};
+          weekRefs.forEach((week) => { weekQty[week.key] = 0; });
+
+          let pendente = 0;
+          let incoming15 = 0;
+          let incoming30 = 0;
+          let incoming45 = 0;
+          let incoming60 = 0;
+
+          orders.forEach((order) => {
+            const parsedWeek = pontoPedidoParseWeek(order.weekRaw, currentIsoWeek.year);
+
+            if (!parsedWeek || parsedWeek.monday.getTime() < currentMonday.getTime()) {
+              // Regra solicitada: sem W válido ou semana anterior à atual = PENDENTE/ATRASADO.
+              pendente += order.quantity;
+              return;
+            }
+
+            const ref = pontoPedidoWeekRefFromDate(parsedWeek.monday);
+
+              if (Object.prototype.hasOwnProperty.call(weekQty, ref.key)) {
+                weekQty[ref.key] =
+                  (weekQty[ref.key] ?? 0) + order.quantity;
+              }
+
+            const diffDays = Math.floor(
+              (parsedWeek.monday.getTime() - new Date(`${today}T12:00:00Z`).getTime()) / 86400000
+            );
+
+            if (diffDays <= 15) incoming15 += order.quantity;
+            if (diffDays <= 30) incoming30 += order.quantity;
+            if (diffDays <= 45) incoming45 += order.quantity;
+            if (parsedWeek.monday.getTime() <= horizon60.getTime()) incoming60 += order.quantity;
+          });
+
+          const demand15 = vmdPonderada * 15;
+          const demand30 = vmdPonderada * 30;
+          const demand45 = vmdPonderada * 45;
+          const demand60 = vmdPonderada * 60;
+
+          const proj15 = estoque + incoming15 - demand15;
+          const proj30 = estoque + incoming30 - demand30;
+          const proj45 = estoque + incoming45 - demand45;
+          const proj60 = estoque + incoming60 - demand60;
+
+          // Sugestão conservadora: garante cobertura projetada de 60 dias.
+          // Pedidos atrasados/semana inválida NÃO reduzem a sugestão, porque sua
+          // data de chegada não é confiável.
+          const sugestaoPedido = Math.max(
+            0,
+            Math.ceil(demand60 - estoque - incoming60)
+          );
+
+          const coberturaAtualDias = vmdPonderada > 0 ? estoque / vmdPonderada : null;
+          const coberturaAtualData = coberturaAtualDias === null
+            ? ''
+            : pontoPedidoDateAddDays(today, Math.max(0, Math.floor(coberturaAtualDias)));
+
+          const pedidoRufino = Math.max(0, manualMap.get(colorKey) ?? manualMap.get(baseKey) ?? 0);
+          const supplyPostOrder = estoque + incoming60 + pedidoRufino;
+          const coberturaPosPedidoDias = vmdPonderada > 0 ? supplyPostOrder / vmdPonderada : null;
+          const previsaoEstoque = coberturaPosPedidoDias === null
+            ? ''
+            : pontoPedidoDateAddDays(today, Math.max(0, Math.floor(coberturaPosPedidoDias)));
+
+          return {
+            ...row,
+            rowKey: `${sheetName}::${row.sourceRow}::${colorKey || baseKey}`,
+            vendas60,
+            vendas45,
+            vendas30,
+            vendas15,
+            estoque,
+            pendente,
+            weeks: weekRefs.reduce((acc, week) => {
+              acc[week.key] = Math.round((weekQty[week.key] || 0) * 100) / 100;
+              return acc;
+            }, {} as Record<string, number>),
+            vendasMediaDia: vmdPonderada,
+            coberturaAtualDias,
+            coberturaAtualData,
+            previsao15: Math.round(proj15 * 10) / 10,
+            previsao30: Math.round(proj30 * 10) / 10,
+            previsao45: Math.round(proj45 * 10) / 10,
+            previsao60: Math.round(proj60 * 10) / 10,
+            incoming60: Math.round(incoming60 * 100) / 100,
+            sugestaoPedido,
+            pedidoRufino,
+            previsaoEstoque,
+            coberturaPosPedidoDias,
+          };
+        });
+
+        const summary = result.reduce(
+          (acc, row) => {
+            acc.modelos += 1;
+            acc.estoque += pontoPedidoNumber(row.estoque);
+            acc.pendente += pontoPedidoNumber(row.pendente);
+            acc.sugestao += pontoPedidoNumber(row.sugestaoPedido);
+            acc.pedidoRufino += pontoPedidoNumber(row.pedidoRufino);
+            return acc;
+          },
+          { modelos: 0, estoque: 0, pendente: 0, sugestao: 0, pedidoRufino: 0 }
+        );
+
+        return res.json({
+          ok: true,
+          sourceUrl: PONTO_PEDIDO_SHEET_URL,
+          loadedAt: cache.loadedAt,
+          today,
+          sheetName,
+          tabs: planningTabs.map((name) => ({
+            id: name,
+            label: pontoPedidoPlanningTabLabel(name),
+          })),
+          currentWeek: weekRefs[0]?.label || '',
+          weeks: weekRefs.map((week) => ({
+            key: week.key,
+            label: week.label,
+            displayLabel: week.displayLabel,
+            startDate: week.startDate,
+            endDate: week.endDate,
+            year: week.year,
+            week: week.week,
+          })),
+          summary,
+          formula: {
+            vmd: '40% VMD15 + 30% VMD30 + 20% VMD45 + 10% VMD60',
+            suggestion: 'max(0, demanda projetada 60d - estoque - pedidos com chegada prevista em até 60d)',
+            pending: 'sem semana válida ou semana anterior à semana atual; não reduz a sugestão',
+          },
+          rows: result,
+        });
+      } catch (error: any) {
+        console.error('Erro /api/ponto-pedido:', error);
+        return res.status(500).json({
+          ok: false,
+          error: error?.message || 'Falha ao montar o Ponto de Pedido.',
+        });
+      } finally {
+        if (manualDb) {
+          try { await manualDb.close(); } catch {}
+        }
+      }
+    });
+
+    app.post('/api/ponto-pedido/pedido-rufino', async (req, res) => {
+      let db: any;
+
+      try {
+        const aba = String(req.body?.aba || '').trim();
+        const modelo = String(req.body?.modeloComCor || req.body?.modelo || '').trim();
+        const valor = Math.max(0, pontoPedidoNumber(req.body?.valor));
+
+        if (!aba || !pontoPedidoIsPlanningSheet(aba)) {
+          return res.status(400).json({
+            ok: false,
+            error: 'Aba de Ponto de Pedido inválida.',
+          });
+        }
+
+        if (!modelo) {
+          return res.status(400).json({ ok: false, error: 'Modelo não informado.' });
+        }
+
+        db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+
+        await db.run(`
+          INSERT INTO sugestao_compras_manual (
+            modelo,
+            regiao_aba,
+            faturado,
+            sugestao_coordenador,
+            pedido_rufino
+          ) VALUES (?, ?, 0, 0, ?)
+          ON CONFLICT(modelo, regiao_aba)
+          DO UPDATE SET pedido_rufino = excluded.pedido_rufino
+        `, [modelo.toUpperCase(), aba, valor]);
+
+        return res.json({ ok: true, aba, modelo, pedidoRufino: valor });
+      } catch (error: any) {
+        console.error('Erro /api/ponto-pedido/pedido-rufino:', error);
+        return res.status(500).json({ ok: false, error: error?.message || 'Falha ao salvar Pedido Rufino.' });
+      } finally {
+        if (db) {
+          try { await db.close(); } catch {}
+        }
+      }
+    });
+
+    function pontoPedidoDeterministicPurchaseAnalysis(
+  rows: any[],
+  aba: string
+): string {
+  const safeRows = Array.isArray(rows) ? rows : [];
+
+  const critical = safeRows
+    .filter(
+      (row) =>
+        pontoPedidoNumber(row?.estoque) <= 0 &&
+        pontoPedidoNumber(row?.vendas30) > 0
+    )
+    .sort(
+      (a, b) =>
+        pontoPedidoNumber(b?.vendas30) -
+        pontoPedidoNumber(a?.vendas30)
+    );
+
+  const under = safeRows
+    .filter(
+      (row) =>
+        pontoPedidoNumber(row?.sugestao) > 0 &&
+        pontoPedidoNumber(row?.pedidoRufino) <
+          pontoPedidoNumber(row?.sugestao)
+    )
+    .sort(
+      (a, b) =>
+        (
+          pontoPedidoNumber(b?.sugestao) -
+          pontoPedidoNumber(b?.pedidoRufino)
+        ) -
+        (
+          pontoPedidoNumber(a?.sugestao) -
+          pontoPedidoNumber(a?.pedidoRufino)
+        )
+    );
+
+  const over = safeRows
+    .filter(
+      (row) =>
+        pontoPedidoNumber(row?.pedidoRufino) >
+        pontoPedidoNumber(row?.sugestao)
+    )
+    .sort(
+      (a, b) =>
+        (
+          pontoPedidoNumber(b?.pedidoRufino) -
+          pontoPedidoNumber(b?.sugestao)
+        ) -
+        (
+          pontoPedidoNumber(a?.pedidoRufino) -
+          pontoPedidoNumber(a?.sugestao)
+        )
+    );
+
+  const totalSuggestion = safeRows.reduce(
+    (sum, row) => sum + pontoPedidoNumber(row?.sugestao),
+    0
+  );
+
+  const totalOrder = safeRows.reduce(
+    (sum, row) => sum + pontoPedidoNumber(row?.pedidoRufino),
+    0
+  );
+
+  const top = (
+    items: any[],
+    mapper: (row: any) => string
+  ) =>
+    items
+      .slice(0, 6)
+      .map((row, index) => `${index + 1}. ${mapper(row)}`)
+      .join('\n');
+
+  return [
+    `Resumo de compra — ${aba}`,
+    `Sugestão total: ${Math.round(totalSuggestion)} un. | ` +
+      `Pedido Rufino: ${Math.round(totalOrder)} un.`,
+    '',
+    critical.length
+      ? `Risco de ruptura:\n${top(
+          critical,
+          (row) =>
+            `${row.modelo}: estoque ${pontoPedidoNumber(row.estoque)}, ` +
+            `vendas 30d ${pontoPedidoNumber(row.vendas30)}, ` +
+            `sugestão ${pontoPedidoNumber(row.sugestao)}.`
+        )}`
+      : 'Sem ruptura evidente entre os dados analisados.',
+    '',
+    under.length
+      ? `Abaixo da sugestão:\n${top(
+          under,
+          (row) =>
+            `${row.modelo}: Rufino ${pontoPedidoNumber(row.pedidoRufino)} ` +
+            `vs sugestão ${pontoPedidoNumber(row.sugestao)}.`
+        )}`
+      : 'Nenhum pedido abaixo da sugestão.',
+    '',
+    over.length
+      ? `Possível excesso:\n${top(
+          over,
+          (row) =>
+            `${row.modelo}: Rufino ${pontoPedidoNumber(row.pedidoRufino)} ` +
+            `vs sugestão ${pontoPedidoNumber(row.sugestao)}.`
+        )}`
+      : 'Nenhum pedido acima da sugestão.',
+  ].join('\n');
+}
+
+app.post('/api/ponto-pedido/analise-ia', async (req, res) => {
+  try {
+    const aba = String(req.body?.aba || '').trim();
+    const pergunta = String(req.body?.pergunta || '').trim();
+    const inputRows = Array.isArray(req.body?.rows)
+      ? req.body.rows
+      : [];
+
+    if (!aba || !pontoPedidoIsPlanningSheet(aba)) {
+      return res.status(400).json({
+        ok: false,
+        error: 'Aba de Ponto de Pedido inválida.',
+      });
+    }
+
+    if (!inputRows.length) {
+      return res.status(400).json({
+        ok: false,
+        error: 'Não há dados de compra para analisar.',
+      });
+    }
+
+    const relevantRows = [...inputRows]
+      .map((row: any) => ({
+        modelo: String(row?.modelo || '').slice(0, 120),
+        vendas15: pontoPedidoNumber(row?.vendas15),
+        vendas30: pontoPedidoNumber(row?.vendas30),
+        vendas45: pontoPedidoNumber(row?.vendas45),
+        vendas60: pontoPedidoNumber(row?.vendas60),
+        estoque: pontoPedidoNumber(row?.estoque),
+        pendente: pontoPedidoNumber(row?.pendente),
+        semanas:
+          row?.semanas && typeof row.semanas === 'object'
+            ? row.semanas
+            : {},
+        vmd: pontoPedidoNumber(row?.vmd),
+        coberturaDias:
+          row?.coberturaDias === null
+            ? null
+            : pontoPedidoNumber(row?.coberturaDias),
+        saldo15: pontoPedidoNumber(row?.saldo15),
+        saldo30: pontoPedidoNumber(row?.saldo30),
+        saldo45: pontoPedidoNumber(row?.saldo45),
+        saldo60: pontoPedidoNumber(row?.saldo60),
+        sugestao: pontoPedidoNumber(row?.sugestao),
+        pedidoRufino: pontoPedidoNumber(row?.pedidoRufino),
+      }))
+      .sort((a: any, b: any) => {
+        const scoreA =
+          (a.estoque <= 0 && a.vendas30 > 0 ? 100000 : 0) +
+          Math.max(0, a.sugestao - a.pedidoRufino) * 100 +
+          Math.max(0, -a.saldo30) * 10 +
+          a.vendas30;
+
+        const scoreB =
+          (b.estoque <= 0 && b.vendas30 > 0 ? 100000 : 0) +
+          Math.max(0, b.sugestao - b.pedidoRufino) * 100 +
+          Math.max(0, -b.saldo30) * 10 +
+          b.vendas30;
+
+        return scoreB - scoreA;
+      })
+      .slice(0, 100);
+
+    const deterministic =
+      pontoPedidoDeterministicPurchaseAnalysis(
+        relevantRows,
+        aba
+      );
+
+    const apiKey = String(
+      process.env.ANTHROPIC_API_KEY || ''
+    ).trim();
+
+    const model = String(
+      process.env.CLAUDE_MODEL || ''
+    ).trim();
+
+    // Se a Claude estiver temporariamente indisponível, o usuário
+    // ainda recebe uma análise objetiva baseada nos mesmos números.
+    if (!apiKey || !model) {
+      return res.json({
+        ok: true,
+        answer: deterministic,
+        source: 'deterministic',
+      });
+    }
+
+    const prompt = `Você é a IA de compras do TeleFluxo.
+Analise SOMENTE os dados fornecidos.
+
+Objetivo: evitar tanto ruptura quanto excesso de compra por modelo/cor.
+
+Regras:
+- venda recente tem peso maior, mas use também 45/60 dias para tendência;
+- considere estoque, cobertura, saldo projetado, pedidos em trânsito e semanas de chegada;
+- PENDENTE é atrasado/sem data confiável e não deve ser tratado como chegada garantida;
+- compare Pedido Rufino com Sugestão do sistema;
+- modelo sem giro não deve receber compra apenas por estar sem estoque;
+- classifique recomendações em: COMPRAR AGORA, MANTER, REDUZIR/REVISAR e ACOMPANHAR;
+- não invente números e cite os números dos modelos recomendados.
+
+ABA: ${aba}
+PERGUNTA: ${pergunta || 'Faça uma análise completa do pedido.'}
+DADOS: ${JSON.stringify(relevantRows)}
+RESUMO DO SISTEMA: ${deterministic}`;
+
+    const response = await fetch(
+      'https://api.anthropic.com/v1/messages',
+      {
+        method: 'POST',
+        headers: {
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          model,
+          max_tokens: 1800,
+          temperature: 0.15,
+          system:
+            'Você é um analista de compras e abastecimento do TeleFluxo. ' +
+            'Seja conservador contra ruptura e excesso e use apenas os dados fornecidos.',
+          messages: [
+            {
+              role: 'user',
+              content: prompt,
+            },
+          ],
+        }),
+      }
+    );
+
+    const payload: any = await response
+      .json()
+      .catch(() => null);
+
+    if (!response.ok) {
+      console.warn(
+        'Ponto de Pedido IA: Claude falhou; usando análise determinística.',
+        payload
+      );
+
+      return res.json({
+        ok: true,
+        answer: deterministic,
+        source: 'deterministic',
+      });
+    }
+
+    const answer = Array.isArray(payload?.content)
+      ? payload.content
+          .filter((item: any) => item?.type === 'text')
+          .map((item: any) => String(item?.text || ''))
+          .join('\n')
+          .trim()
+      : '';
+
+    return res.json({
+      ok: true,
+      answer: answer || deterministic,
+      source: answer ? 'claude' : 'deterministic',
+    });
+  } catch (error: any) {
+    console.error(
+      'Erro /api/ponto-pedido/analise-ia:',
+      error
+    );
+
+    return res.status(500).json({
+      ok: false,
+      error:
+        error?.message ||
+        'Falha ao gerar análise de compra.',
+    });
+  }
+});
+
+
+// ==========================================
 // 🚀 MÓDULO ESTOQUE X VENDAS (VERSÃO FINAL: FILTRO NA MEMÓRIA)
 // ==========================================
 
