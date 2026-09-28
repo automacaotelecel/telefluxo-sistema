@@ -78,6 +78,41 @@ const isFilmSale = (sale: any) =>
 const buildSellerKey = (sellerName: any, storeName: any) =>
     `${normalizeText(storeName)}__${normalizeText(sellerName)}`;
 
+type StoreInsuranceMetrics = {
+    qtd_seguros: number;
+    qtd_produtos_com_seguro: number;
+    pct_seguro: number;
+};
+
+type InsuranceSnapshot = {
+    startDate: string;
+    endDate: string;
+    stores: any[];
+};
+
+// Mesma fonte e escala do Ranking de seguros da Home.
+// O backend retorna seguroPct de 0 a 100; formatPercent usa uma razão de 0 a 1.
+const buildStoreInsuranceIndex = (stores: any[]) => {
+    const index = new Map<string, StoreInsuranceMetrics>();
+
+    stores.forEach((store: any) => {
+        const metrics: StoreInsuranceMetrics = {
+            qtd_seguros: Math.max(0, Number(store.qtdSeguros) || 0),
+            qtd_produtos_com_seguro: Math.max(0, Number(store.qtdAparelhosSeguro) || 0),
+            pct_seguro: Math.max(0, Number(store.seguroPct) || 0) / 100,
+        };
+
+        // Permite cruzar o nome normalizado ou o CNPJ, sem depender de acentos.
+        [store.loja, store.cnpj, store.cnpj_empresa].forEach((value) => {
+            if (!value) return;
+            const key = normalizeText(getStoreName(String(value)));
+            if (key && key !== 'N/D') index.set(key, metrics);
+        });
+    });
+
+    return index;
+};
+
 const formatMoneyShort = (val: number) => {
     if (val >= 1000000) return `R$ ${(val / 1000000).toFixed(1)}M`;
     if (val >= 1000) return `R$ ${(val / 1000).toFixed(0)}k`;
@@ -94,7 +129,8 @@ const toLocalIsoDate = (value: Date) => {
 export default function SalesDashboard() {
   const [rawData, setRawData] = useState<any[]>([]);
   const [flowRawData, setFlowRawData] = useState<any[]>([]);
-  const [stockRawData, setStockRawData] = useState<any[]>([]);
+  const [insuranceSnapshot, setInsuranceSnapshot] = useState<InsuranceSnapshot | null>(null);
+  const [insuranceError, setInsuranceError] = useState('');
   const [kpiData, setKpiData] = useState<any[]>([]); 
   
   const [summary, setSummary] = useState<any>({ total_vendas: 0, total_pecas: 0, ticket_medio: 0 });
@@ -135,6 +171,8 @@ export default function SalesDashboard() {
   
   const formatMoney = (val: number) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val || 0);
   const formatPercent = (val: number) => `${((Number(val) || 0) * 100).toFixed(1)}%`;
+  const formatInsurancePercent = (val: number | null) =>
+      val === null ? '—' : formatPercent(val);
 
   useEffect(() => {
     function handleClickOutside(event: any) {
@@ -148,6 +186,8 @@ export default function SalesDashboard() {
 
   const loadAllData = async () => {
     setLoading(true);
+    setInsuranceError('');
+    setInsuranceSnapshot(null);
     let userId = '';
     try {
         const rawUser = localStorage.getItem('user') || localStorage.getItem('telefluxo_user');
@@ -198,16 +238,28 @@ export default function SalesDashboard() {
         }
 
         try {
-            const resStock = await fetch(`${API_URL}/stock?userId=${encodeURIComponent(userId)}`);
-            if (resStock.ok) {
-                const dataStock = await resStock.json();
-                setStockRawData(Array.isArray(dataStock) ? dataStock : []);
-            } else {
-                setStockRawData([]);
+            // O estoque não é base de conversão de seguros. Reutilizamos a rota
+            // do Ranking de seguros, com o mesmo usuário e período da tela.
+            const resInsurance = await fetch(
+                `${API_URL}/api/home/resumo?${salesParams.toString()}`,
+                { cache: 'no-store' }
+            );
+            const dataInsurance = await resInsurance.json();
+            if (!resInsurance.ok || dataInsurance?.success !== true || !Array.isArray(dataInsurance.stores)) {
+                throw new Error('Resposta inválida do Ranking de seguros.');
             }
-        } catch(e) { 
-            console.warn("Erro estoque", e); 
-            setStockRawData([]);
+            if (dataInsurance.period?.startDate !== startDate || dataInsurance.period?.endDate !== endDate) {
+                throw new Error('O período retornado pelo Ranking de seguros é diferente do solicitado.');
+            }
+            setInsuranceSnapshot({
+                startDate: dataInsurance.period.startDate,
+                endDate: dataInsurance.period.endDate,
+                stores: dataInsurance.stores,
+            });
+        } catch(e) {
+            console.warn('Erro ao carregar conversão de seguros', e);
+            setInsuranceSnapshot(null);
+            setInsuranceError('Não foi possível carregar a conversão de seguros. Clique em Atualizar para tentar novamente.');
         }
 
         try {
@@ -574,7 +626,7 @@ setRanking(finalRanking);
       
       setProductRanking(sortedProd);
 
-  }, [filteredData, stockRawData, kpiData, selectedStores, diasPassados, diasNoMes]);
+  }, [filteredData, kpiData, selectedStores, diasPassados, diasNoMes]);
 
   const uniqueStores = useMemo(() => {
       const stores = new Set(rawData.map(r => getStoreName(r.cnpj_empresa || r.loja)).filter(Boolean));
@@ -593,6 +645,16 @@ setRanking(finalRanking);
           .map(key => ({ nome: key, total: stores[key] }))
           .sort((a, b) => b.total - a.total);
   }, [filteredData]);
+
+  const storeInsuranceIndex = useMemo(() => {
+      if (!insuranceSnapshot || insuranceSnapshot.startDate !== startDate || insuranceSnapshot.endDate !== endDate) {
+          return new Map<string, StoreInsuranceMetrics>();
+      }
+      return buildStoreInsuranceIndex(insuranceSnapshot.stores);
+  }, [insuranceSnapshot, startDate, endDate]);
+
+  const insurancePeriodChanged = insuranceSnapshot !== null &&
+      (insuranceSnapshot.startDate !== startDate || insuranceSnapshot.endDate !== endDate);
 
   const storeKpiRanking = useMemo(() => {
       const groups = new Map<string, any>();
@@ -650,9 +712,9 @@ setRanking(finalRanking);
                   ? (group.tendencia - group.mes_anterior) / group.mes_anterior
                   : 0;
 
-              const pctSeguro = group.qtd_produtos_com_seguro > 0
-                  ? group.qtd_seguros / group.qtd_produtos_com_seguro
-                  : 0;
+              // Não reutilizar o denominador agregado de /sellers-kpi:
+              // a fonte oficial desta conversão é o Ranking de seguros.
+              const insurance = storeInsuranceIndex.get(normalizeText(getStoreName(group.loja)));
 
               return {
                   ...group,
@@ -662,16 +724,20 @@ setRanking(finalRanking);
                   qtd_aparelhos_vendas: salesConversion?.aparelhos ?? 0,
                   qtd_acessorios_vendas: salesConversion?.acessorios ?? 0,
                   qtd_peliculas_vendas: salesConversion?.peliculas ?? 0,
-                  pct_seguro: pctSeguro,
+                  qtd_seguros: insurance?.qtd_seguros ?? null,
+                  qtd_produtos_com_seguro: insurance?.qtd_produtos_com_seguro ?? null,
+                  pct_seguro: insurance?.pct_seguro ?? null,
               };
           })
           .sort((a: any, b: any) => b.faturamento - a.faturamento);
-  }, [ranking, storeSalesConversions]);
+  }, [ranking, storeSalesConversions, storeInsuranceIndex]);
 
   const storeKpiNetworkSummary = useMemo(() => {
       let qtdSeguros = 0;
       let qtdProdutosComSeguro = 0;
       let segurosValor = 0;
+      const hasCompleteInsurance = insuranceSnapshot !== null && !insurancePeriodChanged &&
+          storeKpiRanking.every((item: any) => item.pct_seguro !== null);
 
       storeKpiRanking.forEach((item: any) => {
           qtdSeguros += Math.max(0, Number(item.qtd_seguros) || 0);
@@ -684,10 +750,14 @@ setRanking(finalRanking);
           // total acessórios / total aparelhos e total películas / total aparelhos.
           pct_acessorios: storeSalesConversions.network.pct_acessorios,
           conv_peliculas: storeSalesConversions.network.conv_peliculas,
-          pct_seguro: qtdProdutosComSeguro > 0 ? qtdSeguros / qtdProdutosComSeguro : 0,
+          // Total ponderado pelas quantidades das lojas visíveis, como na Home.
+          // Falha de leitura não pode aparecer como conversão zero ou parcial.
+          pct_seguro: hasCompleteInsurance
+              ? (qtdProdutosComSeguro > 0 ? qtdSeguros / qtdProdutosComSeguro : 0)
+              : null,
           seguros: segurosValor,
       };
-  }, [storeKpiRanking, storeSalesConversions]);
+  }, [storeKpiRanking, storeSalesConversions, insuranceSnapshot, insurancePeriodChanged]);
 
   const totalTendencia = useMemo(() => {
       if (diasPassados === 0) return summary.total_vendas;
@@ -1117,6 +1187,11 @@ setRanking(finalRanking);
 
       {activeTab === 'lojas' && (
         <div className="space-y-4">
+            {(insuranceError || insurancePeriodChanged) && (
+                <div role="status" className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-bold text-amber-800">
+                    {insuranceError || 'Clique em Atualizar para carregar a conversão de seguros do período selecionado.'}
+                </div>
+            )}
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
                 <div className="bg-white p-5 rounded-xl shadow-sm border-l-4 border-[#1428A0]">
                     <div className="flex justify-between items-start mb-2"><span className="text-[10px] font-black text-slate-400 uppercase">Lojas Consolidadas</span><Store size={16} className="text-[#1428A0]"/></div>
@@ -1137,7 +1212,7 @@ setRanking(finalRanking);
                 <div className="bg-white p-5 rounded-xl shadow-sm border-l-4 border-emerald-500">
                     <div className="flex justify-between items-start mb-2"><span className="text-[10px] font-black text-slate-400 uppercase">Conv. Seguro Rede</span><CheckSquare size={16} className="text-emerald-500"/></div>
                     <div className="text-2xl font-black text-slate-800">
-                        {formatPercent(storeKpiNetworkSummary.pct_seguro)}
+                        {formatInsurancePercent(storeKpiNetworkSummary.pct_seguro)}
                     </div>
                     <div className="mt-1 text-[10px] font-bold text-slate-400">
                         {formatMoney(storeKpiNetworkSummary.seguros)} em seguros
@@ -1185,7 +1260,12 @@ setRanking(finalRanking);
                                     <td className="p-3 text-right text-indigo-500 whitespace-nowrap font-black">{formatPercent(loja.pct_acessorios)}</td>
                                     <td className="p-3 text-right text-amber-500 whitespace-nowrap font-black">{formatPercent(loja.conv_peliculas)}</td>
                                     <td className="p-3 text-right text-emerald-600 whitespace-nowrap">{formatMoney(loja.seguros)}</td>
-                                    <td className="p-3 text-right font-black text-emerald-600 whitespace-nowrap">{formatPercent(loja.pct_seguro)}</td>
+                                    <td
+                                        className="p-3 text-right font-black text-emerald-600 whitespace-nowrap"
+                                        title={loja.pct_seguro === null
+                                            ? 'Conversão de seguros indisponível para esta loja no período.'
+                                            : `${loja.qtd_seguros} seguros / ${loja.qtd_produtos_com_seguro} produtos — mesma base do Ranking de seguros.`}
+                                    >{formatInsurancePercent(loja.pct_seguro)}</td>
                                 </tr>
                             ))}
                         </tbody>
