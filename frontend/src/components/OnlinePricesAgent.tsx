@@ -57,14 +57,27 @@ export type OnlineComparativoModel = {
   rowKey?: string;
 };
 
+export type OnlineMarketComparison = {
+  storeName: string;
+  marketStoreName: string;
+  marketPrice: number | null;
+  differenceToTelecel: number | null;
+};
+
 type Props = {
   currentUser?: any;
   comparativoModels?: OnlineComparativoModel[];
   embedded?: boolean;
+  scopeLabel?: string;
+  headless?: boolean;
+  onMarketComparisonChange?: (
+    comparisons: Record<string, OnlineMarketComparison>,
+  ) => void;
 };
 
 type PreparedModel = OnlineComparativoModel & {
   aliases: string[];
+  orderIndex: number;
 };
 
 type StorePriceGroup = {
@@ -339,9 +352,84 @@ const getCheapestKeys = (
   );
 };
 
+const getCheapestMarketInfo = (
+  row: PreparedOnlineRow,
+  storeGroups: StorePriceGroup[],
+): OnlineMarketComparison => {
+  const marketPrices = storeGroups
+    .map((group) => ({
+      key: group.key,
+      name: group.name,
+      value:
+        group.installmentsIndex === null
+          ? null
+          : parseCurrencyValue(row.raw?.[group.installmentsIndex]),
+    }))
+    .filter(
+      (item): item is { key: string; name: string; value: number } =>
+        item.value !== null,
+    );
+
+  const telecel = parseCurrencyValue(row.matchedModel?.precoTelecel);
+
+  if (!marketPrices.length) {
+    return {
+      storeName: telecel !== null ? 'TELECEL' : '—',
+      marketStoreName: '',
+      marketPrice: null,
+      differenceToTelecel: null,
+    };
+  }
+
+  const minimum = Math.min(...marketPrices.map((item) => item.value));
+  const epsilon = 0.005;
+  const cheapestMarketStore =
+    marketPrices.find((item) => Math.abs(item.value - minimum) <= epsilon) ||
+    marketPrices[0];
+
+  // A coluna "Loja mais barata" considera Telecel + mercado.
+  // Se a Telecel for menor ou empatar com a menor loja do mercado,
+  // exibimos TELECEL. Em empate entre lojas do mercado, usamos apenas uma.
+  const storeName =
+    telecel !== null && telecel <= minimum + epsilon
+      ? 'TELECEL'
+      : cheapestMarketStore.name;
+
+  return {
+    storeName,
+    marketStoreName: cheapestMarketStore.name,
+    marketPrice: minimum,
+    // Mantemos a diferença contra o menor preço 12x DO MERCADO.
+    // Assim um valor negativo continua informando quanto a Telecel está
+    // mais barata, mesmo quando "Loja mais barata" mostra TELECEL.
+    differenceToTelecel:
+      telecel === null ? null : telecel - minimum,
+  };
+};
+
+const formatSignedMoney = (value: number | null | undefined) => {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return '—';
+  }
+
+  const absolute = Math.abs(value).toLocaleString('pt-BR', {
+    style: 'currency',
+    currency: 'BRL',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+
+  if (Math.abs(value) < 0.005) return absolute;
+  return `${value > 0 ? '+' : '-'} ${absolute}`;
+};
+
+
 export default function OnlinePricesAgent({
   comparativoModels = [],
   embedded = false,
+  scopeLabel = 'Online total',
+  headless = false,
+  onMarketComparisonChange,
 }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -391,8 +479,9 @@ export default function OnlinePricesAgent({
 
   const preparedModels = useMemo<PreparedModel[]>(
     () =>
-      comparativoModels.map((model) => ({
+      comparativoModels.map((model, orderIndex) => ({
         ...model,
+        orderIndex,
         aliases: buildModelAliases(model),
       })),
     [comparativoModels],
@@ -437,6 +526,11 @@ export default function OnlinePricesAgent({
               matchedModel: findMatchedModel(row, modelIndex, preparedModels),
             }))
             .filter((row) => Boolean(row.matchedModel))
+            .sort(
+              (a, b) =>
+                (a.matchedModel?.orderIndex ?? Number.MAX_SAFE_INTEGER) -
+                (b.matchedModel?.orderIndex ?? Number.MAX_SAFE_INTEGER),
+            )
         : bodyRows.map((row) => ({ raw: row, matchedModel: null }));
 
       const term = normalizeCompact(searchTerm);
@@ -471,6 +565,35 @@ export default function OnlinePricesAgent({
     preparedSheets[0] ||
     null;
 
+  useEffect(() => {
+    if (!onMarketComparisonChange) return;
+
+    const bestMarketByRowKey: Record<string, OnlineMarketComparison> = {};
+
+    preparedSheets.forEach((sheet) => {
+      sheet.rows.forEach((preparedRow) => {
+        const rowKey = String(preparedRow.matchedModel?.rowKey || '').trim();
+        if (!rowKey) return;
+
+        const info = getCheapestMarketInfo(preparedRow, sheet.storeGroups);
+        if (info.marketPrice === null) return;
+
+        const current = bestMarketByRowKey[rowKey];
+        if (
+          !current ||
+          current.marketPrice === null ||
+          info.marketPrice < current.marketPrice
+        ) {
+          bestMarketByRowKey[rowKey] = info;
+        }
+      });
+    });
+
+    onMarketComparisonChange(bestMarketByRowKey);
+  }, [preparedSheets, onMarketComparisonChange]);
+
+  if (headless) return null;
+
   return (
     <div className={embedded ? 'w-full' : 'min-h-full bg-slate-50 p-3 md:p-5'}>
       <div className={embedded ? 'space-y-3' : 'mx-auto max-w-[1800px] space-y-4'}>
@@ -485,7 +608,7 @@ export default function OnlinePricesAgent({
               </div>
               <p className="mt-1 text-xs font-semibold text-slate-500">
                 {preparedModels.length
-                  ? `Cartas + Sem ofertas: ${preparedModels.length} modelo(s) considerados. O Preço Telecel acompanha o comparativo em tempo real.`
+                  ? `${scopeLabel}: ${preparedModels.length} modelo(s), na mesma ordem do comparativo. O Preço Telecel acompanha o comparativo em tempo real.`
                   : 'Nenhum comparativo está filtrando a base. Exibindo a planilha ONLINE completa.'}
               </p>
             </div>
@@ -590,14 +713,12 @@ export default function OnlinePricesAgent({
                     <table className="w-full min-w-max border-separate border-spacing-0 text-left text-[11px]">
                       <thead className="sticky top-0 z-20 bg-slate-100">
                         <tr>
-                          {selectedSheet.positionIndex >= 0 && (
-                            <th
-                              rowSpan={2}
-                              className="min-w-[76px] whitespace-nowrap border-b border-r border-slate-200 bg-slate-100 px-3 py-2 text-[10px] font-black uppercase tracking-wide text-slate-600"
-                            >
-                              Position
-                            </th>
-                          )}
+                          <th
+                            rowSpan={2}
+                            className="min-w-[70px] whitespace-nowrap border-b border-r border-slate-200 bg-slate-100 px-3 py-2 text-[10px] font-black uppercase tracking-wide text-slate-600"
+                          >
+                            Posição
+                          </th>
 
                           <th
                             rowSpan={2}
@@ -622,6 +743,21 @@ export default function OnlinePricesAgent({
                               {group.name}
                             </th>
                           ))}
+
+
+                          <th
+                            rowSpan={2}
+                            className="min-w-[150px] whitespace-nowrap border-b border-r border-slate-300 bg-amber-50 px-3 py-2 text-center text-[10px] font-black uppercase tracking-wide text-amber-900"
+                          >
+                            Loja mais barata
+                          </th>
+
+                          <th
+                            rowSpan={2}
+                            className="min-w-[170px] whitespace-nowrap border-b border-slate-300 bg-amber-50 px-3 py-2 text-center text-[10px] font-black uppercase tracking-wide text-amber-900"
+                          >
+                            Diferença p/ mais barata
+                          </th>
                         </tr>
 
                         <tr>
@@ -650,11 +786,12 @@ export default function OnlinePricesAgent({
                             preparedRow,
                             selectedSheet.storeGroups,
                           );
+                          const cheapestMarket = getCheapestMarketInfo(
+                            preparedRow,
+                            selectedSheet.storeGroups,
+                          );
                           const telecelIsCheapest = cheapest.has('TELECEL');
-                          const positionValue =
-                            selectedSheet.positionIndex >= 0
-                              ? preparedRow.raw?.[selectedSheet.positionIndex]
-                              : rowIndex + 1;
+                          const positionValue = rowIndex + 1;
                           const modelValue =
                             selectedSheet.modelIndex >= 0
                               ? preparedRow.raw?.[selectedSheet.modelIndex]
@@ -667,11 +804,9 @@ export default function OnlinePricesAgent({
                                 rowIndex % 2 === 0 ? 'bg-white' : 'bg-slate-50/60'
                               }
                             >
-                              {selectedSheet.positionIndex >= 0 && (
-                                <td className="whitespace-nowrap border-b border-r border-slate-100 px-3 py-2 text-center font-bold text-slate-500">
-                                  {String(positionValue ?? '') || '—'}
-                                </td>
-                              )}
+                              <td className="whitespace-nowrap border-b border-r border-slate-100 px-3 py-2 text-center font-bold text-slate-500">
+                                {positionValue}
+                              </td>
 
                               <td className="whitespace-nowrap border-b border-r border-slate-100 px-3 py-2 font-black text-slate-800">
                                 {String(modelValue ?? '') || '—'}
@@ -728,6 +863,36 @@ export default function OnlinePricesAgent({
                                   </>
                                 );
                               })}
+
+
+                              <td className="whitespace-nowrap border-b border-r border-amber-100 bg-amber-50/60 px-3 py-2 font-black text-slate-800">
+                                {cheapestMarket.storeName || '—'}
+                              </td>
+
+                              <td
+                                className={`whitespace-nowrap border-b border-amber-100 bg-amber-50/60 px-3 py-2 text-right font-black ${
+                                  cheapestMarket.differenceToTelecel === null
+                                    ? 'text-slate-400'
+                                    : cheapestMarket.differenceToTelecel > 0.005
+                                      ? 'text-red-600'
+                                      : cheapestMarket.differenceToTelecel < -0.005
+                                        ? 'text-emerald-700'
+                                        : 'text-slate-700'
+                                }`}
+                                title={
+                                  cheapestMarket.differenceToTelecel === null
+                                    ? undefined
+                                    : cheapestMarket.differenceToTelecel > 0.005
+                                      ? 'Positivo: Telecel está mais caro que a loja mais barata.'
+                                      : cheapestMarket.differenceToTelecel < -0.005
+                                        ? 'Negativo: Telecel está mais barato que a loja mais barata.'
+                                        : 'Telecel está com o mesmo preço da loja mais barata.'
+                                }
+                              >
+                                {formatSignedMoney(
+                                  cheapestMarket.differenceToTelecel,
+                                )}
+                              </td>
                             </tr>
                           );
                         })}
@@ -736,8 +901,7 @@ export default function OnlinePricesAgent({
                           <tr>
                             <td
                               colSpan={
-                                2 +
-                                (selectedSheet.positionIndex >= 0 ? 1 : 0) +
+                                5 +
                                 selectedSheet.storeGroups.length * 2
                               }
                               className="px-4 py-16 text-center text-sm font-semibold text-slate-400"
@@ -794,7 +958,7 @@ export default function OnlinePricesAgent({
                       {selectedSheet.rows.length}
                     </strong>
                     {preparedModels.length
-                      ? ` de ${selectedSheet.totalRows} linhas da aba · ${preparedModels.length} modelo(s) considerados`
+                      ? ` de ${selectedSheet.totalRows} linhas da aba · ${scopeLabel}: ${preparedModels.length} modelo(s)`
                       : ' registros'}
                   </span>
                   <span>

@@ -1,9 +1,9 @@
 
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { AlertCircle, Bot, FileSpreadsheet, Link2, Search, UploadCloud, X } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
 import * as XLSX from 'xlsx';
-import OnlinePricesAgent from './OnlinePricesAgent';
+import OnlinePricesAgent, { type OnlineMarketComparison } from './OnlinePricesAgent';
 
 // Vite + pdfjs-dist v5: usar workerPort evita o erro:
 // "Setting up fake worker failed: Failed to fetch dynamically imported module..."
@@ -85,8 +85,14 @@ type SaleAgg = {
 };
 
 type ComparativoKind = 'REBATE_TRADEIN' | 'BOGO' | 'SIP';
-type ComparativoTab = 'com_ofertas' | 'sem_ofertas' | 'online';
+type ComparativoTab =
+  | 'com_ofertas'
+  | 'online_com_ofertas'
+  | 'sem_ofertas'
+  | 'online_sem_ofertas'
+  | 'online_total';
 type EditableDiscountField = 'totalDescontoTelecel' | 'descontoRebate' | 'descontoTradeIn' | 'descontoBogo' | 'descontoSip' | 'descontoGeral';
+type EditablePriceField = 'priceRebate' | 'priceTradeIn' | 'priceBogo' | 'priceSip';
 
 type PendingComparativoData = {
   pdfItems: PdfItem[];
@@ -142,6 +148,20 @@ type LinhaTabela = {
 const formatMoney = (value: number | null | undefined) => {
   const n = Number(value || 0);
   return n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+};
+
+const formatSignedMoney = (value: number | null | undefined) => {
+  if (value === null || value === undefined || !Number.isFinite(value)) return '-';
+
+  const absolute = Math.abs(value).toLocaleString('pt-BR', {
+    style: 'currency',
+    currency: 'BRL',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+
+  if (Math.abs(value) < 0.005) return absolute;
+  return `${value > 0 ? '+' : '-'} ${absolute}`;
 };
 
 const formatNumber = (value: number | null | undefined) =>
@@ -1156,32 +1176,33 @@ const MIN_COLUMN_WIDTH = 54;
 const MAX_COLUMN_WIDTH = 640;
 
 const DEFAULT_COLUMN_WIDTHS: Record<string, number> = {
-  descricao: 330,
-  precoSamsung: 106,
-  precoTelecel: 106,
-  totalDescontoTelecel: 126,
-  descontoRebate: 122,
-  descontoTradeIn: 128,
-  descontoBogo: 116,
-  descontoSip: 112,
-  descontoGeral: 132,
-  descontoCollapsed: 86,
-  totalDesconto: 122,
-  precoPromocional: 158,
-  qtdEstoque: 82,
-  custoMedioEstoque: 122,
-  margemEstoque: 104,
-  novoCustoMedio: 138,
-  margemPrice: 110,
-  qtdVendida: 88,
-  priceRebate: 108,
-  priceTradeIn: 120,
-  priceBogo: 106,
-  priceSip: 96,
-  priceCollapsed: 64,
-  ofertaAtual: 118,
-  status: 96,
-  ofertaCollapsed: 64,
+  descricao: 260,
+  precoSamsung: 92,
+  precoTelecel: 92,
+  totalDescontoTelecel: 106,
+  descontoRebate: 100,
+  descontoTradeIn: 106,
+  descontoBogo: 96,
+  descontoSip: 92,
+  descontoGeral: 108,
+  descontoCollapsed: 58,
+  totalDesconto: 100,
+  precoPromocional: 118,
+  qtdEstoque: 66,
+  custoMedioEstoque: 100,
+  margemEstoque: 84,
+  novoCustoMedio: 110,
+  margemPrice: 88,
+  qtdVendida: 70,
+  priceRebate: 94,
+  priceTradeIn: 100,
+  priceBogo: 92,
+  priceSip: 88,
+  priceCollapsed: 52,
+  ofertaAtual: 98,
+  status: 78,
+  ofertaCollapsed: 52,
+  differenceCheapest: 136,
 };
 
 const clampColumnWidth = (value: number) =>
@@ -1200,6 +1221,13 @@ const DISCOUNT_FIELD_LABELS: Record<EditableDiscountField, string> = DISCOUNT_CO
   (acc, item) => ({ ...acc, [item.key]: item.label }),
   {} as Record<EditableDiscountField, string>
 );
+
+const PRICE_TO_DISCOUNT_FIELD: Record<EditablePriceField, EditableDiscountField> = {
+  priceRebate: 'descontoRebate',
+  priceTradeIn: 'descontoTradeIn',
+  priceBogo: 'descontoBogo',
+  priceSip: 'descontoSip',
+};
 
 const getVisibleColumnKeys = (
   showDiscountDetails: boolean,
@@ -1223,6 +1251,7 @@ const getVisibleColumnKeys = (
     ? ['priceRebate', 'priceTradeIn', 'priceBogo', 'priceSip']
     : ['priceCollapsed']),
   ...(showOfferDetails ? ['ofertaAtual', 'status'] : ['ofertaCollapsed']),
+  'differenceCheapest',
 ];
 
 const floorMoneyToTen = (value: number) => {
@@ -1291,8 +1320,11 @@ const recalculateRow = (row: LinhaTabela): LinhaTabela => {
 
   let status = row.status || '-';
   if (row.ofertaAtual > 0 && precoPromocional > 0) {
-    if (row.ofertaAtual < precoPromocional) status = 'MENOR';
-    else if (row.ofertaAtual > precoPromocional) status = 'MAIOR';
+    // STATUS compara o NOVO comparativo com a oferta/preço atual.
+    // MENOR = o novo preço promocional ficou abaixo do preço atual.
+    // MAIOR = o novo preço promocional ficou acima do preço atual.
+    if (precoPromocional < row.ofertaAtual) status = 'MENOR';
+    else if (precoPromocional > row.ofertaAtual) status = 'MAIOR';
     else status = 'IGUAL';
   }
 
@@ -1424,7 +1456,7 @@ type TableHeaderProps = {
 const TableHeader = ({ children, className = '', style, onResizeStart }: TableHeaderProps) => (
   <th
     style={style}
-    className={`relative px-2 py-1.5 text-[10px] font-black uppercase tracking-[0.14em] text-slate-500 text-center border-b border-slate-200 whitespace-normal select-none ${className}`}
+    className={`relative border-b border-r border-slate-200 px-1.5 py-1 text-center text-[9px] font-black uppercase tracking-[0.08em] text-slate-500 whitespace-normal select-none ${className}`}
   >
     <div
       className={typeof children === 'string' ? 'min-w-0 truncate pr-2' : 'min-w-0 pr-2'}
@@ -1445,14 +1477,25 @@ const TableHeader = ({ children, className = '', style, onResizeStart }: TableHe
   </th>
 );
 
-const TableCell = ({ children, className = '', style }: { children: React.ReactNode; className?: string; style?: React.CSSProperties }) => (
-  <td style={style} className={`overflow-hidden px-1.5 py-1.5 text-[11px] leading-5 text-slate-700 border-b border-slate-100 align-middle ${className}`}>{children}</td>
+const TableCell = ({
+  children,
+  className = '',
+  style,
+  ...tdProps
+}: React.TdHTMLAttributes<HTMLTableCellElement>) => (
+  <td
+    {...tdProps}
+    style={style}
+    className={`overflow-hidden border-b border-r border-slate-100 px-1 py-[3px] text-[10px] leading-4 text-slate-700 align-middle ${className}`}
+  >
+    {children}
+  </td>
 );
 
 const GroupHeader = ({ children, className = '', colSpan }: { children: React.ReactNode; className?: string; colSpan: number }) => (
   <th
     colSpan={colSpan}
-    className={`px-2.5 py-1.5 text-[10px] font-black uppercase tracking-[0.18em] text-center border-b border-slate-200 whitespace-nowrap ${className}`}
+    className={`border-b border-r border-slate-200 px-1.5 py-1 text-center text-[9px] font-black uppercase tracking-[0.12em] whitespace-nowrap ${className}`}
   >
     {children}
   </th>
@@ -1462,7 +1505,7 @@ const ToggleGroupButton = ({ open, label, onClick }: { open: boolean; label: str
   <button
     type="button"
     onClick={onClick}
-    className="inline-flex items-center justify-center gap-1 rounded-full border border-current/20 bg-white/70 px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.14em] shadow-sm transition hover:bg-white"
+    className="inline-flex items-center justify-center gap-1 rounded-md border border-current/20 bg-white/75 px-1.5 py-[2px] text-[9px] font-black uppercase tracking-[0.08em] shadow-sm transition hover:bg-white"
     title={open ? `Recolher ${label}` : `Abrir ${label}`}
   >
     <span className="text-[13px] leading-none">{open ? '−' : '+'}</span>
@@ -1471,7 +1514,7 @@ const ToggleGroupButton = ({ open, label, onClick }: { open: boolean; label: str
 );
 
 const HeaderStack = ({ top, bottom }: { top: string; bottom: string }) => (
-  <div className="flex min-h-[24px] flex-col items-center justify-center leading-[1.05]">
+  <div className="flex min-h-[20px] flex-col items-center justify-center leading-[1.0]">
     <span>{top}</span>
     <span>{bottom}</span>
   </div>
@@ -1481,6 +1524,15 @@ const HeaderStack = ({ top, bottom }: { top: string; bottom: string }) => (
 export default function ComparativosModule({ currentUser }: { currentUser?: any }) {
   const [showOnlinePricesModal, setShowOnlinePricesModal] = useState(false);
   const [rows, setRows] = useState<LinhaTabela[]>([]);
+  const [onlineMarketComparison, setOnlineMarketComparison] = useState<
+    Record<string, OnlineMarketComparison>
+  >({});
+  const handleOnlineMarketComparisonChange = useCallback(
+    (comparisons: Record<string, OnlineMarketComparison>) => {
+      setOnlineMarketComparison(comparisons);
+    },
+    []
+  );
   const [errorMsg, setErrorMsg] = useState('');
   const [apiInfo, setApiInfo] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
@@ -1621,15 +1673,15 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
 
 
   const renderMoneyInput = (rowKey: string, field: EditableDiscountField, value: number) => (
-    <div className="comparativo-money-input relative w-full min-w-0 overflow-hidden rounded-md border border-sky-200 bg-white/95 shadow-sm transition focus-within:border-sky-500 focus-within:bg-white">
-      <span className="pointer-events-none absolute left-1.5 top-1/2 z-10 -translate-y-1/2 text-[10px] font-black text-sky-700">R$</span>
+    <div className="comparativo-money-input relative w-full min-w-0 overflow-hidden rounded-[4px] border border-sky-200 bg-white/95 transition focus-within:border-sky-500 focus-within:bg-white">
+      <span className="pointer-events-none absolute left-1 top-1/2 z-10 -translate-y-1/2 text-[9px] font-black text-sky-700">R$</span>
       <input
         type="text"
         inputMode="decimal"
         value={formatEditableNumber(value)}
         onChange={(event) => updateDiscountField(rowKey, field, event.target.value)}
         onBlur={() => normalizeDiscountField(rowKey, field)}
-        className="block w-full min-w-0 rounded-md bg-transparent py-1 pl-6 pr-1.5 text-right text-[11px] font-black text-slate-800 outline-none"
+        className="block w-full min-w-0 rounded-[4px] bg-transparent py-[2px] pl-5 pr-1 text-right text-[10px] font-black text-slate-800 outline-none"
         placeholder="0,00"
       />
     </div>
@@ -1644,6 +1696,53 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
       </TableCell>
     );
   };
+
+
+  const updatePriceField = (
+    rowKey: string,
+    field: EditablePriceField,
+    rawValue: string
+  ) => {
+    const value = toNumber(rawValue);
+    const discountField = PRICE_TO_DISCOUNT_FIELD[field];
+
+    setRows((prevRows) =>
+      prevRows.map((row) => {
+        if (row.rowKey !== rowKey) return row;
+
+        const productType = resolveDiscountProductType('', row.descricao);
+        const formulaFactor = getDiscountFormulaFactor(productType);
+
+        return recalculateRow({
+          ...row,
+          [field]: value,
+          // Mantém Price e Desconto coerentes: ao editar o Price, o desconto
+          // correspondente é recalculado pela mesma fórmula usada na carta.
+          [discountField]: calculateDiscountFromPrice(value, formulaFactor),
+        });
+      })
+    );
+  };
+
+  const renderPriceInput = (
+    row: LinhaTabela,
+    field: EditablePriceField
+  ) => (
+    <div className="relative w-full min-w-0 overflow-hidden rounded-[4px] border border-emerald-200 bg-white/95 transition focus-within:border-emerald-500 focus-within:ring-1 focus-within:ring-emerald-200">
+      <span className="pointer-events-none absolute left-1 top-1/2 -translate-y-1/2 text-[9px] font-black text-emerald-700">
+        R$
+      </span>
+      <input
+        type="text"
+        inputMode="decimal"
+        value={formatEditableNumber(Number(row[field] || 0))}
+        onChange={(event) => updatePriceField(row.rowKey, field, event.target.value)}
+        className="block w-full min-w-0 bg-transparent py-[2px] pl-5 pr-1 text-right text-[10px] font-black text-slate-800 outline-none"
+        placeholder="0,00"
+        title="Price editável - altera o desconto correspondente e recalcula o comparativo"
+      />
+    </div>
+  );
 
   const toggleDiscountFieldVisibility = (field: EditableDiscountField) => {
     setVisibleDiscountFields((current) => {
@@ -2049,10 +2148,17 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
     await processSelectedFiles(Array.from(event.dataTransfer.files || []) as File[]);
   };
 
+  const isOnlineTab =
+    activeTab === 'online_com_ofertas' ||
+    activeTab === 'online_sem_ofertas' ||
+    activeTab === 'online_total';
+
   const currentTabAllRows = useMemo(() => {
-    if (activeTab === 'online') return rows;
-    return rows.filter((row) => (activeTab === 'com_ofertas' ? row.hasOferta : !row.hasOferta));
-  }, [rows, activeTab]);
+    if (isOnlineTab) return rows;
+    return rows.filter((row) =>
+      activeTab === 'com_ofertas' ? row.hasOferta : !row.hasOferta
+    );
+  }, [rows, activeTab, isOnlineTab]);
 
   const currentTabRows = useMemo(() => currentTabAllRows.filter((row) => row.isSelected), [currentTabAllRows]);
   const ignoredRows = useMemo(() => rows.filter((row) => !row.isSelected), [rows]);
@@ -2100,41 +2206,63 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
   }), [filteredRows]);
 
 
-  const onlineComparativoModels = useMemo(() => {
-    const seen = new Set<string>();
+  const onlineComparativoGroups = useMemo(() => {
+    const buildModels = (sourceRows: LinhaTabela[]) => {
+      const seen = new Set<string>();
 
-    return rows
-      // ONLINE = todos os modelos vindos das cartas + todos os modelos
-      // que permanecem na aba "Sem ofertas".
-      .filter((row) => row.hasOferta || (!row.hasOferta && row.isSelected))
-      .filter((row) => {
-        const key = [
-          normalizeDesc(row.descricao || ''),
-          normalizeReference(row.referencia || ''),
-          normalizeBasicModel(row.basicModel || row.modeloPdf || ''),
-        ].join('|');
+      return sourceRows
+        .filter((row) => row.isSelected)
+        .filter((row) => {
+          const key = [
+            normalizeDesc(row.descricao || ''),
+            normalizeReference(row.referencia || ''),
+            normalizeBasicModel(row.basicModel || row.modeloPdf || ''),
+          ].join('|');
 
-        if (!key.replace(/\|/g, '')) return false;
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      })
-      .map((row) => ({
-        descricao: row.descricao,
-        referencia: row.referencia,
-        basicModel: row.basicModel,
-        modeloPdf: row.modeloPdf,
-        // O preço mostrado no ONLINE acompanha o preço promocional do
-        // comparativo em tempo real. Se ainda não houver promoção calculada,
-        // usa o preço Telecel de tabela como fallback.
-        precoTelecel:
-          Number(row.precoPromocional || 0) > 0
-            ? Number(row.precoPromocional || 0)
-            : Number(row.precoTelecel || 0),
-        hasOferta: row.hasOferta,
-        rowKey: row.rowKey,
-      }));
+          if (!key.replace(/\|/g, '')) return false;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        })
+        .map((row) => ({
+          descricao: row.descricao,
+          referencia: row.referencia,
+          basicModel: row.basicModel,
+          modeloPdf: row.modeloPdf,
+          // O ONLINE acompanha o preço final/promocional do comparativo em tempo real.
+          precoTelecel:
+            Number(row.precoPromocional || 0) > 0
+              ? Number(row.precoPromocional || 0)
+              : Number(row.precoTelecel || 0),
+          hasOferta: row.hasOferta,
+          rowKey: row.rowKey,
+        }));
+    };
+
+    const comOfertasRows = rows.filter((row) => row.hasOferta);
+    const semOfertasRows = rows.filter((row) => !row.hasOferta);
+
+    return {
+      comOfertas: buildModels(comOfertasRows),
+      semOfertas: buildModels(semOfertasRows),
+      total: buildModels(rows),
+    };
   }, [rows]);
+
+  const activeOnlineModels =
+    activeTab === 'online_com_ofertas'
+      ? onlineComparativoGroups.comOfertas
+      : activeTab === 'online_sem_ofertas'
+        ? onlineComparativoGroups.semOfertas
+        : onlineComparativoGroups.total;
+
+  const activeOnlineLabel =
+    activeTab === 'online_com_ofertas'
+      ? 'Online com ofertas'
+      : activeTab === 'online_sem_ofertas'
+        ? 'Online sem ofertas'
+        : 'Online total';
+
 
   const buildExportData = (sourceRows: LinhaTabela[]) =>
     sourceRows
@@ -2174,6 +2302,8 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
         'OFERTA ATUAL': row.ofertaAtual,
         'LOJAS': row.lojas,
         'STATUS': row.status,
+        'LOJA MAIS BARATA': onlineMarketComparison[row.rowKey]?.storeName || '',
+        'DIFERENÇA P/ MAIS BARATA': onlineMarketComparison[row.rowKey]?.differenceToTelecel ?? null,
       }));
 
   const exportExcel = () => {
@@ -2481,6 +2611,14 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
         `}
       </style>
 
+      <OnlinePricesAgent
+        currentUser={currentUser}
+        comparativoModels={onlineComparativoGroups.total}
+        scopeLabel="Online total"
+        headless
+        onMarketComparisonChange={handleOnlineMarketComparisonChange}
+      />
+
       <div className="h-full min-h-0 w-full overflow-y-auto bg-slate-50 pb-24">
       <div className="w-full max-w-none space-y-3 px-1.5 py-2 md:px-2">
         <div className="rounded-[22px] border border-slate-200 bg-white px-4 py-3 shadow-sm">
@@ -2577,7 +2715,7 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
               <button
                 type="button"
                 onClick={() => setActiveTab('com_ofertas')}
-                className={`rounded-xl px-4 py-2 text-xs font-black uppercase tracking-widest transition ${
+                className={`rounded-xl px-3.5 py-2 text-[11px] font-black uppercase tracking-wider transition ${
                   activeTab === 'com_ofertas'
                     ? 'bg-slate-900 text-white shadow-sm'
                     : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
@@ -2588,8 +2726,24 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
 
               <button
                 type="button"
+                onClick={() => setActiveTab('online_com_ofertas')}
+                className={`rounded-xl px-3.5 py-2 text-[11px] font-black uppercase tracking-wider transition ${
+                  activeTab === 'online_com_ofertas'
+                    ? 'bg-orange-600 text-white shadow-sm'
+                    : 'bg-orange-50 text-orange-700 hover:bg-orange-100'
+                }`}
+              >
+                <span className="inline-flex items-center gap-1">
+                  <Link2 size={12} /> Online com ofertas ({onlineComparativoGroups.comOfertas.length})
+                </span>
+              </button>
+
+              <span className="px-1 text-sm font-black text-slate-300">//</span>
+
+              <button
+                type="button"
                 onClick={() => setActiveTab('sem_ofertas')}
-                className={`rounded-xl px-4 py-2 text-xs font-black uppercase tracking-widest transition ${
+                className={`rounded-xl px-3.5 py-2 text-[11px] font-black uppercase tracking-wider transition ${
                   activeTab === 'sem_ofertas'
                     ? 'bg-slate-900 text-white shadow-sm'
                     : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
@@ -2600,10 +2754,32 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
 
               <button
                 type="button"
-                onClick={() => setActiveTab('online')}
-                className={`rounded-xl px-4 py-2 text-xs font-black uppercase tracking-widest transition ${activeTab === 'online' ? 'bg-orange-600 text-white shadow-sm' : 'bg-orange-50 text-orange-700 hover:bg-orange-100'}`}
+                onClick={() => setActiveTab('online_sem_ofertas')}
+                className={`rounded-xl px-3.5 py-2 text-[11px] font-black uppercase tracking-wider transition ${
+                  activeTab === 'online_sem_ofertas'
+                    ? 'bg-orange-600 text-white shadow-sm'
+                    : 'bg-orange-50 text-orange-700 hover:bg-orange-100'
+                }`}
               >
-                <span className="inline-flex items-center gap-1"><Link2 size={13} /> Online ({onlineComparativoModels.length})</span>
+                <span className="inline-flex items-center gap-1">
+                  <Link2 size={12} /> Online sem ofertas ({onlineComparativoGroups.semOfertas.length})
+                </span>
+              </button>
+
+              <span className="px-1 text-sm font-black text-slate-300">//</span>
+
+              <button
+                type="button"
+                onClick={() => setActiveTab('online_total')}
+                className={`rounded-xl px-3.5 py-2 text-[11px] font-black uppercase tracking-wider transition ${
+                  activeTab === 'online_total'
+                    ? 'bg-orange-600 text-white shadow-sm'
+                    : 'bg-orange-50 text-orange-700 hover:bg-orange-100'
+                }`}
+              >
+                <span className="inline-flex items-center gap-1">
+                  <Link2 size={12} /> Online total ({onlineComparativoGroups.total.length})
+                </span>
               </button>
             </div>
 
@@ -2614,15 +2790,16 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
             </div>
           </div>
 
-          {activeTab === 'online' && (
+          {isOnlineTab && (
             <OnlinePricesAgent
               currentUser={currentUser}
-              comparativoModels={onlineComparativoModels}
+              comparativoModels={activeOnlineModels}
+              scopeLabel={activeOnlineLabel}
               embedded
             />
           )}
 
-          {activeTab !== 'online' && (
+          {!isOnlineTab && (
             <>
           <div className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
             <div
@@ -2703,6 +2880,9 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
                         onClick={() => setShowOfferDetails((prev) => !prev)}
                       />
                     </GroupHeader>
+                    <GroupHeader colSpan={1} className="bg-[#fff2cc] text-[#7f6000]">
+                      Mercado
+                    </GroupHeader>
                   </tr>
                   <tr className="sticky top-[29px] z-30 bg-white">
                     {renderResizableHeader('descricao', 'Descrição', 'sticky left-0 z-40 bg-[#d9d9d9] text-[#003366] shadow-[1px_0_0_0_rgba(148,163,184,0.55)]')}
@@ -2718,7 +2898,7 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
                       renderResizableHeader('descontoCollapsed', '+ Descontos', 'bg-[#dff1ff] text-center text-[#003366]')
                     )}
                     {renderResizableHeader('totalDesconto', <HeaderStack top="Total" bottom="Desconto" />, 'bg-[#fff2cc] text-[#7f6000]')}
-                    {renderResizableHeader('precoPromocional', <HeaderStack top="Preço" bottom="Promocional" />, 'bg-gradient-to-b from-amber-200 to-yellow-100 text-amber-900 border-x-2 border-amber-300 shadow-[inset_0_0_0_1px_rgba(245,158,11,0.22)]')}
+                    {renderResizableHeader('precoPromocional', <HeaderStack top="Preço" bottom="Final" />, 'bg-emerald-200 text-red-700 border-x border-emerald-300 shadow-[inset_0_0_0_1px_rgba(16,185,129,0.16)]')}
 
                     {renderResizableHeader('qtdEstoque', <HeaderStack top="Qtd" bottom="Est." />, 'bg-[#eaf2f8] text-right')}
                     {renderResizableHeader('custoMedioEstoque', <HeaderStack top="Custo" bottom="Médio" />, 'bg-[#eaf2f8] text-right')}
@@ -2745,6 +2925,12 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
                       </>
                     ) : (
                       renderResizableHeader('ofertaCollapsed', '+', 'bg-[#92d050] text-center text-[#003b8f]')
+                    )}
+
+                    {renderResizableHeader(
+                      'differenceCheapest',
+                      <HeaderStack top="Diferença p/" bottom="Mais barata" />,
+                      'bg-[#fff2cc] text-[#7f6000] text-right'
                     )}
                   </tr>
                 </thead>
@@ -2777,13 +2963,13 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
                         className={`group ${baseRow} ${isDragging ? 'opacity-50 ring-2 ring-blue-300' : ''} cursor-grab active:cursor-grabbing`}
                       >
                         <TableCell style={getColumnStyle('descricao')} className={`sticky left-0 z-20 whitespace-nowrap font-black text-slate-900 shadow-[1px_0_0_0_rgba(148,163,184,0.35)] ${descBg}`}>
-                          <div className="flex min-w-0 items-center gap-2">
-                            <span className="cursor-grab select-none text-slate-400" title="Arraste para mover a linha">⋮⋮</span>
+                          <div className="flex min-w-0 items-center gap-1">
+                            <span className="cursor-grab select-none text-[9px] text-slate-400" title="Arraste para mover a linha">⋮⋮</span>
                             <input
                               type="checkbox"
                               checked={row.isSelected}
                               onChange={() => toggleRowSelected(row.rowKey)}
-                              className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                              className="h-3.5 w-3.5 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
                               title="Desmarcar e mover para o campo desconsiderados"
                             />
                             <span className="truncate uppercase" title={(row.descricao || '-').toUpperCase()}>{(row.descricao || '-').toUpperCase()}</span>
@@ -2809,7 +2995,7 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
                         )}
                         <TableCell className="whitespace-nowrap bg-[#fff2cc] text-right font-black text-red-600">{formatMoney(row.totalDesconto)}</TableCell>
 
-                        <TableCell className="whitespace-nowrap border-x-2 border-amber-300 bg-gradient-to-r from-amber-100 via-yellow-50 to-amber-100 text-right text-[12px] font-black text-amber-950 shadow-[inset_0_0_0_1px_rgba(245,158,11,0.18)]">{formatMoney(row.precoPromocional)}</TableCell>
+                        <TableCell className="whitespace-nowrap border-x border-emerald-300 bg-emerald-100 text-right text-[11px] font-black text-red-600 shadow-[inset_0_0_0_1px_rgba(16,185,129,0.12)]">{formatMoney(row.precoPromocional)}</TableCell>
 
                         <TableCell className="bg-[#f2f7fb] text-right font-black text-emerald-600">{formatNumber(row.qtdEstoque)}</TableCell>
                         <TableCell className="whitespace-nowrap bg-[#f2f7fb] text-right">{formatMoney(row.custoMedioEstoque)}</TableCell>
@@ -2822,10 +3008,10 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
 
                         {showPriceDetails ? (
                           <>
-                            <TableCell className="whitespace-nowrap bg-[#edf7e8] text-right font-semibold">{formatMoney(row.priceRebate)}</TableCell>
-                            <TableCell className="whitespace-nowrap bg-[#edf7e8] text-right font-semibold">{formatMoney(row.priceTradeIn)}</TableCell>
-                            <TableCell className="whitespace-nowrap bg-[#edf7e8] text-right font-semibold">{formatMoney(row.priceBogo)}</TableCell>
-                            <TableCell className="whitespace-nowrap bg-[#edf7e8] text-right font-semibold">{formatMoney(row.priceSip)}</TableCell>
+                            <TableCell className="bg-[#edf7e8]">{renderPriceInput(row, 'priceRebate')}</TableCell>
+                            <TableCell className="bg-[#edf7e8]">{renderPriceInput(row, 'priceTradeIn')}</TableCell>
+                            <TableCell className="bg-[#edf7e8]">{renderPriceInput(row, 'priceBogo')}</TableCell>
+                            <TableCell className="bg-[#edf7e8]">{renderPriceInput(row, 'priceSip')}</TableCell>
                           </>
                         ) : (
                           <TableCell className="bg-[#edf7e8] text-center">
@@ -2859,6 +3045,32 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
                             </button>
                           </TableCell>
                         )}
+
+                        {(() => {
+                          const marketComparison = onlineMarketComparison[row.rowKey];
+                          const difference = marketComparison?.differenceToTelecel ?? null;
+
+                          return (
+                            <TableCell
+                              className={`whitespace-nowrap bg-[#fffaf0] text-right font-black ${
+                                difference === null
+                                  ? 'text-slate-400'
+                                  : difference > 0.005
+                                    ? 'text-red-600'
+                                    : difference < -0.005
+                                      ? 'text-emerald-700'
+                                      : 'text-slate-700'
+                              }`}
+                              title={
+                                marketComparison?.marketStoreName
+                                  ? `Comparação com ${marketComparison.marketStoreName} no menor preço 12x do mercado.`
+                                  : 'Sem preço 12x de mercado localizado para este modelo.'
+                              }
+                            >
+                              {formatSignedMoney(difference)}
+                            </TableCell>
+                          );
+                        })()}
                       </tr>
                     );
                   })}
@@ -3139,7 +3351,8 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
             <div className="min-h-0 flex-1 overflow-auto">
               <OnlinePricesAgent
                 currentUser={currentUser}
-                comparativoModels={onlineComparativoModels}
+                comparativoModels={onlineComparativoGroups.total}
+                scopeLabel="Online total"
               />
             </div>
           </div>
