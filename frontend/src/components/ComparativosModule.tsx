@@ -3056,9 +3056,9 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
                                 difference === null
                                   ? 'text-slate-400'
                                   : difference > 0.005
-                                    ? 'text-red-600'
+                                    ? 'text-emerald-700'
                                     : difference < -0.005
-                                      ? 'text-emerald-700'
+                                      ? 'text-red-600'
                                       : 'text-slate-700'
                               }`}
                               title={

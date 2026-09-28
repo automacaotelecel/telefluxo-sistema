@@ -399,11 +399,11 @@ const getCheapestMarketInfo = (
     storeName,
     marketStoreName: cheapestMarketStore.name,
     marketPrice: minimum,
-    // Mantemos a diferença contra o menor preço 12x DO MERCADO.
-    // Assim um valor negativo continua informando quanto a Telecel está
-    // mais barata, mesmo quando "Loja mais barata" mostra TELECEL.
+    // Diferença positiva = vantagem da Telecel sobre o menor preço 12x do mercado.
+    // Ex.: mercado R$ 596,30 e Telecel R$ 559,00 => + R$ 37,30.
+    // Diferença negativa = Telecel está mais cara que o menor preço do mercado.
     differenceToTelecel:
-      telecel === null ? null : telecel - minimum,
+      telecel === null ? null : minimum - telecel,
   };
 };
 
@@ -874,18 +874,18 @@ export default function OnlinePricesAgent({
                                   cheapestMarket.differenceToTelecel === null
                                     ? 'text-slate-400'
                                     : cheapestMarket.differenceToTelecel > 0.005
-                                      ? 'text-red-600'
+                                      ? 'text-emerald-700'
                                       : cheapestMarket.differenceToTelecel < -0.005
-                                        ? 'text-emerald-700'
+                                        ? 'text-red-600'
                                         : 'text-slate-700'
                                 }`}
                                 title={
                                   cheapestMarket.differenceToTelecel === null
                                     ? undefined
                                     : cheapestMarket.differenceToTelecel > 0.005
-                                      ? 'Positivo: Telecel está mais caro que a loja mais barata.'
+                                      ? 'Positivo: Telecel está mais barato que a loja mais barata do mercado.'
                                       : cheapestMarket.differenceToTelecel < -0.005
-                                        ? 'Negativo: Telecel está mais barato que a loja mais barata.'
+                                        ? 'Negativo: Telecel está mais caro que a loja mais barata do mercado.'
                                         : 'Telecel está com o mesmo preço da loja mais barata.'
                                 }
                               >
