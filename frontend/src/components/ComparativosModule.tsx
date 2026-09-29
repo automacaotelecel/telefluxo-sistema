@@ -262,8 +262,29 @@ const formatModelWithoutColor = (value: string) => {
   const text = normalizeLine(value || '');
   if (!text) return '';
 
-  const storageMatch = text.match(/^(.*?\b\d+(?:[.,]\d+)?\s*(?:GB|TB)\b)/i);
-  if (storageMatch?.[1]) return storageMatch[1].trim();
+  const isTablet = /\bGALAXY\s+TAB\b/i.test(text);
+  const storageMatch = text.match(/^(.*?\b\d+(?:[.,]\d+)?\s*(?:GB|TB)\b)(.*)$/i);
+
+  if (storageMatch?.[1]) {
+    const baseModel = storageMatch[1].trim();
+
+    // Tablets precisam manter a informação de conectividade mesmo quando
+    // ela aparece depois da capacidade. Ex.: "Galaxy Tab A11 64GB WiFi".
+    if (isTablet) {
+      const suffix = String(storageMatch[2] || '');
+      const connectivityMatch = suffix.match(/\b(5G|4G|LTE|WI[\s-]*FI|WIFI)\b/i);
+
+      if (connectivityMatch?.[1]) {
+        const connectivity = connectivityMatch[1]
+          .toUpperCase()
+          .replace(/WI[\s-]*FI/g, 'WIFI');
+
+        return `${baseModel} ${connectivity}`.trim();
+      }
+    }
+
+    return baseModel;
+  }
 
   return text.replace(COLOR_SUFFIX_PATTERN, '').trim();
 };
@@ -2205,6 +2226,35 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
     verba: filteredRows.reduce((sum, r) => sum + r.verbaTotal, 0),
   }), [filteredRows]);
 
+  // Linha TOTAL no rodapé, no estilo de uma planilha.
+  // Somamos valores monetários e quantidades; percentuais/status ficam sem soma,
+  // pois a soma desses campos não representa uma métrica válida.
+  const tableTotals = useMemo(() => ({
+    precoSamsung: filteredRows.reduce((sum, row) => sum + Number(row.precoSamsung || 0), 0),
+    precoTelecel: filteredRows.reduce((sum, row) => sum + Number(row.precoTelecel || 0), 0),
+    totalDescontoTelecel: filteredRows.reduce((sum, row) => sum + Number(row.totalDescontoTelecel || 0), 0),
+    descontoRebate: filteredRows.reduce((sum, row) => sum + Number(row.descontoRebate || 0), 0),
+    descontoTradeIn: filteredRows.reduce((sum, row) => sum + Number(row.descontoTradeIn || 0), 0),
+    descontoBogo: filteredRows.reduce((sum, row) => sum + Number(row.descontoBogo || 0), 0),
+    descontoSip: filteredRows.reduce((sum, row) => sum + Number(row.descontoSip || 0), 0),
+    descontoGeral: filteredRows.reduce((sum, row) => sum + Number(row.descontoGeral || 0), 0),
+    totalDesconto: filteredRows.reduce((sum, row) => sum + Number(row.totalDesconto || 0), 0),
+    precoPromocional: filteredRows.reduce((sum, row) => sum + Number(row.precoPromocional || 0), 0),
+    qtdEstoque: filteredRows.reduce((sum, row) => sum + Number(row.qtdEstoque || 0), 0),
+    custoMedioEstoque: filteredRows.reduce((sum, row) => sum + Number(row.custoMedioEstoque || 0), 0),
+    novoCustoMedio: filteredRows.reduce((sum, row) => sum + Number(row.novoCustoMedio || 0), 0),
+    qtdVendida: filteredRows.reduce((sum, row) => sum + Number(row.qtdVendida || 0), 0),
+    priceRebate: filteredRows.reduce((sum, row) => sum + Number(row.priceRebate || 0), 0),
+    priceTradeIn: filteredRows.reduce((sum, row) => sum + Number(row.priceTradeIn || 0), 0),
+    priceBogo: filteredRows.reduce((sum, row) => sum + Number(row.priceBogo || 0), 0),
+    priceSip: filteredRows.reduce((sum, row) => sum + Number(row.priceSip || 0), 0),
+    ofertaAtual: filteredRows.reduce((sum, row) => sum + Number(row.ofertaAtual || 0), 0),
+    differenceCheapest: filteredRows.reduce(
+      (sum, row) => sum + Number(onlineMarketComparison[row.rowKey]?.differenceToTelecel || 0),
+      0
+    ),
+  }), [filteredRows, onlineMarketComparison]);
+
 
   const onlineComparativoGroups = useMemo(() => {
     const buildModels = (sourceRows: LinhaTabela[]) => {
@@ -2898,7 +2948,7 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
                       renderResizableHeader('descontoCollapsed', '+ Descontos', 'bg-[#dff1ff] text-center text-[#003366]')
                     )}
                     {renderResizableHeader('totalDesconto', <HeaderStack top="Total" bottom="Desconto" />, 'bg-[#fff2cc] text-[#7f6000]')}
-                    {renderResizableHeader('precoPromocional', <HeaderStack top="Preço" bottom="Final" />, 'bg-emerald-200 text-red-700 border-x border-emerald-300 shadow-[inset_0_0_0_1px_rgba(16,185,129,0.16)]')}
+                    {renderResizableHeader('precoPromocional', <HeaderStack top="Preço" bottom="Final" />, 'bg-emerald-200 text-[#c00000] border-x border-emerald-300 shadow-[inset_0_0_0_1px_rgba(16,185,129,0.16)]')}
 
                     {renderResizableHeader('qtdEstoque', <HeaderStack top="Qtd" bottom="Est." />, 'bg-[#eaf2f8] text-right')}
                     {renderResizableHeader('custoMedioEstoque', <HeaderStack top="Custo" bottom="Médio" />, 'bg-[#eaf2f8] text-right')}
@@ -2995,7 +3045,7 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
                         )}
                         <TableCell className="whitespace-nowrap bg-[#fff2cc] text-right font-black text-red-600">{formatMoney(row.totalDesconto)}</TableCell>
 
-                        <TableCell className="whitespace-nowrap border-x border-emerald-300 bg-emerald-100 text-right text-[11px] font-black text-red-600 shadow-[inset_0_0_0_1px_rgba(16,185,129,0.12)]">{formatMoney(row.precoPromocional)}</TableCell>
+                        <TableCell className="whitespace-nowrap border-x border-emerald-300 bg-emerald-100 text-right text-[11px] font-black text-[#c00000] shadow-[inset_0_0_0_1px_rgba(16,185,129,0.12)]">{formatMoney(row.precoPromocional)}</TableCell>
 
                         <TableCell className="bg-[#f2f7fb] text-right font-black text-emerald-600">{formatNumber(row.qtdEstoque)}</TableCell>
                         <TableCell className="whitespace-nowrap bg-[#f2f7fb] text-right">{formatMoney(row.custoMedioEstoque)}</TableCell>
@@ -3052,14 +3102,14 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
 
                           return (
                             <TableCell
-                              className={`whitespace-nowrap bg-[#fffaf0] text-right font-black ${
+                              className={`whitespace-nowrap text-right font-black ${
                                 difference === null
-                                  ? 'text-slate-400'
+                                  ? 'bg-slate-50 text-slate-400'
                                   : difference > 0.005
-                                    ? 'text-emerald-700'
+                                    ? 'bg-emerald-100 text-emerald-800'
                                     : difference < -0.005
-                                      ? 'text-red-600'
-                                      : 'text-slate-700'
+                                      ? 'bg-red-100 text-red-700'
+                                      : 'bg-slate-100 text-slate-700'
                               }`}
                               title={
                                 marketComparison?.marketStoreName
@@ -3091,6 +3141,90 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
                     </tr>
                   )}
                 </tbody>
+
+                <tfoot>
+                  <tr className="bg-slate-900 text-white shadow-[0_-1px_0_0_rgba(15,23,42,0.15)]">
+                    <td className="sticky left-0 z-20 whitespace-nowrap border-r border-slate-700 bg-slate-900 px-1.5 py-1.5 text-[10px] font-black uppercase tracking-[0.08em] text-white">
+                      TOTAL
+                    </td>
+
+                    <td className="whitespace-nowrap border-r border-slate-700 px-1 py-1.5 text-right text-[10px] font-black">
+                      {formatMoney(tableTotals.precoSamsung)}
+                    </td>
+                    <td className="whitespace-nowrap border-r border-slate-700 px-1 py-1.5 text-right text-[10px] font-black">
+                      {formatMoney(tableTotals.precoTelecel)}
+                    </td>
+
+                    {showDiscountDetails && activeDiscountFields.length > 0 ? (
+                      activeDiscountFields.map((field) => (
+                        <td
+                          key={`total-${field}`}
+                          className="whitespace-nowrap border-r border-slate-700 px-1 py-1.5 text-right text-[10px] font-black"
+                        >
+                          {formatMoney(tableTotals[field])}
+                        </td>
+                      ))
+                    ) : (
+                      <td className="border-r border-slate-700 px-1 py-1.5 text-center text-[10px] font-black text-slate-400">—</td>
+                    )}
+
+                    <td className="whitespace-nowrap border-r border-slate-700 bg-amber-100 px-1 py-1.5 text-right text-[10px] font-black text-red-700">
+                      {formatMoney(tableTotals.totalDesconto)}
+                    </td>
+                    <td className="whitespace-nowrap border-x border-emerald-300 bg-emerald-200 px-1 py-1.5 text-right text-[11px] font-black text-[#c00000]">
+                      {formatMoney(tableTotals.precoPromocional)}
+                    </td>
+
+                    <td className="whitespace-nowrap border-r border-slate-700 px-1 py-1.5 text-right text-[10px] font-black">
+                      {formatNumber(tableTotals.qtdEstoque)}
+                    </td>
+                    <td className="whitespace-nowrap border-r border-slate-700 px-1 py-1.5 text-right text-[10px] font-black">
+                      {formatMoney(tableTotals.custoMedioEstoque)}
+                    </td>
+                    <td className="border-r border-slate-700 px-1 py-1.5 text-center text-[10px] font-black text-slate-400">—</td>
+                    <td className="whitespace-nowrap border-r border-slate-700 px-1 py-1.5 text-right text-[10px] font-black">
+                      {formatMoney(tableTotals.novoCustoMedio)}
+                    </td>
+                    <td className="border-r border-slate-700 px-1 py-1.5 text-center text-[10px] font-black text-slate-400">—</td>
+                    <td className="whitespace-nowrap border-r border-slate-700 px-1 py-1.5 text-right text-[10px] font-black">
+                      {formatNumber(tableTotals.qtdVendida)}
+                    </td>
+
+                    {showPriceDetails ? (
+                      <>
+                        <td className="whitespace-nowrap border-r border-slate-700 px-1 py-1.5 text-right text-[10px] font-black">{formatMoney(tableTotals.priceRebate)}</td>
+                        <td className="whitespace-nowrap border-r border-slate-700 px-1 py-1.5 text-right text-[10px] font-black">{formatMoney(tableTotals.priceTradeIn)}</td>
+                        <td className="whitespace-nowrap border-r border-slate-700 px-1 py-1.5 text-right text-[10px] font-black">{formatMoney(tableTotals.priceBogo)}</td>
+                        <td className="whitespace-nowrap border-r border-slate-700 px-1 py-1.5 text-right text-[10px] font-black">{formatMoney(tableTotals.priceSip)}</td>
+                      </>
+                    ) : (
+                      <td className="border-r border-slate-700 px-1 py-1.5 text-center text-[10px] font-black text-slate-400">—</td>
+                    )}
+
+                    {showOfferDetails ? (
+                      <>
+                        <td className="whitespace-nowrap border-r border-slate-700 px-1 py-1.5 text-right text-[10px] font-black">
+                          {formatMoney(tableTotals.ofertaAtual)}
+                        </td>
+                        <td className="border-r border-slate-700 px-1 py-1.5 text-center text-[10px] font-black text-slate-400">—</td>
+                      </>
+                    ) : (
+                      <td className="border-r border-slate-700 px-1 py-1.5 text-center text-[10px] font-black text-slate-400">—</td>
+                    )}
+
+                    <td
+                      className={`whitespace-nowrap px-1 py-1.5 text-right text-[10px] font-black ${
+                        tableTotals.differenceCheapest > 0.005
+                          ? 'bg-emerald-200 text-emerald-900'
+                          : tableTotals.differenceCheapest < -0.005
+                            ? 'bg-red-200 text-red-800'
+                            : 'bg-slate-800 text-white'
+                      }`}
+                    >
+                      {formatSignedMoney(tableTotals.differenceCheapest)}
+                    </td>
+                  </tr>
+                </tfoot>
               </table>
             </div>
 
