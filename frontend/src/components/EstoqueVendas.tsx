@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import * as XLSX from 'xlsx';
 import {
   AlertTriangle,
   BarChart3,
@@ -7,7 +8,9 @@ import {
   ChevronRight,
   Clock3,
   ExternalLink,
+  Info,
   Package,
+  FileSpreadsheet,
   RefreshCw,
   Search,
   Send,
@@ -46,6 +49,7 @@ type PontoPedidoRow = {
   sellIn: number;
   alteracao: string;
   status: string;
+  pedidoFaturado: number;
   vendas60: number;
   vendas45: number;
   vendas30: number;
@@ -62,6 +66,7 @@ type PontoPedidoRow = {
   previsao45: number;
   previsao60: number;
   incoming60: number;
+  sugestaoEstoqueDobrado?: number;
   sugestaoFaturarBacklog: number;
   sugestaoNovoPedido: number;
   sugestaoPedido: number;
@@ -208,20 +213,41 @@ function GroupButton({
   open,
   onClick,
   children,
+  help,
 }: {
   open: boolean;
   onClick: () => void;
   children: React.ReactNode;
+  help?: string;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      title={help}
       className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-[8px] font-black uppercase tracking-wide text-slate-600 shadow-sm transition hover:border-indigo-200 hover:text-indigo-700"
     >
       {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
       {children}
     </button>
+  );
+}
+
+function ColumnLabel({
+  label,
+  help,
+}: {
+  label: React.ReactNode;
+  help: string;
+}) {
+  return (
+    <span
+      title={help}
+      className="inline-flex cursor-help items-center justify-center gap-1"
+    >
+      <span>{label}</span>
+      <Info size={9} className="shrink-0 opacity-45" />
+    </span>
   );
 }
 
@@ -307,7 +333,7 @@ export function EstoqueVendas() {
   const [savingRowKey, setSavingRowKey] = useState('');
   const [savingControladoriaKey, setSavingControladoriaKey] = useState('');
   const [aiQuestion, setAiQuestion] = useState(
-    'Planeje o ponto de pedido desta aba. Para cada modelo relevante, indique o que faturar do backlog, o que pedir de novo, o que reduzir ou zerar e quais itens têm maior risco de ruptura ou excesso.',
+    'Gere o relatório completo do ponto de pedido desta aba e monte o pedido recomendado, separando faturamento de backlog, novos pedidos, reduções e riscos.',
   );
   const [aiAnswer, setAiAnswer] = useState('');
   const [aiLoading, setAiLoading] = useState(false);
@@ -699,18 +725,35 @@ export function EstoqueVendas() {
     return { date, days };
   };
 
+  const statusBlocksOrder = (status: string) => {
+    const normalized = String(status || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .trim()
+      .toUpperCase();
+
+    return (
+      normalized.includes('NAO HA COMO PEDIR') ||
+      normalized.includes('OBSOLETO')
+    );
+  };
+
+  const doubleStockSuggestion = (row: PontoPedidoRow) => {
+    if (statusBlocksOrder(row.status)) return 0;
+
+    const backendValue = Number(row.sugestaoEstoqueDobrado);
+    if (Number.isFinite(backendValue)) {
+      return Math.max(0, Math.ceil(backendValue));
+    }
+
+    return Math.max(0, Math.ceil(Number(row.vendas60 || 0) * 2));
+  };
+
   const totalVisibleColumns =
-    1 +
-    3 +
+    16 +
     (showSales ? 4 : 1) +
-    1 +
-    1 +
-    1 +
-    1 +
-    (showFutureWeeks ? 4 : 0) +
-    1 +
-    (showForecasts ? 4 : 1) +
-    7;
+    (showFutureWeeks ? 6 : 0) +
+    (showForecasts ? 4 : 0);
 
   const runAiAnalysis = async () => {
     if (!activeTab || aiLoading) return;
@@ -720,6 +763,9 @@ export function EstoqueVendas() {
     try {
       const compactRows = rows.map((row) => ({
         modelo: row.modeloComCor || row.modelo,
+        status: row.status,
+        pedidoFaturado: row.pedidoFaturado,
+        sugestaoEstoqueDobrado: doubleStockSuggestion(row),
         vendas15: row.vendas15,
         vendas30: row.vendas30,
         vendas45: row.vendas45,
@@ -762,6 +808,130 @@ export function EstoqueVendas() {
       setErrorMsg(error?.message || 'Falha ao consultar a IA de compras.');
     } finally {
       setAiLoading(false);
+    }
+  };
+
+  const exportAiReportExcel = () => {
+    if (!aiAnswer.trim()) {
+      setErrorMsg('Gere o relatório da IA antes de exportar o Excel.');
+      return;
+    }
+
+    try {
+      const workbook = XLSX.utils.book_new();
+      const generatedAt = new Date().toLocaleString('pt-BR');
+      const tabLabel = activeTabMeta?.label || activeTab || 'Ponto de Pedido';
+      const regionLabel = activeTabMeta?.stateLabel || activeTabMeta?.state || '';
+
+      const total = (field: keyof PontoPedidoRow) =>
+        rows.reduce((sum, row) => sum + Number(row[field] || 0), 0);
+
+      const actionRows = rows.filter((row) =>
+        Number(row.sugestaoEstoqueDobrado || 0) > 0 ||
+        Number(row.sugestaoFaturarBacklog || 0) > 0 ||
+        Number(row.sugestaoNovoPedido || 0) > 0 ||
+        Number(row.pedidoControladoria || 0) > 0 ||
+        Number(row.pedidoRufino || 0) > 0 ||
+        Number(row.pedidoFaturado || 0) > 0
+      );
+
+      const summaryData: (string | number)[][] = [
+        ['TELEFLUXO - RESUMO DO PONTO DE PEDIDO'],
+        [],
+        ['Aba', tabLabel],
+        ['Região', regionLabel],
+        ['Gerado em', generatedAt],
+        ['Pergunta utilizada', aiQuestion],
+        [],
+        ['TOTAIS DA ABA'],
+        ['Vendas 60 dias', total('vendas60')],
+        ['Estoque atual', total('estoque')],
+        ['Pedido faturado', total('pedidoFaturado')],
+        ['Total em backlog', total('backlogTotal')],
+        ['Sug. estoque dobrado', rows.reduce((sum, row) => sum + doubleStockSuggestion(row), 0)],
+        ['Sug. faturar backlog', total('sugestaoFaturarBacklog')],
+        ['Sug. novos pedidos', total('sugestaoNovoPedido')],
+        ['Pedido Controladoria', total('pedidoControladoria')],
+        ['Pedido Rufino', total('pedidoRufino')],
+        ['Modelos com ação', actionRows.length],
+        [],
+        ['ANÁLISE DA IA'],
+        ...aiAnswer.split(/\r?\n/).map((line) => [line]),
+      ];
+
+      const summarySheet = XLSX.utils.aoa_to_sheet(summaryData);
+      summarySheet['!cols'] = [{ wch: 28 }, { wch: 120 }];
+      XLSX.utils.book_append_sheet(workbook, summarySheet, 'Resumo');
+
+      const pedidosData = actionRows.map((row) => ({
+        'Modelo com cor': row.modeloComCor || row.modelo,
+        Status: row.status || '',
+        'Vendas 60': Number(row.vendas60 || 0),
+        Estoque: Number(row.estoque || 0),
+        'Pedido faturado': Number(row.pedidoFaturado || 0),
+        'Total em backlog': Number(row.backlogTotal || 0),
+        'Sug. estoque dobrado': doubleStockSuggestion(row),
+        'Sug. faturar backlog': Number(row.sugestaoFaturarBacklog || 0),
+        'Sug. novos pedidos': Number(row.sugestaoNovoPedido || 0),
+        'Pedido Controladoria': Number(row.pedidoControladoria || 0),
+        'Pedido Rufino': Number(row.pedidoRufino || 0),
+        'Cobertura atual (dias)': row.coberturaAtualDias == null ? '' : Number(row.coberturaAtualDias),
+        Sobra: Number(row.sobra || 0),
+      }));
+
+      const pedidosSheet = XLSX.utils.json_to_sheet(pedidosData);
+      pedidosSheet['!cols'] = [
+        { wch: 38 },
+        { wch: 20 },
+        { wch: 12 },
+        { wch: 12 },
+        { wch: 16 },
+        { wch: 17 },
+        { wch: 21 },
+        { wch: 21 },
+        { wch: 20 },
+        { wch: 22 },
+        { wch: 16 },
+        { wch: 22 },
+        { wch: 12 },
+      ];
+      XLSX.utils.book_append_sheet(workbook, pedidosSheet, 'Pedidos');
+
+      const allRowsData = rows.map((row) => ({
+        'Modelo com cor': row.modeloComCor || row.modelo,
+        Status: row.status || '',
+        'Vendas 60': Number(row.vendas60 || 0),
+        Estoque: Number(row.estoque || 0),
+        'Pedido faturado': Number(row.pedidoFaturado || 0),
+        'Total em backlog': Number(row.backlogTotal || 0),
+        Pendente: Number(row.pendente || 0),
+        'Sug. estoque dobrado': doubleStockSuggestion(row),
+        'Sug. faturar backlog': Number(row.sugestaoFaturarBacklog || 0),
+        'Sug. novos pedidos': Number(row.sugestaoNovoPedido || 0),
+        'Pedido Controladoria': Number(row.pedidoControladoria || 0),
+        'Pedido Rufino': Number(row.pedidoRufino || 0),
+        'Cobertura atual (dias)': row.coberturaAtualDias == null ? '' : Number(row.coberturaAtualDias),
+        Sobra: Number(row.sobra || 0),
+      }));
+
+      const allRowsSheet = XLSX.utils.json_to_sheet(allRowsData);
+      allRowsSheet['!cols'] = pedidosSheet['!cols'];
+      XLSX.utils.book_append_sheet(workbook, allRowsSheet, 'Base analisada');
+
+      const safeName = `${tabLabel}-${regionLabel || 'rede'}`
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-zA-Z0-9_-]+/g, '_')
+        .replace(/^_+|_+$/g, '')
+        .slice(0, 70);
+
+      XLSX.writeFile(
+        workbook,
+        `Ponto_de_Pedido_${safeName || 'TeleFluxo'}_${new Date().toISOString().slice(0, 10)}.xlsx`,
+      );
+    } catch (error: any) {
+      console.error('Exportação Excel - Ponto de Pedido:', error);
+      setErrorMsg(error?.message || 'Não foi possível gerar o Excel do Ponto de Pedido.');
     }
   };
 
@@ -900,64 +1070,130 @@ export function EstoqueVendas() {
           <thead className="sticky top-0 z-30 bg-slate-100/95 backdrop-blur">
             <tr className="text-[8px] font-black uppercase tracking-[0.10em] text-slate-500">
               <th className="sticky left-0 z-40 w-[260px] min-w-[260px] max-w-[260px] border-b border-r border-slate-200 bg-slate-100 px-3 py-2">
-                Modelo com cor
+                <ColumnLabel
+                  label="Modelo com cor"
+                  help="Modelo exatamente como está na planilha de Ponto de Pedido, preservando a variação de cor."
+                />
               </th>
-              <th className="min-w-[118px] border-b border-r border-emerald-100 bg-emerald-50 px-3 py-2 text-right text-emerald-700">Preço Samsung</th>
-              <th className="min-w-[118px] border-b border-r border-emerald-100 bg-emerald-50 px-3 py-2 text-right text-emerald-700">Preço Telecel</th>
-              <th className="min-w-[118px] border-b border-r border-emerald-100 bg-emerald-50 px-3 py-2 text-right text-emerald-700">Preço final</th>
+
+              <th className="min-w-[118px] border-b border-r border-emerald-100 bg-emerald-50 px-3 py-2 text-right text-emerald-700">
+                <ColumnLabel label="Preço Samsung" help="Preço Samsung informado na aba atual do Google Sheets." />
+              </th>
+
+              <th className="min-w-[118px] border-b border-r border-emerald-100 bg-emerald-50 px-3 py-2 text-right text-emerald-700">
+                <ColumnLabel label="Preço Telecel" help="Preço Telecel informado na aba atual do Google Sheets." />
+              </th>
+
+              <th className="min-w-[118px] border-b border-r border-emerald-100 bg-emerald-50 px-3 py-2 text-right text-emerald-700">
+                <ColumnLabel label="Preço final" help="Preço final considerado na planilha para este modelo." />
+              </th>
 
               {showSales ? (
                 <>
-                  <th className="min-w-[84px] border-b border-r border-blue-100 bg-blue-100 px-2 py-2 text-center text-blue-800">Vendas 60</th>
-                  <th className="min-w-[84px] border-b border-r border-blue-100 bg-blue-50 px-2 py-2 text-center text-blue-700">Vendas 45</th>
-                  <th className="min-w-[84px] border-b border-r border-blue-100 bg-blue-50 px-2 py-2 text-center text-blue-700">Vendas 30</th>
-                  <th className="min-w-[84px] border-b border-r border-blue-100 bg-blue-50 px-2 py-2 text-center text-blue-700">Vendas 15</th>
+                  <th className="min-w-[84px] border-b border-r border-blue-100 bg-blue-100 px-2 py-2 text-center text-blue-800">
+                    <ColumnLabel label="Vendas 60" help="Quantidade total vendida deste modelo/cor nos últimos 60 dias. É a principal referência do planejamento." />
+                  </th>
+                  <th className="min-w-[84px] border-b border-r border-blue-100 bg-blue-50 px-2 py-2 text-center text-blue-700">
+                    <ColumnLabel label="Vendas 45" help="Quantidade vendida nos últimos 45 dias. Usada como tendência complementar." />
+                  </th>
+                  <th className="min-w-[84px] border-b border-r border-blue-100 bg-blue-50 px-2 py-2 text-center text-blue-700">
+                    <ColumnLabel label="Vendas 30" help="Quantidade vendida nos últimos 30 dias. Usada como tendência complementar." />
+                  </th>
+                  <th className="min-w-[84px] border-b border-r border-blue-100 bg-blue-50 px-2 py-2 text-center text-blue-700">
+                    <ColumnLabel label="Vendas 15" help="Quantidade vendida nos últimos 15 dias. Ajuda a identificar aceleração ou desaceleração recente." />
+                  </th>
                 </>
               ) : (
                 <th className="min-w-[105px] border-b border-r border-blue-200 bg-blue-100 px-2 py-2 text-center text-blue-800">
-                  Vendas 60d <span className="text-[7px] text-blue-500">▸</span>
+                  <ColumnLabel label="Vendas 60d ▸" help="Foco principal do relatório: vendas acumuladas dos últimos 60 dias. Clique em Vendas para abrir 15/30/45/60 dias." />
                 </th>
               )}
 
-              <th className="min-w-[88px] border-b border-r border-slate-200 bg-slate-100 px-2 py-2 text-center text-slate-700">Estoque</th>
-              <th className="min-w-[90px] border-b border-r border-red-100 bg-red-50 px-2 py-2 text-center text-red-700">Pendente</th>
-              <th className="min-w-[120px] border-b border-r border-violet-200 bg-violet-100 px-2 py-2 text-center text-violet-800">Total em backlog</th>
-              <th className="min-w-[165px] border-b border-r border-violet-100 bg-violet-50 px-2 py-2 text-center text-violet-700">
-                {renderWeekHeaderContent(data?.weeks?.[0])}
+              <th className="min-w-[88px] border-b border-r border-slate-200 bg-slate-100 px-2 py-2 text-center text-slate-700">
+                <ColumnLabel label="Estoque" help="Estoque atual encontrado para este modelo/cor na região da aba selecionada." />
               </th>
 
-              {showFutureWeeks &&
-                (data?.weeks || []).slice(1, 5).map((week) => (
-                  <th
-                    key={week.key}
-                    className="min-w-[165px] border-b border-r border-violet-100 bg-violet-50 px-2 py-2 text-center text-violet-700"
-                  >
-                    {renderWeekHeaderContent(week)}
-                  </th>
-                ))}
+              <th className="min-w-[120px] border-b border-r border-violet-200 bg-violet-100 px-2 py-2 text-center text-violet-800">
+                <ColumnLabel label="Total em backlog" help="Backlog total considerado no planejamento: pendente/atrasado + semana atual + próximas quatro semanas." />
+              </th>
 
-              <th className="min-w-[130px] border-b border-r border-cyan-100 bg-cyan-50 px-2 py-2 text-center text-cyan-700">Cobertura atual</th>
-
-              {showForecasts ? (
+              {showFutureWeeks && (
                 <>
-                  <th className="min-w-[88px] border-b border-r border-cyan-100 bg-cyan-50 px-2 py-2 text-center text-cyan-700">Saldo 15d</th>
-                  <th className="min-w-[88px] border-b border-r border-cyan-100 bg-cyan-50 px-2 py-2 text-center text-cyan-700">Saldo 30d</th>
-                  <th className="min-w-[88px] border-b border-r border-cyan-100 bg-cyan-50 px-2 py-2 text-center text-cyan-700">Saldo 45d</th>
-                  <th className="min-w-[88px] border-b border-r border-cyan-100 bg-cyan-50 px-2 py-2 text-center text-cyan-700">Saldo 60d</th>
+                  <th className="min-w-[90px] border-b border-r border-red-100 bg-red-50 px-2 py-2 text-center text-red-700">
+                    <ColumnLabel label="Pendente" help="Parte do backlog sem semana válida ou com semana anterior à atual. Já está incluída no Total em backlog." />
+                  </th>
+
+                  {(data?.weeks || []).slice(0, 5).map((week) => (
+                    <th
+                      key={week.key}
+                      title="Quantidade de backlog prevista especificamente para esta semana."
+                      className="min-w-[165px] border-b border-r border-violet-100 bg-violet-50 px-2 py-2 text-center text-violet-700"
+                    >
+                      {renderWeekHeaderContent(week)}
+                    </th>
+                  ))}
                 </>
-              ) : (
-                <th className="min-w-[95px] border-b border-r border-cyan-100 bg-cyan-50 px-2 py-2 text-center text-cyan-700">
-                  Saldo 60d <span className="text-[7px] text-cyan-400">▸</span>
-                </th>
               )}
 
-              <th className="min-w-[130px] border-b border-r border-orange-200 bg-orange-100 px-2 py-2 text-center text-orange-800">Sug. faturar backlog</th>
-              <th className="min-w-[125px] border-b border-r border-amber-200 bg-amber-100 px-2 py-2 text-center text-amber-900">Sug. novos pedidos</th>
-              <th className="min-w-[145px] border-b border-r border-violet-200 bg-violet-600 px-2 py-2 text-center text-white">Sugestão pedido Controladoria</th>
-              <th className="min-w-[122px] border-b border-r border-indigo-200 bg-indigo-600 px-2 py-2 text-center text-white">Pedido Rufino</th>
-              <th className="min-w-[150px] border-b border-r border-slate-200 bg-slate-950 px-2 py-2 text-center text-white">Previsão de estoque</th>
-              <th className="min-w-[110px] border-b border-r border-emerald-100 bg-emerald-50 px-3 py-2 text-right text-emerald-700">Sell in</th>
-              <th className="min-w-[105px] border-b border-slate-200 bg-slate-100 px-3 py-2 text-center">Alteração</th>
+              <th className="min-w-[118px] border-b border-r border-sky-200 bg-sky-50 px-2 py-2 text-center text-sky-800">
+                <ColumnLabel label="Pedido faturado" help="Quantidade informada na coluna K — PEDIDO FATURADO — da planilha oficial. Representa pedido já faturado." />
+              </th>
+
+              <th className="min-w-[130px] border-b border-r border-cyan-100 bg-cyan-50 px-2 py-2 text-center text-cyan-700">
+                <ColumnLabel label="Cobertura atual" help="Estimativa de quantos dias o estoque atual sustenta o giro calculado do modelo." />
+              </th>
+
+              {showForecasts && (
+                <>
+                  <th className="min-w-[88px] border-b border-r border-cyan-100 bg-cyan-50 px-2 py-2 text-center text-cyan-700">
+                    <ColumnLabel label="Saldo 15d" help="Saldo projetado para 15 dias considerando estoque, demanda e pedidos com chegada dentro do horizonte." />
+                  </th>
+                  <th className="min-w-[88px] border-b border-r border-cyan-100 bg-cyan-50 px-2 py-2 text-center text-cyan-700">
+                    <ColumnLabel label="Saldo 30d" help="Saldo projetado para 30 dias considerando estoque, demanda e pedidos com chegada dentro do horizonte." />
+                  </th>
+                  <th className="min-w-[88px] border-b border-r border-cyan-100 bg-cyan-50 px-2 py-2 text-center text-cyan-700">
+                    <ColumnLabel label="Saldo 45d" help="Saldo projetado para 45 dias considerando estoque, demanda e pedidos com chegada dentro do horizonte." />
+                  </th>
+                  <th className="min-w-[88px] border-b border-r border-cyan-100 bg-cyan-50 px-2 py-2 text-center text-cyan-700">
+                    <ColumnLabel label="Saldo 60d" help="Saldo projetado para 60 dias. Valor negativo indica necessidade de reposição dentro do horizonte." />
+                  </th>
+                </>
+              )}
+
+              <th className="min-w-[155px] border-b border-r border-teal-200 bg-teal-100 px-2 py-2 text-center text-teal-900">
+                <ColumnLabel
+                  label="Sug. estoque dobrado"
+                  help="Referência gerencial simples: Vendas 60 dias × 2. Fica zerada para itens com status Não há como pedir ou Obsoleto."
+                />
+              </th>
+
+              <th className="min-w-[130px] border-b border-r border-orange-200 bg-orange-100 px-2 py-2 text-center text-orange-800">
+                <ColumnLabel label="Sug. faturar backlog" help="Quanto do backlog existente deve ser priorizado para faturamento, limitado pela necessidade calculada." />
+              </th>
+
+              <th className="min-w-[125px] border-b border-r border-amber-200 bg-amber-100 px-2 py-2 text-center text-amber-900">
+                <ColumnLabel label="Sug. novos pedidos" help="Necessidade adicional após considerar vendas de 60 dias, estoque e total em backlog." />
+              </th>
+
+              <th className="min-w-[145px] border-b border-r border-violet-200 bg-violet-600 px-2 py-2 text-center text-white">
+                <ColumnLabel label="Sugestão pedido Controladoria" help="Quantidade manual definida pela Controladoria. Campo editável e salvo no sistema." />
+              </th>
+
+              <th className="min-w-[122px] border-b border-r border-indigo-200 bg-indigo-600 px-2 py-2 text-center text-white">
+                <ColumnLabel label="Pedido Rufino" help="Quantidade manual final do pedido Rufino. Campo editável e sincronizado com o Resumo dos Pedidos." />
+              </th>
+
+              <th className="min-w-[150px] border-b border-r border-slate-200 bg-slate-950 px-2 py-2 text-center text-white">
+                <ColumnLabel label="Previsão de estoque" help="Cobertura estimada após considerar estoque, entradas previstas e Pedido Rufino." />
+              </th>
+
+              <th className="min-w-[110px] border-b border-r border-emerald-100 bg-emerald-50 px-3 py-2 text-right text-emerald-700">
+                <ColumnLabel label="Sell in" help="Valor de Sell In informado na planilha original." />
+              </th>
+
+              <th className="min-w-[105px] border-b border-slate-200 bg-slate-100 px-3 py-2 text-center">
+                <ColumnLabel label="Alteração" help="Observação de alteração trazida diretamente da planilha original." />
+              </th>
             </tr>
           </thead>
 
@@ -977,12 +1213,9 @@ export function EstoqueVendas() {
             ) : (
               searchedRows.map((row, index) => {
                 const forecast = finalForecast(row);
-                const currentWeek = data?.weeks?.[0];
-                const currentWeekQty = currentWeek
-                  ? Number(row.weeks?.[currentWeek.key] || 0)
-                  : 0;
                 const coverageDays = row.coberturaAtualDias;
                 const rowTone = statusRowClass(row.status, index);
+                const estoqueDobrado = doubleStockSuggestion(row);
 
                 return (
                   <tr key={row.rowKey} className={`${rowTone} transition hover:brightness-[0.99]`}>
@@ -1007,16 +1240,31 @@ export function EstoqueVendas() {
                     )}
 
                     <td className="border-b border-r border-slate-100 px-2 py-2 text-center font-black text-slate-900">{number(row.estoque)}</td>
-                    <td className={`border-b border-r border-red-100 px-2 py-2 text-center font-black ${row.pendente > 0 ? 'bg-red-100 text-red-700' : 'bg-red-50/20 text-slate-400'}`}>{number(row.pendente)}</td>
-                    <td className="border-b border-r border-violet-200 bg-violet-100/70 px-2 py-2 text-center font-black text-violet-900">{number(row.backlogTotal)}</td>
-                    <td className="border-b border-r border-violet-100 bg-violet-50/40 px-2 py-2 text-center font-black text-violet-800">{number(currentWeekQty)}</td>
 
-                    {showFutureWeeks &&
-                      (data?.weeks || []).slice(1, 5).map((week) => (
-                        <td key={`${row.rowKey}-${week.key}`} className="border-b border-r border-violet-100 bg-violet-50/40 px-2 py-2 text-center font-black text-violet-800">
-                          {number(row.weeks?.[week.key] || 0)}
+                    <td className="border-b border-r border-violet-200 bg-violet-100/70 px-2 py-2 text-center font-black text-violet-900">
+                      {number(row.backlogTotal)}
+                    </td>
+
+                    {showFutureWeeks && (
+                      <>
+                        <td className={`border-b border-r border-red-100 px-2 py-2 text-center font-black ${row.pendente > 0 ? 'bg-red-100 text-red-700' : 'bg-red-50/20 text-slate-400'}`}>
+                          {number(row.pendente)}
                         </td>
-                      ))}
+
+                        {(data?.weeks || []).slice(0, 5).map((week) => (
+                          <td
+                            key={`${row.rowKey}-${week.key}`}
+                            className="border-b border-r border-violet-100 bg-violet-50/40 px-2 py-2 text-center font-black text-violet-800"
+                          >
+                            {number(row.weeks?.[week.key] || 0)}
+                          </td>
+                        ))}
+                      </>
+                    )}
+
+                    <td className="border-b border-r border-sky-100 bg-sky-50/60 px-2 py-2 text-center font-black text-sky-900">
+                      {number(row.pedidoFaturado)}
+                    </td>
 
                     <td className="border-b border-r border-cyan-100 bg-cyan-50/30 px-2 py-2 text-center">
                       {coverageDays === null ? (
@@ -1029,21 +1277,30 @@ export function EstoqueVendas() {
                       )}
                     </td>
 
-                    {showForecasts ? (
+                    {showForecasts && (
                       <>
                         <td className={`border-b border-r border-cyan-100 px-2 py-2 text-center font-black ${metricTone(row.previsao15)}`}>{number(row.previsao15)}</td>
                         <td className={`border-b border-r border-cyan-100 px-2 py-2 text-center font-black ${metricTone(row.previsao30)}`}>{number(row.previsao30)}</td>
                         <td className={`border-b border-r border-cyan-100 px-2 py-2 text-center font-black ${metricTone(row.previsao45)}`}>{number(row.previsao45)}</td>
                         <td className={`border-b border-r border-cyan-100 px-2 py-2 text-center font-black ${metricTone(row.previsao60)}`}>{number(row.previsao60)}</td>
                       </>
-                    ) : (
-                      <td className={`border-b border-r border-cyan-100 px-2 py-2 text-center font-black ${metricTone(row.previsao60)}`}>{number(row.previsao60)}</td>
                     )}
 
-                    <td className={`border-b border-r border-orange-200 px-2 py-2 text-center font-black ${row.sugestaoFaturarBacklog > 0 ? 'bg-orange-100 text-orange-900' : 'bg-orange-50/40 text-slate-400'}`}>{number(row.sugestaoFaturarBacklog)}</td>
-                    <td className={`border-b border-r border-amber-200 px-2 py-2 text-center font-black ${row.sugestaoNovoPedido > 0 ? 'bg-amber-100 text-amber-900' : 'bg-amber-50/40 text-slate-400'}`}>{number(row.sugestaoNovoPedido)}</td>
+                    <td className={`border-b border-r border-teal-200 px-2 py-2 text-center font-black ${estoqueDobrado > 0 ? 'bg-teal-100 text-teal-900' : 'bg-teal-50/30 text-slate-400'}`}>
+                      {number(estoqueDobrado)}
+                    </td>
+
+                    <td className={`border-b border-r border-orange-200 px-2 py-2 text-center font-black ${row.sugestaoFaturarBacklog > 0 ? 'bg-orange-100 text-orange-900' : 'bg-orange-50/40 text-slate-400'}`}>
+                      {number(row.sugestaoFaturarBacklog)}
+                    </td>
+
+                    <td className={`border-b border-r border-amber-200 px-2 py-2 text-center font-black ${row.sugestaoNovoPedido > 0 ? 'bg-amber-100 text-amber-900' : 'bg-amber-50/40 text-slate-400'}`}>
+                      {number(row.sugestaoNovoPedido)}
+                    </td>
+
                     <td className="border-b border-r border-violet-100 bg-violet-50 px-1.5 py-1.5">{renderControladoriaInput(row)}</td>
                     <td className="border-b border-r border-indigo-100 bg-indigo-50 px-1.5 py-1.5">{renderPedidoInput(row)}</td>
+
                     <td className="border-b border-r border-slate-100 bg-slate-950 px-2 py-2 text-center text-white">
                       {forecast.days === null ? (
                         <span className="font-black text-slate-400">Sem giro</span>
@@ -1054,6 +1311,7 @@ export function EstoqueVendas() {
                         </div>
                       )}
                     </td>
+
                     <td className="border-b border-r border-emerald-50 bg-emerald-50/30 px-3 py-2 text-right font-bold text-slate-700">{money(row.sellIn)}</td>
                     <td className="border-b border-slate-100 px-3 py-2 text-center font-bold text-slate-500">{row.alteracao || '—'}</td>
                   </tr>
@@ -1065,7 +1323,8 @@ export function EstoqueVendas() {
       </div>
 
       <div className="flex flex-col gap-1.5 border-t border-slate-200 bg-slate-50 px-3 py-2 text-[8px] font-bold text-slate-500 lg:flex-row lg:items-center lg:justify-between">
-        <span>Faturar backlog = necessidade de V60 após estoque, limitada ao backlog disponível.</span>
+        <span>Total em backlog já inclui o pendente. Abra “Semanas backlog” para detalhar pendente + W atual + próximas 4 semanas.</span>
+        <span className="text-teal-700">Estoque dobrado = Vendas 60 × 2 para itens que ainda podem ser pedidos.</span>
         <span className="text-amber-700">Novo pedido = V60 - estoque - total em backlog.</span>
       </div>
     </div>
@@ -1205,104 +1464,129 @@ export function EstoqueVendas() {
     </div>
   );
 
-  const renderAiPanel = () => (
-    <div className="grid gap-3 xl:grid-cols-[0.78fr_1.22fr]">
-      <div className="rounded-2xl border border-violet-200 bg-gradient-to-br from-violet-950 to-slate-950 p-4 text-white shadow-sm">
-        <div className="flex items-start gap-3">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white/10">
-            <BrainCircuit size={18} />
+  const renderAiPanel = () => {
+    const quickQuestions = [
+      'Monte o ponto de pedido completo desta aba. Analise modelo a modelo e entregue o pedido final recomendado, separando faturamento de backlog, novos pedidos, reduções, itens a zerar e prioridade de cada ação.',
+      'Monte o plano de faturamento do backlog. Diga exatamente quais modelos devo faturar agora, em que quantidade e por quê, considerando Vendas 60, estoque, pedido faturado, backlog e semanas de chegada.',
+      'Monte a sugestão de novos pedidos. Para cada modelo que realmente precisa de compra, informe quantidade recomendada, prioridade e justificativa; use estoque dobrado apenas como referência gerencial e respeite o status do produto.',
+      'Audite os pedidos atuais. Compare Sistema, Controladoria e Pedido Rufino e diga modelo a modelo o que deve aumentar, reduzir, manter ou zerar, destacando divergências relevantes.',
+      'Faça a revisão final de risco do ponto de pedido: identifique ruptura, excesso, cobertura inadequada, lançamentos, obsoletos e itens sem possibilidade de pedido e entregue somente as ações que exigem decisão.',
+    ];
+
+    return (
+      <div className="grid gap-3 xl:grid-cols-[0.72fr_1.28fr]">
+        <div className="rounded-2xl border border-violet-200 bg-gradient-to-br from-violet-950 to-slate-950 p-4 text-white shadow-sm">
+          <div className="flex items-start gap-3">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white/10">
+              <BrainCircuit size={18} />
+            </div>
+            <div>
+              <p className="text-[8px] font-black uppercase tracking-[0.18em] text-violet-300">Inteligência de compra</p>
+              <h3 className="mt-1 text-lg font-black">Assistente de Ponto de Pedido</h3>
+              <p className="mt-1 text-[10px] font-semibold leading-relaxed text-slate-300">
+                Use a IA para transformar vendas de 60 dias, estoque, pedido faturado, backlog, status e pedidos manuais em uma decisão de compra objetiva.
+              </p>
+            </div>
           </div>
-          <div>
-            <p className="text-[8px] font-black uppercase tracking-[0.18em] text-violet-300">Inteligência de compra</p>
-            <h3 className="mt-1 text-lg font-black">Assistente de Ponto de Pedido</h3>
-            <p className="mt-1 text-[10px] font-semibold leading-relaxed text-slate-300">
-              A análise prioriza vendas de 60 dias e considera estoque, total em backlog, pendentes, semanas de chegada, sugestão de faturamento, novos pedidos, Controladoria e Pedido Rufino.
+
+          <div className="mt-5">
+            <p className="mb-2 text-[7px] font-black uppercase tracking-[0.16em] text-violet-300">
+              Ações principais
             </p>
+
+            <div className="grid gap-2">
+              {quickQuestions.map((question, index) => (
+                <button
+                  key={question}
+                  type="button"
+                  onClick={() => setAiQuestion(question)}
+                  className={`rounded-xl border px-3 py-2.5 text-left text-[9px] font-bold leading-4 transition ${
+                    index === 0
+                      ? 'border-violet-400/50 bg-violet-500/20 text-white hover:bg-violet-500/30'
+                      : 'border-white/10 bg-white/5 text-slate-200 hover:border-violet-400/40 hover:bg-white/10'
+                  }`}
+                >
+                  <span className="mr-2 text-violet-300">{String(index + 1).padStart(2, '0')}</span>
+                  {question}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="mt-5 rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-[9px] font-semibold leading-5 text-slate-300">
+            A IA recebe apenas os dados desta aba. O foco é <strong className="text-white">Vendas 60</strong> e ela deve diferenciar
+            pedido já faturado, backlog existente e compra nova.
           </div>
         </div>
 
-        <div className="mt-4 grid grid-cols-2 gap-2">
-          <div className="rounded-xl bg-white/5 p-2.5">
-            <p className="text-[7px] font-black uppercase text-slate-400">Estoque crítico</p>
-            <p className="mt-1 text-lg font-black">{number(rows.filter((row) => row.estoque <= 0 && row.vendas60 > 0).length)}</p>
-          </div>
-          <div className="rounded-xl bg-white/5 p-2.5">
-            <p className="text-[7px] font-black uppercase text-slate-400">Sugestão total</p>
-            <p className="mt-1 text-lg font-black">{number(liveSummary.novosPedidos)}</p>
-          </div>
-        </div>
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <Sparkles size={15} className="text-violet-600" />
+              <h3 className="text-[11px] font-black uppercase tracking-wide text-slate-900">Análise da IA</h3>
+            </div>
 
-        <div className="mt-4">
-          <p className="mb-2 text-[7px] font-black uppercase tracking-[0.16em] text-violet-300">Perguntas de planejamento</p>
-          <div className="grid gap-1.5 lg:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
-            {[
-              'Monte o pedido ideal completo desta aba, modelo a modelo, com prioridade e quantidade sugerida.',
-              'Quais modelos devo faturar do backlog primeiro e em que quantidade?',
-              'Quais modelos precisam de novos pedidos agora e quais podem esperar?',
-              'Quais modelos têm maior risco de ruptura nos próximos 15, 30 e 60 dias?',
-              'Quais modelos têm excesso de estoque e deveriam ter o pedido reduzido ou zerado?',
-              'Compare a sugestão do sistema, Controladoria e Pedido Rufino e destaque todas as divergências relevantes.',
-              'Quais lançamentos merecem compra mesmo com histórico de vendas curto?',
-              'Quais modelos obsoletos ou sem possibilidade de pedido devem ser retirados da decisão de compra?',
-              'Faça um plano de faturamento do backlog por urgência, considerando vendas 60d, estoque e semanas de chegada.',
-              'Se eu mantiver os pedidos atuais, quais modelos ficarão com excesso e quais ainda ficarão descobertos?',
-            ].map((question) => (
+            {aiAnswer && (
               <button
-                key={question}
                 type="button"
-                onClick={() => setAiQuestion(question)}
-                className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-left text-[9px] font-bold leading-4 text-slate-200 transition hover:border-violet-400/40 hover:bg-white/10"
+                onClick={exportAiReportExcel}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-[8px] font-black uppercase tracking-wide text-slate-600 transition hover:border-violet-200 hover:text-violet-700"
               >
-                {question}
+                <FileSpreadsheet size={12} />
+                Exportar Excel
               </button>
-            ))}
+            )}
+          </div>
+
+          <textarea
+            value={aiQuestion}
+            onChange={(event) => setAiQuestion(event.target.value)}
+            rows={3}
+            placeholder="Escreva o que deseja analisar..."
+            className="mt-3 w-full resize-none rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs font-semibold text-slate-700 outline-none transition focus:border-violet-400 focus:bg-white"
+          />
+
+          <div className="mt-2 flex flex-wrap justify-end gap-2">
+            {aiAnswer && (
+              <button
+                type="button"
+                onClick={exportAiReportExcel}
+                className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-[9px] font-black uppercase tracking-wide text-slate-600 transition hover:border-violet-200 hover:text-violet-700"
+              >
+                <FileSpreadsheet size={13} />
+                Exportar Excel
+              </button>
+            )}
+
+            <button
+              type="button"
+              onClick={runAiAnalysis}
+              disabled={aiLoading || !aiQuestion.trim() || !rows.length}
+              className="inline-flex items-center gap-2 rounded-xl bg-violet-600 px-4 py-2 text-[9px] font-black uppercase tracking-wide text-white shadow-sm transition hover:bg-violet-700 disabled:opacity-40"
+            >
+              {aiLoading ? <RefreshCw size={13} className="animate-spin" /> : <Send size={13} />}
+              Gerar relatório
+            </button>
+          </div>
+
+          <div className="mt-3 min-h-[320px] rounded-xl border border-slate-200 bg-slate-50 p-3">
+            {aiLoading ? (
+              <div className="flex min-h-[280px] items-center justify-center gap-2 text-xs font-bold text-slate-400">
+                <RefreshCw size={15} className="animate-spin" />
+                Analisando vendas, estoque, pedido faturado, backlog e pedidos...
+              </div>
+            ) : aiAnswer ? (
+              <div className="whitespace-pre-wrap text-[11px] font-semibold leading-6 text-slate-700">{aiAnswer}</div>
+            ) : (
+              <div className="flex min-h-[280px] items-center justify-center px-8 text-center text-[11px] font-semibold leading-5 text-slate-400">
+                Use “Gerar relatório completo” para receber uma recomendação pronta ou escolha uma das análises específicas ao lado.
+              </div>
+            )}
           </div>
         </div>
       </div>
-
-      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-        <div className="flex items-center gap-2">
-          <Sparkles size={15} className="text-violet-600" />
-          <h3 className="text-[11px] font-black uppercase tracking-wide text-slate-900">Análise da IA</h3>
-        </div>
-
-        <textarea
-          value={aiQuestion}
-          onChange={(event) => setAiQuestion(event.target.value)}
-          rows={3}
-          placeholder="Pergunte sobre o pedido..."
-          className="mt-3 w-full resize-none rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs font-semibold text-slate-700 outline-none transition focus:border-violet-400 focus:bg-white"
-        />
-
-        <div className="mt-2 flex justify-end">
-          <button
-            type="button"
-            onClick={runAiAnalysis}
-            disabled={aiLoading || !aiQuestion.trim() || !rows.length}
-            className="inline-flex items-center gap-2 rounded-xl bg-violet-600 px-4 py-2 text-[9px] font-black uppercase tracking-wide text-white shadow-sm transition hover:bg-violet-700 disabled:opacity-40"
-          >
-            {aiLoading ? <RefreshCw size={13} className="animate-spin" /> : <Send size={13} />}
-            Analisar compra
-          </button>
-        </div>
-
-        <div className="mt-3 min-h-[300px] rounded-xl border border-slate-200 bg-slate-50 p-3">
-          {aiLoading ? (
-            <div className="flex min-h-[260px] items-center justify-center gap-2 text-xs font-bold text-slate-400">
-              <RefreshCw size={15} className="animate-spin" />
-              Analisando vendas, estoque e pedidos...
-            </div>
-          ) : aiAnswer ? (
-            <div className="whitespace-pre-wrap text-[11px] font-semibold leading-6 text-slate-700">{aiAnswer}</div>
-          ) : (
-            <div className="flex min-h-[260px] items-center justify-center px-8 text-center text-[11px] font-semibold leading-5 text-slate-400">
-              Escolha uma pergunta ou escreva o que deseja analisar. A IA deve usar somente os números desta aba e sinalizar quando não houver dado suficiente.
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
+    );
+  };
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-[#f5f7fb]">
@@ -1430,9 +1714,8 @@ export function EstoqueVendas() {
 
         {pageMode === 'planejamento' && (
           <>
-            <div className="mb-2.5 grid grid-cols-2 gap-1.5 md:grid-cols-3 xl:grid-cols-6">
+            <div className="mb-2.5 grid grid-cols-2 gap-1.5 md:grid-cols-3 xl:grid-cols-5">
               <CompactSummaryCard label="Total backlog" value={number(liveSummary.backlog)} icon={Clock3} tone="violet" />
-              <CompactSummaryCard label="Pendente" value={number(liveSummary.pendente)} icon={AlertTriangle} tone="red" />
               <CompactSummaryCard label="Faturar backlog" value={number(liveSummary.faturarBacklog)} icon={TrendingUp} tone="amber" />
               <CompactSummaryCard label="Novos pedidos" value={number(liveSummary.novosPedidos)} icon={ShoppingCart} tone="amber" />
               <CompactSummaryCard label="Controladoria" value={number(liveSummary.controladoria)} icon={BarChart3} tone="violet" />
@@ -1494,14 +1777,28 @@ export function EstoqueVendas() {
               </div>
 
               <div className="flex flex-wrap items-center gap-1.5">
-                <GroupButton open={showSales} onClick={() => setShowSales((value) => !value)}>
+                <GroupButton
+                  open={showSales}
+                  onClick={() => setShowSales((value) => !value)}
+                  help="Abre ou recolhe o detalhamento de vendas em 15, 30, 45 e 60 dias."
+                >
                   Vendas
                 </GroupButton>
-                <GroupButton open={showFutureWeeks} onClick={() => setShowFutureWeeks((value) => !value)}>
+
+                <GroupButton
+                  open={showFutureWeeks}
+                  onClick={() => setShowFutureWeeks((value) => !value)}
+                  help="Abre ou recolhe Pendente, semana atual e as próximas quatro semanas do backlog."
+                >
                   Semanas backlog
                 </GroupButton>
-                <GroupButton open={showForecasts} onClick={() => setShowForecasts((value) => !value)}>
-                  Previsões
+
+                <GroupButton
+                  open={showForecasts}
+                  onClick={() => setShowForecasts((value) => !value)}
+                  help="Abre ou recolhe os saldos projetados de 15, 30, 45 e 60 dias."
+                >
+                  Saldos
                 </GroupButton>
               </div>
             </div>
