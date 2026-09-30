@@ -9851,22 +9851,26 @@ const isDailySupplement = (row: any) => {
 
       const period = homeResolvePeriod(req.query.startDate, req.query.endDate);
       const snapshot = await homeBuildSnapshot({ userId, period });
-      const visibleStores = hasNetworkScope ? snapshot.stores : snapshot.stores.slice(0, 1);
+      const visibleStores = snapshot.stores;
 
       return res.json({
         success: true,
         generatedAt: new Date().toISOString(),
         scope: {
           type: hasNetworkScope ? 'network' : 'store',
-          label: hasNetworkScope ? 'Visão consolidada da rede' : 'Dados restritos à sua unidade',
+          label: hasNetworkScope
+            ? 'Visão consolidada da rede'
+            : allowedStores.length > 1
+              ? 'Visão consolidada das lojas permitidas'
+              : 'Dados restritos à sua unidade',
           stores: hasNetworkScope ? snapshot.stores.map((item: any) => item.loja) : allowedStores,
-          canCompareStores: hasNetworkScope,
+          canCompareStores: hasNetworkScope || allowedStores.length > 1,
           canUseClark: isClarkDirector,
         },
         period: snapshot.period,
         kpis: {
           ...snapshot.kpis,
-          lojasAtivas: hasNetworkScope ? snapshot.stores.length : Math.min(1, snapshot.stores.length),
+          llojasAtivas: visibleStores.length,
         },
         trend: snapshot.trend,
         stores: visibleStores,
@@ -13090,11 +13094,12 @@ const normalizeKeys = (rows: any[]) => {
     });
 };
 
-// ==========================================
+
 // 📦 PONTO DE PEDIDO 2.0 - GOOGLE SHEETS + VENDAS + ESTOQUE + PEDIDOS
 // ==========================================
 
 const PONTO_PEDIDO_SHEET_ID = '1D3BpE__wEiw48CmsMEfkQwMeeTzV13p45ZgKhgci4bA';
+// ==========================================
 const PONTO_PEDIDO_SHEET_URL =
   `https://docs.google.com/spreadsheets/d/${PONTO_PEDIDO_SHEET_ID}/edit?usp=sharing`;
 const PONTO_PEDIDO_CACHE_MS = 5 * 60 * 1000;
@@ -13135,29 +13140,159 @@ function pontoPedidoNormalizeHeader(value: any): string {
     .trim();
 }
 
+type PontoPedidoGeoScope =
+  | 'STATE'
+  | 'DF_GO_SEM_RIO_VERDE'
+  | 'RIO_VERDE_ONLY';
+
+type PontoPedidoPlanningTabMeta = {
+  id: string;
+  label: string;
+  category: string;
+  state: string;
+  stateLabel: string;
+  geoScope: PontoPedidoGeoScope;
+};
+
 function pontoPedidoIsPlanningSheet(value: any): boolean {
   const normalized = pontoPedidoNormalizeHeader(value);
 
   return (
     normalized.startsWith('APA') ||
-    normalized === 'API CABEDELO' ||
-    normalized === 'AP FORTALEZA'
+    normalized.startsWith('API') ||
+    normalized.startsWith('AP ') ||
+    normalized.startsWith('TAB') ||
+    normalized.startsWith('WEA') ||
+    normalized.startsWith('ACE') ||
+    normalized.startsWith('ACESS') ||
+    normalized.includes('CABEDELO') ||
+    normalized.includes('MANAIRA') ||
+    normalized.includes('MANAIRA') ||
+    normalized.includes('FORTALEZA')
   );
 }
 
-function pontoPedidoPlanningTabLabel(value: any): string {
+function pontoPedidoPlanningTabMeta(value: any): PontoPedidoPlanningTabMeta {
   const raw = String(value ?? '').trim();
   const normalized = pontoPedidoNormalizeHeader(raw);
 
-  if (normalized === 'API CABEDELO') {
-    return 'JOÃO PESSOA';
+  let state = 'OUTROS';
+  let stateLabel = 'OUTROS';
+  let label = raw;
+  let geoScope: PontoPedidoGeoScope = 'STATE';
+
+  if (normalized.includes('BRASILIA')) {
+    state = 'DF';
+    stateLabel = 'DF+GO';
+    label = 'BRASÍLIA';
+    geoScope = 'DF_GO_SEM_RIO_VERDE';
+  } else if (normalized.includes('UBERLANDIA')) {
+    state = 'MG';
+    stateLabel = 'MINAS GERAIS';
+    label = 'UBERLÂNDIA';
+  } else if (normalized.includes('RIO VERDE')) {
+    state = 'GO';
+    stateLabel = 'RIO VERDE';
+    label = 'RIO VERDE';
+    geoScope = 'RIO_VERDE_ONLY';
+  } else if (normalized.includes('RECIFE')) {
+    state = 'PE';
+    stateLabel = 'PERNAMBUCO';
+    label = 'RECIFE';
+  } else if (normalized.includes('CABEDELO') || normalized.includes('MANAIRA') || normalized.includes('MANAIRA')) {
+    state = 'PB';
+    stateLabel = 'PARAÍBA';
+    label = 'MANAÍRA (CABEDELO)';
+  } else if (normalized.includes('FORTALEZA')) {
+    state = 'CE';
+    stateLabel = 'CEARÁ';
+    label = 'FORTALEZA';
   }
 
-  if (normalized === 'AP FORTALEZA') {
-    return 'FORTALEZA';
+  let category = 'APARELHOS';
+  if (normalized.includes('WEAR') || normalized.includes('WATCH') || normalized.includes('BUDS')) {
+    category = 'WEARABLES';
+  } else if (normalized.includes('TABLET') || normalized.startsWith('TAB')) {
+    category = 'TABLETS';
+  } else if (normalized.includes('ACESS') || normalized.startsWith('ACE')) {
+    category = 'ACESSÓRIOS';
   }
 
-  return raw;
+  return {
+    id: raw,
+    label,
+    category,
+    state,
+    stateLabel,
+    geoScope,
+  };
+}
+
+function pontoPedidoPlanningTabLabel(value: any): string {
+  return pontoPedidoPlanningTabMeta(value).label;
+}
+
+function pontoPedidoStateFromText(value: any): string {
+  const normalized = pontoPedidoNormalizeHeader(value);
+  if (!normalized) return '';
+
+  if (normalized === 'CE' || normalized.includes('CEARA') || normalized.includes('FORTALEZA')) return 'CE';
+  if (normalized === 'PB' || normalized.includes('PARAIBA') || normalized.includes('CABEDELO') || normalized.includes('MANAIRA') || normalized.includes('MANAIRA') || normalized.includes('JOAO PESSOA')) return 'PB';
+  if (normalized === 'PE' || normalized.includes('PERNAMBUCO') || normalized.includes('RECIFE')) return 'PE';
+  if (normalized === 'MG' || normalized.includes('MINAS GERAIS') || normalized.includes('UBERLANDIA') || normalized.includes('UBERABA')) return 'MG';
+  if (normalized === 'GO' || normalized.includes('GOIAS') || normalized.includes('GOIANIA') || normalized.includes('FLAMBOYANT') || normalized.includes('PASSEIO DAS AGUAS') || normalized.includes('BURITI SHOPPING') || normalized.includes('PORTAL SHOPPING') || normalized.includes('SHOPPING SUL') || normalized.includes('RIO VERDE') || normalized.includes('ARAGUAIA') || normalized.includes('ANAPOLIS')) return 'GO';
+  if (normalized === 'DF' || normalized.includes('DISTRITO FEDERAL') || normalized.includes('BRASILIA') || normalized.includes('TAGUATINGA') || normalized.includes('CONJUNTO NACIONAL') || normalized.includes('PARK SHOPPING') || normalized.includes('JK SHOPPING') || normalized.includes('PATIO BRASIL') || normalized.includes('TERRACO') || normalized.includes('BOULEVARD') || normalized.includes('IGUATEMI SHOPPING')) return 'DF';
+  return '';
+}
+
+function pontoPedidoStateFromSalesRow(row: any): string {
+  const cnpj = String(row?.cnpj_empresa || row?.CNPJ_EMPRESA || '').replace(/\D/g, '');
+  if (cnpj && LOJAS_MAP_GLOBAL[cnpj]) {
+    const byStore = pontoPedidoStateFromText(LOJAS_MAP_GLOBAL[cnpj]);
+    if (byStore) return byStore;
+  }
+
+  return (
+    pontoPedidoStateFromText(row?.loja || row?.LOJA) ||
+    pontoPedidoStateFromText(row?.regiao || row?.REGIAO)
+  );
+}
+
+function pontoPedidoIsRioVerdeText(value: any): boolean {
+  const normalized = pontoPedidoNormalizeHeader(value);
+  return normalized.includes('BURITI RIO VERDE');
+}
+
+function pontoPedidoIsRioVerdeSalesRow(row: any): boolean {
+  const cnpj = String(row?.cnpj_empresa || row?.CNPJ_EMPRESA || '').replace(/\D/g, '');
+  const mappedStore = cnpj && LOJAS_MAP_GLOBAL[cnpj]
+    ? LOJAS_MAP_GLOBAL[cnpj]
+    : '';
+
+  return pontoPedidoIsRioVerdeText([
+    mappedStore,
+    row?.loja,
+    row?.LOJA,
+    row?.regiao,
+    row?.REGIAO,
+  ].filter(Boolean).join(' '));
+}
+
+function pontoPedidoMatchesGeoScope(
+  rowState: string,
+  isRioVerde: boolean,
+  stateCode = '',
+  geoScope: PontoPedidoGeoScope = 'STATE'
+): boolean {
+  if (geoScope === 'DF_GO_SEM_RIO_VERDE') {
+    return rowState === 'DF' || (rowState === 'GO' && !isRioVerde);
+  }
+
+  if (geoScope === 'RIO_VERDE_ONLY') {
+    return rowState === 'GO' && isRioVerde;
+  }
+
+  return !stateCode || rowState === stateCode;
 }
 
 function pontoPedidoProductKey(value: any): string {
@@ -13500,7 +13635,11 @@ type PontoPedidoSalesMetric = {
   vendas60: number;
 };
 
-async function pontoPedidoLoadSalesMetrics(todayIso: string): Promise<PontoPedidoSalesMetric[]> {
+async function pontoPedidoLoadSalesMetrics(
+  todayIso: string,
+  stateCode = '',
+  geoScope: PontoPedidoGeoScope = 'STATE'
+): Promise<PontoPedidoSalesMetric[]> {
   const start15 = pontoPedidoDateAddDays(todayIso, -14);
   const start30 = pontoPedidoDateAddDays(todayIso, -29);
   const start45 = pontoPedidoDateAddDays(todayIso, -44);
@@ -13511,6 +13650,13 @@ async function pontoPedidoLoadSalesMetrics(todayIso: string): Promise<PontoPedid
 
   const addRows = (rows: any[]) => {
     (rows || []).forEach((row) => {
+      const rowState = pontoPedidoStateFromSalesRow(row);
+      const isRioVerde = pontoPedidoIsRioVerdeSalesRow(row);
+
+      if (!pontoPedidoMatchesGeoScope(rowState, isRioVerde, stateCode, geoScope)) {
+        return;
+      }
+
       const descricao = String(row.descricao || row.DESCRICAO || '').trim();
       const key = pontoPedidoProductKey(descricao);
       if (!key) return;
@@ -13562,6 +13708,9 @@ async function pontoPedidoLoadSalesMetrics(todayIso: string): Promise<PontoPedid
         const rows = await annualDb.all(`
           SELECT
             descricao,
+            COALESCE(loja, '') AS loja,
+            COALESCE(cnpj_empresa, '') AS cnpj_empresa,
+            COALESCE(regiao, '') AS regiao,
             SUM(CASE WHEN ${dateExpr} >= ? THEN COALESCE(NULLIF(qtd_real, 0), quantidade, 0) ELSE 0 END) AS vendas15,
             SUM(CASE WHEN ${dateExpr} >= ? THEN COALESCE(NULLIF(qtd_real, 0), quantidade, 0) ELSE 0 END) AS vendas30,
             SUM(CASE WHEN ${dateExpr} >= ? THEN COALESCE(NULLIF(qtd_real, 0), quantidade, 0) ELSE 0 END) AS vendas45,
@@ -13573,7 +13722,7 @@ async function pontoPedidoLoadSalesMetrics(todayIso: string): Promise<PontoPedid
               UPPER(TRIM(CAST(cancelado AS TEXT))) NOT IN
               ('S', 'SIM', 'TRUE', '1', 'CANCELADO', 'CANCELADA')
             )
-          GROUP BY descricao
+          GROUP BY descricao, COALESCE(loja, ''), COALESCE(cnpj_empresa, ''), COALESCE(regiao, '')
         `, [start15, start30, start45, start60, start60, todayIso]);
 
         addRows(rows);
@@ -13601,13 +13750,15 @@ async function pontoPedidoLoadSalesMetrics(todayIso: string): Promise<PontoPedid
       const rows = await globalDb.all(`
         SELECT
           descricao,
+          COALESCE(cnpj_empresa, '') AS cnpj_empresa,
+          COALESCE(regiao, '') AS regiao,
           SUM(CASE WHEN ${dateExpr} >= ? THEN COALESCE(quantidade, 0) ELSE 0 END) AS vendas15,
           SUM(CASE WHEN ${dateExpr} >= ? THEN COALESCE(quantidade, 0) ELSE 0 END) AS vendas30,
           SUM(CASE WHEN ${dateExpr} >= ? THEN COALESCE(quantidade, 0) ELSE 0 END) AS vendas45,
           SUM(CASE WHEN ${dateExpr} >= ? THEN COALESCE(quantidade, 0) ELSE 0 END) AS vendas60
         FROM vendas
         WHERE ${dateExpr} >= ? AND ${dateExpr} <= ?
-        GROUP BY descricao
+        GROUP BY descricao, COALESCE(cnpj_empresa, ''), COALESCE(regiao, '')
       `, [start15, start30, start45, start60, dailyStart, todayIso]);
 
       addRows(rows);
@@ -13635,18 +13786,29 @@ type PontoPedidoStockMetric = {
   estoque: number;
 };
 
-async function pontoPedidoLoadStockMetrics(): Promise<PontoPedidoStockMetric[]> {
+async function pontoPedidoLoadStockMetrics(
+  stateCode = '',
+  geoScope: PontoPedidoGeoScope = 'STATE'
+): Promise<PontoPedidoStockMetric[]> {
   const rows = await prisma.stock.findMany({
     where: { stockType: 'ESTOQUE' },
     select: {
       description: true,
       quantity: true,
+      storeName: true,
     },
   });
 
   const map = new Map<string, PontoPedidoStockMetric>();
 
   rows.forEach((row: any) => {
+    const rowState = pontoPedidoStateFromText(row.storeName);
+    const isRioVerde = pontoPedidoIsRioVerdeText(row.storeName);
+
+    if (!pontoPedidoMatchesGeoScope(rowState, isRioVerde, stateCode, geoScope)) {
+      return;
+    }
+
     const descricao = String(row.description || '').trim();
     const key = pontoPedidoProductKey(descricao);
     if (!key) return;
@@ -13705,7 +13867,9 @@ type PontoPedidoOrderRow = {
   searchKey: string;
   weekRaw: string;
   quantity: number;
-};
+  state: string;
+  sourceText: string;
+}
 
 function pontoPedidoLoadOpenOrders(workbook: XLSX.WorkBook): PontoPedidoOrderRow[] {
   const sheetName = workbook.SheetNames.find(
@@ -13722,9 +13886,8 @@ function pontoPedidoLoadOpenOrders(workbook: XLSX.WorkBook): PontoPedidoOrderRow
   ]);
   const headers = rows[headerIndex] || [];
 
-  // Regra do arquivo atual informada pelo usuário:
-  // D = SEMANA e L = quantidade ainda em aberto para chegar.
-  // Só usamos o cabeçalho como fallback caso a estrutura venha menor que essas colunas.
+  // Estrutura informada pelo usuário:
+  // D = SEMANA e L = saldo ainda aberto para chegar.
   const weekIndex = headers.length > 3
     ? 3
     : pontoPedidoFindColumn(headers, ['SEMANA'], 3);
@@ -13756,10 +13919,13 @@ function pontoPedidoLoadOpenOrders(workbook: XLSX.WorkBook): PontoPedidoOrderRow
         .filter(Boolean)
         .join(' ');
 
-      // Fallback: usa a linha inteira. Isso deixa a integração resiliente caso
-      // o nome da coluna de produto mude no CONSOLIDADO_PEDIDOS.
       const fallbackText = (row || [])
         .filter((_, index) => index !== weekIndex && index !== qtyIndex)
+        .map((cell) => String(cell ?? '').trim())
+        .filter(Boolean)
+        .join(' ');
+
+      const fullText = (row || [])
         .map((cell) => String(cell ?? '').trim())
         .filter(Boolean)
         .join(' ');
@@ -13768,6 +13934,8 @@ function pontoPedidoLoadOpenOrders(workbook: XLSX.WorkBook): PontoPedidoOrderRow
         quantity,
         weekRaw,
         searchKey: pontoPedidoProductKey(preferredText || fallbackText),
+        state: pontoPedidoStateFromText(weekRaw) || pontoPedidoStateFromText(fullText),
+        sourceText: fullText,
       };
     })
     .filter((row) => row.quantity > 0 && row.searchKey);
@@ -13777,9 +13945,19 @@ function pontoPedidoOrdersForModel(
   orders: PontoPedidoOrderRow[],
   colorKey: string,
   baseKey: string,
-  allowBaseFallback: boolean
+  allowBaseFallback: boolean,
+  stateCode = '',
+  geoScope: PontoPedidoGeoScope = 'STATE'
 ): PontoPedidoOrderRow[] {
   return orders.filter((order) => {
+    const isRioVerde = pontoPedidoIsRioVerdeText(
+      order.sourceText || order.weekRaw
+    );
+
+    if (!pontoPedidoMatchesGeoScope(order.state, isRioVerde, stateCode, geoScope)) {
+      return false;
+    }
+
     if (colorKey && (order.searchKey.includes(colorKey) || colorKey.includes(order.searchKey))) {
       return true;
     }
@@ -13818,6 +13996,7 @@ function pontoPedidoParseApaSheet(workbook: XLSX.WorkBook, sheetName: string) {
   const idxFinal = pontoPedidoFindColumn(headers, ['PRECO FINAL', 'PREÇO FINAL']);
   const idxSellIn = pontoPedidoFindColumn(headers, ['SELL IN', 'SELLIN']);
   const idxAlteracao = pontoPedidoFindColumn(headers, ['ALTERACAO', 'ALTERAÇÃO']);
+  const idxStatus = pontoPedidoFindColumn(headers, ['STATUS', 'SITUACAO', 'SITUAÇÃO']);
 
   if (idxModelo < 0 && idxModeloCor < 0) {
     throw new Error(`A aba ${sheetName} não possui coluna MODELO/MODELO COM COR reconhecível.`);
@@ -13841,6 +14020,7 @@ function pontoPedidoParseApaSheet(workbook: XLSX.WorkBook, sheetName: string) {
         precoFinal: pontoPedidoNumber(row?.[idxFinal]),
         sellIn: pontoPedidoNumber(row?.[idxSellIn]),
         alteracao: idxAlteracao >= 0 ? String(row?.[idxAlteracao] ?? '').trim() : '',
+        status: idxStatus >= 0 ? String(row?.[idxStatus] ?? '').trim() : '',
       };
     })
     .filter(Boolean) as Array<{
@@ -13853,353 +14033,576 @@ function pontoPedidoParseApaSheet(workbook: XLSX.WorkBook, sheetName: string) {
       precoFinal: number;
       sellIn: number;
       alteracao: string;
+      status: string;
     }>;
 }
 
-    app.get('/api/ponto-pedido/meta', async (req, res) => {
-      try {
-        const startedAt = Date.now();
-              console.log('📦 [PONTO PEDIDO META] iniciando...');
-        const forceRefresh = String(req.query.refresh || '') === '1';
-        const cache = await pontoPedidoLoadWorkbook(forceRefresh);
-        console.log(
-          `📦 [PONTO PEDIDO META] workbook carregado em ${Date.now() - startedAt}ms`,
-          cache.workbook.SheetNames
-        );
-        const tabs = cache.workbook.SheetNames
-          .filter(pontoPedidoIsPlanningSheet)
-          .map((name) => ({ id: name, label: pontoPedidoPlanningTabLabel(name) }));
-          
-          if (!tabs.length) {
-              console.error('Ponto de Pedido: nenhuma aba de planejamento encontrada.', {
-                sheetNames: cache.workbook.SheetNames,
-              });
+type PontoPedidoManualValues = {
+  pedidoRufino: number;
+  pedidoControladoria: number;
+};
 
-              return res.status(422).json({
-                ok: false,
-                error:
-                  'A planilha foi lida, mas nenhuma aba de Ponto de Pedido foi encontrada. ' +
-                  'Esperado: abas APA*, API-CABEDELO ou AP - FORTALEZA.',
-                sheetNames: cache.workbook.SheetNames,
-              });
-            }
+type PontoPedidoStateMetricCache = {
+  expiresAt: number;
+  sales: PontoPedidoSalesMetric[];
+  stock: PontoPedidoStockMetric[];
+};
 
-        const today = pontoPedidoBrazilTodayIso();
-        const weekRefs = pontoPedidoWeekRefs(today, 5);
+const pontoPedidoStateMetricCache = new Map<string, PontoPedidoStateMetricCache>();
 
-        return res.json({
-          ok: true,
-          sourceUrl: PONTO_PEDIDO_SHEET_URL,
-          loadedAt: cache.loadedAt,
+async function pontoPedidoLoadStateMetrics(
+  today: string,
+  stateCode: string,
+  geoScope: PontoPedidoGeoScope = 'STATE',
+  forceRefresh = false
+) {
+  const key = `${today}|${stateCode || 'ALL'}|${geoScope}`;
+  const cached = pontoPedidoStateMetricCache.get(key);
+
+  if (!forceRefresh && cached && cached.expiresAt > Date.now()) {
+    return { salesMetrics: cached.sales, stockMetrics: cached.stock };
+  }
+
+  const [salesMetrics, stockMetrics] = await Promise.all([
+    pontoPedidoLoadSalesMetrics(today, stateCode, geoScope),
+    pontoPedidoLoadStockMetrics(stateCode, geoScope),
+  ]);
+
+  pontoPedidoStateMetricCache.set(key, {
+    expiresAt: Date.now() + 2 * 60 * 1000,
+    sales: salesMetrics,
+    stock: stockMetrics,
+  });
+
+  return { salesMetrics, stockMetrics };
+}
+
+async function pontoPedidoLoadManualMap(
+  sheetName: string
+): Promise<Map<string, PontoPedidoManualValues>> {
+  let db: any;
+  const map = new Map<string, PontoPedidoManualValues>();
+
+  try {
+    db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+    const rows = await db.all(`
+      SELECT modelo, pedido_rufino, sugestao_coordenador
+      FROM sugestao_compras_manual
+      WHERE regiao_aba = ?
+    `, [sheetName]);
+
+    (rows || []).forEach((row: any) => {
+      const key = pontoPedidoProductKey(row.modelo);
+      if (!key) return;
+      map.set(key, {
+        pedidoRufino: Math.max(0, pontoPedidoNumber(row.pedido_rufino)),
+        pedidoControladoria: Math.max(0, pontoPedidoNumber(row.sugestao_coordenador)),
+      });
+    });
+  } finally {
+    if (db) {
+      try { await db.close(); } catch {}
+    }
+  }
+
+  return map;
+}
+
+async function pontoPedidoBuildSheetData(params: {
+  workbook: XLSX.WorkBook;
+  sheetName: string;
+  today: string;
+  forceRefresh?: boolean;
+  includeManual?: boolean;
+}) {
+  const { workbook, sheetName, today } = params;
+  const forceRefresh = Boolean(params.forceRefresh);
+  const includeManual = params.includeManual !== false;
+  const tabMeta = pontoPedidoPlanningTabMeta(sheetName);
+
+  const currentIsoWeek = pontoPedidoIsoWeek(today);
+  const weekRefs = pontoPedidoWeekRefs(today, 5);
+  const currentMonday =
+    weekRefs[0]?.monday ||
+    pontoPedidoIsoWeekMonday(currentIsoWeek.year, currentIsoWeek.week);
+  const horizon60 = new Date(`${pontoPedidoDateAddDays(today, 60)}T12:00:00Z`);
+
+  const [{ salesMetrics, stockMetrics }, manualMap] = await Promise.all([
+    pontoPedidoLoadStateMetrics(
+      today,
+      tabMeta.state,
+      tabMeta.geoScope,
+      forceRefresh
+    ),
+    includeManual
+      ? pontoPedidoLoadManualMap(sheetName)
+      : Promise.resolve(new Map<string, PontoPedidoManualValues>()),
+  ]);
+
+  const sheetRows = pontoPedidoParseApaSheet(workbook, sheetName);
+  const openOrders = pontoPedidoLoadOpenOrders(workbook);
+
+  const baseCounts = new Map<string, number>();
+  sheetRows.forEach((row) => {
+    const baseKey = pontoPedidoProductKey(row.modelo);
+    if (baseKey) baseCounts.set(baseKey, (baseCounts.get(baseKey) || 0) + 1);
+  });
+
+  const result = sheetRows.map((row) => {
+    const colorKey = pontoPedidoProductKey(row.modeloComCor || row.modelo);
+    const baseKey = pontoPedidoProductKey(row.modelo);
+    const allowBaseFallback = Boolean(baseKey) && (baseCounts.get(baseKey) || 0) === 1;
+
+    const sales = pontoPedidoMetricForModel(
+      salesMetrics,
+      colorKey,
+      baseKey,
+      allowBaseFallback
+    );
+    const stock = pontoPedidoMetricForModel(
+      stockMetrics,
+      colorKey,
+      baseKey,
+      allowBaseFallback
+    );
+    const orders = pontoPedidoOrdersForModel(
+      openOrders,
+      colorKey,
+      baseKey,
+      allowBaseFallback,
+      tabMeta.state,
+      tabMeta.geoScope
+    );
+
+    const vendas15 = Math.max(0, pontoPedidoNumber((sales as any)?.vendas15));
+    const vendas30 = Math.max(0, pontoPedidoNumber((sales as any)?.vendas30));
+    const vendas45 = Math.max(0, pontoPedidoNumber((sales as any)?.vendas45));
+    const vendas60 = Math.max(0, pontoPedidoNumber((sales as any)?.vendas60));
+    const estoque = Math.max(0, pontoPedidoNumber((stock as any)?.estoque));
+
+    const vmd15 = vendas15 / 15;
+    const vmd30 = vendas30 / 30;
+    const vmd45 = vendas45 / 45;
+    const vmd60 = vendas60 / 60;
+
+    const vmdPonderada =
+      vmd15 * 0.40 +
+      vmd30 * 0.30 +
+      vmd45 * 0.20 +
+      vmd60 * 0.10;
+
+    const weekQty: Record<string, number> = {};
+    weekRefs.forEach((week) => { weekQty[week.key] = 0; });
+
+    let pendente = 0;
+    let incoming15 = 0;
+    let incoming30 = 0;
+    let incoming45 = 0;
+    let incoming60 = 0;
+
+    orders.forEach((order) => {
+      const parsedWeek = pontoPedidoParseWeek(order.weekRaw, currentIsoWeek.year);
+
+      if (!parsedWeek || parsedWeek.monday.getTime() < currentMonday.getTime()) {
+        pendente += order.quantity;
+        return;
+      }
+
+      const ref = pontoPedidoWeekRefFromDate(parsedWeek.monday);
+      if (Object.prototype.hasOwnProperty.call(weekQty, ref.key)) {
+        weekQty[ref.key] = (weekQty[ref.key] ?? 0) + order.quantity;
+      }
+
+      const diffDays = Math.floor(
+        (parsedWeek.monday.getTime() - new Date(`${today}T12:00:00Z`).getTime()) /
+          86400000
+      );
+
+      if (diffDays <= 15) incoming15 += order.quantity;
+      if (diffDays <= 30) incoming30 += order.quantity;
+      if (diffDays <= 45) incoming45 += order.quantity;
+      if (parsedWeek.monday.getTime() <= horizon60.getTime()) incoming60 += order.quantity;
+    });
+
+    const backlogTotal =
+      pendente +
+      weekRefs.reduce(
+        (sum, week) =>
+          sum + pontoPedidoNumber(weekQty[week.key] ?? 0),
+        0
+      );
+
+    const demand15 = vmdPonderada * 15;
+    const demand30 = vmdPonderada * 30;
+    const demand45 = vmdPonderada * 45;
+    const demand60 = vmdPonderada * 60;
+
+    const proj15 = estoque + incoming15 - demand15;
+    const proj30 = estoque + incoming30 - demand30;
+    const proj45 = estoque + incoming45 - demand45;
+    const proj60 = estoque + incoming60 - demand60;
+
+    // Regras operacionais solicitadas:
+    // 1) foco principal = venda dos últimos 60 dias;
+    // 2) faturar backlog = quanto falta para cobrir V60 após considerar estoque,
+    //    limitado ao saldo realmente existente no backlog;
+    // 3) novo pedido = necessidade remanescente depois de estoque + TODO backlog.
+    const necessidade60 = Math.max(0, Math.ceil(vendas60 - estoque));
+    const sugestaoFaturarBacklog = Math.max(
+      0,
+      Math.min(Math.ceil(backlogTotal), necessidade60)
+    );
+    const statusNorm = pontoPedidoNormalizeHeader((row as any).status || '');
+    const bloqueiaNovoPedido =
+      statusNorm.includes('NAO HA COMO PEDIR') ||
+      statusNorm.includes('OBSOLETO');
+
+    const sugestaoNovoPedido = bloqueiaNovoPedido
+      ? 0
+      : Math.max(0, Math.ceil(vendas60 - estoque - backlogTotal));
+    const sobra = Math.max(0, estoque + backlogTotal - vendas60);
+
+    const coberturaAtualDias = vmdPonderada > 0 ? estoque / vmdPonderada : null;
+    const coberturaAtualData = coberturaAtualDias === null
+      ? ''
+      : pontoPedidoDateAddDays(today, Math.max(0, Math.floor(coberturaAtualDias)));
+
+    const manual = manualMap.get(colorKey) || manualMap.get(baseKey) || {
+      pedidoRufino: 0,
+      pedidoControladoria: 0,
+    };
+
+    const pedidoRufino = Math.max(0, manual.pedidoRufino || 0);
+    const pedidoControladoria = Math.max(0, manual.pedidoControladoria || 0);
+
+    const supplyPostOrder = estoque + incoming60 + pedidoRufino;
+    const coberturaPosPedidoDias = vmdPonderada > 0 ? supplyPostOrder / vmdPonderada : null;
+    const previsaoEstoque = coberturaPosPedidoDias === null
+      ? ''
+      : pontoPedidoDateAddDays(today, Math.max(0, Math.floor(coberturaPosPedidoDias)));
+
+    return {
+      ...row,
+      rowKey: `${sheetName}::${row.sourceRow}::${colorKey || baseKey}`,
+      category: tabMeta.category,
+      state: tabMeta.state,
+      stateLabel: tabMeta.stateLabel,
+      vendas60,
+      vendas45,
+      vendas30,
+      vendas15,
+      estoque,
+      pendente,
+      backlogTotal: Math.round(backlogTotal * 100) / 100,
+      weeks: weekRefs.reduce((acc, week) => {
+        acc[week.key] = Math.round((weekQty[week.key] || 0) * 100) / 100;
+        return acc;
+      }, {} as Record<string, number>),
+      vendasMediaDia: vmdPonderada,
+      coberturaAtualDias,
+      coberturaAtualData,
+      previsao15: Math.round(proj15 * 10) / 10,
+      previsao30: Math.round(proj30 * 10) / 10,
+      previsao45: Math.round(proj45 * 10) / 10,
+      previsao60: Math.round(proj60 * 10) / 10,
+      incoming60: Math.round(incoming60 * 100) / 100,
+      sugestaoFaturarBacklog,
+      sugestaoNovoPedido,
+      // Mantém compatibilidade com a IA e telas antigas.
+      sugestaoPedido: sugestaoNovoPedido,
+      pedidoControladoria,
+      pedidoRufino,
+      sobra: Math.round(sobra * 100) / 100,
+      previsaoEstoque,
+      coberturaPosPedidoDias,
+    };
+  });
+
+  const summary = result.reduce(
+    (acc, row) => {
+      acc.modelos += 1;
+      acc.estoque += pontoPedidoNumber(row.estoque);
+      acc.pendente += pontoPedidoNumber(row.pendente);
+      acc.backlogTotal += pontoPedidoNumber(row.backlogTotal);
+      acc.sugestaoFaturarBacklog += pontoPedidoNumber(row.sugestaoFaturarBacklog);
+      acc.sugestaoNovosPedidos += pontoPedidoNumber(row.sugestaoNovoPedido);
+      acc.pedidoControladoria += pontoPedidoNumber(row.pedidoControladoria);
+      acc.pedidoRufino += pontoPedidoNumber(row.pedidoRufino);
+      acc.sobra += pontoPedidoNumber(row.sobra);
+      acc.vendas60 += pontoPedidoNumber(row.vendas60);
+      return acc;
+    },
+    {
+      modelos: 0,
+      estoque: 0,
+      pendente: 0,
+      backlogTotal: 0,
+      sugestaoFaturarBacklog: 0,
+      sugestaoNovosPedidos: 0,
+      pedidoControladoria: 0,
+      pedidoRufino: 0,
+      sobra: 0,
+      vendas60: 0,
+    }
+  );
+
+  return {
+    tabMeta,
+    weekRefs,
+    rows: result,
+    summary,
+  };
+}
+
+app.get('/api/ponto-pedido/meta', async (req, res) => {
+  try {
+    const forceRefresh = String(req.query.refresh || '') === '1';
+    if (forceRefresh) pontoPedidoStateMetricCache.clear();
+    const cache = await pontoPedidoLoadWorkbook(forceRefresh);
+    const tabs = cache.workbook.SheetNames
+      .filter(pontoPedidoIsPlanningSheet)
+      .map(pontoPedidoPlanningTabMeta);
+
+    if (!tabs.length) {
+      return res.status(422).json({
+        ok: false,
+        error: 'A planilha foi lida, mas nenhuma aba de Ponto de Pedido foi encontrada.',
+        sheetNames: cache.workbook.SheetNames,
+      });
+    }
+
+    const today = pontoPedidoBrazilTodayIso();
+    const weekRefs = pontoPedidoWeekRefs(today, 5);
+
+    return res.json({
+      ok: true,
+      sourceUrl: PONTO_PEDIDO_SHEET_URL,
+      loadedAt: cache.loadedAt,
+      today,
+      tabs,
+      categories: Array.from(new Set(tabs.map((tab) => tab.category))),
+      currentWeek: weekRefs[0]?.label || '',
+      weeks: weekRefs.map((week) => ({
+        key: week.key,
+        label: week.label,
+        displayLabel: week.displayLabel,
+        startDate: week.startDate,
+        endDate: week.endDate,
+        year: week.year,
+        week: week.week,
+      })),
+    });
+  } catch (error: any) {
+    console.error('Erro /api/ponto-pedido/meta:', error);
+    return res.status(500).json({
+      ok: false,
+      error: error?.message || 'Falha ao carregar Ponto de Pedido.',
+    });
+  }
+});
+
+app.get('/api/ponto-pedido', async (req, res) => {
+  try {
+    const requestedSheet = String(req.query.aba || '').trim();
+    const forceRefresh = String(req.query.refresh || '') === '1';
+    if (forceRefresh) pontoPedidoStateMetricCache.clear();
+    const cache = await pontoPedidoLoadWorkbook(forceRefresh);
+    const workbook = cache.workbook;
+
+    const planningTabs = workbook.SheetNames.filter(pontoPedidoIsPlanningSheet);
+    const sheetName = requestedSheet && planningTabs.includes(requestedSheet)
+      ? requestedSheet
+      : planningTabs[0];
+
+    if (!sheetName) {
+      return res.status(404).json({
+        ok: false,
+        error: 'Nenhuma aba de Ponto de Pedido disponível.',
+      });
+    }
+
+    const today = pontoPedidoBrazilTodayIso();
+    const built = await pontoPedidoBuildSheetData({
+      workbook,
+      sheetName,
+      today,
+      forceRefresh,
+      includeManual: true,
+    });
+
+    return res.json({
+      ok: true,
+      sourceUrl: PONTO_PEDIDO_SHEET_URL,
+      loadedAt: cache.loadedAt,
+      today,
+      sheetName,
+      activeTab: built.tabMeta,
+      tabs: planningTabs.map(pontoPedidoPlanningTabMeta),
+      currentWeek: built.weekRefs[0]?.label || '',
+      weeks: built.weekRefs.map((week) => ({
+        key: week.key,
+        label: week.label,
+        displayLabel: week.displayLabel,
+        startDate: week.startDate,
+        endDate: week.endDate,
+        year: week.year,
+        week: week.week,
+      })),
+      summary: built.summary,
+      formula: {
+        salesFocus: 'vendas dos últimos 60 dias',
+        backlogBilling: 'min(total backlog, max(0, vendas60 - estoque))',
+        newOrder: 'max(0, vendas60 - estoque - total backlog)',
+        pending: 'backlog sem semana válida ou com semana anterior à atual',
+      },
+      rows: built.rows,
+    });
+  } catch (error: any) {
+    console.error('Erro /api/ponto-pedido:', error);
+    return res.status(500).json({
+      ok: false,
+      error: error?.message || 'Falha ao montar o Ponto de Pedido.',
+    });
+  }
+});
+
+app.get('/api/ponto-pedido/resumo-estados', async (req, res) => {
+  try {
+    const category = pontoPedidoNormalizeHeader(req.query.categoria || 'APARELHOS');
+    const forceRefresh = String(req.query.refresh || '') === '1';
+    const cache = await pontoPedidoLoadWorkbook(forceRefresh);
+    const workbook = cache.workbook;
+    const today = pontoPedidoBrazilTodayIso();
+
+    const tabs = workbook.SheetNames
+      .filter(pontoPedidoIsPlanningSheet)
+      .map(pontoPedidoPlanningTabMeta)
+      .filter((tab) => pontoPedidoNormalizeHeader(tab.category) === category);
+
+    const builtRows = await Promise.all(
+      tabs.map(async (tab) => {
+        const built = await pontoPedidoBuildSheetData({
+          workbook,
+          sheetName: tab.id,
           today,
-
-          // ✅ FALTAVA ISTO
-          tabs,
-
-          currentWeek: weekRefs[0]?.label || '',
-
-          weeks: weekRefs.map((week) => ({
-            key: week.key,
-            label: week.label,
-            displayLabel: week.displayLabel,
-            startDate: week.startDate,
-            endDate: week.endDate,
-            year: week.year,
-            week: week.week,
-          })),
+          forceRefresh,
+          includeManual: false,
         });
-      } catch (error: any) {
-        console.error('Erro /api/ponto-pedido/meta:', error);
-        
-        return res.status(500).json({ ok: false, error: error?.message || 'Falha ao carregar Ponto de Pedido.' });
-      }
+
+        return {
+          ...tab,
+          estoque: built.summary.estoque,
+          backlogTotal: built.summary.backlogTotal,
+          vendas60: built.summary.vendas60,
+          sobra: built.summary.sobra,
+          sugestaoNovosPedidos: built.summary.sugestaoNovosPedidos,
+        };
+      })
+    );
+
+    return res.json({ ok: true, category, rows: builtRows });
+  } catch (error: any) {
+    console.error('Erro /api/ponto-pedido/resumo-estados:', error);
+    return res.status(500).json({
+      ok: false,
+      error: error?.message || 'Falha ao calcular sobra por estado.',
+    });
+  }
+});
+
+async function pontoPedidoSaveManualValue(params: {
+  aba: string;
+  modelo: string;
+  value: number;
+  field: 'pedido_rufino' | 'sugestao_coordenador';
+}) {
+  let db: any;
+  try {
+    db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+
+    if (params.field === 'pedido_rufino') {
+      await db.run(`
+        INSERT INTO sugestao_compras_manual (
+          modelo, regiao_aba, faturado, sugestao_coordenador, pedido_rufino
+        ) VALUES (?, ?, 0, 0, ?)
+        ON CONFLICT(modelo, regiao_aba)
+        DO UPDATE SET pedido_rufino = excluded.pedido_rufino
+      `, [params.modelo.toUpperCase(), params.aba, params.value]);
+    } else {
+      await db.run(`
+        INSERT INTO sugestao_compras_manual (
+          modelo, regiao_aba, faturado, sugestao_coordenador, pedido_rufino
+        ) VALUES (?, ?, 0, ?, 0)
+        ON CONFLICT(modelo, regiao_aba)
+        DO UPDATE SET sugestao_coordenador = excluded.sugestao_coordenador
+      `, [params.modelo.toUpperCase(), params.aba, params.value]);
+    }
+  } finally {
+    if (db) {
+      try { await db.close(); } catch {}
+    }
+  }
+}
+
+app.post('/api/ponto-pedido/pedido-rufino', async (req, res) => {
+  try {
+    const aba = String(req.body?.aba || '').trim();
+    const modelo = String(req.body?.modeloComCor || req.body?.modelo || '').trim();
+    const valor = Math.max(0, pontoPedidoNumber(req.body?.valor));
+
+    if (!aba || !pontoPedidoIsPlanningSheet(aba)) {
+      return res.status(400).json({ ok: false, error: 'Aba de Ponto de Pedido inválida.' });
+    }
+    if (!modelo) {
+      return res.status(400).json({ ok: false, error: 'Modelo não informado.' });
+    }
+
+    await pontoPedidoSaveManualValue({
+      aba,
+      modelo,
+      value: valor,
+      field: 'pedido_rufino',
     });
 
-    app.get('/api/ponto-pedido', async (req, res) => {
-      let manualDb: any;
+    return res.json({ ok: true, aba, modelo, pedidoRufino: valor });
+  } catch (error: any) {
+    console.error('Erro /api/ponto-pedido/pedido-rufino:', error);
+    return res.status(500).json({
+      ok: false,
+      error: error?.message || 'Falha ao salvar Pedido Rufino.',
+    });
+  }
+});
 
-      try {
-        const requestedSheet = String(req.query.aba || '').trim();
-        const forceRefresh = String(req.query.refresh || '') === '1';
-        const cache = await pontoPedidoLoadWorkbook(forceRefresh);
-        const workbook = cache.workbook;
+app.post('/api/ponto-pedido/pedido-controladoria', async (req, res) => {
+  try {
+    const aba = String(req.body?.aba || '').trim();
+    const modelo = String(req.body?.modeloComCor || req.body?.modelo || '').trim();
+    const valor = Math.max(0, pontoPedidoNumber(req.body?.valor));
 
-        const planningTabs = workbook.SheetNames.filter(pontoPedidoIsPlanningSheet);
-        const sheetName = requestedSheet && planningTabs.includes(requestedSheet)
-          ? requestedSheet
-          : planningTabs[0];
+    if (!aba || !pontoPedidoIsPlanningSheet(aba)) {
+      return res.status(400).json({ ok: false, error: 'Aba de Ponto de Pedido inválida.' });
+    }
+    if (!modelo) {
+      return res.status(400).json({ ok: false, error: 'Modelo não informado.' });
+    }
 
-        if (!sheetName) {
-          return res.status(404).json({
-            ok: false,
-            error: 'Nenhuma aba de Ponto de Pedido disponível.',
-          });
-        }
-
-        const today = pontoPedidoBrazilTodayIso();
-        const currentIsoWeek = pontoPedidoIsoWeek(today);
-        const weekRefs = pontoPedidoWeekRefs(today, 5);
-        const currentMonday = weekRefs[0]?.monday || pontoPedidoIsoWeekMonday(currentIsoWeek.year, currentIsoWeek.week);
-        const horizon60 = new Date(`${pontoPedidoDateAddDays(today, 60)}T12:00:00Z`);
-
-        const [sheetRows, salesMetrics, stockMetrics] = await Promise.all([
-          Promise.resolve(pontoPedidoParseApaSheet(workbook, sheetName)),
-          pontoPedidoLoadSalesMetrics(today),
-          pontoPedidoLoadStockMetrics(),
-        ]);
-
-        const openOrders = pontoPedidoLoadOpenOrders(workbook);
-
-        const baseCounts = new Map<string, number>();
-        sheetRows.forEach((row) => {
-          const baseKey = pontoPedidoProductKey(row.modelo);
-          if (baseKey) baseCounts.set(baseKey, (baseCounts.get(baseKey) || 0) + 1);
-        });
-
-        manualDb = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
-        const manualRows = await manualDb.all(`
-          SELECT modelo, regiao_aba, pedido_rufino
-          FROM sugestao_compras_manual
-          WHERE regiao_aba = ?
-        `, [sheetName]);
-
-        const manualMap = new Map<string, number>();
-        manualRows.forEach((row: any) => {
-          manualMap.set(pontoPedidoProductKey(row.modelo), pontoPedidoNumber(row.pedido_rufino));
-        });
-
-        const result = sheetRows.map((row) => {
-          const colorKey = pontoPedidoProductKey(row.modeloComCor || row.modelo);
-          const baseKey = pontoPedidoProductKey(row.modelo);
-          const allowBaseFallback = Boolean(baseKey) && (baseCounts.get(baseKey) || 0) === 1;
-
-          const sales = pontoPedidoMetricForModel(
-            salesMetrics,
-            colorKey,
-            baseKey,
-            allowBaseFallback
-          );
-          const stock = pontoPedidoMetricForModel(
-            stockMetrics,
-            colorKey,
-            baseKey,
-            allowBaseFallback
-          );
-          const orders = pontoPedidoOrdersForModel(
-            openOrders,
-            colorKey,
-            baseKey,
-            allowBaseFallback
-          );
-
-          const vendas15 = Math.max(0, pontoPedidoNumber((sales as any)?.vendas15));
-          const vendas30 = Math.max(0, pontoPedidoNumber((sales as any)?.vendas30));
-          const vendas45 = Math.max(0, pontoPedidoNumber((sales as any)?.vendas45));
-          const vendas60 = Math.max(0, pontoPedidoNumber((sales as any)?.vendas60));
-          const estoque = Math.max(0, pontoPedidoNumber((stock as any)?.estoque));
-
-          const vmd15 = vendas15 / 15;
-          const vmd30 = vendas30 / 30;
-          const vmd45 = vendas45 / 45;
-          const vmd60 = vendas60 / 60;
-
-          // Média diária ponderada: dá mais peso ao comportamento recente sem
-          // ignorar a tendência de 60 dias.
-          const vmdPonderada =
-            vmd15 * 0.40 +
-            vmd30 * 0.30 +
-            vmd45 * 0.20 +
-            vmd60 * 0.10;
-
-          const weekQty: Record<string, number> = {};
-          weekRefs.forEach((week) => { weekQty[week.key] = 0; });
-
-          let pendente = 0;
-          let incoming15 = 0;
-          let incoming30 = 0;
-          let incoming45 = 0;
-          let incoming60 = 0;
-
-          orders.forEach((order) => {
-            const parsedWeek = pontoPedidoParseWeek(order.weekRaw, currentIsoWeek.year);
-
-            if (!parsedWeek || parsedWeek.monday.getTime() < currentMonday.getTime()) {
-              // Regra solicitada: sem W válido ou semana anterior à atual = PENDENTE/ATRASADO.
-              pendente += order.quantity;
-              return;
-            }
-
-            const ref = pontoPedidoWeekRefFromDate(parsedWeek.monday);
-
-              if (Object.prototype.hasOwnProperty.call(weekQty, ref.key)) {
-                weekQty[ref.key] =
-                  (weekQty[ref.key] ?? 0) + order.quantity;
-              }
-
-            const diffDays = Math.floor(
-              (parsedWeek.monday.getTime() - new Date(`${today}T12:00:00Z`).getTime()) / 86400000
-            );
-
-            if (diffDays <= 15) incoming15 += order.quantity;
-            if (diffDays <= 30) incoming30 += order.quantity;
-            if (diffDays <= 45) incoming45 += order.quantity;
-            if (parsedWeek.monday.getTime() <= horizon60.getTime()) incoming60 += order.quantity;
-          });
-
-          const demand15 = vmdPonderada * 15;
-          const demand30 = vmdPonderada * 30;
-          const demand45 = vmdPonderada * 45;
-          const demand60 = vmdPonderada * 60;
-
-          const proj15 = estoque + incoming15 - demand15;
-          const proj30 = estoque + incoming30 - demand30;
-          const proj45 = estoque + incoming45 - demand45;
-          const proj60 = estoque + incoming60 - demand60;
-
-          // Sugestão conservadora: garante cobertura projetada de 60 dias.
-          // Pedidos atrasados/semana inválida NÃO reduzem a sugestão, porque sua
-          // data de chegada não é confiável.
-          const sugestaoPedido = Math.max(
-            0,
-            Math.ceil(demand60 - estoque - incoming60)
-          );
-
-          const coberturaAtualDias = vmdPonderada > 0 ? estoque / vmdPonderada : null;
-          const coberturaAtualData = coberturaAtualDias === null
-            ? ''
-            : pontoPedidoDateAddDays(today, Math.max(0, Math.floor(coberturaAtualDias)));
-
-          const pedidoRufino = Math.max(0, manualMap.get(colorKey) ?? manualMap.get(baseKey) ?? 0);
-          const supplyPostOrder = estoque + incoming60 + pedidoRufino;
-          const coberturaPosPedidoDias = vmdPonderada > 0 ? supplyPostOrder / vmdPonderada : null;
-          const previsaoEstoque = coberturaPosPedidoDias === null
-            ? ''
-            : pontoPedidoDateAddDays(today, Math.max(0, Math.floor(coberturaPosPedidoDias)));
-
-          return {
-            ...row,
-            rowKey: `${sheetName}::${row.sourceRow}::${colorKey || baseKey}`,
-            vendas60,
-            vendas45,
-            vendas30,
-            vendas15,
-            estoque,
-            pendente,
-            weeks: weekRefs.reduce((acc, week) => {
-              acc[week.key] = Math.round((weekQty[week.key] || 0) * 100) / 100;
-              return acc;
-            }, {} as Record<string, number>),
-            vendasMediaDia: vmdPonderada,
-            coberturaAtualDias,
-            coberturaAtualData,
-            previsao15: Math.round(proj15 * 10) / 10,
-            previsao30: Math.round(proj30 * 10) / 10,
-            previsao45: Math.round(proj45 * 10) / 10,
-            previsao60: Math.round(proj60 * 10) / 10,
-            incoming60: Math.round(incoming60 * 100) / 100,
-            sugestaoPedido,
-            pedidoRufino,
-            previsaoEstoque,
-            coberturaPosPedidoDias,
-          };
-        });
-
-        const summary = result.reduce(
-          (acc, row) => {
-            acc.modelos += 1;
-            acc.estoque += pontoPedidoNumber(row.estoque);
-            acc.pendente += pontoPedidoNumber(row.pendente);
-            acc.sugestao += pontoPedidoNumber(row.sugestaoPedido);
-            acc.pedidoRufino += pontoPedidoNumber(row.pedidoRufino);
-            return acc;
-          },
-          { modelos: 0, estoque: 0, pendente: 0, sugestao: 0, pedidoRufino: 0 }
-        );
-
-        return res.json({
-          ok: true,
-          sourceUrl: PONTO_PEDIDO_SHEET_URL,
-          loadedAt: cache.loadedAt,
-          today,
-          sheetName,
-          tabs: planningTabs.map((name) => ({
-            id: name,
-            label: pontoPedidoPlanningTabLabel(name),
-          })),
-          currentWeek: weekRefs[0]?.label || '',
-          weeks: weekRefs.map((week) => ({
-            key: week.key,
-            label: week.label,
-            displayLabel: week.displayLabel,
-            startDate: week.startDate,
-            endDate: week.endDate,
-            year: week.year,
-            week: week.week,
-          })),
-          summary,
-          formula: {
-            vmd: '40% VMD15 + 30% VMD30 + 20% VMD45 + 10% VMD60',
-            suggestion: 'max(0, demanda projetada 60d - estoque - pedidos com chegada prevista em até 60d)',
-            pending: 'sem semana válida ou semana anterior à semana atual; não reduz a sugestão',
-          },
-          rows: result,
-        });
-      } catch (error: any) {
-        console.error('Erro /api/ponto-pedido:', error);
-        return res.status(500).json({
-          ok: false,
-          error: error?.message || 'Falha ao montar o Ponto de Pedido.',
-        });
-      } finally {
-        if (manualDb) {
-          try { await manualDb.close(); } catch {}
-        }
-      }
+    await pontoPedidoSaveManualValue({
+      aba,
+      modelo,
+      value: valor,
+      field: 'sugestao_coordenador',
     });
 
-    app.post('/api/ponto-pedido/pedido-rufino', async (req, res) => {
-      let db: any;
-
-      try {
-        const aba = String(req.body?.aba || '').trim();
-        const modelo = String(req.body?.modeloComCor || req.body?.modelo || '').trim();
-        const valor = Math.max(0, pontoPedidoNumber(req.body?.valor));
-
-        if (!aba || !pontoPedidoIsPlanningSheet(aba)) {
-          return res.status(400).json({
-            ok: false,
-            error: 'Aba de Ponto de Pedido inválida.',
-          });
-        }
-
-        if (!modelo) {
-          return res.status(400).json({ ok: false, error: 'Modelo não informado.' });
-        }
-
-        db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
-
-        await db.run(`
-          INSERT INTO sugestao_compras_manual (
-            modelo,
-            regiao_aba,
-            faturado,
-            sugestao_coordenador,
-            pedido_rufino
-          ) VALUES (?, ?, 0, 0, ?)
-          ON CONFLICT(modelo, regiao_aba)
-          DO UPDATE SET pedido_rufino = excluded.pedido_rufino
-        `, [modelo.toUpperCase(), aba, valor]);
-
-        return res.json({ ok: true, aba, modelo, pedidoRufino: valor });
-      } catch (error: any) {
-        console.error('Erro /api/ponto-pedido/pedido-rufino:', error);
-        return res.status(500).json({ ok: false, error: error?.message || 'Falha ao salvar Pedido Rufino.' });
-      } finally {
-        if (db) {
-          try { await db.close(); } catch {}
-        }
-      }
+    return res.json({ ok: true, aba, modelo, pedidoControladoria: valor });
+  } catch (error: any) {
+    console.error('Erro /api/ponto-pedido/pedido-controladoria:', error);
+    return res.status(500).json({
+      ok: false,
+      error: error?.message || 'Falha ao salvar sugestão da Controladoria.',
     });
+  }
+});
 
     function pontoPedidoDeterministicPurchaseAnalysis(
   rows: any[],
@@ -14211,12 +14614,12 @@ function pontoPedidoParseApaSheet(workbook: XLSX.WorkBook, sheetName: string) {
     .filter(
       (row) =>
         pontoPedidoNumber(row?.estoque) <= 0 &&
-        pontoPedidoNumber(row?.vendas30) > 0
+        pontoPedidoNumber(row?.vendas60) > 0
     )
     .sort(
       (a, b) =>
-        pontoPedidoNumber(b?.vendas30) -
-        pontoPedidoNumber(a?.vendas30)
+        pontoPedidoNumber(b?.vendas60) -
+        pontoPedidoNumber(a?.vendas60)
     );
 
   const under = safeRows
@@ -14285,7 +14688,7 @@ function pontoPedidoParseApaSheet(workbook: XLSX.WorkBook, sheetName: string) {
           critical,
           (row) =>
             `${row.modelo}: estoque ${pontoPedidoNumber(row.estoque)}, ` +
-            `vendas 30d ${pontoPedidoNumber(row.vendas30)}, ` +
+            `vendas 60d ${pontoPedidoNumber(row.vendas60)}, ` +
             `sugestão ${pontoPedidoNumber(row.sugestao)}.`
         )}`
       : 'Sem ruptura evidente entre os dados analisados.',
@@ -14341,6 +14744,7 @@ app.post('/api/ponto-pedido/analise-ia', async (req, res) => {
         vendas60: pontoPedidoNumber(row?.vendas60),
         estoque: pontoPedidoNumber(row?.estoque),
         pendente: pontoPedidoNumber(row?.pendente),
+        backlogTotal: pontoPedidoNumber(row?.backlogTotal),
         semanas:
           row?.semanas && typeof row.semanas === 'object'
             ? row.semanas
@@ -14354,18 +14758,21 @@ app.post('/api/ponto-pedido/analise-ia', async (req, res) => {
         saldo30: pontoPedidoNumber(row?.saldo30),
         saldo45: pontoPedidoNumber(row?.saldo45),
         saldo60: pontoPedidoNumber(row?.saldo60),
+        sugestaoFaturarBacklog: pontoPedidoNumber(row?.sugestaoFaturarBacklog),
         sugestao: pontoPedidoNumber(row?.sugestao),
+        pedidoControladoria: pontoPedidoNumber(row?.pedidoControladoria),
         pedidoRufino: pontoPedidoNumber(row?.pedidoRufino),
+        sobra: pontoPedidoNumber(row?.sobra),
       }))
       .sort((a: any, b: any) => {
         const scoreA =
-          (a.estoque <= 0 && a.vendas30 > 0 ? 100000 : 0) +
+          (a.estoque <= 0 && a.vendas60 > 0 ? 100000 : 0) +
           Math.max(0, a.sugestao - a.pedidoRufino) * 100 +
           Math.max(0, -a.saldo30) * 10 +
           a.vendas30;
 
         const scoreB =
-          (b.estoque <= 0 && b.vendas30 > 0 ? 100000 : 0) +
+          (b.estoque <= 0 && b.vendas60 > 0 ? 100000 : 0) +
           Math.max(0, b.sugestao - b.pedidoRufino) * 100 +
           Math.max(0, -b.saldo30) * 10 +
           b.vendas30;
@@ -14404,10 +14811,10 @@ Analise SOMENTE os dados fornecidos.
 Objetivo: evitar tanto ruptura quanto excesso de compra por modelo/cor.
 
 Regras:
-- venda recente tem peso maior, mas use também 45/60 dias para tendência;
-- considere estoque, cobertura, saldo projetado, pedidos em trânsito e semanas de chegada;
+- o foco operacional é VENDAS 60 DIAS; use 15/30/45 apenas como tendência complementar;
+- considere estoque, cobertura, TOTAL EM BACKLOG, backlog pendente, semanas de chegada e saldo projetado;
 - PENDENTE é atrasado/sem data confiável e não deve ser tratado como chegada garantida;
-- compare Pedido Rufino com Sugestão do sistema;
+- diferencie a sugestão de FATURAR BACKLOG da sugestão de NOVOS PEDIDOS; compare Controladoria e Pedido Rufino com a sugestão de novos pedidos;
 - modelo sem giro não deve receber compra apenas por estar sem estoque;
 - classifique recomendações em: COMPRAR AGORA, MANTER, REDUZIR/REVISAR e ACOMPANHAR;
 - não invente números e cite os números dos modelos recomendados.
@@ -14487,7 +14894,6 @@ RESUMO DO SISTEMA: ${deterministic}`;
     });
   }
 });
-
 
 // ==========================================
 // 🚀 MÓDULO ESTOQUE X VENDAS (VERSÃO FINAL: FILTRO NA MEMÓRIA)

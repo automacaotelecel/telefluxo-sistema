@@ -2,18 +2,13 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   BarChart3,
-  Boxes,
   BrainCircuit,
   ChevronDown,
   ChevronRight,
   Clock3,
-  Eye,
-  EyeOff,
   ExternalLink,
   Package,
-  PackageX,
   RefreshCw,
-  RotateCcw,
   Search,
   Send,
   ShoppingCart,
@@ -24,6 +19,9 @@ import {
 type SheetTab = {
   id: string;
   label: string;
+  category: string;
+  state: string;
+  stateLabel: string;
 };
 
 type WeekColumn = {
@@ -47,12 +45,14 @@ type PontoPedidoRow = {
   precoFinal: number;
   sellIn: number;
   alteracao: string;
+  status: string;
   vendas60: number;
   vendas45: number;
   vendas30: number;
   vendas15: number;
   estoque: number;
   pendente: number;
+  backlogTotal: number;
   weeks: Record<string, number>;
   vendasMediaDia: number;
   coberturaAtualDias: number | null;
@@ -62,8 +62,12 @@ type PontoPedidoRow = {
   previsao45: number;
   previsao60: number;
   incoming60: number;
+  sugestaoFaturarBacklog: number;
+  sugestaoNovoPedido: number;
   sugestaoPedido: number;
+  pedidoControladoria: number;
   pedidoRufino: number;
+  sobra: number;
   previsaoEstoque: string;
   coberturaPosPedidoDias: number | null;
 };
@@ -82,18 +86,37 @@ type PontoPedidoResponse = {
     modelos: number;
     estoque: number;
     pendente: number;
-    sugestao: number;
+    backlogTotal: number;
+    sugestaoFaturarBacklog: number;
+    sugestaoNovosPedidos: number;
+    pedidoControladoria: number;
     pedidoRufino: number;
+    sobra: number;
+    vendas60: number;
   };
   formula?: {
-    vmd?: string;
-    suggestion?: string;
+    salesFocus?: string;
+    backlogBilling?: string;
+    newOrder?: string;
     pending?: string;
   };
   rows: PontoPedidoRow[];
 };
 
-type PageMode = 'planejamento' | 'resumo' | 'ia';
+type PageMode = 'planejamento' | 'resumo' | 'sugestoes' | 'ia';
+
+type StateSurplusRow = {
+  id: string;
+  label: string;
+  category: string;
+  state: string;
+  stateLabel: string;
+  estoque: number;
+  backlogTotal: number;
+  vendas60: number;
+  sobra: number;
+  sugestaoNovosPedidos: number;
+};
 
 const getApiUrl = () => {
   const envUrl = String(import.meta.env.VITE_API_URL || '').trim();
@@ -279,12 +302,12 @@ export function EstoqueVendas() {
   const [showSales, setShowSales] = useState(false);
   const [showFutureWeeks, setShowFutureWeeks] = useState(false);
   const [showForecasts, setShowForecasts] = useState(false);
-  const [showBaseModel, setShowBaseModel] = useState(false);
-  const [showNoStock, setShowNoStock] = useState(false);
-  const [restoredNoStockKeys, setRestoredNoStockKeys] = useState<Set<string>>(() => new Set());
+  const [stateSummaries, setStateSummaries] = useState<StateSurplusRow[]>([]);
+  const [stateSummaryLoading, setStateSummaryLoading] = useState(false);
   const [savingRowKey, setSavingRowKey] = useState('');
+  const [savingControladoriaKey, setSavingControladoriaKey] = useState('');
   const [aiQuestion, setAiQuestion] = useState(
-    'Analise o ponto de pedido e me diga onde devo comprar mais, reduzir ou manter o pedido.',
+    'Planeje o ponto de pedido desta aba. Para cada modelo relevante, indique o que faturar do backlog, o que pedir de novo, o que reduzir ou zerar e quais itens têm maior risco de ruptura ou excesso.',
   );
   const [aiAnswer, setAiAnswer] = useState('');
   const [aiLoading, setAiLoading] = useState(false);
@@ -359,6 +382,37 @@ export function EstoqueVendas() {
     }
   }, []);
 
+  const loadStateSummaries = useCallback(async (category: string, force = false) => {
+    if (!category) {
+      setStateSummaries([]);
+      return;
+    }
+
+    setStateSummaryLoading(true);
+    try {
+      const params = new URLSearchParams({ categoria: category });
+      if (force) params.set('refresh', '1');
+
+      const { response, json } = await fetchJsonWithTimeout(
+        `${API_URL}/api/ponto-pedido/resumo-estados?${params.toString()}`,
+        { cache: 'no-store' },
+        60000,
+      );
+
+      if (!response.ok || !json?.ok) {
+        throw new Error(json?.error || 'Não foi possível calcular a sobra por estado.');
+      }
+
+      setStateSummaries(Array.isArray(json.rows) ? json.rows : []);
+    } catch (error) {
+      console.error('Resumo por estado:', error);
+      setStateSummaries([]);
+    } finally {
+      setStateSummaryLoading(false);
+    }
+  }, []);
+
+
   useEffect(() => {
     let alive = true;
 
@@ -375,6 +429,8 @@ export function EstoqueVendas() {
         }
 
         await loadData(first, false);
+        const firstCategory = String(nextTabs[0]?.category || 'APARELHOS');
+        loadStateSummaries(firstCategory, false);
       } catch (error: any) {
         if (!alive) return;
         setErrorMsg(error?.message || 'Falha ao iniciar o Ponto de Pedido.');
@@ -387,14 +443,12 @@ export function EstoqueVendas() {
     return () => {
       alive = false;
     };
-  }, [loadData, loadMeta]);
+  }, [loadData, loadMeta, loadStateSummaries]);
 
   const handleTabChange = (tab: string) => {
     if (tab === activeTab) return;
     setActiveTab(tab);
     setSearchTerm('');
-    setShowNoStock(false);
-    setRestoredNoStockKeys(new Set());
     loadData(tab, false);
   };
 
@@ -416,6 +470,8 @@ export function EstoqueVendas() {
       // loadMeta(true) já atualizou o workbook no backend.
       // Aqui usamos o cache recém-carregado para não baixar a planilha inteira duas vezes.
       await loadData(target, false);
+      const targetCategory = String(nextTabs.find((tab: SheetTab) => tab.id === target)?.category || 'APARELHOS');
+      loadStateSummaries(targetCategory, false);
     } catch (error: any) {
       setErrorMsg(error?.message || 'Falha ao atualizar o Google Sheets.');
     } finally {
@@ -432,32 +488,31 @@ export function EstoqueVendas() {
     );
   }, [rows, searchTerm]);
 
-  const availableRows = useMemo(
-    () =>
-      searchedRows.filter(
-        (row) =>
-          Number(row.estoque || 0) > 0 ||
-          restoredNoStockKeys.has(row.rowKey),
-      ),
-    [searchedRows, restoredNoStockKeys],
+  const categories = useMemo(
+    () => Array.from(new Set(tabs.map((tab) => tab.category || 'APARELHOS'))),
+    [tabs],
   );
 
-  const noStockRows = useMemo(
-    () =>
-      searchedRows.filter(
-        (row) =>
-          Number(row.estoque || 0) <= 0 &&
-          !restoredNoStockKeys.has(row.rowKey),
-      ),
-    [searchedRows, restoredNoStockKeys],
+  const activeTabMeta = useMemo(
+    () => tabs.find((tab) => tab.id === activeTab) || tabs[0] || null,
+    [tabs, activeTab],
   );
 
-  const restoreNoStockRow = (rowKey: string) => {
-    setRestoredNoStockKeys((current) => {
-      const next = new Set(current);
-      next.add(rowKey);
-      return next;
-    });
+  const activeCategory = activeTabMeta?.category || categories[0] || 'APARELHOS';
+
+  const stateTabs = useMemo(
+    () => tabs.filter((tab) => (tab.category || 'APARELHOS') === activeCategory),
+    [tabs, activeCategory],
+  );
+
+  const handleCategoryChange = (category: string) => {
+    if (!category || category === activeCategory) return;
+    const firstTab = tabs.find((tab) => tab.category === category);
+    if (!firstTab) return;
+    setActiveTab(firstTab.id);
+    setSearchTerm('');
+    loadData(firstTab.id, false);
+    loadStateSummaries(category, false);
   };
 
   const liveSummary = useMemo(() => {
@@ -465,57 +520,112 @@ export function EstoqueVendas() {
       (acc, row) => {
         acc.modelos += 1;
         acc.estoque += Number(row.estoque || 0);
+        acc.backlog += Number(row.backlogTotal || 0);
         acc.pendente += Number(row.pendente || 0);
-        acc.sugestao += Number(row.sugestaoPedido || 0);
+        acc.faturarBacklog += Number(row.sugestaoFaturarBacklog || 0);
+        acc.novosPedidos += Number(row.sugestaoNovoPedido || 0);
+        acc.controladoria += Number(row.pedidoControladoria || 0);
         acc.pedidoRufino += Number(row.pedidoRufino || 0);
-        if (Number(row.estoque || 0) <= 0) acc.semEstoque += 1;
+        acc.sobra += Number(row.sobra || 0);
         return acc;
       },
       {
         modelos: 0,
         estoque: 0,
+        backlog: 0,
         pendente: 0,
-        sugestao: 0,
+        faturarBacklog: 0,
+        novosPedidos: 0,
+        controladoria: 0,
         pedidoRufino: 0,
-        semEstoque: 0,
+        sobra: 0,
       },
     );
   }, [rows]);
 
   const orderedRows = useMemo(
     () =>
-      rows
-        .filter((row) => Number(row.pedidoRufino || 0) > 0)
-        .sort(
-          (a, b) =>
-            Number(b.pedidoRufino || 0) - Number(a.pedidoRufino || 0) ||
-            Number(b.sugestaoPedido || 0) - Number(a.sugestaoPedido || 0),
-        ),
+      rows.filter(
+        (row) =>
+          Number(row.pedidoRufino || 0) > 0 ||
+          Number(row.pedidoControladoria || 0) > 0 ||
+          Number(row.sugestaoFaturarBacklog || 0) > 0 ||
+          Number(row.sugestaoNovoPedido || 0) > 0,
+      ),
+    [rows],
+  );
+
+  const suggestionRows = useMemo(
+    () =>
+      rows.filter(
+        (row) =>
+          Number(row.sugestaoFaturarBacklog || 0) > 0 ||
+          Number(row.sugestaoNovoPedido || 0) > 0,
+      ),
     [rows],
   );
 
   const orderSummary = useMemo(() => {
     return orderedRows.reduce(
       (acc, row) => {
-        const pedido = Number(row.pedidoRufino || 0);
-        const sugestao = Number(row.sugestaoPedido || 0);
+        const rufino = Number(row.pedidoRufino || 0);
+        const controladoria = Number(row.pedidoControladoria || 0);
+        const sugestao = Number(row.sugestaoNovoPedido || 0);
         acc.modelos += 1;
-        acc.unidades += pedido;
+        acc.vendas60 += Number(row.vendas60 || 0);
+        acc.estoque += Number(row.estoque || 0);
+        acc.backlog += Number(row.backlogTotal || 0);
+        acc.faturarBacklog += Number(row.sugestaoFaturarBacklog || 0);
+        acc.rufino += rufino;
+        acc.controladoria += controladoria;
         acc.sugestao += sugestao;
-        if (pedido < sugestao) acc.abaixo += 1;
-        if (pedido > sugestao) acc.acima += 1;
-        if (Math.abs(pedido - sugestao) < 0.0001) acc.alinhados += 1;
+        if (rufino < sugestao) acc.abaixo += 1;
+        if (rufino > sugestao) acc.acima += 1;
         return acc;
       },
-      { modelos: 0, unidades: 0, sugestao: 0, abaixo: 0, acima: 0, alinhados: 0 },
+      {
+        modelos: 0,
+        vendas60: 0,
+        estoque: 0,
+        backlog: 0,
+        faturarBacklog: 0,
+        rufino: 0,
+        controladoria: 0,
+        sugestao: 0,
+        abaixo: 0,
+        acima: 0,
+      },
     );
   }, [orderedRows]);
+
+  const manualOrderSummary = useMemo(() => {
+    return rows.reduce(
+      (acc, row) => {
+        const rufino = Number(row.pedidoRufino || 0);
+        const controladoria = Number(row.pedidoControladoria || 0);
+        if (rufino > 0 || controladoria > 0) acc.modelos += 1;
+        acc.rufino += rufino;
+        acc.controladoria += controladoria;
+        return acc;
+      },
+      { modelos: 0, rufino: 0, controladoria: 0 },
+    );
+  }, [rows]);
 
   const updatePedidoRufino = (rowKey: string, value: number) => {
     const safeValue = Math.max(0, Number.isFinite(value) ? value : 0);
     setRows((current) =>
       current.map((row) =>
         row.rowKey === rowKey ? { ...row, pedidoRufino: safeValue } : row,
+      ),
+    );
+  };
+
+  const updatePedidoControladoria = (rowKey: string, value: number) => {
+    const safeValue = Math.max(0, Number.isFinite(value) ? value : 0);
+    setRows((current) =>
+      current.map((row) =>
+        row.rowKey === rowKey ? { ...row, pedidoControladoria: safeValue } : row,
       ),
     );
   };
@@ -548,6 +658,34 @@ export function EstoqueVendas() {
     }
   };
 
+  const savePedidoControladoria = async (row: PontoPedidoRow) => {
+    if (!activeTab) return;
+    setSavingControladoriaKey(row.rowKey);
+
+    try {
+      const response = await fetch(`${API_URL}/api/ponto-pedido/pedido-controladoria`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          aba: activeTab,
+          modelo: row.modelo,
+          modeloComCor: row.modeloComCor,
+          valor: Number(row.pedidoControladoria || 0),
+        }),
+      });
+
+      const json = await response.json().catch(() => null);
+      if (!response.ok || !json?.ok) {
+        throw new Error(json?.error || 'Não foi possível salvar a sugestão da Controladoria.');
+      }
+    } catch (error: any) {
+      console.error(error);
+      setErrorMsg(error?.message || 'Falha ao salvar sugestão da Controladoria.');
+    } finally {
+      setSavingControladoriaKey('');
+    }
+  };
+
   const finalForecast = (row: PontoPedidoRow) => {
     const daily = Number(row.vendasMediaDia || 0);
     if (daily <= 0) return { date: '', days: null as number | null };
@@ -561,24 +699,18 @@ export function EstoqueVendas() {
     return { date, days };
   };
 
-  const futureWeekTotal = (row: PontoPedidoRow) =>
-    (data?.weeks || [])
-      .slice(1, 5)
-      .reduce((sum, week) => sum + Number(row.weeks?.[week.key] || 0), 0);
-
   const totalVisibleColumns =
-    (showBaseModel ? 1 : 0) +
     1 +
     3 +
     (showSales ? 4 : 1) +
     1 +
     1 +
     1 +
-    (showFutureWeeks ? 4 : 1) +
+    1 +
+    (showFutureWeeks ? 4 : 0) +
     1 +
     (showForecasts ? 4 : 1) +
-    3 +
-    2;
+    7;
 
   const runAiAnalysis = async () => {
     if (!activeTab || aiLoading) return;
@@ -594,6 +726,7 @@ export function EstoqueVendas() {
         vendas60: row.vendas60,
         estoque: row.estoque,
         pendente: row.pendente,
+        backlogTotal: row.backlogTotal,
         semanas: row.weeks,
         vmd: row.vendasMediaDia,
         coberturaDias: row.coberturaAtualDias,
@@ -601,8 +734,11 @@ export function EstoqueVendas() {
         saldo30: row.previsao30,
         saldo45: row.previsao45,
         saldo60: row.previsao60,
-        sugestao: row.sugestaoPedido,
+        sugestaoFaturarBacklog: row.sugestaoFaturarBacklog,
+        sugestao: row.sugestaoNovoPedido,
+        pedidoControladoria: row.pedidoControladoria,
         pedidoRufino: row.pedidoRufino,
+        sobra: row.sobra,
       }));
 
       const response = await fetch(`${API_URL}/api/ponto-pedido/analise-ia`, {
@@ -663,8 +799,8 @@ export function EstoqueVendas() {
 
   const renderPedidoInput = (row: PontoPedidoRow) => {
     const pedidoCompleto =
-      Number(row.pedidoRufino || 0) >= Number(row.sugestaoPedido || 0) &&
-      Number(row.sugestaoPedido || 0) > 0;
+      Number(row.pedidoRufino || 0) >= Number(row.sugestaoNovoPedido || 0) &&
+      Number(row.sugestaoNovoPedido || 0) > 0;
 
     return (
       <div className="relative">
@@ -693,58 +829,104 @@ export function EstoqueVendas() {
     );
   };
 
+  const renderControladoriaInput = (row: PontoPedidoRow) => (
+    <div className="relative">
+      <input
+        type="number"
+        min="0"
+        step="1"
+        value={Number(row.pedidoControladoria || 0)}
+        onChange={(event) =>
+          updatePedidoControladoria(row.rowKey, Number(event.target.value || 0))
+        }
+        onBlur={() => savePedidoControladoria(row)}
+        className="w-full rounded-lg border border-violet-200 bg-white px-2 py-1.5 text-center text-[11px] font-black text-violet-800 outline-none transition focus:ring-2 focus:ring-violet-300"
+      />
+      {savingControladoriaKey === row.rowKey && (
+        <RefreshCw
+          size={10}
+          className="absolute right-1.5 top-1/2 -translate-y-1/2 animate-spin text-violet-500"
+        />
+      )}
+    </div>
+  );
+
+  const normalizedStatus = (value: string) =>
+    String(value || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .trim()
+      .toUpperCase();
+
+  const statusRowClass = (status: string, index: number) => {
+    const normalized = normalizedStatus(status);
+
+    if (normalized.includes('NAO HA COMO PEDIR')) {
+      return '[&>td]:!bg-red-50 [&>td]:!border-red-100';
+    }
+    if (normalized.includes('LANCAMENTO')) {
+      return '[&>td]:!bg-emerald-50 [&>td]:!border-emerald-100';
+    }
+    if (normalized.includes('OBSOLETO')) {
+      return '[&>td]:!bg-red-900 [&>td]:!border-red-800 [&>td]:!text-white [&>td_span]:!text-white [&>td_div]:!text-white';
+    }
+
+    return index % 2 === 0 ? 'bg-white' : 'bg-slate-50/50';
+  };
+
+  const statusBadge = (status: string) => {
+    const normalized = normalizedStatus(status);
+    if (!normalized || normalized.includes('EM LINHA')) return null;
+
+    const className = normalized.includes('LANCAMENTO')
+      ? 'border-emerald-200 bg-emerald-100 text-emerald-800'
+      : normalized.includes('OBSOLETO')
+        ? 'border-red-300 bg-red-800 text-white'
+        : normalized.includes('NAO HA COMO PEDIR')
+          ? 'border-red-200 bg-red-100 text-red-700'
+          : 'border-slate-200 bg-slate-100 text-slate-600';
+
+    return (
+      <span className={`mt-1 inline-flex rounded-full border px-1.5 py-0.5 text-[7px] font-black uppercase tracking-wide ${className}`}>
+        {status}
+      </span>
+    );
+  };
+
   const renderMainTable = () => (
     <div className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-[0_18px_40px_-26px_rgba(15,23,42,0.35)]">
       <div className="max-h-[72vh] overflow-auto">
         <table className="min-w-max border-separate border-spacing-0 text-left text-[10px]">
           <thead className="sticky top-0 z-30 bg-slate-100/95 backdrop-blur">
             <tr className="text-[8px] font-black uppercase tracking-[0.10em] text-slate-500">
-              {showBaseModel && (
-                <th className="sticky left-0 z-40 w-[180px] min-w-[180px] max-w-[180px] border-b border-r border-slate-200 bg-slate-100 px-3 py-2">
-                  Modelo
-                </th>
-              )}
-              <th
-                className={`sticky z-40 w-[260px] min-w-[260px] max-w-[260px] border-b border-r border-slate-200 bg-slate-100 px-3 py-2 ${
-                  showBaseModel ? 'left-[180px]' : 'left-0'
-                }`}
-              >
+              <th className="sticky left-0 z-40 w-[260px] min-w-[260px] max-w-[260px] border-b border-r border-slate-200 bg-slate-100 px-3 py-2">
                 Modelo com cor
               </th>
-              <th className="min-w-[118px] border-b border-r border-emerald-100 bg-emerald-50 px-3 py-2 text-right text-emerald-700">
-                Preço Samsung
-              </th>
-              <th className="min-w-[118px] border-b border-r border-emerald-100 bg-emerald-50 px-3 py-2 text-right text-emerald-700">
-                Preço Telecel
-              </th>
-              <th className="min-w-[118px] border-b border-r border-emerald-100 bg-emerald-50 px-3 py-2 text-right text-emerald-700">
-                Preço final
-              </th>
+              <th className="min-w-[118px] border-b border-r border-emerald-100 bg-emerald-50 px-3 py-2 text-right text-emerald-700">Preço Samsung</th>
+              <th className="min-w-[118px] border-b border-r border-emerald-100 bg-emerald-50 px-3 py-2 text-right text-emerald-700">Preço Telecel</th>
+              <th className="min-w-[118px] border-b border-r border-emerald-100 bg-emerald-50 px-3 py-2 text-right text-emerald-700">Preço final</th>
 
               {showSales ? (
                 <>
-                  <th className="min-w-[84px] border-b border-r border-blue-100 bg-blue-50 px-2 py-2 text-center text-blue-700">Vendas 60</th>
+                  <th className="min-w-[84px] border-b border-r border-blue-100 bg-blue-100 px-2 py-2 text-center text-blue-800">Vendas 60</th>
                   <th className="min-w-[84px] border-b border-r border-blue-100 bg-blue-50 px-2 py-2 text-center text-blue-700">Vendas 45</th>
                   <th className="min-w-[84px] border-b border-r border-blue-100 bg-blue-50 px-2 py-2 text-center text-blue-700">Vendas 30</th>
                   <th className="min-w-[84px] border-b border-r border-blue-100 bg-blue-50 px-2 py-2 text-center text-blue-700">Vendas 15</th>
                 </>
               ) : (
-                <th className="min-w-[100px] border-b border-r border-blue-100 bg-blue-50 px-2 py-2 text-center text-blue-700">
-                  Vendas 30d <span className="text-[7px] text-blue-400">▸</span>
+                <th className="min-w-[105px] border-b border-r border-blue-200 bg-blue-100 px-2 py-2 text-center text-blue-800">
+                  Vendas 60d <span className="text-[7px] text-blue-500">▸</span>
                 </th>
               )}
 
-              <th className="min-w-[88px] border-b border-r border-slate-200 bg-slate-100 px-2 py-2 text-center text-slate-700">
-                Estoque
-              </th>
-              <th className="min-w-[90px] border-b border-r border-red-100 bg-red-50 px-2 py-2 text-center text-red-700">
-                Pendente
-              </th>
+              <th className="min-w-[88px] border-b border-r border-slate-200 bg-slate-100 px-2 py-2 text-center text-slate-700">Estoque</th>
+              <th className="min-w-[90px] border-b border-r border-red-100 bg-red-50 px-2 py-2 text-center text-red-700">Pendente</th>
+              <th className="min-w-[120px] border-b border-r border-violet-200 bg-violet-100 px-2 py-2 text-center text-violet-800">Total em backlog</th>
               <th className="min-w-[165px] border-b border-r border-violet-100 bg-violet-50 px-2 py-2 text-center text-violet-700">
                 {renderWeekHeaderContent(data?.weeks?.[0])}
               </th>
 
-              {showFutureWeeks ? (
+              {showFutureWeeks &&
                 (data?.weeks || []).slice(1, 5).map((week) => (
                   <th
                     key={week.key}
@@ -752,16 +934,9 @@ export function EstoqueVendas() {
                   >
                     {renderWeekHeaderContent(week)}
                   </th>
-                ))
-              ) : (
-                <th className="min-w-[104px] border-b border-r border-violet-100 bg-violet-50 px-2 py-2 text-center text-violet-700">
-                  Próx. 4 sem. <span className="text-[7px] text-violet-400">▸</span>
-                </th>
-              )}
+                ))}
 
-              <th className="min-w-[130px] border-b border-r border-cyan-100 bg-cyan-50 px-2 py-2 text-center text-cyan-700">
-                Cobertura atual
-              </th>
+              <th className="min-w-[130px] border-b border-r border-cyan-100 bg-cyan-50 px-2 py-2 text-center text-cyan-700">Cobertura atual</th>
 
               {showForecasts ? (
                 <>
@@ -776,21 +951,13 @@ export function EstoqueVendas() {
                 </th>
               )}
 
-              <th className="min-w-[118px] border-b border-r border-amber-200 bg-amber-100 px-2 py-2 text-center text-amber-800">
-                Sugestão pedido
-              </th>
-              <th className="min-w-[122px] border-b border-r border-indigo-200 bg-indigo-600 px-2 py-2 text-center text-white">
-                Pedido Rufino
-              </th>
-              <th className="min-w-[150px] border-b border-r border-slate-200 bg-slate-950 px-2 py-2 text-center text-white">
-                Previsão de estoque
-              </th>
-              <th className="min-w-[110px] border-b border-r border-emerald-100 bg-emerald-50 px-3 py-2 text-right text-emerald-700">
-                Sell in
-              </th>
-              <th className="min-w-[105px] border-b border-slate-200 bg-slate-100 px-3 py-2 text-center">
-                Alteração
-              </th>
+              <th className="min-w-[130px] border-b border-r border-orange-200 bg-orange-100 px-2 py-2 text-center text-orange-800">Sug. faturar backlog</th>
+              <th className="min-w-[125px] border-b border-r border-amber-200 bg-amber-100 px-2 py-2 text-center text-amber-900">Sug. novos pedidos</th>
+              <th className="min-w-[145px] border-b border-r border-violet-200 bg-violet-600 px-2 py-2 text-center text-white">Sugestão pedido Controladoria</th>
+              <th className="min-w-[122px] border-b border-r border-indigo-200 bg-indigo-600 px-2 py-2 text-center text-white">Pedido Rufino</th>
+              <th className="min-w-[150px] border-b border-r border-slate-200 bg-slate-950 px-2 py-2 text-center text-white">Previsão de estoque</th>
+              <th className="min-w-[110px] border-b border-r border-emerald-100 bg-emerald-50 px-3 py-2 text-right text-emerald-700">Sell in</th>
+              <th className="min-w-[105px] border-b border-slate-200 bg-slate-100 px-3 py-2 text-center">Alteração</th>
             </tr>
           </thead>
 
@@ -801,42 +968,27 @@ export function EstoqueVendas() {
                   {loadingStage}
                 </td>
               </tr>
-            ) : availableRows.length === 0 ? (
+            ) : searchedRows.length === 0 ? (
               <tr>
                 <td colSpan={totalVisibleColumns} className="px-4 py-20 text-center text-xs font-black uppercase tracking-widest text-slate-400">
-                  Nenhum modelo com estoque encontrado nesta aba.
+                  Nenhum modelo encontrado nesta aba.
                 </td>
               </tr>
             ) : (
-              availableRows.map((row, index) => {
+              searchedRows.map((row, index) => {
                 const forecast = finalForecast(row);
                 const currentWeek = data?.weeks?.[0];
                 const currentWeekQty = currentWeek
                   ? Number(row.weeks?.[currentWeek.key] || 0)
                   : 0;
                 const coverageDays = row.coberturaAtualDias;
+                const rowTone = statusRowClass(row.status, index);
 
                 return (
-                  <tr
-                    key={row.rowKey}
-                    className={`${index % 2 === 0 ? 'bg-white' : 'bg-slate-50/40'} transition-colors hover:bg-indigo-50/50`}
-                  >
-                    {showBaseModel && (
-                      <td className={`sticky left-0 z-20 w-[180px] min-w-[180px] max-w-[180px] border-b border-r border-slate-100 px-3 py-2 font-black text-slate-700 ${index % 2 === 0 ? 'bg-white' : 'bg-slate-50'}`}>
-                        <span className="block truncate uppercase tracking-[0.02em]" title={row.modelo}>{row.modelo}</span>
-                      </td>
-                    )}
-                    <td className={`sticky z-20 w-[260px] min-w-[260px] max-w-[260px] border-b border-r border-slate-100 px-3 py-2 font-black text-slate-950 ${showBaseModel ? 'left-[180px]' : 'left-0'} ${index % 2 === 0 ? 'bg-white' : 'bg-slate-50'}`}>
-                      <div className="flex min-w-0 items-center gap-2">
-                        <span className="block min-w-0 flex-1 truncate uppercase tracking-[0.02em]" title={row.modeloComCor}>
-                          {row.modeloComCor}
-                        </span>
-                        {Number(row.estoque || 0) <= 0 && restoredNoStockKeys.has(row.rowKey) && (
-                          <span className="shrink-0 rounded-full border border-orange-200 bg-orange-50 px-1.5 py-0.5 text-[6px] font-black uppercase tracking-wide text-orange-700">
-                            Sem estoque
-                          </span>
-                        )}
-                      </div>
+                  <tr key={row.rowKey} className={`${rowTone} transition hover:brightness-[0.99]`}>
+                    <td className="sticky left-0 z-20 w-[260px] min-w-[260px] max-w-[260px] border-b border-r border-slate-100 px-3 py-2 font-black text-slate-950">
+                      <span className="block truncate uppercase tracking-[0.02em]" title={row.modeloComCor}>{row.modeloComCor}</span>
+                      {statusBadge(row.status)}
                     </td>
 
                     <td className="border-b border-r border-emerald-50 bg-emerald-50/30 px-3 py-2 text-right font-bold text-slate-700">{money(row.precoSamsung)}</td>
@@ -845,40 +997,33 @@ export function EstoqueVendas() {
 
                     {showSales ? (
                       <>
-                        <td className="border-b border-r border-blue-50 bg-blue-50/20 px-2 py-2 text-center font-black text-blue-800">{number(row.vendas60)}</td>
+                        <td className="border-b border-r border-blue-100 bg-blue-100/60 px-2 py-2 text-center font-black text-blue-900">{number(row.vendas60)}</td>
                         <td className="border-b border-r border-blue-50 bg-blue-50/20 px-2 py-2 text-center font-black text-blue-800">{number(row.vendas45)}</td>
                         <td className="border-b border-r border-blue-50 bg-blue-50/20 px-2 py-2 text-center font-black text-blue-800">{number(row.vendas30)}</td>
                         <td className="border-b border-r border-blue-50 bg-blue-50/20 px-2 py-2 text-center font-black text-blue-800">{number(row.vendas15)}</td>
                       </>
                     ) : (
-                      <td className="border-b border-r border-blue-50 bg-blue-50/20 px-2 py-2 text-center font-black text-blue-800">{number(row.vendas30)}</td>
+                      <td className="border-b border-r border-blue-100 bg-blue-100/60 px-2 py-2 text-center font-black text-blue-900">{number(row.vendas60)}</td>
                     )}
 
                     <td className="border-b border-r border-slate-100 px-2 py-2 text-center font-black text-slate-900">{number(row.estoque)}</td>
-                    <td className={`border-b border-r border-red-100 px-2 py-2 text-center font-black ${row.pendente > 0 ? 'bg-red-100 text-red-700' : 'bg-red-50/20 text-slate-400'}`}>
-                      {number(row.pendente)}
-                    </td>
+                    <td className={`border-b border-r border-red-100 px-2 py-2 text-center font-black ${row.pendente > 0 ? 'bg-red-100 text-red-700' : 'bg-red-50/20 text-slate-400'}`}>{number(row.pendente)}</td>
+                    <td className="border-b border-r border-violet-200 bg-violet-100/70 px-2 py-2 text-center font-black text-violet-900">{number(row.backlogTotal)}</td>
                     <td className="border-b border-r border-violet-100 bg-violet-50/40 px-2 py-2 text-center font-black text-violet-800">{number(currentWeekQty)}</td>
 
-                    {showFutureWeeks ? (
+                    {showFutureWeeks &&
                       (data?.weeks || []).slice(1, 5).map((week) => (
-                        <td
-                          key={`${row.rowKey}-${week.key}`}
-                          className="border-b border-r border-violet-100 bg-violet-50/40 px-2 py-2 text-center font-black text-violet-800"
-                        >
+                        <td key={`${row.rowKey}-${week.key}`} className="border-b border-r border-violet-100 bg-violet-50/40 px-2 py-2 text-center font-black text-violet-800">
                           {number(row.weeks?.[week.key] || 0)}
                         </td>
-                      ))
-                    ) : (
-                      <td className="border-b border-r border-violet-100 bg-violet-50/40 px-2 py-2 text-center font-black text-violet-800">{number(futureWeekTotal(row))}</td>
-                    )}
+                      ))}
 
                     <td className="border-b border-r border-cyan-100 bg-cyan-50/30 px-2 py-2 text-center">
                       {coverageDays === null ? (
                         <span className="font-black text-slate-400">Sem giro</span>
                       ) : (
                         <div className="leading-tight">
-                          <div className="font-black text-slate-900">{number(coverageDays, 0)} dias</div>
+                          <div className="font-black text-slate-900">{number(coverageDays)} dias</div>
                           <div className="mt-0.5 text-[8px] font-bold text-slate-400">até {shortDate(row.coberturaAtualData)}</div>
                         </div>
                       )}
@@ -895,19 +1040,17 @@ export function EstoqueVendas() {
                       <td className={`border-b border-r border-cyan-100 px-2 py-2 text-center font-black ${metricTone(row.previsao60)}`}>{number(row.previsao60)}</td>
                     )}
 
-                    <td className={`border-b border-r border-amber-200 px-2 py-2 text-center font-black ${row.sugestaoPedido > 0 ? 'bg-amber-100 text-amber-900' : 'bg-amber-50/40 text-slate-400'}`}>
-                      {number(row.sugestaoPedido)}
-                    </td>
-                    <td className="border-b border-r border-indigo-100 bg-indigo-50 px-1.5 py-1.5">
-                      {renderPedidoInput(row)}
-                    </td>
+                    <td className={`border-b border-r border-orange-200 px-2 py-2 text-center font-black ${row.sugestaoFaturarBacklog > 0 ? 'bg-orange-100 text-orange-900' : 'bg-orange-50/40 text-slate-400'}`}>{number(row.sugestaoFaturarBacklog)}</td>
+                    <td className={`border-b border-r border-amber-200 px-2 py-2 text-center font-black ${row.sugestaoNovoPedido > 0 ? 'bg-amber-100 text-amber-900' : 'bg-amber-50/40 text-slate-400'}`}>{number(row.sugestaoNovoPedido)}</td>
+                    <td className="border-b border-r border-violet-100 bg-violet-50 px-1.5 py-1.5">{renderControladoriaInput(row)}</td>
+                    <td className="border-b border-r border-indigo-100 bg-indigo-50 px-1.5 py-1.5">{renderPedidoInput(row)}</td>
                     <td className="border-b border-r border-slate-100 bg-slate-950 px-2 py-2 text-center text-white">
                       {forecast.days === null ? (
                         <span className="font-black text-slate-400">Sem giro</span>
                       ) : (
                         <div className="leading-tight">
                           <div className="font-black">{shortDate(forecast.date)}</div>
-                          <div className="mt-0.5 text-[8px] font-bold text-slate-400">{number(forecast.days, 0)} dias</div>
+                          <div className="mt-0.5 text-[8px] font-bold text-slate-400">{number(forecast.days)} dias</div>
                         </div>
                       )}
                     </td>
@@ -922,150 +1065,58 @@ export function EstoqueVendas() {
       </div>
 
       <div className="flex flex-col gap-1.5 border-t border-slate-200 bg-slate-50 px-3 py-2 text-[8px] font-bold text-slate-500 lg:flex-row lg:items-center lg:justify-between">
-        <span>
-          {data?.formula?.suggestion ||
-            'Sugestão = demanda projetada de 60 dias - estoque - pedidos previstos para chegar em até 60 dias.'}
-        </span>
-        <span className="text-red-600">
-          Pendente/atrasado não reduz a sugestão de compra.
-        </span>
+        <span>Faturar backlog = necessidade de V60 após estoque, limitada ao backlog disponível.</span>
+        <span className="text-amber-700">Novo pedido = V60 - estoque - total em backlog.</span>
       </div>
     </div>
   );
 
-  const renderNoStockBlock = () => {
-    if (!noStockRows.length) return null;
-
-    return (
-      <div className="mt-3 overflow-hidden rounded-2xl border border-orange-200 bg-orange-50/60 shadow-sm">
-        <button
-          type="button"
-          onClick={() => setShowNoStock((value) => !value)}
-          className="flex w-full items-center justify-between gap-3 bg-orange-100/80 px-3 py-2 text-left"
-        >
-          <div className="flex min-w-0 items-center gap-2">
-            <PackageX size={15} className="shrink-0 text-orange-600" />
-            <div>
-              <p className="text-[10px] font-black uppercase tracking-[0.12em] text-orange-800">
-                Modelos sem estoque
-              </p>
-              <p className="text-[8px] font-bold text-orange-600">
-                Separados da grade principal. Use Restaurar para recolocar um modelo no planejamento.
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="rounded-full bg-white px-2 py-1 text-[9px] font-black text-orange-700 shadow-sm">
-              {noStockRows.length} itens
-            </span>
-            {showNoStock ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-          </div>
-        </button>
-
-        {showNoStock && (
-          <div className="max-h-[46vh] overflow-auto bg-white">
-            <table className="w-full min-w-[980px] border-collapse text-[10px]">
-              <thead className="sticky top-0 z-10 bg-orange-50 text-[8px] font-black uppercase tracking-wide text-orange-800">
-                <tr>
-                  <th className="px-3 py-2 text-left">Modelo com cor</th>
-                  <th className="px-2 py-2 text-center">Vendas 30</th>
-                  <th className="px-2 py-2 text-center">Pendente</th>
-                  <th className="px-2 py-2 text-center">Próx. 4 sem.</th>
-                  <th className="px-2 py-2 text-center">Sugestão</th>
-                  <th className="px-2 py-2 text-center">Pedido Rufino</th>
-                  <th className="px-2 py-2 text-center">Previsão</th>
-                  <th className="px-2 py-2 text-center">Ação</th>
-                </tr>
-              </thead>
-              <tbody>
-                {noStockRows.map((row, index) => {
-                  const forecast = finalForecast(row);
-                  return (
-                    <tr key={`no-stock-${row.rowKey}`} className={index % 2 === 0 ? 'bg-white' : 'bg-orange-50/30'}>
-                      <td className="border-t border-orange-100 px-3 py-2 font-black uppercase text-slate-900">{row.modeloComCor}</td>
-                      <td className="border-t border-orange-100 px-2 py-2 text-center font-black text-blue-800">{number(row.vendas30)}</td>
-                      <td className="border-t border-orange-100 px-2 py-2 text-center font-black text-red-700">{number(row.pendente)}</td>
-                      <td className="border-t border-orange-100 px-2 py-2 text-center font-black text-violet-700">{number(futureWeekTotal(row))}</td>
-                      <td className="border-t border-orange-100 px-2 py-2 text-center font-black text-amber-800">{number(row.sugestaoPedido)}</td>
-                      <td className="border-t border-orange-100 px-2 py-1.5">{renderPedidoInput(row)}</td>
-                      <td className="border-t border-orange-100 px-2 py-2 text-center font-black text-slate-700">
-                        {forecast.days === null ? 'Sem giro' : `${shortDate(forecast.date)} · ${number(forecast.days)}d`}
-                      </td>
-                      <td className="border-t border-orange-100 px-2 py-1.5 text-center">
-                        <button
-                          type="button"
-                          onClick={() => restoreNoStockRow(row.rowKey)}
-                          className="inline-flex items-center gap-1.5 rounded-lg bg-orange-600 px-3 py-1.5 text-[8px] font-black uppercase tracking-wide text-white shadow-sm transition hover:bg-orange-700"
-                          title="Recolocar este modelo na grade principal de planejamento"
-                        >
-                          <RotateCcw size={11} />
-                          Restaurar
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-    );
-  };
-
   const renderOrderSummary = () => (
     <div className="space-y-3">
-      <div className="grid grid-cols-2 gap-2 lg:grid-cols-5">
-        <CompactSummaryCard label="Modelos no pedido" value={number(orderSummary.modelos)} icon={ShoppingCart} tone="slate" />
-        <CompactSummaryCard label="Unidades Rufino" value={number(orderSummary.unidades)} icon={Boxes} tone="emerald" />
-        <CompactSummaryCard label="Sugestão sistema" value={number(orderSummary.sugestao)} icon={TrendingUp} tone="amber" />
-        <CompactSummaryCard label="Abaixo sugestão" value={number(orderSummary.abaixo)} icon={AlertTriangle} tone="red" />
-        <CompactSummaryCard label="Acima sugestão" value={number(orderSummary.acima)} icon={BarChart3} tone="violet" />
-      </div>
-
       <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
         <div className="flex items-center justify-between gap-2 border-b border-slate-200 px-3 py-2.5">
           <div>
-            <h3 className="text-[11px] font-black uppercase tracking-wide text-slate-900">Resumo do pedido</h3>
+            <h3 className="text-[11px] font-black uppercase tracking-wide text-slate-900">Resumo dos pedidos</h3>
             <p className="mt-0.5 text-[9px] font-semibold text-slate-400">
-              Somente os modelos com quantidade preenchida em Pedido Rufino.
+              Pedido Rufino e Controladoria são editáveis aqui. A alteração atualiza imediatamente a mesma linha no Planejamento e é salva ao sair do campo.
             </p>
           </div>
-          <span className="rounded-full bg-slate-100 px-2 py-1 text-[9px] font-black text-slate-600">
-            {number(orderSummary.unidades)} un.
-          </span>
+          <div className="flex flex-wrap items-center justify-end gap-1.5 text-[8px] font-black uppercase tracking-wide">
+            <span className="rounded-full bg-slate-100 px-2 py-1 text-slate-600">{number(manualOrderSummary.modelos)} modelos com pedido</span>
+            <span className="rounded-full bg-violet-50 px-2 py-1 text-violet-700">Controladoria {number(manualOrderSummary.controladoria)}</span>
+            <span className="rounded-full bg-emerald-50 px-2 py-1 text-emerald-700">Rufino {number(manualOrderSummary.rufino)}</span>
+          </div>
         </div>
 
         <div className="max-h-[65vh] overflow-auto">
-          <table className="w-full min-w-[920px] border-collapse text-[10px]">
+          <table className="w-full min-w-[1180px] border-collapse text-[10px]">
             <thead className="sticky top-0 z-10 bg-slate-50 text-[8px] font-black uppercase tracking-wide text-slate-500">
               <tr>
                 <th className="px-3 py-2 text-left">Modelo</th>
+                <th className="px-2 py-2 text-center">Vendas 60</th>
                 <th className="px-2 py-2 text-center">Estoque</th>
-                <th className="px-2 py-2 text-center">Vendas 30</th>
-                <th className="px-2 py-2 text-center">Pendente</th>
-                <th className="px-2 py-2 text-center">Sugestão</th>
+                <th className="px-2 py-2 text-center">Backlog</th>
+                <th className="px-2 py-2 text-center">Sug. faturar backlog</th>
+                <th className="px-2 py-2 text-center">Sug. novo pedido</th>
+                <th className="px-2 py-2 text-center">Controladoria</th>
                 <th className="px-2 py-2 text-center">Pedido Rufino</th>
-                <th className="px-2 py-2 text-center">Diferença</th>
-                <th className="px-2 py-2 text-center">Cobertura pós-pedido</th>
+                <th className="px-2 py-2 text-center">Previsão</th>
               </tr>
             </thead>
             <tbody>
               {orderedRows.length ? (
                 orderedRows.map((row, index) => {
-                  const diff = Number(row.pedidoRufino || 0) - Number(row.sugestaoPedido || 0);
                   const forecast = finalForecast(row);
                   return (
                     <tr key={`summary-${row.rowKey}`} className={index % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}>
                       <td className="border-t border-slate-100 px-3 py-2 font-black uppercase text-slate-900">{row.modeloComCor}</td>
+                      <td className="border-t border-slate-100 px-2 py-2 text-center font-black text-blue-800">{number(row.vendas60)}</td>
                       <td className="border-t border-slate-100 px-2 py-2 text-center font-bold">{number(row.estoque)}</td>
-                      <td className="border-t border-slate-100 px-2 py-2 text-center font-bold">{number(row.vendas30)}</td>
-                      <td className="border-t border-slate-100 px-2 py-2 text-center font-bold text-red-700">{number(row.pendente)}</td>
-                      <td className="border-t border-slate-100 px-2 py-2 text-center font-black text-amber-800">{number(row.sugestaoPedido)}</td>
-                      <td className="border-t border-slate-100 px-2 py-2 text-center font-black text-indigo-700">{number(row.pedidoRufino)}</td>
-                      <td className={`border-t border-slate-100 px-2 py-2 text-center font-black ${diff < 0 ? 'text-red-700' : diff > 0 ? 'text-violet-700' : 'text-emerald-700'}`}>
-                        {diff > 0 ? '+' : ''}{number(diff)}
-                      </td>
+                      <td className="border-t border-slate-100 px-2 py-2 text-center font-bold text-violet-800">{number(row.backlogTotal)}</td>
+                      <td className="border-t border-slate-100 px-2 py-2 text-center font-black text-orange-800">{number(row.sugestaoFaturarBacklog)}</td>
+                      <td className="border-t border-slate-100 px-2 py-2 text-center font-black text-amber-800">{number(row.sugestaoNovoPedido)}</td>
+                      <td className="border-t border-slate-100 px-2 py-1.5">{renderControladoriaInput(row)}</td>
+                      <td className="border-t border-slate-100 px-2 py-1.5">{renderPedidoInput(row)}</td>
                       <td className="border-t border-slate-100 px-2 py-2 text-center font-bold text-slate-700">
                         {forecast.days === null ? 'Sem giro' : `${number(forecast.days)} dias · ${shortDate(forecast.date)}`}
                       </td>
@@ -1074,14 +1125,82 @@ export function EstoqueVendas() {
                 })
               ) : (
                 <tr>
-                  <td colSpan={8} className="px-4 py-16 text-center text-xs font-black uppercase tracking-widest text-slate-400">
-                    Nenhum Pedido Rufino preenchido nesta aba.
+                  <td colSpan={9} className="px-4 py-16 text-center text-xs font-black uppercase tracking-widest text-slate-400">
+                    Nenhuma sugestão ou ajuste manual nesta aba.
                   </td>
                 </tr>
               )}
             </tbody>
+            {orderedRows.length > 0 && (
+              <tfoot className="sticky bottom-0 z-10 border-t-2 border-slate-300 bg-slate-950 text-white">
+                <tr>
+                  <td className="px-3 py-2.5 text-left font-black uppercase tracking-wide">
+                    Total geral · {number(orderSummary.modelos)} modelos
+                  </td>
+                  <td className="px-2 py-2.5 text-center font-black">{number(orderSummary.vendas60)}</td>
+                  <td className="px-2 py-2.5 text-center font-black">{number(orderSummary.estoque)}</td>
+                  <td className="px-2 py-2.5 text-center font-black text-violet-200">{number(orderSummary.backlog)}</td>
+                  <td className="px-2 py-2.5 text-center font-black text-orange-200">{number(orderSummary.faturarBacklog)}</td>
+                  <td className="px-2 py-2.5 text-center font-black text-amber-200">{number(orderSummary.sugestao)}</td>
+                  <td className="px-2 py-2.5 text-center font-black text-violet-200">{number(orderSummary.controladoria)}</td>
+                  <td className="px-2 py-2.5 text-center font-black text-emerald-300">{number(orderSummary.rufino)}</td>
+                  <td className="px-2 py-2.5 text-center text-[8px] font-bold text-slate-400">TOTAL DA ABA</td>
+                </tr>
+              </tfoot>
+            )}
           </table>
         </div>
+      </div>
+    </div>
+  );
+
+  const renderSystemSummary = () => (
+    <div className="overflow-hidden rounded-2xl border border-amber-200 bg-white shadow-sm">
+      <div className="flex items-center justify-between gap-3 border-b border-amber-100 bg-amber-50 px-3 py-2.5">
+        <div>
+          <p className="text-[8px] font-black uppercase tracking-[0.16em] text-amber-700">Resumo</p>
+          <h3 className="mt-0.5 text-[12px] font-black text-slate-900">Somente sugestões do sistema</h3>
+        </div>
+        <span className="rounded-full bg-white px-2 py-1 text-[9px] font-black text-amber-800 shadow-sm">
+          {number(suggestionRows.length)} modelos
+        </span>
+      </div>
+
+      <div className="max-h-[70vh] overflow-auto">
+        <table className="w-full min-w-[1000px] border-collapse text-[10px]">
+          <thead className="sticky top-0 z-10 bg-slate-50 text-[8px] font-black uppercase tracking-wide text-slate-500">
+            <tr>
+              <th className="px-3 py-2 text-left">Modelo</th>
+              <th className="px-2 py-2 text-center">Vendas 60</th>
+              <th className="px-2 py-2 text-center">Estoque</th>
+              <th className="px-2 py-2 text-center">Total backlog</th>
+              <th className="px-2 py-2 text-center">Faturar backlog</th>
+              <th className="px-2 py-2 text-center">Novo pedido</th>
+              <th className="px-2 py-2 text-center">Sobra</th>
+            </tr>
+          </thead>
+          <tbody>
+            {suggestionRows.length ? (
+              suggestionRows.map((row, index) => (
+                <tr key={`system-${row.rowKey}`} className={index % 2 === 0 ? 'bg-white' : 'bg-amber-50/20'}>
+                  <td className="border-t border-slate-100 px-3 py-2 font-black uppercase text-slate-900">{row.modeloComCor}</td>
+                  <td className="border-t border-slate-100 px-2 py-2 text-center font-black text-blue-800">{number(row.vendas60)}</td>
+                  <td className="border-t border-slate-100 px-2 py-2 text-center font-bold">{number(row.estoque)}</td>
+                  <td className="border-t border-slate-100 px-2 py-2 text-center font-black text-violet-800">{number(row.backlogTotal)}</td>
+                  <td className="border-t border-slate-100 bg-orange-50 px-2 py-2 text-center font-black text-orange-900">{number(row.sugestaoFaturarBacklog)}</td>
+                  <td className="border-t border-slate-100 bg-amber-50 px-2 py-2 text-center font-black text-amber-900">{number(row.sugestaoNovoPedido)}</td>
+                  <td className="border-t border-slate-100 px-2 py-2 text-center font-black text-emerald-700">{number(row.sobra)}</td>
+                </tr>
+              ))
+            ) : (
+              <tr>
+                <td colSpan={7} className="px-4 py-16 text-center text-xs font-black uppercase tracking-widest text-slate-400">
+                  Nenhuma sugestão de compra para esta aba.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
       </div>
     </div>
   );
@@ -1097,7 +1216,7 @@ export function EstoqueVendas() {
             <p className="text-[8px] font-black uppercase tracking-[0.18em] text-violet-300">Inteligência de compra</p>
             <h3 className="mt-1 text-lg font-black">Assistente de Ponto de Pedido</h3>
             <p className="mt-1 text-[10px] font-semibold leading-relaxed text-slate-300">
-              A análise recebe vendas de 15/30/45/60 dias, estoque atual, pedidos pendentes, semanas de chegada, cobertura, sugestão do sistema e Pedido Rufino.
+              A análise prioriza vendas de 60 dias e considera estoque, total em backlog, pendentes, semanas de chegada, sugestão de faturamento, novos pedidos, Controladoria e Pedido Rufino.
             </p>
           </div>
         </div>
@@ -1105,29 +1224,39 @@ export function EstoqueVendas() {
         <div className="mt-4 grid grid-cols-2 gap-2">
           <div className="rounded-xl bg-white/5 p-2.5">
             <p className="text-[7px] font-black uppercase text-slate-400">Estoque crítico</p>
-            <p className="mt-1 text-lg font-black">{number(rows.filter((row) => row.estoque <= 0 && row.vendas30 > 0).length)}</p>
+            <p className="mt-1 text-lg font-black">{number(rows.filter((row) => row.estoque <= 0 && row.vendas60 > 0).length)}</p>
           </div>
           <div className="rounded-xl bg-white/5 p-2.5">
             <p className="text-[7px] font-black uppercase text-slate-400">Sugestão total</p>
-            <p className="mt-1 text-lg font-black">{number(liveSummary.sugestao)}</p>
+            <p className="mt-1 text-lg font-black">{number(liveSummary.novosPedidos)}</p>
           </div>
         </div>
 
-        <div className="mt-4 space-y-2">
-          {[
-            'Quais modelos eu deveria priorizar neste pedido?',
-            'Onde o Pedido Rufino está acima ou abaixo do necessário?',
-            'Quais modelos têm maior risco de ruptura nas próximas semanas?',
-          ].map((question) => (
-            <button
-              key={question}
-              type="button"
-              onClick={() => setAiQuestion(question)}
-              className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-left text-[9px] font-bold text-slate-200 transition hover:bg-white/10"
-            >
-              {question}
-            </button>
-          ))}
+        <div className="mt-4">
+          <p className="mb-2 text-[7px] font-black uppercase tracking-[0.16em] text-violet-300">Perguntas de planejamento</p>
+          <div className="grid gap-1.5 lg:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
+            {[
+              'Monte o pedido ideal completo desta aba, modelo a modelo, com prioridade e quantidade sugerida.',
+              'Quais modelos devo faturar do backlog primeiro e em que quantidade?',
+              'Quais modelos precisam de novos pedidos agora e quais podem esperar?',
+              'Quais modelos têm maior risco de ruptura nos próximos 15, 30 e 60 dias?',
+              'Quais modelos têm excesso de estoque e deveriam ter o pedido reduzido ou zerado?',
+              'Compare a sugestão do sistema, Controladoria e Pedido Rufino e destaque todas as divergências relevantes.',
+              'Quais lançamentos merecem compra mesmo com histórico de vendas curto?',
+              'Quais modelos obsoletos ou sem possibilidade de pedido devem ser retirados da decisão de compra?',
+              'Faça um plano de faturamento do backlog por urgência, considerando vendas 60d, estoque e semanas de chegada.',
+              'Se eu mantiver os pedidos atuais, quais modelos ficarão com excesso e quais ainda ficarão descobertos?',
+            ].map((question) => (
+              <button
+                key={question}
+                type="button"
+                onClick={() => setAiQuestion(question)}
+                className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-left text-[9px] font-bold leading-4 text-slate-200 transition hover:border-violet-400/40 hover:bg-white/10"
+              >
+                {question}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -1229,22 +1358,50 @@ export function EstoqueVendas() {
         </div>
       </div>
 
-      <div className="shrink-0 border-b border-slate-200 bg-white px-3 pt-2 md:px-6">
-        <div className="flex gap-1 overflow-x-auto pb-2">
-          {tabs.map((tab) => (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={() => handleTabChange(tab.id)}
-              className={`whitespace-nowrap rounded-xl px-3 py-2 text-[9px] font-black uppercase tracking-wide transition ${
-                activeTab === tab.id
-                  ? 'bg-indigo-600 text-white shadow-sm'
-                  : 'border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 hover:text-slate-800'
-              }`}
-            >
-              {tab.label}
-            </button>
-          ))}
+      <div className="shrink-0 border-b border-slate-200 bg-white px-3 py-2 md:px-6">
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center gap-2 overflow-x-auto">
+            <span className="shrink-0 text-[8px] font-black uppercase tracking-[0.14em] text-slate-400">Categorias</span>
+            <div className="flex gap-1">
+              {categories.map((category) => (
+                <button
+                  key={category}
+                  type="button"
+                  onClick={() => handleCategoryChange(category)}
+                  className={`whitespace-nowrap rounded-xl px-3 py-1.5 text-[9px] font-black uppercase tracking-wide transition ${
+                    activeCategory === category
+                      ? 'bg-slate-950 text-white shadow-sm'
+                      : 'border border-slate-200 bg-slate-50 text-slate-600 hover:bg-white hover:text-slate-900'
+                  }`}
+                >
+                  {category}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 overflow-x-auto">
+            <span className="shrink-0 text-[8px] font-black uppercase tracking-[0.14em] text-slate-400">Estados</span>
+            <div className="flex gap-1">
+              {stateTabs.map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => handleTabChange(tab.id)}
+                  className={`flex min-w-[82px] flex-col rounded-xl px-3 py-1.5 text-left transition ${
+                    activeTab === tab.id
+                      ? 'bg-indigo-600 text-white shadow-sm'
+                      : 'border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+                  }`}
+                >
+                  <span className="text-[10px] font-black uppercase">{tab.stateLabel || tab.state}</span>
+                  <span className={`mt-0.5 max-w-[150px] truncate text-[7px] font-bold uppercase ${activeTab === tab.id ? 'text-indigo-100' : 'text-slate-400'}`}>
+                    {tab.label}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
       </div>
 
@@ -1260,6 +1417,9 @@ export function EstoqueVendas() {
           <ModeButton active={pageMode === 'planejamento'} onClick={() => setPageMode('planejamento')} icon={Package}>
             Planejamento
           </ModeButton>
+          <ModeButton active={pageMode === 'sugestoes'} onClick={() => setPageMode('sugestoes')} icon={TrendingUp}>
+            Resumo
+          </ModeButton>
           <ModeButton active={pageMode === 'resumo'} onClick={() => setPageMode('resumo')} icon={BarChart3}>
             Resumo dos pedidos
           </ModeButton>
@@ -1268,46 +1428,65 @@ export function EstoqueVendas() {
           </ModeButton>
         </div>
 
-        <div className="mb-2.5 grid grid-cols-2 gap-1.5 md:grid-cols-3 xl:grid-cols-6">
-          <CompactSummaryCard label="Modelos" value={number(liveSummary.modelos)} icon={Boxes} />
-          <CompactSummaryCard label="Estoque" value={number(liveSummary.estoque)} icon={Package} tone="blue" />
-          <CompactSummaryCard label="Sem estoque" value={number(liveSummary.semEstoque)} icon={PackageX} tone="red" />
-          <CompactSummaryCard label="Pendente" value={number(liveSummary.pendente)} icon={Clock3} tone="red" />
-          <CompactSummaryCard label="Sugestão" value={number(liveSummary.sugestao)} icon={TrendingUp} tone="amber" />
-          <CompactSummaryCard label="Pedido Rufino" value={number(liveSummary.pedidoRufino)} icon={ShoppingCart} tone="emerald" />
-        </div>
+        {pageMode === 'planejamento' && (
+          <>
+            <div className="mb-2.5 grid grid-cols-2 gap-1.5 md:grid-cols-3 xl:grid-cols-6">
+              <CompactSummaryCard label="Total backlog" value={number(liveSummary.backlog)} icon={Clock3} tone="violet" />
+              <CompactSummaryCard label="Pendente" value={number(liveSummary.pendente)} icon={AlertTriangle} tone="red" />
+              <CompactSummaryCard label="Faturar backlog" value={number(liveSummary.faturarBacklog)} icon={TrendingUp} tone="amber" />
+              <CompactSummaryCard label="Novos pedidos" value={number(liveSummary.novosPedidos)} icon={ShoppingCart} tone="amber" />
+              <CompactSummaryCard label="Controladoria" value={number(liveSummary.controladoria)} icon={BarChart3} tone="violet" />
+              <CompactSummaryCard label="Pedido Rufino" value={number(liveSummary.pedidoRufino)} icon={ShoppingCart} tone="emerald" />
+            </div>
+
+            <div className="mb-2.5 rounded-2xl border border-slate-200 bg-white px-3 py-2 shadow-sm">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[8px] font-black uppercase tracking-[0.14em] text-slate-400">Sobra por estado</span>
+                {stateSummaryLoading ? (
+                  <span className="inline-flex items-center gap-1 text-[9px] font-bold text-slate-400"><RefreshCw size={10} className="animate-spin" /> Calculando...</span>
+                ) : stateSummaries.length ? (
+                  stateSummaries.map((item) => (
+                    <button
+                      key={`${item.category}-${item.state}-${item.id}`}
+                      type="button"
+                      onClick={() => handleTabChange(item.id)}
+                      className={`inline-flex items-center gap-2 rounded-xl border px-2.5 py-1.5 text-[9px] font-black transition ${
+                        item.id === activeTab
+                          ? 'border-emerald-300 bg-emerald-100 text-emerald-900'
+                          : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-white'
+                      }`}
+                    >
+                      <span>{item.stateLabel || item.state}</span>
+                      <span className="text-emerald-700">+{number(item.sobra)}</span>
+                    </button>
+                  ))
+                ) : (
+                  <span className="text-[9px] font-bold text-slate-400">Sem resumo disponível.</span>
+                )}
+              </div>
+            </div>
+          </>
+        )}
 
         {pageMode === 'planejamento' && (
           <>
-            <div className="mb-3 flex flex-col gap-2 rounded-2xl border border-slate-200 bg-gradient-to-r from-white via-slate-50 to-white px-3 py-3 shadow-[0_10px_30px_-22px_rgba(15,23,42,0.35)] lg:flex-row lg:items-center lg:justify-between">
-              <div className="flex flex-wrap items-stretch gap-2">
-                <div className="rounded-xl border border-violet-100 bg-violet-50/70 px-3 py-2">
-                  <p className="text-[8px] font-black uppercase tracking-[0.12em] text-violet-700">
-                    Semana atual
-                  </p>
-                  <p className="mt-0.5 text-[11px] font-black text-slate-900">
-                    {weekParts(data?.weeks?.[0]).title}
-                  </p>
-                  <p className="text-[9px] font-bold text-slate-500">
-                    {weekParts(data?.weeks?.[0]).range}
-                  </p>
-                </div>
-
-                <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
-                  <p className="text-[8px] font-black uppercase tracking-[0.12em] text-slate-500">
-                    Aba
-                  </p>
-                  <p className="mt-0.5 text-[11px] font-black text-slate-900">
-                    {data?.sheetName || activeTab || '—'}
-                  </p>
+            <div className="mb-3 flex flex-col gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2.5 shadow-sm lg:flex-row lg:items-center lg:justify-between">
+              <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+                <div className="flex items-center gap-2">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-violet-50 text-violet-700">
+                    <Clock3 size={14} />
+                  </div>
+                  <div className="leading-tight">
+                    <p className="text-[7px] font-black uppercase tracking-[0.14em] text-slate-400">Semana atual</p>
+                    <p className="text-[10px] font-black text-slate-900">{weekParts(data?.weeks?.[0]).title}</p>
+                    <p className="text-[8px] font-bold text-slate-400">{weekParts(data?.weeks?.[0]).range}</p>
+                  </div>
                 </div>
 
                 {data?.loadedAt && (
-                  <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
-                    <p className="text-[8px] font-black uppercase tracking-[0.12em] text-slate-500">
-                      Atualizado
-                    </p>
-                    <p className="mt-0.5 text-[11px] font-black text-slate-900">
+                  <div className="leading-tight">
+                    <p className="text-[7px] font-black uppercase tracking-[0.14em] text-slate-400">Atualizado</p>
+                    <p className="mt-0.5 text-[9px] font-black text-slate-700">
                       {new Date(data.loadedAt).toLocaleString('pt-BR')}
                     </p>
                   </div>
@@ -1315,19 +1494,11 @@ export function EstoqueVendas() {
               </div>
 
               <div className="flex flex-wrap items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => setShowBaseModel((value) => !value)}
-                  className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-[8px] font-black uppercase tracking-wide text-slate-600 shadow-sm transition hover:text-indigo-700"
-                >
-                  {showBaseModel ? <EyeOff size={11} /> : <Eye size={11} />}
-                  Modelo sem cor
-                </button>
                 <GroupButton open={showSales} onClick={() => setShowSales((value) => !value)}>
                   Vendas
                 </GroupButton>
                 <GroupButton open={showFutureWeeks} onClick={() => setShowFutureWeeks((value) => !value)}>
-                  Próximas semanas
+                  Semanas backlog
                 </GroupButton>
                 <GroupButton open={showForecasts} onClick={() => setShowForecasts((value) => !value)}>
                   Previsões
@@ -1336,10 +1507,10 @@ export function EstoqueVendas() {
             </div>
 
             {renderMainTable()}
-            {renderNoStockBlock()}
           </>
         )}
 
+        {pageMode === 'sugestoes' && renderSystemSummary()}
         {pageMode === 'resumo' && renderOrderSummary()}
         {pageMode === 'ia' && renderAiPanel()}
       </div>

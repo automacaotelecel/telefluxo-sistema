@@ -527,7 +527,10 @@ const getCurrentUserInfo = () => {
 };
 
 const PRICE_GUIDE_SHEET_CSV_URL =
-  'https://docs.google.com/spreadsheets/d/1yInC46qAWka0S69njfFoXzJpYO4c1xVR_z3eEWBhkR4/export?format=csv&gid=0';
+  //'https://docs.google.com/spreadsheets/d/1yInC46qAWka0S69njfFoXzJpYO4c1xVR_z3eEWBhkR4/export?format=csv&gid=0';
+
+    // Planilha para testes do comparativo - usando tabelas antigas - voltar para tabela correta após testes.
+    'https://docs.google.com/spreadsheets/d/1yInC46qAWka0S69njfFoXzJpYO4c1xVR_z3eEWBhkR4/export?format=csv&gid=1612807140';
 
 const normalizeHeader = (value: any) =>
   String(value || '')

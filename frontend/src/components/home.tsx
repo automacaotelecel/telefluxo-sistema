@@ -967,6 +967,9 @@ export default function Home({ currentUser }: Props) {
       ['CEO', 'DIRETOR', 'DIRETORIA', 'ADM', 'ADMIN', 'GESTOR'].includes(role));
 
   const isNetworkView = dashboard?.scope?.type === 'network';
+  const hasMultiStoreScope =
+    !isNetworkView && (dashboard?.scope?.stores?.length || 0) > 1;
+  const isMultiStoreView = isNetworkView || hasMultiStoreScope;
   const firstName = String(currentUser?.name || 'Usuário').split(' ')[0];
 
   const fetchAnnouncements = useCallback(() => {
@@ -1181,7 +1184,7 @@ export default function Home({ currentUser }: Props) {
   const groupAgenda = announcements.filter((a) => a.category === 'Agenda');
   const networkKpis = dashboard?.kpis || {};
   const stores = dashboard?.stores || [];
-  const visibleStores = isNetworkView ? stores : stores.slice(0, 1);
+  const visibleStores = isMultiStoreView ? stores : stores.slice(0, 1);
   const isStoreAnalysis = Boolean(storeFilter && storeView?.success);
 
   const kpis = isStoreAnalysis
@@ -1274,12 +1277,12 @@ export default function Home({ currentUser }: Props) {
               </span>
               <span
                 className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.14em] ${
-                  isNetworkView && !isStoreAnalysis
+                  isMultiStoreView && !isStoreAnalysis
                     ? 'bg-slate-950 text-white'
                     : 'bg-emerald-50 text-emerald-700'
                 }`}
               >
-                {isNetworkView && !isStoreAnalysis ? <Crown size={12} /> : <ShieldCheck size={12} />}
+                {isMultiStoreView && !isStoreAnalysis ? <Crown size={12} /> : <ShieldCheck size={12} />}
                 {scopeLabel}
               </span>
               {isStoreAnalysis && (
@@ -1638,7 +1641,7 @@ export default function Home({ currentUser }: Props) {
           operations={operations}
           kpis={kpis}
           loading={viewLoading}
-          storeMode={isStoreAnalysis || dashboard?.scope?.type === 'store'}
+          storeMode={isStoreAnalysis || (!isMultiStoreView && dashboard?.scope?.type === 'store')}
         />
 
         <section className="mt-3 grid grid-cols-1 items-start gap-2.5 sm:mt-4 sm:gap-4 xl:grid-cols-2">
@@ -1646,10 +1649,10 @@ export default function Home({ currentUser }: Props) {
             <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
               <div>
                 <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">
-                  {isNetworkView ? 'Rede' : 'Sua unidade'}
+                  {isMultiStoreView ? (isNetworkView ? 'Rede' : 'Lojas permitidas') : 'Sua unidade'}
                 </p>
                 <h2 className="mt-1 text-lg font-black text-slate-950 sm:text-xl">
-                  {isNetworkView ? 'Performance das lojas' : 'Resumo da loja'}
+                  {isMultiStoreView ? 'Performance das lojas' : 'Resumo da loja'}
                 </h2>
               </div>
 
