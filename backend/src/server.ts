@@ -13997,6 +13997,10 @@ function pontoPedidoParseApaSheet(workbook: XLSX.WorkBook, sheetName: string) {
   const idxSellIn = pontoPedidoFindColumn(headers, ['SELL IN', 'SELLIN']);
   const idxAlteracao = pontoPedidoFindColumn(headers, ['ALTERACAO', 'ALTERAÇÃO']);
   const idxStatus = pontoPedidoFindColumn(headers, ['STATUS', 'SITUACAO', 'SITUAÇÃO']);
+  const idxPedidoFaturadoHeader = pontoPedidoFindColumn(headers, ['PEDIDO FATURADO', 'PEDIDO_FATURADO']);
+  // A planilha oficial mantém PEDIDO FATURADO na coluna K. O fallback em K
+  // evita perder o campo caso o cabeçalho venha com alguma variação inesperada.
+  const idxPedidoFaturado = idxPedidoFaturadoHeader >= 0 ? idxPedidoFaturadoHeader : 10;
 
   if (idxModelo < 0 && idxModeloCor < 0) {
     throw new Error(`A aba ${sheetName} não possui coluna MODELO/MODELO COM COR reconhecível.`);
@@ -14021,6 +14025,7 @@ function pontoPedidoParseApaSheet(workbook: XLSX.WorkBook, sheetName: string) {
         sellIn: pontoPedidoNumber(row?.[idxSellIn]),
         alteracao: idxAlteracao >= 0 ? String(row?.[idxAlteracao] ?? '').trim() : '',
         status: idxStatus >= 0 ? String(row?.[idxStatus] ?? '').trim() : '',
+        pedidoFaturado: pontoPedidoNumber(row?.[idxPedidoFaturado]),
       };
     })
     .filter(Boolean) as Array<{
@@ -14034,6 +14039,7 @@ function pontoPedidoParseApaSheet(workbook: XLSX.WorkBook, sheetName: string) {
       sellIn: number;
       alteracao: string;
       status: string;
+      pedidoFaturado: number;
     }>;
 }
 
@@ -14717,6 +14723,7 @@ app.post('/api/ponto-pedido/analise-ia', async (req, res) => {
   try {
     const aba = String(req.body?.aba || '').trim();
     const pergunta = String(req.body?.pergunta || '').trim();
+
     const inputRows = Array.isArray(req.body?.rows)
       ? req.body.rows
       : [];
@@ -14738,48 +14745,129 @@ app.post('/api/ponto-pedido/analise-ia', async (req, res) => {
     const relevantRows = [...inputRows]
       .map((row: any) => ({
         modelo: String(row?.modelo || '').slice(0, 120),
-        vendas15: pontoPedidoNumber(row?.vendas15),
-        vendas30: pontoPedidoNumber(row?.vendas30),
-        vendas45: pontoPedidoNumber(row?.vendas45),
-        vendas60: pontoPedidoNumber(row?.vendas60),
-        estoque: pontoPedidoNumber(row?.estoque),
-        pendente: pontoPedidoNumber(row?.pendente),
-        backlogTotal: pontoPedidoNumber(row?.backlogTotal),
+
+        status: String(row?.status || '').slice(0, 80),
+
+        pedidoFaturado:
+          pontoPedidoNumber(row?.pedidoFaturado),
+
+        sugestaoEstoqueDobrado:
+          pontoPedidoNumber(
+            row?.sugestaoEstoqueDobrado
+          ),
+
+        vendas15:
+          pontoPedidoNumber(row?.vendas15),
+
+        vendas30:
+          pontoPedidoNumber(row?.vendas30),
+
+        vendas45:
+          pontoPedidoNumber(row?.vendas45),
+
+        vendas60:
+          pontoPedidoNumber(row?.vendas60),
+
+        estoque:
+          pontoPedidoNumber(row?.estoque),
+
+        pendente:
+          pontoPedidoNumber(row?.pendente),
+
+        backlogTotal:
+          pontoPedidoNumber(row?.backlogTotal),
+
         semanas:
-          row?.semanas && typeof row.semanas === 'object'
+          row?.semanas &&
+          typeof row.semanas === 'object'
             ? row.semanas
             : {},
-        vmd: pontoPedidoNumber(row?.vmd),
+
+        vmd:
+          pontoPedidoNumber(row?.vmd),
+
         coberturaDias:
           row?.coberturaDias === null
             ? null
-            : pontoPedidoNumber(row?.coberturaDias),
-        saldo15: pontoPedidoNumber(row?.saldo15),
-        saldo30: pontoPedidoNumber(row?.saldo30),
-        saldo45: pontoPedidoNumber(row?.saldo45),
-        saldo60: pontoPedidoNumber(row?.saldo60),
-        sugestaoFaturarBacklog: pontoPedidoNumber(row?.sugestaoFaturarBacklog),
-        sugestao: pontoPedidoNumber(row?.sugestao),
-        pedidoControladoria: pontoPedidoNumber(row?.pedidoControladoria),
-        pedidoRufino: pontoPedidoNumber(row?.pedidoRufino),
-        sobra: pontoPedidoNumber(row?.sobra),
+            : pontoPedidoNumber(
+                row?.coberturaDias
+              ),
+
+        saldo15:
+          pontoPedidoNumber(row?.saldo15),
+
+        saldo30:
+          pontoPedidoNumber(row?.saldo30),
+
+        saldo45:
+          pontoPedidoNumber(row?.saldo45),
+
+        saldo60:
+          pontoPedidoNumber(row?.saldo60),
+
+        sugestaoFaturarBacklog:
+          pontoPedidoNumber(
+            row?.sugestaoFaturarBacklog
+          ),
+
+        sugestao:
+          pontoPedidoNumber(row?.sugestao),
+
+        pedidoControladoria:
+          pontoPedidoNumber(
+            row?.pedidoControladoria
+          ),
+
+        pedidoRufino:
+          pontoPedidoNumber(row?.pedidoRufino),
+
+        sobra:
+          pontoPedidoNumber(row?.sobra),
       }))
       .sort((a: any, b: any) => {
         const scoreA =
-          (a.estoque <= 0 && a.vendas60 > 0 ? 100000 : 0) +
-          Math.max(0, a.sugestao - a.pedidoRufino) * 100 +
-          Math.max(0, -a.saldo30) * 10 +
-          a.vendas30;
+          (
+            a.estoque <= 0 &&
+            a.vendas60 > 0
+              ? 100000
+              : 0
+          ) +
+          Math.max(
+            0,
+            a.sugestao - a.pedidoRufino
+          ) *
+            100 +
+          Math.max(
+            0,
+            a.sugestaoFaturarBacklog
+          ) *
+            60 +
+          Math.max(0, -a.saldo60) * 10 +
+          a.vendas60;
 
         const scoreB =
-          (b.estoque <= 0 && b.vendas60 > 0 ? 100000 : 0) +
-          Math.max(0, b.sugestao - b.pedidoRufino) * 100 +
-          Math.max(0, -b.saldo30) * 10 +
-          b.vendas30;
+          (
+            b.estoque <= 0 &&
+            b.vendas60 > 0
+              ? 100000
+              : 0
+          ) +
+          Math.max(
+            0,
+            b.sugestao - b.pedidoRufino
+          ) *
+            100 +
+          Math.max(
+            0,
+            b.sugestaoFaturarBacklog
+          ) *
+            60 +
+          Math.max(0, -b.saldo60) * 10 +
+          b.vendas60;
 
         return scoreB - scoreA;
       })
-      .slice(0, 100);
+      .slice(0, 180);
 
     const deterministic =
       pontoPedidoDeterministicPurchaseAnalysis(
@@ -14795,8 +14883,6 @@ app.post('/api/ponto-pedido/analise-ia', async (req, res) => {
       process.env.CLAUDE_MODEL || ''
     ).trim();
 
-    // Se a Claude estiver temporariamente indisponível, o usuário
-    // ainda recebe uma análise objetiva baseada nos mesmos números.
     if (!apiKey || !model) {
       return res.json({
         ok: true,
@@ -14805,41 +14891,137 @@ app.post('/api/ponto-pedido/analise-ia', async (req, res) => {
       });
     }
 
-    const prompt = `Você é a IA de compras do TeleFluxo.
+    const prompt = `
+Você é a IA especialista em planejamento de compras
+e Ponto de Pedido do TeleFluxo.
+
 Analise SOMENTE os dados fornecidos.
+Não invente vendas, estoque, backlog,
+datas, status ou quantidades.
 
-Objetivo: evitar tanto ruptura quanto excesso de compra por modelo/cor.
+OBJETIVO PRINCIPAL
 
-Regras:
-- o foco operacional é VENDAS 60 DIAS; use 15/30/45 apenas como tendência complementar;
-- considere estoque, cobertura, TOTAL EM BACKLOG, backlog pendente, semanas de chegada e saldo projetado;
-- PENDENTE é atrasado/sem data confiável e não deve ser tratado como chegada garantida;
-- diferencie a sugestão de FATURAR BACKLOG da sugestão de NOVOS PEDIDOS; compare Controladoria e Pedido Rufino com a sugestão de novos pedidos;
-- modelo sem giro não deve receber compra apenas por estar sem estoque;
-- classifique recomendações em: COMPRAR AGORA, MANTER, REDUZIR/REVISAR e ACOMPANHAR;
-- não invente números e cite os números dos modelos recomendados.
+Montar uma recomendação de compra prática e precisa,
+evitando ruptura e excesso por modelo/cor.
 
-ABA: ${aba}
-PERGUNTA: ${pergunta || 'Faça uma análise completa do pedido.'}
-DADOS: ${JSON.stringify(relevantRows)}
-RESUMO DO SISTEMA: ${deterministic}`;
+REGRAS OBRIGATÓRIAS
+
+- VENDAS 60 DIAS é a referência principal.
+- V15/V30/V45 servem apenas para identificar tendência.
+
+- TOTAL EM BACKLOG já contém:
+  PENDENTE
+  + semana atual
+  + próximas 4 semanas.
+
+- NUNCA some PENDENTE novamente
+  ao TOTAL EM BACKLOG.
+
+- PENDENTE serve somente como detalhamento
+  da parte atrasada do backlog.
+
+- PEDIDO FATURADO é quantidade já faturada.
+  Considere esse valor como compromisso existente.
+
+- SUGESTÃO ESTOQUE DOBRADO =
+  Vendas 60 dias x 2.
+  É uma referência gerencial,
+  não um pedido obrigatório.
+
+- SUGESTÃO FATURAR BACKLOG indica
+  quanto do backlog deve ser priorizado.
+
+- SUGESTÃO NOVOS PEDIDOS indica
+  compra adicional após considerar
+  estoque e backlog.
+
+- STATUS "NÃO HÁ COMO PEDIR"
+  nunca recebe recomendação de novo pedido.
+
+- STATUS "OBSOLETO"
+  nunca recebe recomendação de novo pedido.
+
+- STATUS "LANÇAMENTO"
+  pode ter pouco histórico.
+  Analise com cautela.
+
+- Produto sem giro não deve receber pedido
+  somente porque está sem estoque.
+
+- Compare sempre:
+  SISTEMA
+  x CONTROLADORIA
+  x PEDIDO RUFINO.
+
+- Sempre que recomendar uma quantidade,
+  informe os números que justificam.
+
+FORMATO DO RELATÓRIO
+
+1. RESUMO EXECUTIVO
+
+2. FATURAR BACKLOG
+Modelo + quantidade + justificativa.
+
+3. NOVOS PEDIDOS
+Modelo + quantidade + justificativa.
+
+4. REVISAR / REDUZIR / ZERAR
+Pedidos manuais ou situações de excesso.
+
+5. RISCO DE RUPTURA
+
+6. PEDIDO RECOMENDADO FINAL
+Somente modelos que realmente exigem ação.
+
+Para cada modelo:
+- modelo
+- quantidade
+- prioridade ALTA / MÉDIA / BAIXA
+- justificativa curta
+
+7. TOTAIS
+- Total faturar backlog
+- Total novos pedidos
+
+ABA:
+${aba}
+
+PERGUNTA:
+${pergunta || 'Gere o relatório completo do ponto de pedido e monte o pedido recomendado.'}
+
+DADOS:
+${JSON.stringify(relevantRows)}
+
+RESUMO DETERMINÍSTICO:
+${deterministic}
+`;
 
     const response = await fetch(
       'https://api.anthropic.com/v1/messages',
       {
         method: 'POST',
+
         headers: {
           'x-api-key': apiKey,
           'anthropic-version': '2023-06-01',
           'content-type': 'application/json',
         },
+
         body: JSON.stringify({
           model,
-          max_tokens: 1800,
-          temperature: 0.15,
+
+          max_tokens: 3000,
+
+          temperature: 0.1,
+
           system:
-            'Você é um analista de compras e abastecimento do TeleFluxo. ' +
-            'Seja conservador contra ruptura e excesso e use apenas os dados fornecidos.',
+            'Você é o planejador de compras do TeleFluxo. ' +
+            'Seja quantitativo, preciso e operacional. ' +
+            'Use somente os dados recebidos. ' +
+            'Não duplique backlog pendente e nunca recomende ' +
+            'novo pedido para itens bloqueados ou obsoletos.',
+
           messages: [
             {
               role: 'user',
@@ -14869,8 +15051,14 @@ RESUMO DO SISTEMA: ${deterministic}`;
 
     const answer = Array.isArray(payload?.content)
       ? payload.content
-          .filter((item: any) => item?.type === 'text')
-          .map((item: any) => String(item?.text || ''))
+          .filter(
+            (item: any) =>
+              item?.type === 'text'
+          )
+          .map(
+            (item: any) =>
+              String(item?.text || '')
+          )
           .join('\n')
           .trim()
       : '';
@@ -14878,7 +15066,10 @@ RESUMO DO SISTEMA: ${deterministic}`;
     return res.json({
       ok: true,
       answer: answer || deterministic,
-      source: answer ? 'claude' : 'deterministic',
+      source:
+        answer
+          ? 'claude'
+          : 'deterministic',
     });
   } catch (error: any) {
     console.error(
