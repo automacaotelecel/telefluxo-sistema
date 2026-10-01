@@ -1029,25 +1029,59 @@ async function buildAnnualStoreCompareRows(params: {
 
     let insuranceRows: any[] = [];
 
-    if (hasInsurance) {
-      insuranceRows = await db.all(`
-        SELECT
-          ano,
-          mes,
-          COALESCE(NULLIF(loja, ''), cnpj_empresa, 'LOJA NÃO INFORMADA') AS loja,
-          COALESCE(cnpj_empresa, '') AS cnpj_empresa,
-          COALESCE(NULLIF(regiao, ''), '') AS regiao,
-          SUM(COALESCE(premio, 0)) AS seguro_total,
-          SUM(COALESCE(qtd, 0)) AS seguro_qtd
-        FROM seguros_anuais
-        WHERE ${securityFilter}
-          ${yearFilter}
-          ${monthFilter}
-          AND ano > 0
-          AND mes BETWEEN 1 AND 12
-        GROUP BY ano, mes, COALESCE(NULLIF(loja, ''), cnpj_empresa, 'LOJA NÃO INFORMADA'), COALESCE(cnpj_empresa, ''), COALESCE(NULLIF(regiao, ''), '')
-      `);
-    }
+      if (hasInsurance) {
+        // A base de seguros teve mais de um layout ao longo do tempo:
+        // algumas versões usam `premio`, outras usam `premio_real`.
+        // Detectamos a coluna existente para a rota anual não quebrar nem zerar.
+        const insuranceColumnsInfo = await db.all(`PRAGMA table_info(seguros_anuais)`);
+        const insuranceColumns = new Set(
+          (insuranceColumnsInfo || []).map((item: any) => String(item?.name || '').toLowerCase())
+        );
+
+        const premioColumn = insuranceColumns.has('premio_real')
+          ? 'premio_real'
+          : insuranceColumns.has('premio')
+            ? 'premio'
+            : insuranceColumns.has('valor')
+              ? 'valor'
+              : insuranceColumns.has('total_real')
+                ? 'total_real'
+                : insuranceColumns.has('total_liquido')
+                  ? 'total_liquido'
+                  : null;
+
+        const qtdColumn = insuranceColumns.has('qtd')
+          ? 'qtd'
+          : insuranceColumns.has('seguro_qtd')
+            ? 'seguro_qtd'
+            : insuranceColumns.has('seguros_qtd')
+              ? 'seguros_qtd'
+              : insuranceColumns.has('qtd_real')
+                ? 'qtd_real'
+                : insuranceColumns.has('quantidade')
+                  ? 'quantidade'
+                  : null;
+
+        if (premioColumn || qtdColumn) {
+          insuranceRows = await db.all(`
+            SELECT
+              ano,
+              mes,
+              COALESCE(NULLIF(loja, ''), cnpj_empresa, 'LOJA NÃO INFORMADA') AS loja,
+              COALESCE(cnpj_empresa, '') AS cnpj_empresa,
+              COALESCE(NULLIF(regiao, ''), '') AS regiao,
+              SUM(COALESCE(${premioColumn || '0'}, 0)) AS seguro_total,
+              SUM(COALESCE(${qtdColumn || '0'}, 0)) AS seguro_qtd
+            FROM seguros_anuais
+            WHERE ${securityFilter}
+              ${yearFilter}
+              ${monthFilter}
+              AND ano > 0
+              AND mes BETWEEN 1 AND 12
+            GROUP BY ano, mes, COALESCE(NULLIF(loja, ''), cnpj_empresa, 'LOJA NÃO INFORMADA'), COALESCE(cnpj_empresa, ''), COALESCE(NULLIF(regiao, ''), '')
+          `);
+        }
+      }
 
     const insuranceHasValue = (insuranceRows || []).some((row: any) => annualNumber(row.seguro_total) !== 0 || annualNumber(row.seguro_qtd) !== 0);
 
@@ -10122,7 +10156,358 @@ app.get('/api/global-search', async (req, res) => {
   }
 });
 
-app.post('/api/executive-report/pdf', async (req, res) => {
+    function executiveReportShiftMonth(monthKey: string, offset: number): string {
+    const [yearRaw, monthRaw] = String(monthKey || '').split('-');
+    const year = Number(yearRaw);
+    const month = Number(monthRaw);
+
+    if (!year || !month) return '';
+
+    const date = new Date(year, month - 1 + offset, 15, 12, 0, 0);
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+  }
+
+  function executiveReportMonthLabel(monthKey: string): string {
+    const [yearRaw, monthRaw] = String(monthKey || '').split('-');
+    const year = Number(yearRaw);
+    const month = Number(monthRaw);
+    if (!year || !month) return monthKey;
+
+    const label = new Intl.DateTimeFormat('pt-BR', {
+      month: 'short',
+      year: 'numeric',
+      timeZone: 'America/Sao_Paulo',
+    }).format(new Date(year, month - 1, 15, 12, 0, 0));
+
+    return label.replace('.', '').replace(' de ', '/');
+  }
+
+  function executiveReportNormalizeDeviceModel(value: any): string {
+    const normalized = String(value ?? '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toUpperCase()
+      .replace(/\bSAMSUNG\b/g, ' ')
+      .replace(/\bSMARTPHONE\b/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    const storageMatch = normalized.match(/^(.+?\b\d+\s*(?:GB|TB)\b)/i);
+    return (storageMatch?.[1] || normalized)
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function executiveReportLooksLikeDevice(row: any): boolean {
+    const family = annualNorm(
+      row?.familia ||
+      row?.categoria_real ||
+      row?.categoria ||
+      ''
+    );
+
+    const description = annualNorm(row?.descricao || '');
+
+    if (
+      family.includes('APARELHO') ||
+      family.includes('SMARTPHONE') ||
+      family === 'CELULAR' ||
+      family.includes('TELEFONE')
+    ) {
+      return true;
+    }
+
+    if (
+      family.includes('TABLET') ||
+      family.includes('WEARABLE') ||
+      family.includes('ACESSORIO') ||
+      family.includes('PELICULA') ||
+      family.includes('FONE')
+    ) {
+      return false;
+    }
+
+    return /\bGALAXY\s+(?:A\d|S\d|M\d|Z\s*FOLD|Z\s*FLIP|FOLD|FLIP)/.test(description);
+  }
+
+  type ExecutiveReportDeviceInsight = {
+    months: Array<{
+      key: string;
+      label: string;
+      quantidade: number;
+      faturamento: number;
+    }>;
+    topProducts: Array<{
+      modelo: string;
+      quantidade: number;
+      faturamento: number;
+    }>;
+    growthProducts: Array<{
+      modelo: string;
+      anterior: number;
+      atual: number;
+      crescimentoPct: number;
+      delta: number;
+    }>;
+    comparison: {
+      previousKey: string;
+      latestKey: string;
+      previousQty: number;
+      latestQty: number;
+      growthPct: number | null;
+    };
+  };
+
+  async function executiveReportLoadDeviceInsights(params: {
+    userId: string;
+    stores: string[];
+    endDate?: string;
+  }): Promise<ExecutiveReportDeviceInsight> {
+    const today = getBrazilTodayIso();
+    const safeEndDate = /^\d{4}-\d{2}-\d{2}$/.test(String(params.endDate || ''))
+      ? String(params.endDate)
+      : today;
+
+    const endMonthKey = safeEndDate.slice(0, 7);
+    const monthKeys = [
+      executiveReportShiftMonth(endMonthKey, -2),
+      executiveReportShiftMonth(endMonthKey, -1),
+      endMonthKey,
+    ].filter(Boolean);
+
+    const salesFilter = await getSalesFilter(params.userId, 'vendas');
+    const requestedCnpjs = Array.from(
+      new Set(
+        (params.stores || [])
+          .map((store) => String(getCnpjByName(store) || '').replace(/\D/g, ''))
+          .filter(Boolean)
+      )
+    );
+
+    const cnpjClause = requestedCnpjs.length
+      ? ` AND REPLACE(REPLACE(REPLACE(COALESCE(cnpj_empresa, ''), '.', ''), '/', ''), '-', '') IN (${requestedCnpjs.map((cnpj) => `'${cnpj}'`).join(',')}) `
+      : '';
+
+    const rows: any[] = [];
+
+    if (fs.existsSync(ANUAL_DB_PATH)) {
+      let annualDb: any;
+      try {
+        annualDb = await open({ filename: ANUAL_DB_PATH, driver: sqlite3.Database });
+        const hasRaw = await annualTableExists(annualDb, 'vendas_anuais_raw');
+
+        if (hasRaw && monthKeys.length) {
+          const monthClause = monthKeys
+            .map((key) => {
+              const [year, month] = key.split('-').map(Number);
+              return `(ano = ${year} AND mes = ${month})`;
+            })
+            .join(' OR ');
+
+          const annualRows = await annualDb.all(`
+            SELECT
+              printf('%04d-%02d', ano, mes) AS month_key,
+              COALESCE(NULLIF(descricao, ''), NULLIF(referencia, ''), 'PRODUTO NÃO INFORMADO') AS descricao,
+              COALESCE(NULLIF(categoria_real, ''), NULLIF(categoria, ''), '') AS familia,
+              SUM(COALESCE(qtd_real, quantidade, 0)) AS quantidade,
+              SUM(COALESCE(total_real, total_liquido, 0)) AS faturamento
+            FROM vendas_anuais_raw
+            WHERE ${salesFilter}
+              ${cnpjClause}
+              AND (${monthClause})
+              AND (
+                cancelado IS NULL OR
+                UPPER(TRIM(CAST(cancelado AS TEXT))) NOT IN ('S', 'SIM', 'TRUE', '1', 'CANCELADO', 'CANCELADA')
+              )
+            GROUP BY
+              ano,
+              mes,
+              COALESCE(NULLIF(descricao, ''), NULLIF(referencia, ''), 'PRODUTO NÃO INFORMADO'),
+              COALESCE(NULLIF(categoria_real, ''), NULLIF(categoria, ''), '')
+          `);
+
+          rows.push(...annualRows);
+        }
+      } catch (error) {
+        console.warn('⚠️ Relatório executivo: não foi possível carregar os aparelhos da base anual:', error);
+      } finally {
+        try { if (annualDb) await annualDb.close(); } catch {}
+      }
+    }
+
+    // O banco mensal é a fonte preferencial do mês corrente, porque contém
+    // o movimento mais recente e evita esperar a consolidação anual.
+    const currentMonthKey = today.slice(0, 7);
+    if (monthKeys.includes(currentMonthKey) && fs.existsSync(GLOBAL_DB_PATH)) {
+      let currentDb: any;
+      try {
+        currentDb = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+        const currentEnd = safeEndDate < today ? safeEndDate : today;
+        const currentRows = await currentDb.all(`
+          SELECT
+            substr(data_emissao, 1, 7) AS month_key,
+            COALESCE(NULLIF(descricao, ''), 'PRODUTO NÃO INFORMADO') AS descricao,
+            COALESCE(NULLIF(familia, ''), '') AS familia,
+            SUM(COALESCE(quantidade, 0)) AS quantidade,
+            SUM(COALESCE(total_liquido, 0)) AS faturamento
+          FROM vendas
+          WHERE ${salesFilter}
+            ${cnpjClause}
+            AND data_emissao >= '${currentMonthKey}-01'
+            AND data_emissao <= '${annualSqlText(currentEnd)}'
+          GROUP BY
+            substr(data_emissao, 1, 7),
+            COALESCE(NULLIF(descricao, ''), 'PRODUTO NÃO INFORMADO'),
+            COALESCE(NULLIF(familia, ''), '')
+        `);
+
+        if (currentRows.length) {
+          for (let index = rows.length - 1; index >= 0; index -= 1) {
+            if (String(rows[index]?.month_key || '') === currentMonthKey) {
+              rows.splice(index, 1);
+            }
+          }
+          rows.push(...currentRows);
+        }
+      } catch (error) {
+        console.warn('⚠️ Relatório executivo: não foi possível complementar o mês corrente:', error);
+      } finally {
+        try { if (currentDb) await currentDb.close(); } catch {}
+      }
+    }
+
+    const monthTotals = new Map<string, { quantidade: number; faturamento: number }>();
+    const productTotals = new Map<string, { quantidade: number; faturamento: number }>();
+    const productByMonth = new Map<string, Map<string, number>>();
+
+    for (const row of rows) {
+      if (!executiveReportLooksLikeDevice(row)) continue;
+
+      const monthKey = String(row?.month_key || '').slice(0, 7);
+      if (!monthKeys.includes(monthKey)) continue;
+
+      const model = executiveReportNormalizeDeviceModel(row?.descricao);
+      if (!model) continue;
+
+      const quantidade = Math.max(0, Number(row?.quantidade || 0));
+      const faturamento = Math.max(0, Number(row?.faturamento || 0));
+
+      const month = monthTotals.get(monthKey) || { quantidade: 0, faturamento: 0 };
+      month.quantidade += quantidade;
+      month.faturamento += faturamento;
+      monthTotals.set(monthKey, month);
+
+      const product = productTotals.get(model) || { quantidade: 0, faturamento: 0 };
+      product.quantidade += quantidade;
+      product.faturamento += faturamento;
+      productTotals.set(model, product);
+
+      const monthlyProducts = productByMonth.get(monthKey) || new Map<string, number>();
+      monthlyProducts.set(model, (monthlyProducts.get(model) || 0) + quantidade);
+      productByMonth.set(monthKey, monthlyProducts);
+    }
+
+    const months = monthKeys.map((key) => ({
+      key,
+      label: executiveReportMonthLabel(key),
+      quantidade: monthTotals.get(key)?.quantidade || 0,
+      faturamento: monthTotals.get(key)?.faturamento || 0,
+    }));
+
+    const topProducts = Array.from(productTotals.entries())
+      .map(([modelo, values]) => ({ modelo, ...values }))
+      .sort((a, b) => b.quantidade - a.quantidade || b.faturamento - a.faturamento)
+      .slice(0, 5);
+
+    const endDateParts = safeEndDate.split('-');
+
+    const endYear = Number(
+      endDateParts[0] || new Date().getFullYear()
+    );
+
+    const endMonth = Number(
+      endDateParts[1] || 1
+    );
+
+    const endDay = Number(
+      endDateParts[2] || 1
+    );
+
+    const lastDay = new Date(
+      endYear,
+      endMonth,
+      0
+    ).getDate();
+
+    const lastMonthKey =
+      monthKeys[monthKeys.length - 1] ||
+      endMonthKey;
+
+    const previousAvailableMonthKey =
+      monthKeys[monthKeys.length - 2] ||
+      lastMonthKey;
+
+    const latestComparisonKey =
+      endDay < lastDay && monthKeys.length >= 2
+        ? previousAvailableMonthKey
+        : lastMonthKey;
+
+    const previousComparisonKey =
+      executiveReportShiftMonth(
+        latestComparisonKey,
+        -1
+      ) ||
+      executiveReportShiftMonth(
+        endMonthKey,
+        -1
+      );
+
+    const previousProducts =
+      productByMonth.get(
+        previousComparisonKey
+      ) ||
+      new Map<string, number>();
+
+    const latestProducts =
+      productByMonth.get(
+        latestComparisonKey
+      ) ||
+      new Map<string, number>();
+
+    const growthProducts = Array.from(new Set([...previousProducts.keys(), ...latestProducts.keys()]))
+      .map((modelo) => {
+        const anterior = previousProducts.get(modelo) || 0;
+        const atual = latestProducts.get(modelo) || 0;
+        const delta = atual - anterior;
+        const crescimentoPct = anterior > 0 ? (delta / anterior) * 100 : atual > 0 ? 100 : 0;
+        return { modelo, anterior, atual, delta, crescimentoPct };
+      })
+      .filter((item) => item.delta > 0 && item.atual > 0)
+      .sort((a, b) => b.delta - a.delta || b.crescimentoPct - a.crescimentoPct)
+      .slice(0, 4);
+
+    const previousQty = monthTotals.get(previousComparisonKey)?.quantidade || 0;
+    const latestQty = monthTotals.get(latestComparisonKey)?.quantidade || 0;
+    const growthPct = previousQty > 0
+      ? ((latestQty - previousQty) / previousQty) * 100
+      : null;
+
+    return {
+      months,
+      topProducts,
+      growthProducts,
+      comparison: {
+        previousKey: previousComparisonKey,
+        latestKey: latestComparisonKey,
+        previousQty,
+        latestQty,
+        growthPct,
+      },
+    };
+  }
+
+
+  app.post('/api/executive-report/pdf', async (req, res) => {
   let browser: any;
 
   try {
@@ -10156,12 +10541,22 @@ app.post('/api/executive-report/pdf', async (req, res) => {
 
     const kpis = dashboard?.kpis || {};
     const stores = Array.isArray(dashboard?.stores) ? dashboard.stores.slice(0, 20) : [];
-    const radar = Array.isArray(dashboard?.radar) ? dashboard.radar.slice(0, 8) : [];
     const trend = Array.isArray(dashboard?.trend) ? dashboard.trend.slice(-31) : [];
     const scopeLabel = dashboard?.scope?.label || (hasNetworkScope ? 'Visão consolidada da rede' : 'Sua unidade');
     const periodLabel = dashboard?.period?.label || 'Este mês';
+    const reportEndDate = String(dashboard?.period?.endDate || getBrazilTodayIso()).slice(0, 10);
     const generatedAt = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
     const maxTrend = Math.max(1, ...trend.map((item: any) => Number(item?.faturamento || 0)));
+
+    // Novo bloco inteligente do relatório:
+    // sempre consulta os 3 meses mais recentes até o final do período do relatório,
+    // respeitando o escopo de segurança do usuário e, quando o relatório é de loja,
+    // restringindo também às lojas efetivamente selecionadas.
+    const deviceInsights = await executiveReportLoadDeviceInsights({
+      userId,
+      stores: payloadStores,
+      endDate: reportEndDate,
+    });
 
     const storeRows = stores.map((store: any, index: number) => `
       <tr>
@@ -10174,18 +10569,55 @@ app.post('/api/executive-report/pdf', async (req, res) => {
       </tr>
     `).join('');
 
-    const radarCards = radar.map((item: any) => `
-      <div class="alert-card">
-        <div class="alert-head"><span class="dot ${item.level === 'positive' ? 'green' : item.level === 'warning' ? 'orange' : 'blue'}"></span><span>${executiveEscapeHtml(item.metric || 'Indicador')}</span></div>
-        <strong>${executiveEscapeHtml(item.title)}</strong>
-        <p>${executiveEscapeHtml(item.text)}</p>
-      </div>
-    `).join('');
-
     const trendBars = trend.map((item: any) => {
       const height = Math.max(3, Math.round((Number(item.faturamento || 0) / maxTrend) * 100));
       return `<div class="bar-wrap"><div class="bar" style="height:${height}%"></div><span>${executiveEscapeHtml(String(item.date || '').slice(8, 10))}</span></div>`;
     }).join('');
+
+    const monthCards = deviceInsights.months.map((month) => `
+      <div class="month-card">
+        <div class="month-label">${executiveEscapeHtml(month.label)}</div>
+        <strong>${Number(month.quantidade || 0).toLocaleString('pt-BR')} aparelhos</strong>
+        <span>${executiveMoney(month.faturamento)}</span>
+      </div>
+    `).join('');
+
+    const topProductRows = deviceInsights.topProducts.map((item, index) => `
+      <div class="product-row">
+        <span class="rank">${String(index + 1).padStart(2, '0')}</span>
+        <span class="product-name">${executiveEscapeHtml(item.modelo)}</span>
+        <strong>${Number(item.quantidade || 0).toLocaleString('pt-BR')} un.</strong>
+      </div>
+    `).join('');
+
+    const growthRows = deviceInsights.growthProducts.map((item) => `
+      <div class="growth-row">
+        <span class="product-name">${executiveEscapeHtml(item.modelo)}</span>
+        <strong>+${Number(item.delta || 0).toLocaleString('pt-BR')} un.</strong>
+        <span>${item.anterior.toLocaleString('pt-BR')} → ${item.atual.toLocaleString('pt-BR')}</span>
+      </div>
+    `).join('');
+
+    const comparison = deviceInsights.comparison;
+    const comparisonText = comparison.growthPct === null
+      ? `Sem base suficiente para comparar ${executiveReportMonthLabel(comparison.previousKey)} com ${executiveReportMonthLabel(comparison.latestKey)}.`
+      : `${executiveReportMonthLabel(comparison.latestKey)} ${comparison.growthPct >= 0 ? 'cresceu' : 'recuou'} ${Math.abs(comparison.growthPct).toFixed(1).replace('.', ',')}% em aparelhos versus ${executiveReportMonthLabel(comparison.previousKey)} (${comparison.previousQty.toLocaleString('pt-BR')} → ${comparison.latestQty.toLocaleString('pt-BR')} un.).`;
+
+    const leader = deviceInsights.topProducts[0];
+    const growthLeader = deviceInsights.growthProducts[0];
+    const smartHighlights = [
+      comparisonText,
+      leader
+        ? `${leader.modelo} foi o aparelho mais vendido no recorte de 3 meses, com ${leader.quantidade.toLocaleString('pt-BR')} unidades.`
+        : '',
+      growthLeader
+        ? `${growthLeader.modelo} foi o principal avanço entre os dois últimos meses comparáveis: +${growthLeader.delta.toLocaleString('pt-BR')} unidades.`
+        : '',
+    ].filter(Boolean);
+
+    const insightBullets = smartHighlights.map((text) => `
+      <div class="insight-bullet"><span></span><p>${executiveEscapeHtml(text)}</p></div>
+    `).join('');
 
     const html = `<!doctype html>
     <html lang="pt-BR">
@@ -10194,9 +10626,11 @@ app.post('/api/executive-report/pdf', async (req, res) => {
         <style>
           *{box-sizing:border-box} body{margin:0;background:#f5f7fb;color:#0f172a;font-family:Arial,Helvetica,sans-serif;font-size:12px}
           .page{padding:28px 30px 34px}.header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:22px}.brand{font-size:10px;font-weight:800;letter-spacing:.18em;color:#f97316;text-transform:uppercase}.title{font-size:28px;font-weight:900;letter-spacing:-.04em;margin:5px 0 4px}.muted{color:#64748b;font-size:10px}.badge{background:#0f172a;color:white;border-radius:999px;padding:8px 12px;font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.1em}
-          .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px}.kpi{background:white;border:1px solid #e2e8f0;border-radius:16px;padding:14px}.kpi label{display:block;color:#94a3b8;font-size:8px;font-weight:800;letter-spacing:.12em;text-transform:uppercase}.kpi strong{display:block;font-size:18px;margin-top:7px;letter-spacing:-.03em}.section{background:white;border:1px solid #e2e8f0;border-radius:18px;padding:16px;margin-top:12px}.section h2{font-size:14px;margin:0 0 12px}.grid{display:grid;grid-template-columns:1.4fr .8fr;gap:12px}
-          .chart{height:150px;display:flex;align-items:flex-end;gap:4px;border-bottom:1px solid #e2e8f0;padding:10px 3px 0}.bar-wrap{height:100%;flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:4px}.bar{width:100%;max-width:16px;background:#f97316;border-radius:4px 4px 0 0}.bar-wrap span{font-size:6px;color:#94a3b8}
-          .alerts{display:grid;gap:8px}.alert-card{border:1px solid #e2e8f0;border-radius:12px;padding:10px;background:#f8fafc}.alert-head{display:flex;gap:6px;align-items:center;color:#94a3b8;text-transform:uppercase;font-size:7px;font-weight:800;letter-spacing:.12em}.dot{width:6px;height:6px;border-radius:50%}.green{background:#10b981}.orange{background:#f59e0b}.blue{background:#38bdf8}.alert-card strong{display:block;margin-top:6px;font-size:10px}.alert-card p{margin:4px 0 0;color:#64748b;font-size:8px;line-height:1.45}
+          .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px}.kpi{background:white;border:1px solid #e2e8f0;border-radius:16px;padding:14px}.kpi label{display:block;color:#94a3b8;font-size:8px;font-weight:800;letter-spacing:.12em;text-transform:uppercase}.kpi strong{display:block;font-size:18px;margin-top:7px;letter-spacing:-.03em}.section{background:white;border:1px solid #e2e8f0;border-radius:18px;padding:16px;margin-top:12px}.section h2{font-size:14px;margin:0 0 12px}.grid{display:grid;grid-template-columns:1.15fr 1fr;gap:12px}
+          .chart{height:184px;display:flex;align-items:flex-end;gap:4px;border-bottom:1px solid #e2e8f0;padding:10px 3px 0}.bar-wrap{height:100%;flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:4px}.bar{width:100%;max-width:16px;background:#f97316;border-radius:4px 4px 0 0}.bar-wrap span{font-size:6px;color:#94a3b8}
+          .months{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}.month-card{border:1px solid #e2e8f0;background:#f8fafc;border-radius:10px;padding:8px}.month-label{font-size:7px;font-weight:900;letter-spacing:.08em;text-transform:uppercase;color:#64748b}.month-card strong{display:block;margin-top:4px;font-size:10px}.month-card span{display:block;margin-top:2px;font-size:7px;color:#64748b;font-weight:700}
+          .insight-bullets{display:grid;gap:4px;margin-top:8px}.insight-bullet{display:flex;gap:6px;align-items:flex-start}.insight-bullet>span{width:5px;height:5px;border-radius:50%;background:#f97316;margin-top:4px;flex:0 0 auto}.insight-bullet p{margin:0;color:#475569;font-size:7.5px;line-height:1.45;font-weight:700}
+          .mini-title{font-size:7px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:#94a3b8;margin:9px 0 5px}.product-list,.growth-list{display:grid;gap:3px}.product-row,.growth-row{display:grid;align-items:center;gap:5px;border-top:1px solid #f1f5f9;padding-top:4px;font-size:7.5px}.product-row{grid-template-columns:18px 1fr auto}.growth-row{grid-template-columns:1fr auto auto}.rank{display:flex;width:16px;height:16px;align-items:center;justify-content:center;border-radius:5px;background:#fff7ed;color:#ea580c;font-size:6px;font-weight:900}.product-name{font-weight:900;color:#0f172a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.growth-row>span:last-child{color:#64748b;font-weight:700}
           table{width:100%;border-collapse:collapse}th{font-size:7px;color:#94a3b8;text-transform:uppercase;letter-spacing:.1em;text-align:right;padding:8px;border-bottom:1px solid #e2e8f0}th:nth-child(1),th:nth-child(2){text-align:left}td{padding:9px 8px;border-bottom:1px solid #f1f5f9;text-align:right;font-size:9px;font-weight:700}td:first-child,td:nth-child(2){text-align:left}.store{font-weight:900}.footer{display:flex;justify-content:space-between;margin-top:16px;color:#94a3b8;font-size:7px}.orange-text{color:#f97316}
         </style>
       </head>
@@ -10208,76 +10642,30 @@ app.post('/api/executive-report/pdf', async (req, res) => {
           </div>
 
           <div class="kpis">
+            <div class="kpi"><label>Faturamento do mês</label><strong>${executiveMoney(kpis.faturamentoMes)}</strong></div>
+            <div class="kpi"><label>Tendência mês</label><strong>${executiveMoney(kpis.tendenciaMes)}</strong></div>
+            <div class="kpi"><label>Tendência ano</label><strong>${executiveMoney(kpis.tendenciaAno)}</strong></div>
             <div class="kpi">
-                <label>
-                  Faturamento do mês
-                </label>
-
-                <strong>
-                  ${executiveMoney(
-                    kpis.faturamentoMes
-                  )}
-                </strong>
-              </div>
-
-              <div class="kpi">
-                <label>
-                  Tendência mês
-                </label>
-
-                <strong>
-                  ${executiveMoney(
-                    kpis.tendenciaMes
-                  )}
-                </strong>
-              </div>
-
-              <div class="kpi">
-                <label>
-                  Tendência ano
-                </label>
-
-                <strong>
-                  ${executiveMoney(
-                    kpis.tendenciaAno
-                  )}
-                </strong>
-              </div>
-
-              <div class="kpi">
-                <label>
-                  Conversões
-                </label>
-
-                <strong
-                  style="
-                    font-size:12px;
-                    line-height:1.55
-                  "
-                >
-                  Acess.
-                  ${executivePct(
-                    kpis.conversaoAcessorios
-                  )}
-                  <br/>
-
-                  Pelíc.
-                  ${executivePct(
-                    kpis.conversaoPeliculas
-                  )}
-                  <br/>
-
-                  Seguro
-                  ${executivePct(
-                    kpis.seguroPct
-                  )}
-                </strong>
-              </div>
+              <label>Conversões</label>
+              <strong style="font-size:12px;line-height:1.55">
+                Acess. ${executivePct(kpis.conversaoAcessorios)}<br/>
+                Pelíc. ${executivePct(kpis.conversaoPeliculas)}<br/>
+                Seguro ${executivePct(kpis.seguroPct)}
+              </strong>
             </div>
+          </div>
 
           <div class="grid">
             <div class="section"><h2>Faturamento diário</h2><div class="chart">${trendBars || '<div class="muted">Sem dados suficientes.</div>'}</div></div>
-            <div class="section"><h2>Pontos de atenção</h2><div class="alerts">${radarCards || '<div class="muted">Nenhum ponto relevante.</div>'}</div></div>
+            <div class="section">
+              <h2>Últimos 3 meses • aparelhos</h2>
+              <div class="months">${monthCards}</div>
+              <div class="insight-bullets">${insightBullets || '<div class="muted">Sem informação comparável suficiente.</div>'}</div>
+              <div class="mini-title">Mais vendidos no período</div>
+              <div class="product-list">${topProductRows || '<div class="muted">Sem aparelhos identificados.</div>'}</div>
+              <div class="mini-title">Produtos em crescimento</div>
+              <div class="growth-list">${growthRows || '<div class="muted">Nenhum crescimento relevante entre os meses comparáveis.</div>'}</div>
+            </div>
           </div>
 
           <div class="section">
@@ -10294,7 +10682,11 @@ app.post('/api/executive-report/pdf', async (req, res) => {
     </html>`;
 
     const date = getBrazilTodayIso();
-    const scopeName = requestedScope === 'network' ? 'rede' : executiveNormalizeStoreName(payloadStores[0] || user.name || 'loja').toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    const scopeName = requestedScope === 'network'
+      ? 'rede'
+      : executiveNormalizeStoreName(payloadStores[0] || user.name || 'loja')
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, '-');
 
     try {
       const { chromium } = await import('playwright');
@@ -13306,11 +13698,86 @@ function pontoPedidoProductKey(value: any): string {
     .replace(/\bSMARTPHONE\b/g, ' ')
     .replace(/\bCELULAR\b/g, ' ')
     .replace(/\bAPARELHO\b/g, ' ')
+    // Normaliza nomes comerciais/ingleses de cores usados pela Samsung/Linx.
+    // Isso evita perder vendas quando o Sheets usa "PRETO/AZUL/CINZA" e
+    // a venda chega como "BLACK/NAVY/LIGHTGRAY/AWESOME ...".
+    .replace(/\bAWESOME\b/g, ' ')
+    .replace(/\bJET\s*BLACK\b/g, ' PRETO ')
+    .replace(/\bJETBLACK\b/g, ' PRETO ')
+    .replace(/\bLIGHT\s*GRAY\b/g, ' CINZA ')
+    .replace(/\bLIGHTGRAY\b/g, ' CINZA ')
+    .replace(/\bGRAPHITE\b/g, ' GRAFITE ')
+    .replace(/\bBLACK\b/g, ' PRETO ')
+    .replace(/\bWHITE\b/g, ' BRANCO ')
+    .replace(/\bGRAY\b/g, ' CINZA ')
+    .replace(/\bGREY\b/g, ' CINZA ')
+    .replace(/\bNAVY\b/g, ' AZUL ')
+    .replace(/\bICE\s*BLUE\b/g, ' AZUL ')
+    .replace(/\bICEBLUE\b/g, ' AZUL ')
+    .replace(/\bBLUE\b/g, ' AZUL ')
+    .replace(/\bMINT\b/g, ' VERDE ')
+    .replace(/\bGREEN\b/g, ' VERDE ')
+    .replace(/\bLAVENDER\b/g, ' LAVANDA ')
+    .replace(/\bPURPLE\b/g, ' VIOLETA ')
+    .replace(/\bVIOLET\b/g, ' VIOLETA ')
+    .replace(/\bSILVER\b/g, ' PRATA ')
+    .replace(/\bPINK\b/g, ' ROSA ')
+    .replace(/\bGOLD\b/g, ' DOURADO ')
+    .replace(/\bCREAM\b/g, ' CREME ')
+    .replace(/\bRED\b/g, ' VERMELHO ')
     .replace(/(\d+)\s*(GB|TB)\b/g, '$1$2')
     .replace(/\b(4|5)\s*G\b/g, '$1G')
     .replace(/[^A-Z0-9]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function pontoPedidoNetworkAgnosticKey(value: any): string {
+  return pontoPedidoProductKey(value)
+    .replace(/\b(?:4G|5G)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function pontoPedidoAccessoryLikeKey(value: any): boolean {
+  const key = pontoPedidoProductKey(value);
+  return /\b(?:CAPA|PELICULA|CARREGADOR|CABO|ADAPTADOR|SUPORTE|CASE|PROTETOR|CARTEIRA)\b/.test(key);
+}
+
+function pontoPedidoModelSignature(value: any): {
+  model: string;
+  storage: string;
+  network: string;
+} {
+  const key = pontoPedidoProductKey(value);
+  const tokens = key.split(' ').filter(Boolean);
+
+  const model =
+    tokens.find((token) =>
+      /^(?:A\d{2}|S\d{2}|M\d{2}|F\d{2}|X\d{3,4}|R\d{3,4})$/.test(token)
+    ) || '';
+
+  const storage =
+    tokens.find((token) => /^\d+(?:GB|TB)$/.test(token)) || '';
+
+  const network =
+    tokens.find((token) => /^(?:4G|5G)$/.test(token)) || '';
+
+  return { model, storage, network };
+}
+
+function pontoPedidoColorSpecificTokens(colorKey: string, baseKey: string): Set<string> {
+  const base = new Set(
+    pontoPedidoProductKey(baseKey)
+      .split(' ')
+      .filter(Boolean)
+  );
+
+  return new Set(
+    pontoPedidoProductKey(colorKey)
+      .split(' ')
+      .filter((token) => token && !base.has(token))
+  );
 }
 
 function pontoPedidoNumber(value: any): number {
@@ -13828,36 +14295,187 @@ function pontoPedidoMetricForModel<T extends { key: string }>(
   metrics: T[],
   colorKey: string,
   baseKey: string,
-  allowBaseFallback: boolean
+  allowBaseFallback: boolean,
+  allowNetworkFallback = false
 ): T | null {
   if (!colorKey && !baseKey) return null;
 
-  const exact = metrics.find((item) => item.key === colorKey);
+  const normalizedColor = pontoPedidoProductKey(colorKey);
+  const normalizedBase = pontoPedidoProductKey(baseKey);
+  const targetLooksAccessory = pontoPedidoAccessoryLikeKey(
+    normalizedColor || normalizedBase
+  );
+
+  const candidateAllowed = (itemKey: string) =>
+    targetLooksAccessory || !pontoPedidoAccessoryLikeKey(itemKey);
+
+  const exact = metrics.find(
+    (item) =>
+      candidateAllowed(item.key) &&
+      pontoPedidoProductKey(item.key) === normalizedColor
+  );
   if (exact) return exact;
 
-  if (colorKey) {
+  const colorTokens = pontoPedidoColorSpecificTokens(
+    normalizedColor,
+    normalizedBase
+  );
+
+  if (normalizedColor) {
     const candidates = metrics
-      .filter((item) =>
-        item.key.includes(colorKey) ||
-        (item.key.length >= 8 && colorKey.includes(item.key))
-      )
-      .sort((a, b) => b.key.length - a.key.length);
+      .map((item) => {
+        const itemKey = pontoPedidoProductKey(item.key);
+        if (!candidateAllowed(itemKey)) return null;
+
+        const isDirect =
+          itemKey.includes(normalizedColor) ||
+          (itemKey.length >= 8 && normalizedColor.includes(itemKey));
+
+        if (!isDirect) return null;
+
+        const itemTokens = new Set(itemKey.split(' ').filter(Boolean));
+        const colorOverlap =
+          colorTokens.size === 0 ||
+          Array.from(colorTokens).some((token) => itemTokens.has(token));
+
+        if (!colorOverlap && !allowBaseFallback) return null;
+
+        return {
+          item,
+          score:
+            (itemKey === normalizedColor ? 100000 : 0) +
+            (colorOverlap ? 10000 : 0) +
+            itemKey.length,
+        };
+      })
+      .filter(Boolean)
+      .sort((a: any, b: any) => b.score - a.score);
+
+    if (candidates.length) return (candidates[0] as any).item ?? null;
+  }
+
+  if (allowBaseFallback && normalizedBase) {
+    const exactBase = metrics.find(
+      (item) =>
+        candidateAllowed(item.key) &&
+        pontoPedidoProductKey(item.key) === normalizedBase
+    );
+    if (exactBase) return exactBase;
+
+    const candidates = metrics
+      .filter((item) => {
+        const itemKey = pontoPedidoProductKey(item.key);
+        return (
+          candidateAllowed(itemKey) &&
+          (
+            itemKey.includes(normalizedBase) ||
+            (itemKey.length >= 8 && normalizedBase.includes(itemKey))
+          )
+        );
+      })
+      .sort(
+        (a, b) =>
+          pontoPedidoProductKey(b.key).length -
+          pontoPedidoProductKey(a.key).length
+      );
 
     if (candidates.length) return candidates[0] ?? null;
   }
 
-  if (allowBaseFallback && baseKey) {
-    const exactBase = metrics.find((item) => item.key === baseKey);
-    if (exactBase) return exactBase;
+  if (allowNetworkFallback) {
+    const colorNoNetwork = pontoPedidoNetworkAgnosticKey(normalizedColor);
+    const baseNoNetwork = pontoPedidoNetworkAgnosticKey(normalizedBase);
 
     const candidates = metrics
-      .filter((item) =>
-        item.key.includes(baseKey) ||
-        (item.key.length >= 8 && baseKey.includes(item.key))
-      )
-      .sort((a, b) => b.key.length - a.key.length);
+      .map((item) => {
+        const itemKey = pontoPedidoProductKey(item.key);
+        if (!candidateAllowed(itemKey)) return null;
 
-    if (candidates.length) return candidates[0] ?? null;
+        const itemNoNetwork = pontoPedidoNetworkAgnosticKey(itemKey);
+        const direct =
+          itemNoNetwork === colorNoNetwork ||
+          itemNoNetwork.includes(colorNoNetwork) ||
+          colorNoNetwork.includes(itemNoNetwork);
+
+        const base =
+          itemNoNetwork === baseNoNetwork ||
+          itemNoNetwork.includes(baseNoNetwork) ||
+          baseNoNetwork.includes(itemNoNetwork);
+
+        if (!direct && !(allowBaseFallback && base)) return null;
+
+        const itemTokens = new Set(itemNoNetwork.split(' ').filter(Boolean));
+        const colorOverlap =
+          colorTokens.size === 0 ||
+          Array.from(colorTokens).some((token) => itemTokens.has(token));
+
+        if (!colorOverlap && !allowBaseFallback) return null;
+
+        return {
+          item,
+          score:
+            (direct ? 10000 : 5000) +
+            (colorOverlap ? 1000 : 0) +
+            itemNoNetwork.length,
+        };
+      })
+      .filter(Boolean)
+      .sort((a: any, b: any) => b.score - a.score);
+
+    if (candidates.length) return (candidates[0] as any).item ?? null;
+  }
+
+  const targetSignature = pontoPedidoModelSignature(normalizedBase || normalizedColor);
+  if (targetSignature.model && targetSignature.storage) {
+    const candidates = metrics
+      .map((item) => {
+        const itemKey = pontoPedidoProductKey(item.key);
+        if (!candidateAllowed(itemKey)) return null;
+
+        const signature = pontoPedidoModelSignature(itemKey);
+        if (
+          signature.model !== targetSignature.model ||
+          signature.storage !== targetSignature.storage
+        ) {
+          return null;
+        }
+
+        if (
+          signature.network &&
+          targetSignature.network &&
+          signature.network !== targetSignature.network
+        ) {
+          return null;
+        }
+
+        if (
+          !allowNetworkFallback &&
+          signature.network !== targetSignature.network
+        ) {
+          return null;
+        }
+
+        const itemTokens = new Set(itemKey.split(' ').filter(Boolean));
+        const colorOverlap =
+          colorTokens.size === 0 ||
+          Array.from(colorTokens).some((token) => itemTokens.has(token));
+
+        if (!colorOverlap && !allowBaseFallback) return null;
+
+        const overlap = normalizedColor
+          .split(' ')
+          .filter((token) => itemTokens.has(token))
+          .length;
+
+        return {
+          item,
+          score: overlap * 100 + itemKey.length,
+        };
+      })
+      .filter(Boolean)
+      .sort((a: any, b: any) => b.score - a.score);
+
+    if (candidates.length) return (candidates[0] as any).item ?? null;
   }
 
   return null;
@@ -14149,27 +14767,44 @@ async function pontoPedidoBuildSheetData(params: {
   const openOrders = pontoPedidoLoadOpenOrders(workbook);
 
   const baseCounts = new Map<string, number>();
+  const networkVariants = new Map<string, Set<string>>();
+
   sheetRows.forEach((row) => {
     const baseKey = pontoPedidoProductKey(row.modelo);
-    if (baseKey) baseCounts.set(baseKey, (baseCounts.get(baseKey) || 0) + 1);
+    if (!baseKey) return;
+
+    baseCounts.set(baseKey, (baseCounts.get(baseKey) || 0) + 1);
+
+    const agnosticKey = pontoPedidoNetworkAgnosticKey(baseKey);
+    const set = networkVariants.get(agnosticKey) || new Set<string>();
+    set.add(baseKey);
+    networkVariants.set(agnosticKey, set);
   });
 
   const result = sheetRows.map((row) => {
     const colorKey = pontoPedidoProductKey(row.modeloComCor || row.modelo);
     const baseKey = pontoPedidoProductKey(row.modelo);
-    const allowBaseFallback = Boolean(baseKey) && (baseCounts.get(baseKey) || 0) === 1;
+    const allowBaseFallback =
+      Boolean(baseKey) && (baseCounts.get(baseKey) || 0) === 1;
+
+    const agnosticKey = pontoPedidoNetworkAgnosticKey(baseKey);
+    const allowNetworkFallback =
+      Boolean(agnosticKey) &&
+      (networkVariants.get(agnosticKey)?.size || 0) === 1;
 
     const sales = pontoPedidoMetricForModel(
       salesMetrics,
       colorKey,
       baseKey,
-      allowBaseFallback
+      allowBaseFallback,
+      allowNetworkFallback
     );
     const stock = pontoPedidoMetricForModel(
       stockMetrics,
       colorKey,
       baseKey,
-      allowBaseFallback
+      allowBaseFallback,
+      allowNetworkFallback
     );
     const orders = pontoPedidoOrdersForModel(
       openOrders,
@@ -14263,10 +14898,25 @@ async function pontoPedidoBuildSheetData(params: {
       statusNorm.includes('NAO HA COMO PEDIR') ||
       statusNorm.includes('OBSOLETO');
 
+    const sugestaoEstoqueDobrado = bloqueiaNovoPedido
+      ? 0
+      : Math.max(0, Math.ceil(vendas60 * 2));
+
     const sugestaoNovoPedido = bloqueiaNovoPedido
       ? 0
       : Math.max(0, Math.ceil(vendas60 - estoque - backlogTotal));
-    const sobra = Math.max(0, estoque + backlogTotal - vendas60);
+
+    // SOBRA = estoque físico acima de quatro semanas de cobertura.
+    // Não mistura backlog com sobra: backlog é entrada futura, sobra é excesso
+    // já disponível no estoque atual.
+    const estoqueAlvo4Semanas = Math.max(0, Math.ceil(vmd60 * 28));
+    const isLancamento = statusNorm.includes('LANCAMENTO');
+    const sobra =
+      vendas60 > 0
+        ? Math.max(0, estoque - estoqueAlvo4Semanas)
+        : isLancamento
+          ? 0
+          : Math.max(0, estoque);
 
     const coberturaAtualDias = vmdPonderada > 0 ? estoque / vmdPonderada : null;
     const coberturaAtualData = coberturaAtualDias === null
@@ -14312,6 +14962,8 @@ async function pontoPedidoBuildSheetData(params: {
       previsao45: Math.round(proj45 * 10) / 10,
       previsao60: Math.round(proj60 * 10) / 10,
       incoming60: Math.round(incoming60 * 100) / 100,
+      estoqueAlvo4Semanas,
+      sugestaoEstoqueDobrado,
       sugestaoFaturarBacklog,
       sugestaoNovoPedido,
       // Mantém compatibilidade com a IA e telas antigas.
@@ -14610,112 +15262,370 @@ app.post('/api/ponto-pedido/pedido-controladoria', async (req, res) => {
   }
 });
 
-    function pontoPedidoDeterministicPurchaseAnalysis(
+    function pontoPedidoStatusBlocksPurchase(status: any): boolean {
+  const normalized = pontoPedidoNormalizeHeader(status || '');
+  return (
+    normalized.includes('NAO HA COMO PEDIR') ||
+    normalized.includes('OBSOLETO')
+  );
+}
+
+type PontoPedidoTransferSuggestion = {
+  modelo: string;
+  origem: string;
+  destino: string;
+  quantidade: number;
+  sobraOrigemAntes: number;
+  necessidadeDestinoAntes: number;
+};
+
+function pontoPedidoBuildTransferSuggestions(
+  rows: any[]
+): PontoPedidoTransferSuggestion[] {
+  const groups = new Map<string, any[]>();
+
+  (rows || []).forEach((row) => {
+    if (pontoPedidoStatusBlocksPurchase(row?.status)) return;
+
+    const modelo = String(
+      row?.modeloComCor ||
+      row?.modelo ||
+      ''
+    ).trim();
+
+    const key = pontoPedidoProductKey(modelo);
+    if (!key) return;
+
+    const list = groups.get(key) || [];
+    list.push(row);
+    groups.set(key, list);
+  });
+
+  const transfers: PontoPedidoTransferSuggestion[] = [];
+
+  groups.forEach((groupRows) => {
+    const donors = groupRows
+      .map((row) => ({
+        row,
+        available: Math.max(0, Math.floor(pontoPedidoNumber(row?.sobra))),
+      }))
+      .filter((item) => item.available > 0)
+      .sort((a, b) => b.available - a.available);
+
+    const receivers = groupRows
+      .map((row) => ({
+        row,
+        need: Math.max(
+          0,
+          Math.ceil(
+            pontoPedidoNumber(
+              row?.sugestaoNovoPedido ?? row?.sugestao
+            )
+          )
+        ),
+      }))
+      .filter((item) => item.need > 0)
+      .sort((a, b) => b.need - a.need);
+
+    donors.forEach((donor) => {
+      for (const receiver of receivers) {
+        if (donor.available <= 0) break;
+        if (receiver.need <= 0) continue;
+
+        const origem = String(
+          donor.row?.stateLabel ||
+          donor.row?.state ||
+          donor.row?.aba ||
+          ''
+        ).trim();
+
+        const destino = String(
+          receiver.row?.stateLabel ||
+          receiver.row?.state ||
+          receiver.row?.aba ||
+          ''
+        ).trim();
+
+        if (!origem || !destino || origem === destino) continue;
+
+        const quantidade = Math.min(
+          donor.available,
+          receiver.need
+        );
+
+        if (quantidade <= 0) continue;
+
+        transfers.push({
+          modelo: String(
+            donor.row?.modeloComCor ||
+            donor.row?.modelo ||
+            receiver.row?.modeloComCor ||
+            receiver.row?.modelo ||
+            ''
+          ),
+          origem,
+          destino,
+          quantidade,
+          sobraOrigemAntes: Math.max(
+            0,
+            Math.floor(pontoPedidoNumber(donor.row?.sobra))
+          ),
+          necessidadeDestinoAntes: Math.max(
+            0,
+            Math.ceil(
+              pontoPedidoNumber(
+                receiver.row?.sugestaoNovoPedido ??
+                receiver.row?.sugestao
+              )
+            )
+          ),
+        });
+
+        donor.available -= quantidade;
+        receiver.need -= quantidade;
+      }
+    });
+  });
+
+  return transfers
+    .sort((a, b) => b.quantidade - a.quantidade)
+    .slice(0, 120);
+}
+
+function pontoPedidoDeterministicPurchaseAnalysis(
   rows: any[],
-  aba: string
+  aba: string,
+  transfers: PontoPedidoTransferSuggestion[] = [],
+  escopo = 'ABA'
 ): string {
   const safeRows = Array.isArray(rows) ? rows : [];
+  const eligibleRows = safeRows.filter(
+    (row) => !pontoPedidoStatusBlocksPurchase(row?.status)
+  );
 
-  const critical = safeRows
-    .filter(
-      (row) =>
-        pontoPedidoNumber(row?.estoque) <= 0 &&
-        pontoPedidoNumber(row?.vendas60) > 0
-    )
-    .sort(
-      (a, b) =>
-        pontoPedidoNumber(b?.vendas60) -
-        pontoPedidoNumber(a?.vendas60)
+  const blockedRows = safeRows.filter(
+    (row) => pontoPedidoStatusBlocksPurchase(row?.status)
+  );
+
+  const transferIn = new Map<string, number>();
+  transfers.forEach((item) => {
+    const key =
+      `${pontoPedidoProductKey(item.modelo)}::` +
+      `${pontoPedidoNormalizeHeader(item.destino)}`;
+
+    transferIn.set(
+      key,
+      (transferIn.get(key) || 0) + item.quantidade
+    );
+  });
+
+  const transferInForRow = (row: any) => {
+    const modelKey = pontoPedidoProductKey(
+      row?.modeloComCor || row?.modelo
+    );
+    const stateKey = pontoPedidoNormalizeHeader(
+      row?.stateLabel || row?.state || row?.aba
     );
 
-  const under = safeRows
+    return transferIn.get(`${modelKey}::${stateKey}`) || 0;
+  };
+
+  const backlog = eligibleRows
     .filter(
       (row) =>
-        pontoPedidoNumber(row?.sugestao) > 0 &&
-        pontoPedidoNumber(row?.pedidoRufino) <
-          pontoPedidoNumber(row?.sugestao)
+        pontoPedidoNumber(row?.sugestaoFaturarBacklog) > 0
     )
     .sort(
       (a, b) =>
-        (
-          pontoPedidoNumber(b?.sugestao) -
-          pontoPedidoNumber(b?.pedidoRufino)
+        pontoPedidoNumber(b?.sugestaoFaturarBacklog) -
+        pontoPedidoNumber(a?.sugestaoFaturarBacklog)
+    );
+
+  const newOrders = eligibleRows
+    .map((row) => {
+      const original = Math.max(
+        0,
+        Math.ceil(
+          pontoPedidoNumber(
+            row?.sugestaoNovoPedido ?? row?.sugestao
+          )
+        )
+      );
+
+      const transferencia = transferInForRow(row);
+      const liquido = Math.max(0, original - transferencia);
+
+      return {
+        ...row,
+        transferenciaSugerida: transferencia,
+        sugestaoLiquidaPosTransferencia: liquido,
+      };
+    })
+    .filter(
+      (row) =>
+        pontoPedidoNumber(
+          row?.sugestaoLiquidaPosTransferencia
+        ) > 0
+    )
+    .sort(
+      (a, b) =>
+        pontoPedidoNumber(
+          b?.sugestaoLiquidaPosTransferencia
         ) -
-        (
-          pontoPedidoNumber(a?.sugestao) -
-          pontoPedidoNumber(a?.pedidoRufino)
+        pontoPedidoNumber(
+          a?.sugestaoLiquidaPosTransferencia
         )
     );
 
-  const over = safeRows
+  const surplus = eligibleRows
+    .filter((row) => pontoPedidoNumber(row?.sobra) > 0)
+    .sort(
+      (a, b) =>
+        pontoPedidoNumber(b?.sobra) -
+        pontoPedidoNumber(a?.sobra)
+    );
+
+  const critical = eligibleRows
     .filter(
       (row) =>
-        pontoPedidoNumber(row?.pedidoRufino) >
-        pontoPedidoNumber(row?.sugestao)
+        pontoPedidoNumber(row?.vendas60) > 0 &&
+        (
+          pontoPedidoNumber(row?.estoque) <= 0 ||
+          pontoPedidoNumber(row?.saldo60) < 0
+        )
     )
     .sort(
       (a, b) =>
-        (
-          pontoPedidoNumber(b?.pedidoRufino) -
-          pontoPedidoNumber(b?.sugestao)
-        ) -
-        (
-          pontoPedidoNumber(a?.pedidoRufino) -
-          pontoPedidoNumber(a?.sugestao)
-        )
+        pontoPedidoNumber(a?.saldo60) -
+        pontoPedidoNumber(b?.saldo60)
     );
 
-  const totalSuggestion = safeRows.reduce(
-    (sum, row) => sum + pontoPedidoNumber(row?.sugestao),
-    0
-  );
+  const stateMap = new Map<string, {
+    vendas60: number;
+    estoque: number;
+    backlog: number;
+    sobra: number;
+    novos: number;
+  }>();
 
-  const totalOrder = safeRows.reduce(
-    (sum, row) => sum + pontoPedidoNumber(row?.pedidoRufino),
-    0
-  );
+  safeRows.forEach((row) => {
+    const estado = String(
+      row?.stateLabel ||
+      row?.state ||
+      row?.aba ||
+      'SEM ESTADO'
+    );
+
+    const current = stateMap.get(estado) || {
+      vendas60: 0,
+      estoque: 0,
+      backlog: 0,
+      sobra: 0,
+      novos: 0,
+    };
+
+    current.vendas60 += pontoPedidoNumber(row?.vendas60);
+    current.estoque += pontoPedidoNumber(row?.estoque);
+    current.backlog += pontoPedidoNumber(row?.backlogTotal);
+    current.sobra += pontoPedidoNumber(row?.sobra);
+
+    if (!pontoPedidoStatusBlocksPurchase(row?.status)) {
+      current.novos += pontoPedidoNumber(
+        row?.sugestaoNovoPedido ?? row?.sugestao
+      );
+    }
+
+    stateMap.set(estado, current);
+  });
 
   const top = (
     items: any[],
-    mapper: (row: any) => string
+    mapper: (row: any) => string,
+    limit = 10
   ) =>
     items
-      .slice(0, 6)
+      .slice(0, limit)
       .map((row, index) => `${index + 1}. ${mapper(row)}`)
       .join('\n');
 
+  const stateLines = Array.from(stateMap.entries())
+    .map(
+      ([estado, values]) =>
+        `${estado}: V60 ${Math.round(values.vendas60)} | ` +
+        `estoque ${Math.round(values.estoque)} | ` +
+        `backlog ${Math.round(values.backlog)} | ` +
+        `sobra >4 semanas ${Math.round(values.sobra)} | ` +
+        `novos pedidos brutos ${Math.round(values.novos)}`
+    )
+    .join('\n');
+
+  const transferLines = transfers.length
+    ? top(
+        transfers,
+        (item) =>
+          `${item.modelo}: ${item.origem} → ${item.destino} | ` +
+          `${item.quantidade} un.`,
+        15
+      )
+    : 'Nenhuma transferência objetiva encontrada entre as sobras e necessidades atuais.';
+
   return [
-    `Resumo de compra — ${aba}`,
-    `Sugestão total: ${Math.round(totalSuggestion)} un. | ` +
-      `Pedido Rufino: ${Math.round(totalOrder)} un.`,
+    `Resumo de compra — ${escopo === 'REDE' ? 'REDE COMPLETA' : aba}`,
+    '',
+    'Resumo por estado:',
+    stateLines || 'Sem estados disponíveis.',
+    '',
+    `Modelos bloqueados/obsoletos: ${blockedRows.length}. ` +
+      'Eles não entram em recomendações de compra, faturamento sugerido ou transferência.',
+    '',
+    'Transferências sugeridas antes de comprar:',
+    transferLines,
+    '',
+    backlog.length
+      ? `Faturamento de backlog prioritário:\n${top(
+          backlog,
+          (row) =>
+            `${row.modeloComCor || row.modelo} — ` +
+            `${row.stateLabel || row.state || row.aba}: ` +
+            `${pontoPedidoNumber(row.sugestaoFaturarBacklog)} un.`
+        )}`
+      : 'Sem necessidade relevante de faturamento de backlog entre os itens elegíveis.',
+    '',
+    newOrders.length
+      ? `Novos pedidos após transferências:\n${top(
+          newOrders,
+          (row) =>
+            `${row.modeloComCor || row.modelo} — ` +
+            `${row.stateLabel || row.state || row.aba}: ` +
+            `${pontoPedidoNumber(row.sugestaoLiquidaPosTransferencia)} un. ` +
+            `(bruto ${pontoPedidoNumber(row.sugestaoNovoPedido ?? row.sugestao)}, ` +
+            `transferência ${pontoPedidoNumber(row.transferenciaSugerida)}).`
+        )}`
+      : 'Sem novos pedidos líquidos após considerar transferências.',
+    '',
+    surplus.length
+      ? `Maiores sobras acima de 4 semanas de cobertura:\n${top(
+          surplus,
+          (row) =>
+            `${row.modeloComCor || row.modelo} — ` +
+            `${row.stateLabel || row.state || row.aba}: ` +
+            `${pontoPedidoNumber(row.sobra)} un. de sobra, ` +
+            `estoque ${pontoPedidoNumber(row.estoque)}, ` +
+            `V60 ${pontoPedidoNumber(row.vendas60)}.`
+        )}`
+      : 'Sem sobras relevantes acima de quatro semanas.',
     '',
     critical.length
-      ? `Risco de ruptura:\n${top(
+      ? `Riscos de ruptura:\n${top(
           critical,
           (row) =>
-            `${row.modelo}: estoque ${pontoPedidoNumber(row.estoque)}, ` +
-            `vendas 60d ${pontoPedidoNumber(row.vendas60)}, ` +
-            `sugestão ${pontoPedidoNumber(row.sugestao)}.`
+            `${row.modeloComCor || row.modelo} — ` +
+            `${row.stateLabel || row.state || row.aba}: ` +
+            `estoque ${pontoPedidoNumber(row.estoque)}, ` +
+            `V60 ${pontoPedidoNumber(row.vendas60)}, ` +
+            `saldo60 ${pontoPedidoNumber(row.saldo60)}.`
         )}`
-      : 'Sem ruptura evidente entre os dados analisados.',
-    '',
-    under.length
-      ? `Abaixo da sugestão:\n${top(
-          under,
-          (row) =>
-            `${row.modelo}: Rufino ${pontoPedidoNumber(row.pedidoRufino)} ` +
-            `vs sugestão ${pontoPedidoNumber(row.sugestao)}.`
-        )}`
-      : 'Nenhum pedido abaixo da sugestão.',
-    '',
-    over.length
-      ? `Possível excesso:\n${top(
-          over,
-          (row) =>
-            `${row.modelo}: Rufino ${pontoPedidoNumber(row.pedidoRufino)} ` +
-            `vs sugestão ${pontoPedidoNumber(row.sugestao)}.`
-        )}`
-      : 'Nenhum pedido acima da sugestão.',
+      : 'Sem ruptura evidente nos itens elegíveis analisados.',
   ].join('\n');
 }
 
@@ -14723,157 +15633,266 @@ app.post('/api/ponto-pedido/analise-ia', async (req, res) => {
   try {
     const aba = String(req.body?.aba || '').trim();
     const pergunta = String(req.body?.pergunta || '').trim();
+    const escopo = String(req.body?.escopo || 'REDE')
+      .trim()
+      .toUpperCase();
+
+    const category = pontoPedidoNormalizeHeader(
+      req.body?.categoria || 'APARELHOS'
+    );
 
     const inputRows = Array.isArray(req.body?.rows)
       ? req.body.rows
       : [];
 
-    if (!aba || !pontoPedidoIsPlanningSheet(aba)) {
-      return res.status(400).json({
-        ok: false,
-        error: 'Aba de Ponto de Pedido inválida.',
-      });
+    let analysisRows: any[] = [];
+    let statesAnalyzed: string[] = [];
+
+    if (escopo === 'REDE') {
+      const cache = await pontoPedidoLoadWorkbook(false);
+      const workbook = cache.workbook;
+      const today = pontoPedidoBrazilTodayIso();
+
+      const planningTabs = workbook.SheetNames
+        .filter(pontoPedidoIsPlanningSheet)
+        .map(pontoPedidoPlanningTabMeta)
+        .filter(
+          (tab) =>
+            pontoPedidoNormalizeHeader(tab.category) === category
+        );
+
+      if (!planningTabs.length) {
+        return res.status(404).json({
+          ok: false,
+          error:
+            'Nenhuma aba da categoria selecionada foi encontrada para a análise da rede.',
+        });
+      }
+
+      const builtTabs = await Promise.all(
+        planningTabs.map(async (tab) => {
+          const built = await pontoPedidoBuildSheetData({
+            workbook,
+            sheetName: tab.id,
+            today,
+            forceRefresh: false,
+            includeManual: true,
+          });
+
+          return {
+            tab,
+            rows: built.rows,
+          };
+        })
+      );
+
+      analysisRows = builtTabs.flatMap(({ tab, rows }) =>
+        rows.map((row: any) => ({
+          ...row,
+          aba: tab.id,
+          state: tab.state,
+          stateLabel: tab.stateLabel || tab.state,
+          category: tab.category,
+        }))
+      );
+
+      statesAnalyzed = Array.from(
+        new Set(
+          planningTabs.map(
+            (tab) => tab.stateLabel || tab.state || tab.label
+          )
+        )
+      );
+    } else {
+      if (!aba || !pontoPedidoIsPlanningSheet(aba)) {
+        return res.status(400).json({
+          ok: false,
+          error: 'Aba de Ponto de Pedido inválida.',
+        });
+      }
+
+      analysisRows = inputRows.map((row: any) => ({
+        ...row,
+        aba,
+      }));
+
+      statesAnalyzed = [
+        String(
+          req.body?.stateLabel ||
+          req.body?.state ||
+          aba
+        ),
+      ];
     }
 
-    if (!inputRows.length) {
+    if (!analysisRows.length) {
       return res.status(400).json({
         ok: false,
         error: 'Não há dados de compra para analisar.',
       });
     }
 
-    const relevantRows = [...inputRows]
-      .map((row: any) => ({
-        modelo: String(row?.modelo || '').slice(0, 120),
-
-        status: String(row?.status || '').slice(0, 80),
-
-        pedidoFaturado:
-          pontoPedidoNumber(row?.pedidoFaturado),
-
-        sugestaoEstoqueDobrado:
-          pontoPedidoNumber(
-            row?.sugestaoEstoqueDobrado
-          ),
-
-        vendas15:
-          pontoPedidoNumber(row?.vendas15),
-
-        vendas30:
-          pontoPedidoNumber(row?.vendas30),
-
-        vendas45:
-          pontoPedidoNumber(row?.vendas45),
-
-        vendas60:
-          pontoPedidoNumber(row?.vendas60),
-
-        estoque:
-          pontoPedidoNumber(row?.estoque),
-
-        pendente:
-          pontoPedidoNumber(row?.pendente),
-
-        backlogTotal:
-          pontoPedidoNumber(row?.backlogTotal),
-
-        semanas:
-          row?.semanas &&
-          typeof row.semanas === 'object'
+    const normalizedRows = analysisRows.map((row: any) => ({
+      modelo: String(row?.modelo || row?.modeloComCor || '').slice(0, 140),
+      modeloComCor: String(row?.modeloComCor || row?.modelo || '').slice(0, 140),
+      aba: String(row?.aba || '').slice(0, 100),
+      state: String(row?.state || '').slice(0, 40),
+      stateLabel: String(row?.stateLabel || row?.state || '').slice(0, 80),
+      status: String(row?.status || '').slice(0, 80),
+      pedidoFaturado: pontoPedidoNumber(row?.pedidoFaturado),
+      sugestaoEstoqueDobrado: pontoPedidoNumber(row?.sugestaoEstoqueDobrado),
+      vendas15: pontoPedidoNumber(row?.vendas15),
+      vendas30: pontoPedidoNumber(row?.vendas30),
+      vendas45: pontoPedidoNumber(row?.vendas45),
+      vendas60: pontoPedidoNumber(row?.vendas60),
+      estoque: pontoPedidoNumber(row?.estoque),
+      pendente: pontoPedidoNumber(row?.pendente),
+      backlogTotal: pontoPedidoNumber(row?.backlogTotal),
+      semanas:
+        row?.weeks && typeof row.weeks === 'object'
+          ? row.weeks
+          : row?.semanas && typeof row.semanas === 'object'
             ? row.semanas
             : {},
+      vmd: pontoPedidoNumber(
+        row?.vendasMediaDia ?? row?.vmd
+      ),
+      coberturaDias:
+        row?.coberturaAtualDias === null ||
+        row?.coberturaDias === null
+          ? null
+          : pontoPedidoNumber(
+              row?.coberturaAtualDias ?? row?.coberturaDias
+            ),
+      saldo15: pontoPedidoNumber(
+        row?.previsao15 ?? row?.saldo15
+      ),
+      saldo30: pontoPedidoNumber(
+        row?.previsao30 ?? row?.saldo30
+      ),
+      saldo45: pontoPedidoNumber(
+        row?.previsao45 ?? row?.saldo45
+      ),
+      saldo60: pontoPedidoNumber(
+        row?.previsao60 ?? row?.saldo60
+      ),
+      sugestaoFaturarBacklog: pontoPedidoNumber(
+        row?.sugestaoFaturarBacklog
+      ),
+      sugestaoNovoPedido: pontoPedidoNumber(
+        row?.sugestaoNovoPedido ?? row?.sugestao
+      ),
+      sugestao: pontoPedidoNumber(
+        row?.sugestaoNovoPedido ?? row?.sugestao
+      ),
+      pedidoControladoria: pontoPedidoNumber(
+        row?.pedidoControladoria
+      ),
+      pedidoRufino: pontoPedidoNumber(row?.pedidoRufino),
+      sobra: pontoPedidoNumber(row?.sobra),
+      estoqueAlvo4Semanas: pontoPedidoNumber(
+        row?.estoqueAlvo4Semanas
+      ),
+    }));
 
-        vmd:
-          pontoPedidoNumber(row?.vmd),
-
-        coberturaDias:
-          row?.coberturaDias === null
-            ? null
-            : pontoPedidoNumber(
-                row?.coberturaDias
-              ),
-
-        saldo15:
-          pontoPedidoNumber(row?.saldo15),
-
-        saldo30:
-          pontoPedidoNumber(row?.saldo30),
-
-        saldo45:
-          pontoPedidoNumber(row?.saldo45),
-
-        saldo60:
-          pontoPedidoNumber(row?.saldo60),
-
-        sugestaoFaturarBacklog:
-          pontoPedidoNumber(
-            row?.sugestaoFaturarBacklog
-          ),
-
-        sugestao:
-          pontoPedidoNumber(row?.sugestao),
-
-        pedidoControladoria:
-          pontoPedidoNumber(
-            row?.pedidoControladoria
-          ),
-
-        pedidoRufino:
-          pontoPedidoNumber(row?.pedidoRufino),
-
-        sobra:
-          pontoPedidoNumber(row?.sobra),
-      }))
-      .sort((a: any, b: any) => {
-        const scoreA =
-          (
-            a.estoque <= 0 &&
-            a.vendas60 > 0
-              ? 100000
-              : 0
-          ) +
-          Math.max(
-            0,
-            a.sugestao - a.pedidoRufino
-          ) *
-            100 +
-          Math.max(
-            0,
-            a.sugestaoFaturarBacklog
-          ) *
-            60 +
-          Math.max(0, -a.saldo60) * 10 +
-          a.vendas60;
-
-        const scoreB =
-          (
-            b.estoque <= 0 &&
-            b.vendas60 > 0
-              ? 100000
-              : 0
-          ) +
-          Math.max(
-            0,
-            b.sugestao - b.pedidoRufino
-          ) *
-            100 +
-          Math.max(
-            0,
-            b.sugestaoFaturarBacklog
-          ) *
-            60 +
-          Math.max(0, -b.saldo60) * 10 +
-          b.vendas60;
-
-        return scoreB - scoreA;
-      })
-      .slice(0, 180);
+    const transfers =
+      escopo === 'REDE'
+        ? pontoPedidoBuildTransferSuggestions(normalizedRows)
+        : [];
 
     const deterministic =
       pontoPedidoDeterministicPurchaseAnalysis(
-        relevantRows,
-        aba
+        normalizedRows,
+        aba || 'REDE',
+        transfers,
+        escopo
       );
+
+    const stateSummary = Array.from(
+      normalizedRows.reduce((map, row) => {
+        const key = row.stateLabel || row.state || row.aba || 'SEM ESTADO';
+        const current = map.get(key) || {
+          estado: key,
+          vendas60: 0,
+          estoque: 0,
+          backlog: 0,
+          sobra: 0,
+          novosPedidos: 0,
+          faturarBacklog: 0,
+        };
+
+        current.vendas60 += row.vendas60;
+        current.estoque += row.estoque;
+        current.backlog += row.backlogTotal;
+        current.sobra += row.sobra;
+
+        if (!pontoPedidoStatusBlocksPurchase(row.status)) {
+          current.novosPedidos += row.sugestaoNovoPedido;
+          current.faturarBacklog += row.sugestaoFaturarBacklog;
+        }
+
+        map.set(key, current);
+        return map;
+      }, new Map<string, any>()).values()
+    );
+
+    const transferInMap = new Map<string, number>();
+    transfers.forEach((item) => {
+      const key =
+        `${pontoPedidoProductKey(item.modelo)}::` +
+        `${pontoPedidoNormalizeHeader(item.destino)}`;
+      transferInMap.set(
+        key,
+        (transferInMap.get(key) || 0) + item.quantidade
+      );
+    });
+
+    const relevantRows = normalizedRows
+      .map((row) => {
+        const transferKey =
+          `${pontoPedidoProductKey(row.modeloComCor || row.modelo)}::` +
+          `${pontoPedidoNormalizeHeader(row.stateLabel || row.state || row.aba)}`;
+
+        const transferenciaEntrada =
+          transferInMap.get(transferKey) || 0;
+
+        return {
+          ...row,
+          bloqueadoParaCompra:
+            pontoPedidoStatusBlocksPurchase(row.status),
+          transferenciaEntrada,
+          novoPedidoLiquidoPosTransferencia:
+            pontoPedidoStatusBlocksPurchase(row.status)
+              ? 0
+              : Math.max(
+                  0,
+                  row.sugestaoNovoPedido - transferenciaEntrada
+                ),
+        };
+      })
+      .filter(
+        (row) =>
+          row.vendas60 > 0 ||
+          row.estoque > 0 ||
+          row.backlogTotal > 0 ||
+          row.sobra > 0 ||
+          row.sugestaoFaturarBacklog > 0 ||
+          row.sugestaoNovoPedido > 0 ||
+          row.pedidoControladoria > 0 ||
+          row.pedidoRufino > 0
+      )
+      .sort((a: any, b: any) => {
+        const score = (row: any) =>
+          (row.bloqueadoParaCompra ? -100000 : 0) +
+          Math.max(0, row.novoPedidoLiquidoPosTransferencia) * 200 +
+          Math.max(0, row.sugestaoFaturarBacklog) * 100 +
+          Math.max(0, -row.saldo60) * 30 +
+          Math.max(0, row.sobra) * 20 +
+          row.vendas60;
+
+        return score(b) - score(a);
+      })
+      .slice(0, 350);
 
     const apiKey = String(
       process.env.ANTHROPIC_API_KEY || ''
@@ -14888,110 +15907,77 @@ app.post('/api/ponto-pedido/analise-ia', async (req, res) => {
         ok: true,
         answer: deterministic,
         source: 'deterministic',
+        context: {
+          escopo,
+          statesAnalyzed,
+          stateSummary,
+          transferencias: transfers,
+        },
       });
     }
 
     const prompt = `
-Você é a IA especialista em planejamento de compras
-e Ponto de Pedido do TeleFluxo.
+Você é o planejador sênior de compras e redistribuição de estoque do TeleFluxo.
 
-Analise SOMENTE os dados fornecidos.
-Não invente vendas, estoque, backlog,
-datas, status ou quantidades.
+ESCOPO:
+${escopo === 'REDE'
+  ? 'REDE COMPLETA. Analise TODOS os estados fornecidos em conjunto.'
+  : `ABA ${aba}`}
 
-OBJETIVO PRINCIPAL
+OBJETIVO:
+Montar um ponto de pedido realmente operacional, reduzindo ruptura, excesso e compra desnecessária.
+Antes de comprar, procure oportunidades de TRANSFERÊNCIA entre estados.
 
-Montar uma recomendação de compra prática e precisa,
-evitando ruptura e excesso por modelo/cor.
+REGRAS INEGOCIÁVEIS:
+1. NUNCA recomende compra, faturamento sugerido ou transferência de produto com status "NÃO HÁ COMO PEDIR".
+2. NUNCA recomende compra, faturamento sugerido ou transferência de produto com status "OBSOLETO".
+3. Esses itens podem ser citados apenas em uma seção de BLOQUEADOS/OBSOLETOS, sem quantidade recomendada.
+4. VENDAS 60 DIAS é a referência principal. V15/V30/V45 servem para tendência.
+5. TOTAL EM BACKLOG já contém pendente + semana atual + próximas quatro semanas. Nunca some PENDENTE novamente.
+6. PEDIDO FATURADO é compromisso já faturado e deve ser considerado antes de recomendar nova compra.
+7. SOBRA significa SOMENTE estoque físico acima de quatro semanas de cobertura. NÃO é diferença entre backlog e faturamento de backlog.
+8. SUGESTÃO ESTOQUE DOBRADO = Vendas 60 x 2 e é apenas referência gerencial.
+9. Antes de sugerir NOVO PEDIDO, use as transferências possíveis das SOBRAS do mesmo modelo/cor entre estados.
+10. Depois de uma transferência, reduza a necessidade de compra do estado destino pela quantidade transferida.
+11. Não transfira estoque se isso fizer o estado origem ficar abaixo de quatro semanas de cobertura.
+12. Modelo sem giro não deve receber compra apenas porque está sem estoque.
+13. Lançamentos devem ser analisados com cautela porque podem ter histórico curto.
+14. Compare Sistema x Controladoria x Pedido Rufino, mas não trate pedido manual como verdade absoluta.
+15. Não invente números. Toda recomendação deve citar V60, estoque, backlog, pedido faturado, sobra/transferência e necessidade final quando aplicável.
 
-REGRAS OBRIGATÓRIAS
+RESUMO POR ESTADO:
+${JSON.stringify(stateSummary)}
 
-- VENDAS 60 DIAS é a referência principal.
-- V15/V30/V45 servem apenas para identificar tendência.
+TRANSFERÊNCIAS PRÉ-CALCULADAS:
+${JSON.stringify(transfers)}
 
-- TOTAL EM BACKLOG já contém:
-  PENDENTE
-  + semana atual
-  + próximas 4 semanas.
-
-- NUNCA some PENDENTE novamente
-  ao TOTAL EM BACKLOG.
-
-- PENDENTE serve somente como detalhamento
-  da parte atrasada do backlog.
-
-- PEDIDO FATURADO é quantidade já faturada.
-  Considere esse valor como compromisso existente.
-
-- SUGESTÃO ESTOQUE DOBRADO =
-  Vendas 60 dias x 2.
-  É uma referência gerencial,
-  não um pedido obrigatório.
-
-- SUGESTÃO FATURAR BACKLOG indica
-  quanto do backlog deve ser priorizado.
-
-- SUGESTÃO NOVOS PEDIDOS indica
-  compra adicional após considerar
-  estoque e backlog.
-
-- STATUS "NÃO HÁ COMO PEDIR"
-  nunca recebe recomendação de novo pedido.
-
-- STATUS "OBSOLETO"
-  nunca recebe recomendação de novo pedido.
-
-- STATUS "LANÇAMENTO"
-  pode ter pouco histórico.
-  Analise com cautela.
-
-- Produto sem giro não deve receber pedido
-  somente porque está sem estoque.
-
-- Compare sempre:
-  SISTEMA
-  x CONTROLADORIA
-  x PEDIDO RUFINO.
-
-- Sempre que recomendar uma quantidade,
-  informe os números que justificam.
-
-FORMATO DO RELATÓRIO
-
-1. RESUMO EXECUTIVO
-
-2. FATURAR BACKLOG
-Modelo + quantidade + justificativa.
-
-3. NOVOS PEDIDOS
-Modelo + quantidade + justificativa.
-
-4. REVISAR / REDUZIR / ZERAR
-Pedidos manuais ou situações de excesso.
-
-5. RISCO DE RUPTURA
-
-6. PEDIDO RECOMENDADO FINAL
-Somente modelos que realmente exigem ação.
-
-Para cada modelo:
-- modelo
-- quantidade
-- prioridade ALTA / MÉDIA / BAIXA
-- justificativa curta
-
-7. TOTAIS
-- Total faturar backlog
-- Total novos pedidos
-
-ABA:
-${aba}
-
-PERGUNTA:
-${pergunta || 'Gere o relatório completo do ponto de pedido e monte o pedido recomendado.'}
-
-DADOS:
+DADOS RELEVANTES DA REDE:
 ${JSON.stringify(relevantRows)}
+
+PERGUNTA DO USUÁRIO:
+${pergunta || 'Monte o ponto de pedido completo da rede.'}
+
+FORMATO OBRIGATÓRIO:
+1. RESUMO EXECUTIVO DA REDE
+2. RESUMO POR ESTADO
+3. TRANSFERÊNCIAS RECOMENDADAS
+   - modelo
+   - origem
+   - destino
+   - quantidade
+   - justificativa
+4. FATURAR BACKLOG
+5. NOVOS PEDIDOS APÓS TRANSFERÊNCIAS
+6. REDUZIR / MANTER / ZERAR PEDIDOS MANUAIS
+7. RISCOS DE RUPTURA
+8. SOBRAS ACIMA DE 4 SEMANAS
+9. BLOQUEADOS / OBSOLETOS — somente alerta, nunca sugestão de compra
+10. PEDIDO FINAL RECOMENDADO
+    - estado
+    - modelo
+    - quantidade final
+    - prioridade ALTA / MÉDIA / BAIXA
+    - justificativa curta
 
 RESUMO DETERMINÍSTICO:
 ${deterministic}
@@ -15001,27 +15987,20 @@ ${deterministic}
       'https://api.anthropic.com/v1/messages',
       {
         method: 'POST',
-
         headers: {
           'x-api-key': apiKey,
           'anthropic-version': '2023-06-01',
           'content-type': 'application/json',
         },
-
         body: JSON.stringify({
           model,
-
-          max_tokens: 3000,
-
-          temperature: 0.1,
-
+          max_tokens: 3500,
+          temperature: 0.05,
           system:
             'Você é o planejador de compras do TeleFluxo. ' +
-            'Seja quantitativo, preciso e operacional. ' +
-            'Use somente os dados recebidos. ' +
-            'Não duplique backlog pendente e nunca recomende ' +
-            'novo pedido para itens bloqueados ou obsoletos.',
-
+            'Priorize redistribuição de estoque antes de novas compras. ' +
+            'Nunca recomende itens bloqueados ou obsoletos. ' +
+            'Seja quantitativo, conservador e use somente os dados recebidos.',
           messages: [
             {
               role: 'user',
@@ -15046,19 +16025,19 @@ ${deterministic}
         ok: true,
         answer: deterministic,
         source: 'deterministic',
+        context: {
+          escopo,
+          statesAnalyzed,
+          stateSummary,
+          transferencias: transfers,
+        },
       });
     }
 
     const answer = Array.isArray(payload?.content)
       ? payload.content
-          .filter(
-            (item: any) =>
-              item?.type === 'text'
-          )
-          .map(
-            (item: any) =>
-              String(item?.text || '')
-          )
+          .filter((item: any) => item?.type === 'text')
+          .map((item: any) => String(item?.text || ''))
           .join('\n')
           .trim()
       : '';
@@ -15066,10 +16045,13 @@ ${deterministic}
     return res.json({
       ok: true,
       answer: answer || deterministic,
-      source:
-        answer
-          ? 'claude'
-          : 'deterministic',
+      source: answer ? 'claude' : 'deterministic',
+      context: {
+        escopo,
+        statesAnalyzed,
+        stateSummary,
+        transferencias: transfers,
+      },
     });
   } catch (error: any) {
     console.error(

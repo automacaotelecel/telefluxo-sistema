@@ -123,6 +123,30 @@ type StateSurplusRow = {
   sugestaoNovosPedidos: number;
 };
 
+type AiTransferSuggestion = {
+  modelo: string;
+  origem: string;
+  destino: string;
+  quantidade: number;
+  sobraOrigemAntes?: number;
+  necessidadeDestinoAntes?: number;
+};
+
+type AiAnalysisContext = {
+  escopo?: string;
+  statesAnalyzed?: string[];
+  stateSummary?: Array<{
+    estado: string;
+    vendas60: number;
+    estoque: number;
+    backlog: number;
+    sobra: number;
+    novosPedidos: number;
+    faturarBacklog: number;
+  }>;
+  transferencias?: AiTransferSuggestion[];
+};
+
 const getApiUrl = () => {
   const envUrl = String(import.meta.env.VITE_API_URL || '').trim();
   if (envUrl) return envUrl.replace(/\/$/, '');
@@ -333,9 +357,10 @@ export function EstoqueVendas() {
   const [savingRowKey, setSavingRowKey] = useState('');
   const [savingControladoriaKey, setSavingControladoriaKey] = useState('');
   const [aiQuestion, setAiQuestion] = useState(
-    'Gere o relatório completo do ponto de pedido desta aba e monte o pedido recomendado, separando faturamento de backlog, novos pedidos, reduções e riscos.',
+    'Monte o ponto de pedido completo da rede. Analise todos os estados, priorize transferências das sobras antes de novas compras e entregue o pedido final recomendado por estado e modelo.',
   );
   const [aiAnswer, setAiAnswer] = useState('');
+  const [aiContext, setAiContext] = useState<AiAnalysisContext | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
 
   const loadMeta = useCallback(async (force = false) => {
@@ -398,6 +423,7 @@ export function EstoqueVendas() {
       setRows(Array.isArray(json.rows) ? json.rows : []);
       if (Array.isArray(json.tabs)) setTabs(json.tabs);
       setAiAnswer('');
+      setAiContext(null);
     } catch (error: any) {
       console.error('Ponto de Pedido:', error);
       setErrorMsg(error?.message || 'Falha ao carregar dados.');
@@ -586,8 +612,17 @@ export function EstoqueVendas() {
       rows.filter(
         (row) =>
           Number(row.sugestaoFaturarBacklog || 0) > 0 ||
-          Number(row.sugestaoNovoPedido || 0) > 0,
+          Number(row.sugestaoNovoPedido || 0) > 0 ||
+          Number(row.sobra || 0) > 0,
       ),
+    [rows],
+  );
+
+  const surplusRows = useMemo(
+    () =>
+      rows
+        .filter((row) => Number(row.sobra || 0) > 0)
+        .sort((a, b) => Number(b.sobra || 0) - Number(a.sobra || 0)),
     [rows],
   );
 
@@ -792,7 +827,12 @@ export function EstoqueVendas() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           aba: activeTab,
+          categoria: activeCategory,
+          escopo: 'REDE',
           pergunta: aiQuestion,
+          // Mantém os dados da aba atual como fallback de compatibilidade.
+          // O backend novo monta novamente TODAS as abas da categoria
+          // para a análise consolidada da rede.
           rows: compactRows,
         }),
       });
@@ -803,6 +843,7 @@ export function EstoqueVendas() {
       }
 
       setAiAnswer(String(json.answer || '').trim());
+      setAiContext((json.context || null) as AiAnalysisContext | null);
     } catch (error: any) {
       console.error(error);
       setErrorMsg(error?.message || 'Falha ao consultar a IA de compras.');
@@ -822,101 +863,208 @@ export function EstoqueVendas() {
       const generatedAt = new Date().toLocaleString('pt-BR');
       const tabLabel = activeTabMeta?.label || activeTab || 'Ponto de Pedido';
       const regionLabel = activeTabMeta?.stateLabel || activeTabMeta?.state || '';
-
-      const total = (field: keyof PontoPedidoRow) =>
-        rows.reduce((sum, row) => sum + Number(row[field] || 0), 0);
-
-      const actionRows = rows.filter((row) =>
-        Number(row.sugestaoEstoqueDobrado || 0) > 0 ||
-        Number(row.sugestaoFaturarBacklog || 0) > 0 ||
-        Number(row.sugestaoNovoPedido || 0) > 0 ||
-        Number(row.pedidoControladoria || 0) > 0 ||
-        Number(row.pedidoRufino || 0) > 0 ||
-        Number(row.pedidoFaturado || 0) > 0
-      );
+      const statesLabel = aiContext?.statesAnalyzed?.join(', ') || regionLabel || tabLabel;
 
       const summaryData: (string | number)[][] = [
-        ['TELEFLUXO - RESUMO DO PONTO DE PEDIDO'],
+        ['TELEFLUXO - RELATÓRIO DA IA - PONTO DE PEDIDO'],
         [],
-        ['Aba', tabLabel],
-        ['Região', regionLabel],
+        ['Escopo', aiContext?.escopo === 'REDE' ? 'Rede completa' : 'Aba atual'],
+        ['Categoria', activeCategory],
+        ['Estados analisados', statesLabel],
         ['Gerado em', generatedAt],
         ['Pergunta utilizada', aiQuestion],
-        [],
-        ['TOTAIS DA ABA'],
-        ['Vendas 60 dias', total('vendas60')],
-        ['Estoque atual', total('estoque')],
-        ['Pedido faturado', total('pedidoFaturado')],
-        ['Total em backlog', total('backlogTotal')],
-        ['Sug. estoque dobrado', rows.reduce((sum, row) => sum + doubleStockSuggestion(row), 0)],
-        ['Sug. faturar backlog', total('sugestaoFaturarBacklog')],
-        ['Sug. novos pedidos', total('sugestaoNovoPedido')],
-        ['Pedido Controladoria', total('pedidoControladoria')],
-        ['Pedido Rufino', total('pedidoRufino')],
-        ['Modelos com ação', actionRows.length],
         [],
         ['ANÁLISE DA IA'],
         ...aiAnswer.split(/\r?\n/).map((line) => [line]),
       ];
 
       const summarySheet = XLSX.utils.aoa_to_sheet(summaryData);
-      summarySheet['!cols'] = [{ wch: 28 }, { wch: 120 }];
+      summarySheet['!cols'] = [{ wch: 30 }, { wch: 120 }];
+      XLSX.utils.book_append_sheet(workbook, summarySheet, 'Relatório IA');
+
+      if (aiContext?.stateSummary?.length) {
+        const statesSheet = XLSX.utils.json_to_sheet(
+          aiContext.stateSummary.map((item) => ({
+            Estado: item.estado,
+            'Vendas 60': Number(item.vendas60 || 0),
+            Estoque: Number(item.estoque || 0),
+            Backlog: Number(item.backlog || 0),
+            'Sobra > 4 semanas': Number(item.sobra || 0),
+            'Faturar backlog': Number(item.faturarBacklog || 0),
+            'Novos pedidos': Number(item.novosPedidos || 0),
+          })),
+        );
+
+        statesSheet['!cols'] = [
+          { wch: 24 },
+          { wch: 14 },
+          { wch: 14 },
+          { wch: 14 },
+          { wch: 20 },
+          { wch: 18 },
+          { wch: 18 },
+        ];
+
+        XLSX.utils.book_append_sheet(workbook, statesSheet, 'Resumo por Estado');
+      }
+
+      if (aiContext?.transferencias?.length) {
+        const transferSheet = XLSX.utils.json_to_sheet(
+          aiContext.transferencias.map((item) => ({
+            Modelo: item.modelo,
+            Origem: item.origem,
+            Destino: item.destino,
+            Quantidade: Number(item.quantidade || 0),
+            'Sobra origem antes': Number(item.sobraOrigemAntes || 0),
+            'Necessidade destino antes': Number(item.necessidadeDestinoAntes || 0),
+          })),
+        );
+
+        transferSheet['!cols'] = [
+          { wch: 38 },
+          { wch: 22 },
+          { wch: 22 },
+          { wch: 14 },
+          { wch: 20 },
+          { wch: 24 },
+        ];
+
+        XLSX.utils.book_append_sheet(workbook, transferSheet, 'Transferências');
+      }
+
+      const safeName = `REDE-${activeCategory}`
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-zA-Z0-9_-]+/g, '_')
+        .replace(/^_+|_+$/g, '')
+        .slice(0, 70);
+
+      XLSX.writeFile(
+        workbook,
+        `Ponto_de_Pedido_IA_${safeName || 'TeleFluxo'}_${new Date().toISOString().slice(0, 10)}.xlsx`,
+      );
+    } catch (error: any) {
+      console.error('Exportação Excel - IA Ponto de Pedido:', error);
+      setErrorMsg(error?.message || 'Não foi possível gerar o Excel da análise da IA.');
+    }
+  };
+
+  const exportSystemSummaryExcel = () => {
+    try {
+      const workbook = XLSX.utils.book_new();
+      const generatedAt = new Date().toLocaleString('pt-BR');
+      const tabLabel = activeTabMeta?.label || activeTab || 'Ponto de Pedido';
+      const regionLabel = activeTabMeta?.stateLabel || activeTabMeta?.state || '';
+
+      const total = (field: keyof PontoPedidoRow) =>
+        rows.reduce((sum, row) => sum + Number(row[field] || 0), 0);
+
+      const summaryData: (string | number)[][] = [
+        ['TELEFLUXO - RESUMO DO PONTO DE PEDIDO'],
+        [],
+        ['Aba', tabLabel],
+        ['Região', regionLabel],
+        ['Categoria', activeCategory],
+        ['Gerado em', generatedAt],
+        [],
+        ['INDICADORES'],
+        ['Vendas 60 dias', total('vendas60')],
+        ['Estoque atual', total('estoque')],
+        ['Pedido faturado', total('pedidoFaturado')],
+        ['Total em backlog', total('backlogTotal')],
+        ['Sug. faturar backlog', total('sugestaoFaturarBacklog')],
+        ['Sug. novos pedidos', total('sugestaoNovoPedido')],
+        ['Pedido Controladoria', total('pedidoControladoria')],
+        ['Pedido Rufino', total('pedidoRufino')],
+        ['Sobra > 4 semanas', total('sobra')],
+        ['Modelos com sobra > 4 semanas', surplusRows.length],
+      ];
+
+      const summarySheet = XLSX.utils.aoa_to_sheet(summaryData);
+      summarySheet['!cols'] = [{ wch: 34 }, { wch: 28 }];
       XLSX.utils.book_append_sheet(workbook, summarySheet, 'Resumo');
 
-      const pedidosData = actionRows.map((row) => ({
+      const actionsData = suggestionRows.map((row) => ({
         'Modelo com cor': row.modeloComCor || row.modelo,
         Status: row.status || '',
         'Vendas 60': Number(row.vendas60 || 0),
         Estoque: Number(row.estoque || 0),
+        'Cobertura atual (dias)':
+          row.coberturaAtualDias == null ? '' : Number(row.coberturaAtualDias),
         'Pedido faturado': Number(row.pedidoFaturado || 0),
         'Total em backlog': Number(row.backlogTotal || 0),
-        'Sug. estoque dobrado': doubleStockSuggestion(row),
         'Sug. faturar backlog': Number(row.sugestaoFaturarBacklog || 0),
         'Sug. novos pedidos': Number(row.sugestaoNovoPedido || 0),
+        'Sobra > 4 semanas': Number(row.sobra || 0),
         'Pedido Controladoria': Number(row.pedidoControladoria || 0),
         'Pedido Rufino': Number(row.pedidoRufino || 0),
-        'Cobertura atual (dias)': row.coberturaAtualDias == null ? '' : Number(row.coberturaAtualDias),
-        Sobra: Number(row.sobra || 0),
       }));
 
-      const pedidosSheet = XLSX.utils.json_to_sheet(pedidosData);
-      pedidosSheet['!cols'] = [
-        { wch: 38 },
+      const actionsSheet = XLSX.utils.json_to_sheet(actionsData);
+      actionsSheet['!cols'] = [
+        { wch: 40 },
         { wch: 20 },
         { wch: 12 },
         { wch: 12 },
-        { wch: 16 },
-        { wch: 17 },
-        { wch: 21 },
-        { wch: 21 },
+        { wch: 22 },
+        { wch: 18 },
+        { wch: 18 },
+        { wch: 22 },
+        { wch: 20 },
         { wch: 20 },
         { wch: 22 },
         { wch: 16 },
-        { wch: 22 },
-        { wch: 12 },
       ];
-      XLSX.utils.book_append_sheet(workbook, pedidosSheet, 'Pedidos');
+      XLSX.utils.book_append_sheet(workbook, actionsSheet, 'Ações do Sistema');
 
-      const allRowsData = rows.map((row) => ({
+      const surplusData = surplusRows.map((row) => ({
         'Modelo com cor': row.modeloComCor || row.modelo,
         Status: row.status || '',
         'Vendas 60': Number(row.vendas60 || 0),
         Estoque: Number(row.estoque || 0),
+        'Cobertura atual (dias)':
+          row.coberturaAtualDias == null ? '' : Number(row.coberturaAtualDias),
+        'Sobra > 4 semanas': Number(row.sobra || 0),
+        Backlog: Number(row.backlogTotal || 0),
         'Pedido faturado': Number(row.pedidoFaturado || 0),
-        'Total em backlog': Number(row.backlogTotal || 0),
-        Pendente: Number(row.pendente || 0),
-        'Sug. estoque dobrado': doubleStockSuggestion(row),
-        'Sug. faturar backlog': Number(row.sugestaoFaturarBacklog || 0),
-        'Sug. novos pedidos': Number(row.sugestaoNovoPedido || 0),
-        'Pedido Controladoria': Number(row.pedidoControladoria || 0),
-        'Pedido Rufino': Number(row.pedidoRufino || 0),
-        'Cobertura atual (dias)': row.coberturaAtualDias == null ? '' : Number(row.coberturaAtualDias),
-        Sobra: Number(row.sobra || 0),
       }));
 
-      const allRowsSheet = XLSX.utils.json_to_sheet(allRowsData);
-      allRowsSheet['!cols'] = pedidosSheet['!cols'];
-      XLSX.utils.book_append_sheet(workbook, allRowsSheet, 'Base analisada');
+      const surplusSheet = XLSX.utils.json_to_sheet(surplusData);
+      surplusSheet['!cols'] = [
+        { wch: 40 },
+        { wch: 20 },
+        { wch: 12 },
+        { wch: 12 },
+        { wch: 22 },
+        { wch: 20 },
+        { wch: 14 },
+        { wch: 18 },
+      ];
+      XLSX.utils.book_append_sheet(workbook, surplusSheet, 'Sobras 4 semanas');
+
+      if (stateSummaries.length) {
+        const stateSheet = XLSX.utils.json_to_sheet(
+          stateSummaries.map((item) => ({
+            Estado: item.stateLabel || item.state,
+            Estoque: Number(item.estoque || 0),
+            'Vendas 60': Number(item.vendas60 || 0),
+            Backlog: Number(item.backlogTotal || 0),
+            'Sobra > 4 semanas': Number(item.sobra || 0),
+            'Sug. novos pedidos': Number(item.sugestaoNovosPedidos || 0),
+          })),
+        );
+
+        stateSheet['!cols'] = [
+          { wch: 24 },
+          { wch: 14 },
+          { wch: 14 },
+          { wch: 14 },
+          { wch: 20 },
+          { wch: 20 },
+        ];
+
+        XLSX.utils.book_append_sheet(workbook, stateSheet, 'Sobra por Estado');
+      }
 
       const safeName = `${tabLabel}-${regionLabel || 'rede'}`
         .normalize('NFD')
@@ -927,11 +1075,11 @@ export function EstoqueVendas() {
 
       XLSX.writeFile(
         workbook,
-        `Ponto_de_Pedido_${safeName || 'TeleFluxo'}_${new Date().toISOString().slice(0, 10)}.xlsx`,
+        `Resumo_Ponto_de_Pedido_${safeName || 'TeleFluxo'}_${new Date().toISOString().slice(0, 10)}.xlsx`,
       );
     } catch (error: any) {
-      console.error('Exportação Excel - Ponto de Pedido:', error);
-      setErrorMsg(error?.message || 'Não foi possível gerar o Excel do Ponto de Pedido.');
+      console.error('Exportação Excel - Resumo Ponto de Pedido:', error);
+      setErrorMsg(error?.message || 'Não foi possível gerar o Excel do Resumo.');
     }
   };
 
@@ -1415,46 +1563,104 @@ export function EstoqueVendas() {
 
   const renderSystemSummary = () => (
     <div className="overflow-hidden rounded-2xl border border-amber-200 bg-white shadow-sm">
-      <div className="flex items-center justify-between gap-3 border-b border-amber-100 bg-amber-50 px-3 py-2.5">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-amber-100 bg-amber-50 px-3 py-2.5">
         <div>
           <p className="text-[8px] font-black uppercase tracking-[0.16em] text-amber-700">Resumo</p>
-          <h3 className="mt-0.5 text-[12px] font-black text-slate-900">Somente sugestões do sistema</h3>
+          <h3 className="mt-0.5 text-[12px] font-black text-slate-900">
+            Sugestões do sistema e sobras acima de 4 semanas
+          </h3>
+          <p className="mt-0.5 text-[9px] font-semibold text-slate-500">
+            “Sobra” significa estoque físico acima de quatro semanas de cobertura. Backlog não entra nesse cálculo.
+          </p>
         </div>
-        <span className="rounded-full bg-white px-2 py-1 text-[9px] font-black text-amber-800 shadow-sm">
-          {number(suggestionRows.length)} modelos
-        </span>
+
+        <div className="flex items-center gap-2">
+          <span className="rounded-full bg-white px-2 py-1 text-[9px] font-black text-amber-800 shadow-sm">
+            {number(suggestionRows.length)} modelos
+          </span>
+
+          <button
+            type="button"
+            onClick={exportSystemSummaryExcel}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-600 px-3 py-1.5 text-[8px] font-black uppercase tracking-wide text-white shadow-sm transition hover:bg-emerald-700"
+          >
+            <FileSpreadsheet size={12} />
+            Exportar Excel
+          </button>
+        </div>
       </div>
 
       <div className="max-h-[70vh] overflow-auto">
-        <table className="w-full min-w-[1000px] border-collapse text-[10px]">
+        <table className="w-full min-w-[1160px] border-collapse text-[10px]">
           <thead className="sticky top-0 z-10 bg-slate-50 text-[8px] font-black uppercase tracking-wide text-slate-500">
             <tr>
               <th className="px-3 py-2 text-left">Modelo</th>
               <th className="px-2 py-2 text-center">Vendas 60</th>
               <th className="px-2 py-2 text-center">Estoque</th>
+              <th className="px-2 py-2 text-center">Cobertura</th>
               <th className="px-2 py-2 text-center">Total backlog</th>
               <th className="px-2 py-2 text-center">Faturar backlog</th>
               <th className="px-2 py-2 text-center">Novo pedido</th>
-              <th className="px-2 py-2 text-center">Sobra</th>
+              <th className="px-2 py-2 text-center">Sobra &gt; 4 semanas</th>
             </tr>
           </thead>
+
           <tbody>
             {suggestionRows.length ? (
               suggestionRows.map((row, index) => (
-                <tr key={`system-${row.rowKey}`} className={index % 2 === 0 ? 'bg-white' : 'bg-amber-50/20'}>
-                  <td className="border-t border-slate-100 px-3 py-2 font-black uppercase text-slate-900">{row.modeloComCor}</td>
-                  <td className="border-t border-slate-100 px-2 py-2 text-center font-black text-blue-800">{number(row.vendas60)}</td>
-                  <td className="border-t border-slate-100 px-2 py-2 text-center font-bold">{number(row.estoque)}</td>
-                  <td className="border-t border-slate-100 px-2 py-2 text-center font-black text-violet-800">{number(row.backlogTotal)}</td>
-                  <td className="border-t border-slate-100 bg-orange-50 px-2 py-2 text-center font-black text-orange-900">{number(row.sugestaoFaturarBacklog)}</td>
-                  <td className="border-t border-slate-100 bg-amber-50 px-2 py-2 text-center font-black text-amber-900">{number(row.sugestaoNovoPedido)}</td>
-                  <td className="border-t border-slate-100 px-2 py-2 text-center font-black text-emerald-700">{number(row.sobra)}</td>
+                <tr
+                  key={`system-${row.rowKey}`}
+                  className={index % 2 === 0 ? 'bg-white' : 'bg-amber-50/20'}
+                >
+                  <td className="border-t border-slate-100 px-3 py-2 font-black uppercase text-slate-900">
+                    {row.modeloComCor}
+                  </td>
+
+                  <td className="border-t border-slate-100 px-2 py-2 text-center font-black text-blue-800">
+                    {number(row.vendas60)}
+                  </td>
+
+                  <td className="border-t border-slate-100 px-2 py-2 text-center font-bold">
+                    {number(row.estoque)}
+                  </td>
+
+                  <td className="border-t border-slate-100 px-2 py-2 text-center font-bold text-cyan-800">
+                    {row.coberturaAtualDias == null
+                      ? 'Sem giro'
+                      : `${number(row.coberturaAtualDias)} dias`}
+                  </td>
+
+                  <td className="border-t border-slate-100 px-2 py-2 text-center font-black text-violet-800">
+                    {number(row.backlogTotal)}
+                  </td>
+
+                  <td className="border-t border-slate-100 bg-orange-50 px-2 py-2 text-center font-black text-orange-900">
+                    {number(row.sugestaoFaturarBacklog)}
+                  </td>
+
+                  <td className="border-t border-slate-100 bg-amber-50 px-2 py-2 text-center font-black text-amber-900">
+                    {number(row.sugestaoNovoPedido)}
+                  </td>
+
+                  <td
+                    className={`border-t border-slate-100 px-2 py-2 text-center font-black ${
+                      Number(row.sobra || 0) > 0
+                        ? 'bg-emerald-50 text-emerald-800'
+                        : 'text-slate-400'
+                    }`}
+                    title="Unidades do estoque físico que excedem quatro semanas de cobertura calculadas pelas vendas de 60 dias."
+                  >
+                    {number(row.sobra)}
+                  </td>
                 </tr>
               ))
             ) : (
               <tr>
-                <td colSpan={7} className="px-4 py-16 text-center text-xs font-black uppercase tracking-widest text-slate-400">
-                  Nenhuma sugestão de compra para esta aba.
+                <td
+                  colSpan={8}
+                  className="px-4 py-16 text-center text-xs font-black uppercase tracking-widest text-slate-400"
+                >
+                  Nenhuma sugestão de compra ou sobra acima de quatro semanas nesta aba.
                 </td>
               </tr>
             )}
@@ -1466,11 +1672,11 @@ export function EstoqueVendas() {
 
   const renderAiPanel = () => {
     const quickQuestions = [
-      'Monte o ponto de pedido completo desta aba. Analise modelo a modelo e entregue o pedido final recomendado, separando faturamento de backlog, novos pedidos, reduções, itens a zerar e prioridade de cada ação.',
-      'Monte o plano de faturamento do backlog. Diga exatamente quais modelos devo faturar agora, em que quantidade e por quê, considerando Vendas 60, estoque, pedido faturado, backlog e semanas de chegada.',
-      'Monte a sugestão de novos pedidos. Para cada modelo que realmente precisa de compra, informe quantidade recomendada, prioridade e justificativa; use estoque dobrado apenas como referência gerencial e respeite o status do produto.',
-      'Audite os pedidos atuais. Compare Sistema, Controladoria e Pedido Rufino e diga modelo a modelo o que deve aumentar, reduzir, manter ou zerar, destacando divergências relevantes.',
-      'Faça a revisão final de risco do ponto de pedido: identifique ruptura, excesso, cobertura inadequada, lançamentos, obsoletos e itens sem possibilidade de pedido e entregue somente as ações que exigem decisão.',
+      'Monte o ponto de pedido completo da REDE. Analise todos os estados juntos, use transferências das sobras antes de comprar e entregue o pedido final por estado e modelo, com quantidade, prioridade e justificativa.',
+      'Monte um plano de TRANSFERÊNCIAS entre os estados. Use apenas sobras acima de 4 semanas, procure o mesmo modelo/cor em estados com necessidade e diga origem, destino, quantidade e quanto de compra nova pode ser evitado.',
+      'Monte o plano completo de FATURAMENTO DE BACKLOG e NOVOS PEDIDOS da rede. Considere Vendas 60, estoque, pedido faturado, backlog e transferências; nunca recomende itens Não há como pedir ou Obsoletos.',
+      'Audite Sistema x Controladoria x Pedido Rufino em TODOS os estados. Diga objetivamente o que deve aumentar, reduzir, manter ou zerar e explique as maiores divergências.',
+      'Faça a revisão executiva final da rede: riscos de ruptura, sobras acima de 4 semanas, transferências possíveis, lançamentos, pedidos excessivos e pedido final recomendado. Itens bloqueados/obsoletos devem aparecer somente como alerta, nunca como sugestão de compra.',
     ];
 
     return (
@@ -1484,7 +1690,7 @@ export function EstoqueVendas() {
               <p className="text-[8px] font-black uppercase tracking-[0.18em] text-violet-300">Inteligência de compra</p>
               <h3 className="mt-1 text-lg font-black">Assistente de Ponto de Pedido</h3>
               <p className="mt-1 text-[10px] font-semibold leading-relaxed text-slate-300">
-                Use a IA para transformar vendas de 60 dias, estoque, pedido faturado, backlog, status e pedidos manuais em uma decisão de compra objetiva.
+                A IA analisa a rede inteira, cruza todos os estados e procura transferências de sobras antes de recomendar novas compras.
               </p>
             </div>
           </div>
@@ -1514,8 +1720,12 @@ export function EstoqueVendas() {
           </div>
 
           <div className="mt-5 rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-[9px] font-semibold leading-5 text-slate-300">
-            A IA recebe apenas os dados desta aba. O foco é <strong className="text-white">Vendas 60</strong> e ela deve diferenciar
-            pedido já faturado, backlog existente e compra nova.
+            Escopo padrão: <strong className="text-white">todos os estados da categoria</strong>. O foco é Vendas 60,
+            estoque, pedido faturado, backlog, sobra acima de 4 semanas e redistribuição entre estados.
+            <br />
+            <span className="text-violet-200">
+              Itens “Não há como pedir” e “Obsoletos” nunca entram em recomendação de compra.
+            </span>
           </div>
         </div>
 
@@ -1538,6 +1748,22 @@ export function EstoqueVendas() {
             )}
           </div>
 
+          {aiContext?.statesAnalyzed?.length ? (
+            <div className="mt-3 flex flex-wrap items-center gap-1.5">
+              <span className="text-[8px] font-black uppercase tracking-wide text-slate-400">
+                Estados analisados
+              </span>
+              {aiContext.statesAnalyzed.map((state) => (
+                <span
+                  key={state}
+                  className="rounded-full border border-violet-100 bg-violet-50 px-2 py-1 text-[8px] font-black text-violet-700"
+                >
+                  {state}
+                </span>
+              ))}
+            </div>
+          ) : null}
+
           <textarea
             value={aiQuestion}
             onChange={(event) => setAiQuestion(event.target.value)}
@@ -1547,17 +1773,6 @@ export function EstoqueVendas() {
           />
 
           <div className="mt-2 flex flex-wrap justify-end gap-2">
-            {aiAnswer && (
-              <button
-                type="button"
-                onClick={exportAiReportExcel}
-                className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-[9px] font-black uppercase tracking-wide text-slate-600 transition hover:border-violet-200 hover:text-violet-700"
-              >
-                <FileSpreadsheet size={13} />
-                Exportar Excel
-              </button>
-            )}
-
             <button
               type="button"
               onClick={runAiAnalysis}
@@ -1724,7 +1939,7 @@ export function EstoqueVendas() {
 
             <div className="mb-2.5 rounded-2xl border border-slate-200 bg-white px-3 py-2 shadow-sm">
               <div className="flex flex-wrap items-center gap-2">
-                <span className="text-[8px] font-black uppercase tracking-[0.14em] text-slate-400">Sobra por estado</span>
+                <span className="text-[8px] font-black uppercase tracking-[0.14em] text-slate-400" title="Estoque físico acima de quatro semanas de cobertura, calculado por estado.">Sobra &gt; 4 semanas por estado</span>
                 {stateSummaryLoading ? (
                   <span className="inline-flex items-center gap-1 text-[9px] font-bold text-slate-400"><RefreshCw size={10} className="animate-spin" /> Calculando...</span>
                 ) : stateSummaries.length ? (
