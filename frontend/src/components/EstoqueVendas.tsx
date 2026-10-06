@@ -1,22 +1,25 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import {
   AlertTriangle,
+  Archive,
   BarChart3,
   BrainCircuit,
+  CheckCircle2,
   ChevronDown,
   ChevronRight,
   Clock3,
-  ExternalLink,
+  EyeOff,
   Info,
   Package,
+  Pencil,
   FileSpreadsheet,
   RefreshCw,
   Search,
   Send,
-  ShoppingCart,
   Sparkles,
   TrendingUp,
+  Trash2,
 } from 'lucide-react';
 
 type SheetTab = {
@@ -108,7 +111,7 @@ type PontoPedidoResponse = {
   rows: PontoPedidoRow[];
 };
 
-type PageMode = 'planejamento' | 'resumo' | 'sugestoes' | 'ia';
+type PageMode = 'planejamento' | 'resumo' | 'sugestoes' | 'sobras' | 'ia' | 'prontos';
 
 type StateSurplusRow = {
   id: string;
@@ -146,6 +149,18 @@ type AiAnalysisContext = {
   }>;
   transferencias?: AiTransferSuggestion[];
 };
+
+type ReadyOrder = {
+  id: string;
+  nome: string;
+  categoria: string;
+  criadoEm: string;
+  atualizadoEm: string;
+  totalModelos: number;
+  totalUnidades: number;
+};
+
+type AiAction = '' | 'AUTO_PLAN';
 
 const getApiUrl = () => {
   const envUrl = String(import.meta.env.VITE_API_URL || '').trim();
@@ -233,6 +248,19 @@ const metricTone = (value: number) => {
   return 'text-slate-700';
 };
 
+const isBlockedOrderStatus = (status: string) => {
+  const normalized = String(status || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toUpperCase();
+
+  return (
+    normalized.includes('NAO HA COMO PEDIR') ||
+    normalized.includes('OBSOLETO')
+  );
+};
+
 function GroupButton({
   open,
   onClick,
@@ -269,7 +297,7 @@ function ColumnLabel({
       title={help}
       className="inline-flex cursor-help items-center justify-center gap-1"
     >
-      <span>{label}</span>
+      <span className="whitespace-pre-line leading-tight">{label}</span>
       <Info size={9} className="shrink-0 opacity-45" />
     </span>
   );
@@ -302,47 +330,10 @@ function ModeButton({
   );
 }
 
-function CompactSummaryCard({
-  label,
-  value,
-  icon: Icon,
-  tone = 'slate',
-}: {
-  label: string;
-  value: string;
-  icon: React.ElementType;
-  tone?: 'slate' | 'blue' | 'red' | 'amber' | 'emerald' | 'violet';
-}) {
-  const classes = {
-    slate: 'border-slate-200 bg-white text-slate-950',
-    blue: 'border-blue-200 bg-gradient-to-br from-blue-50 to-white text-blue-900',
-    red: 'border-red-200 bg-gradient-to-br from-red-50 to-white text-red-800',
-    amber: 'border-amber-200 bg-gradient-to-br from-amber-50 to-white text-amber-900',
-    emerald: 'border-emerald-200 bg-gradient-to-br from-emerald-50 to-white text-emerald-900',
-    violet: 'border-violet-200 bg-gradient-to-br from-violet-50 to-white text-violet-900',
-  }[tone];
-
-  return (
-    <div
-      className={`rounded-2xl border px-3 py-2.5 shadow-[0_8px_24px_-18px_rgba(15,23,42,0.35)] ${classes}`}
-    >
-      <div className="flex items-center justify-between gap-2">
-        <span className="truncate text-[8px] font-black uppercase tracking-[0.14em] opacity-60">
-          {label}
-        </span>
-        <div className="flex h-6 w-6 items-center justify-center rounded-lg bg-white/70 shadow-sm">
-          <Icon size={12} className="shrink-0 opacity-80" />
-        </div>
-      </div>
-      <p className="mt-1 text-[20px] font-black leading-none">{value}</p>
-    </div>
-  );
-}
-
-export function EstoqueVendas() {
+export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: PageMode }) {
   const [tabs, setTabs] = useState<SheetTab[]>([]);
   const [activeTab, setActiveTab] = useState('');
-  const [pageMode, setPageMode] = useState<PageMode>('planejamento');
+  const [pageMode, setPageMode] = useState<PageMode>(initialMode);
   const [data, setData] = useState<PontoPedidoResponse | null>(null);
   const [rows, setRows] = useState<PontoPedidoRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -352,16 +343,24 @@ export function EstoqueVendas() {
   const [showSales, setShowSales] = useState(false);
   const [showFutureWeeks, setShowFutureWeeks] = useState(false);
   const [showForecasts, setShowForecasts] = useState(false);
+  const [hideBlockedRows, setHideBlockedRows] = useState(true);
   const [stateSummaries, setStateSummaries] = useState<StateSurplusRow[]>([]);
   const [stateSummaryLoading, setStateSummaryLoading] = useState(false);
   const [savingRowKey, setSavingRowKey] = useState('');
   const [savingControladoriaKey, setSavingControladoriaKey] = useState('');
-  const [aiQuestion, setAiQuestion] = useState(
-    'Monte o ponto de pedido completo da rede. Analise todos os estados, priorize transferências das sobras antes de novas compras e entregue o pedido final recomendado por estado e modelo.',
-  );
+  const [aiQuestion, setAiQuestion] = useState('Fazer ponto de pedido');
+  const [aiAction, setAiAction] = useState<AiAction>('AUTO_PLAN');
   const [aiAnswer, setAiAnswer] = useState('');
   const [aiContext, setAiContext] = useState<AiAnalysisContext | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
+  const [readyOrders, setReadyOrders] = useState<ReadyOrder[]>([]);
+  const [readyOrdersLoading, setReadyOrdersLoading] = useState(false);
+  const [finalizing, setFinalizing] = useState(false);
+  const [tableScrollWidth, setTableScrollWidth] = useState(0);
+  const topScrollRef = useRef<HTMLDivElement | null>(null);
+  const tableScrollRef = useRef<HTMLDivElement | null>(null);
+  const tableRef = useRef<HTMLTableElement | null>(null);
+  const syncingScrollRef = useRef(false);
 
   const loadMeta = useCallback(async (force = false) => {
     setLoadingStage('Lendo abas do Google Sheets...');
@@ -464,6 +463,35 @@ export function EstoqueVendas() {
     }
   }, []);
 
+  const loadReadyOrders = useCallback(async (category: string) => {
+    if (!category) {
+      setReadyOrders([]);
+      return;
+    }
+
+    setReadyOrdersLoading(true);
+    try {
+      const params = new URLSearchParams({ categoria: category });
+      const { response, json } = await fetchJsonWithTimeout(
+        `${API_URL}/api/ponto-pedido/pedidos-prontos?${params.toString()}`,
+        { cache: 'no-store' },
+        35000,
+      );
+
+      if (!response.ok || !json?.ok) {
+        throw new Error(json?.error || 'Não foi possível carregar os pedidos prontos.');
+      }
+
+      setReadyOrders(Array.isArray(json.rows) ? json.rows : []);
+    } catch (error: any) {
+      console.error('Pedidos prontos:', error);
+      setErrorMsg(error?.message || 'Falha ao carregar pedidos prontos.');
+      setReadyOrders([]);
+    } finally {
+      setReadyOrdersLoading(false);
+    }
+  }, []);
+
 
   useEffect(() => {
     let alive = true;
@@ -504,41 +532,15 @@ export function EstoqueVendas() {
     loadData(tab, false);
   };
 
-  const handleRefresh = async () => {
-    setLoading(true);
-    setErrorMsg('');
-    try {
-      const nextTabs = await loadMeta(true);
-      const target =
-        (activeTab && nextTabs.some((tab: SheetTab) => tab.id === activeTab)
-          ? activeTab
-          : nextTabs[0]?.id) || '';
-
-      if (!target) {
-        throw new Error('Nenhuma aba disponível após atualizar o Google Sheets.');
-      }
-
-      setActiveTab(target);
-      // loadMeta(true) já atualizou o workbook no backend.
-      // Aqui usamos o cache recém-carregado para não baixar a planilha inteira duas vezes.
-      await loadData(target, false);
-      const targetCategory = String(nextTabs.find((tab: SheetTab) => tab.id === target)?.category || 'APARELHOS');
-      loadStateSummaries(targetCategory, false);
-    } catch (error: any) {
-      setErrorMsg(error?.message || 'Falha ao atualizar o Google Sheets.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const searchedRows = useMemo(() => {
     const term = searchTerm.trim().toUpperCase();
-    if (!term) return rows;
 
-    return rows.filter((row) =>
-      `${row.modelo} ${row.modeloComCor}`.toUpperCase().includes(term),
-    );
-  }, [rows, searchTerm]);
+    return rows.filter((row) => {
+      if (hideBlockedRows && isBlockedOrderStatus(row.status)) return false;
+      if (!term) return true;
+      return `${row.modelo} ${row.modeloComCor}`.toUpperCase().includes(term);
+    });
+  }, [rows, searchTerm, hideBlockedRows]);
 
   const categories = useMemo(
     () => Array.from(new Set(tabs.map((tab) => tab.category || 'APARELHOS'))),
@@ -551,6 +553,44 @@ export function EstoqueVendas() {
   );
 
   const activeCategory = activeTabMeta?.category || categories[0] || 'APARELHOS';
+
+  useEffect(() => {
+    if (pageMode === 'prontos' && activeCategory) {
+      loadReadyOrders(activeCategory);
+    }
+  }, [pageMode, activeCategory, loadReadyOrders]);
+
+  useEffect(() => {
+    const updateWidth = () => {
+      const width = tableRef.current?.scrollWidth || 0;
+      setTableScrollWidth(width);
+    };
+
+    updateWidth();
+    const observer = typeof ResizeObserver !== 'undefined' && tableRef.current
+      ? new ResizeObserver(updateWidth)
+      : null;
+
+    if (observer && tableRef.current) observer.observe(tableRef.current);
+    window.addEventListener('resize', updateWidth);
+
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', updateWidth);
+    };
+  }, [showSales, showFutureWeeks, showForecasts, hideBlockedRows, searchedRows.length]);
+
+  const syncHorizontalScroll = (
+    source: HTMLDivElement | null,
+    target: HTMLDivElement | null,
+  ) => {
+    if (!source || !target || syncingScrollRef.current) return;
+    syncingScrollRef.current = true;
+    target.scrollLeft = source.scrollLeft;
+    window.requestAnimationFrame(() => {
+      syncingScrollRef.current = false;
+    });
+  };
 
   const stateTabs = useMemo(
     () => tabs.filter((tab) => (tab.category || 'APARELHOS') === activeCategory),
@@ -567,33 +607,84 @@ export function EstoqueVendas() {
     loadStateSummaries(category, false);
   };
 
-  const liveSummary = useMemo(() => {
-    return rows.reduce(
-      (acc, row) => {
-        acc.modelos += 1;
-        acc.estoque += Number(row.estoque || 0);
-        acc.backlog += Number(row.backlogTotal || 0);
-        acc.pendente += Number(row.pendente || 0);
-        acc.faturarBacklog += Number(row.sugestaoFaturarBacklog || 0);
-        acc.novosPedidos += Number(row.sugestaoNovoPedido || 0);
-        acc.controladoria += Number(row.pedidoControladoria || 0);
-        acc.pedidoRufino += Number(row.pedidoRufino || 0);
-        acc.sobra += Number(row.sobra || 0);
-        return acc;
-      },
-      {
-        modelos: 0,
-        estoque: 0,
-        backlog: 0,
-        pendente: 0,
-        faturarBacklog: 0,
-        novosPedidos: 0,
-        controladoria: 0,
-        pedidoRufino: 0,
-        sobra: 0,
-      },
-    );
-  }, [rows]);
+  const finalizePointOrder = async () => {
+    if (finalizing || !activeCategory) return;
+
+    setFinalizing(true);
+    setErrorMsg('');
+    try {
+      const { response, json } = await fetchJsonWithTimeout(
+        `${API_URL}/api/ponto-pedido/finalizar`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ categoria: activeCategory }),
+        },
+        90000,
+      );
+
+      if (!response.ok || !json?.ok) {
+        throw new Error(json?.error || 'Não foi possível finalizar o ponto de pedido.');
+      }
+
+      await loadReadyOrders(activeCategory);
+      setPageMode('prontos');
+    } catch (error: any) {
+      console.error(error);
+      setErrorMsg(error?.message || 'Falha ao finalizar o ponto de pedido.');
+    } finally {
+      setFinalizing(false);
+    }
+  };
+
+  const editReadyOrder = async (order: ReadyOrder) => {
+    setErrorMsg('');
+    try {
+      const { response, json } = await fetchJsonWithTimeout(
+        `${API_URL}/api/ponto-pedido/pedidos-prontos/${encodeURIComponent(order.id)}/restaurar`,
+        { method: 'POST' },
+        90000,
+      );
+
+      if (!response.ok || !json?.ok) {
+        throw new Error(json?.error || 'Não foi possível reabrir o pedido.');
+      }
+
+      const targetTab = String(json.firstTab || activeTab || '');
+      if (targetTab) {
+        setActiveTab(targetTab);
+        await loadData(targetTab, false);
+      }
+      setPageMode('planejamento');
+    } catch (error: any) {
+      console.error(error);
+      setErrorMsg(error?.message || 'Falha ao reabrir o pedido pronto.');
+    }
+  };
+
+  const deleteReadyOrder = async (order: ReadyOrder) => {
+    const confirmed = window.confirm(`Excluir definitivamente \"${order.nome}\"?`);
+    if (!confirmed) return;
+
+    setErrorMsg('');
+    try {
+      const { response, json } = await fetchJsonWithTimeout(
+        `${API_URL}/api/ponto-pedido/pedidos-prontos/${encodeURIComponent(order.id)}`,
+        { method: 'DELETE' },
+        35000,
+      );
+
+      if (!response.ok || !json?.ok) {
+        throw new Error(json?.error || 'Não foi possível excluir o pedido pronto.');
+      }
+
+      await loadReadyOrders(activeCategory);
+    } catch (error: any) {
+      console.error(error);
+      setErrorMsg(error?.message || 'Falha ao excluir o pedido pronto.');
+    }
+  };
+
 
   const orderedRows = useMemo(
     () =>
@@ -760,21 +851,9 @@ export function EstoqueVendas() {
     return { date, days };
   };
 
-  const statusBlocksOrder = (status: string) => {
-    const normalized = String(status || '')
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .trim()
-      .toUpperCase();
-
-    return (
-      normalized.includes('NAO HA COMO PEDIR') ||
-      normalized.includes('OBSOLETO')
-    );
-  };
 
   const doubleStockSuggestion = (row: PontoPedidoRow) => {
-    if (statusBlocksOrder(row.status)) return 0;
+    if (isBlockedOrderStatus(row.status)) return 0;
 
     const backendValue = Number(row.sugestaoEstoqueDobrado);
     if (Number.isFinite(backendValue)) {
@@ -796,6 +875,40 @@ export function EstoqueVendas() {
     setErrorMsg('');
 
     try {
+      let automationSummary = '';
+      const normalizedQuestion = aiQuestion
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .trim()
+        .toUpperCase();
+
+      const shouldAutoPlan =
+        aiAction === 'AUTO_PLAN' || normalizedQuestion === 'FAZER PONTO DE PEDIDO';
+
+      if (shouldAutoPlan) {
+        const { response: autoResponse, json: autoJson } = await fetchJsonWithTimeout(
+          `${API_URL}/api/ponto-pedido/auto-planejar`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ categoria: activeCategory }),
+          },
+          90000,
+        );
+
+        if (!autoResponse.ok || !autoJson?.ok) {
+          throw new Error(autoJson?.error || 'Não foi possível preencher automaticamente o ponto de pedido.');
+        }
+
+        automationSummary =
+          `Ponto de pedido preenchido automaticamente: ${number(autoJson.modelosComPedido)} modelos, ` +
+          `${number(autoJson.totalUnidades)} unidades em Sugestão Rufino. ` +
+          `${number(Array.isArray(autoJson.transferencias) ? autoJson.transferencias.length : 0)} transferência(s) consideradas.`;
+
+        // Recarrega a aba para refletir imediatamente os valores gravados pelo planejamento automático.
+        await loadData(activeTab, false);
+      }
+
       const compactRows = rows.map((row) => ({
         modelo: row.modeloComCor || row.modelo,
         status: row.status,
@@ -829,10 +942,9 @@ export function EstoqueVendas() {
           aba: activeTab,
           categoria: activeCategory,
           escopo: 'REDE',
-          pergunta: aiQuestion,
-          // Mantém os dados da aba atual como fallback de compatibilidade.
-          // O backend novo monta novamente TODAS as abas da categoria
-          // para a análise consolidada da rede.
+          pergunta: shouldAutoPlan
+            ? 'Explique e audite o ponto de pedido automático que acabou de ser preenchido, incluindo transferências, backlog, riscos e quantidades finais por estado.'
+            : aiQuestion,
           rows: compactRows,
         }),
       });
@@ -842,7 +954,8 @@ export function EstoqueVendas() {
         throw new Error(json?.error || 'Não foi possível gerar a análise de compras.');
       }
 
-      setAiAnswer(String(json.answer || '').trim());
+      const report = String(json.answer || '').trim();
+      setAiAnswer(automationSummary ? `${automationSummary}\n\n${report}` : report);
       setAiContext((json.context || null) as AiAnalysisContext | null);
     } catch (error: any) {
       console.error(error);
@@ -975,7 +1088,7 @@ export function EstoqueVendas() {
         ['Sug. faturar backlog', total('sugestaoFaturarBacklog')],
         ['Sug. novos pedidos', total('sugestaoNovoPedido')],
         ['Pedido Controladoria', total('pedidoControladoria')],
-        ['Pedido Rufino', total('pedidoRufino')],
+        ['Sugestão Rufino', total('pedidoRufino')],
         ['Sobra > 4 semanas', total('sobra')],
         ['Modelos com sobra > 4 semanas', surplusRows.length],
       ];
@@ -997,7 +1110,7 @@ export function EstoqueVendas() {
         'Sug. novos pedidos': Number(row.sugestaoNovoPedido || 0),
         'Sobra > 4 semanas': Number(row.sobra || 0),
         'Pedido Controladoria': Number(row.pedidoControladoria || 0),
-        'Pedido Rufino': Number(row.pedidoRufino || 0),
+        'Sugestão Rufino': Number(row.pedidoRufino || 0),
       }));
 
       const actionsSheet = XLSX.utils.json_to_sheet(actionsData);
@@ -1213,8 +1326,21 @@ export function EstoqueVendas() {
 
   const renderMainTable = () => (
     <div className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-[0_18px_40px_-26px_rgba(15,23,42,0.35)]">
-      <div className="max-h-[72vh] overflow-auto">
-        <table className="min-w-max border-separate border-spacing-0 text-left text-[10px]">
+      <div
+        ref={topScrollRef}
+        onScroll={() => syncHorizontalScroll(topScrollRef.current, tableScrollRef.current)}
+        className="h-3 overflow-x-auto overflow-y-hidden border-b border-slate-200 bg-slate-50"
+        aria-label="Rolagem horizontal superior da tabela"
+      >
+        <div style={{ width: Math.max(tableScrollWidth, 1), height: 1 }} />
+      </div>
+
+      <div
+        ref={tableScrollRef}
+        onScroll={() => syncHorizontalScroll(tableScrollRef.current, topScrollRef.current)}
+        className="max-h-[76vh] overflow-auto"
+      >
+        <table ref={tableRef} className="min-w-max border-separate border-spacing-0 text-left text-[10px]">
           <thead className="sticky top-0 z-30 bg-slate-100/95 backdrop-blur">
             <tr className="text-[8px] font-black uppercase tracking-[0.10em] text-slate-500">
               <th className="sticky left-0 z-40 w-[260px] min-w-[260px] max-w-[260px] border-b border-r border-slate-200 bg-slate-100 px-3 py-2">
@@ -1261,8 +1387,8 @@ export function EstoqueVendas() {
                 <ColumnLabel label="Estoque" help="Estoque atual encontrado para este modelo/cor na região da aba selecionada." />
               </th>
 
-              <th className="min-w-[120px] border-b border-r border-violet-200 bg-violet-100 px-2 py-2 text-center text-violet-800">
-                <ColumnLabel label="Total em backlog" help="Backlog total considerado no planejamento: pendente/atrasado + semana atual + próximas quatro semanas." />
+              <th className="min-w-[104px] border-b border-r border-violet-200 bg-violet-100 px-2 py-2 text-center text-violet-800">
+                <ColumnLabel label={<>Total em<br />backlog</>} help="Backlog total considerado no planejamento: pendente/atrasado + semana atual + próximas quatro semanas." />
               </th>
 
               {showFutureWeeks && (
@@ -1283,12 +1409,12 @@ export function EstoqueVendas() {
                 </>
               )}
 
-              <th className="min-w-[118px] border-b border-r border-sky-200 bg-sky-50 px-2 py-2 text-center text-sky-800">
-                <ColumnLabel label="Pedido faturado" help="Quantidade informada na coluna K — PEDIDO FATURADO — da planilha oficial. Representa pedido já faturado." />
+              <th className="min-w-[92px] border-b border-r border-sky-200 bg-sky-50 px-2 py-2 text-center text-sky-800">
+                <ColumnLabel label={<>Pedido<br />faturado</>} help="Quantidade informada na coluna K — PEDIDO FATURADO — da planilha oficial. Representa pedido já faturado." />
               </th>
 
-              <th className="min-w-[130px] border-b border-r border-cyan-100 bg-cyan-50 px-2 py-2 text-center text-cyan-700">
-                <ColumnLabel label="Cobertura atual" help="Estimativa de quantos dias o estoque atual sustenta o giro calculado do modelo." />
+              <th className="min-w-[110px] border-b border-r border-cyan-100 bg-cyan-50 px-2 py-2 text-center text-cyan-700">
+                <ColumnLabel label={<>Cobertura<br />atual</>} help="Cobertura calculada somente com o estoque físico atual dividido pela média diária das Vendas 60. Backlog e pedidos futuros não entram nesta conta." />
               </th>
 
               {showForecasts && (
@@ -1308,31 +1434,31 @@ export function EstoqueVendas() {
                 </>
               )}
 
-              <th className="min-w-[155px] border-b border-r border-teal-200 bg-teal-100 px-2 py-2 text-center text-teal-900">
+              <th className="min-w-[126px] border-b border-r border-teal-200 bg-teal-100 px-2 py-2 text-center text-teal-900">
                 <ColumnLabel
-                  label="Sug. estoque dobrado"
+                  label={<>Sug. estoque<br />dobrado</>}
                   help="Referência gerencial simples: Vendas 60 dias × 2. Fica zerada para itens com status Não há como pedir ou Obsoleto."
                 />
               </th>
 
-              <th className="min-w-[130px] border-b border-r border-orange-200 bg-orange-100 px-2 py-2 text-center text-orange-800">
-                <ColumnLabel label="Sug. faturar backlog" help="Quanto do backlog existente deve ser priorizado para faturamento, limitado pela necessidade calculada." />
+              <th className="min-w-[110px] border-b border-r border-orange-200 bg-orange-100 px-2 py-2 text-center text-orange-800">
+                <ColumnLabel label={<>Sug. faturar<br />backlog</>} help="Quanto do backlog existente deve ser priorizado para faturamento, limitado pela necessidade calculada." />
               </th>
 
-              <th className="min-w-[125px] border-b border-r border-amber-200 bg-amber-100 px-2 py-2 text-center text-amber-900">
-                <ColumnLabel label="Sug. novos pedidos" help="Necessidade adicional após considerar vendas de 60 dias, estoque e total em backlog." />
+              <th className="min-w-[108px] border-b border-r border-amber-200 bg-amber-100 px-2 py-2 text-center text-amber-900">
+                <ColumnLabel label={<>Sug. novos<br />pedidos</>} help="Necessidade adicional após considerar vendas de 60 dias, estoque e total em backlog." />
               </th>
 
-              <th className="min-w-[145px] border-b border-r border-violet-200 bg-violet-600 px-2 py-2 text-center text-white">
-                <ColumnLabel label="Sugestão pedido Controladoria" help="Quantidade manual definida pela Controladoria. Campo editável e salvo no sistema." />
+              <th className="min-w-[122px] border-b border-r border-violet-200 bg-violet-600 px-2 py-2 text-center text-white">
+                <ColumnLabel label={<>Sug. pedido<br />Controladoria</>} help="Quantidade manual definida pela Controladoria. Campo editável e salvo no sistema." />
               </th>
 
-              <th className="min-w-[122px] border-b border-r border-indigo-200 bg-indigo-600 px-2 py-2 text-center text-white">
-                <ColumnLabel label="Pedido Rufino" help="Quantidade manual final do pedido Rufino. Campo editável e sincronizado com o Resumo dos Pedidos." />
+              <th className="min-w-[102px] border-b border-r border-indigo-200 bg-indigo-600 px-2 py-2 text-center text-white">
+                <ColumnLabel label={<>Sugestão<br />Rufino</>} help="Quantidade final sugerida para Rufino. Pode ser preenchida pela IA ou editada manualmente e fica sincronizada com o Resumo dos Pedidos." />
               </th>
 
-              <th className="min-w-[150px] border-b border-r border-slate-200 bg-slate-950 px-2 py-2 text-center text-white">
-                <ColumnLabel label="Previsão de estoque" help="Cobertura estimada após considerar estoque, entradas previstas e Pedido Rufino." />
+              <th className="min-w-[120px] border-b border-r border-slate-200 bg-slate-950 px-2 py-2 text-center text-white">
+                <ColumnLabel label={<>Previsão de<br />estoque</>} help="Cobertura estimada após considerar estoque, entradas previstas e Sugestão Rufino." />
               </th>
 
               <th className="min-w-[110px] border-b border-r border-emerald-100 bg-emerald-50 px-3 py-2 text-right text-emerald-700">
@@ -1471,7 +1597,6 @@ export function EstoqueVendas() {
       </div>
 
       <div className="flex flex-col gap-1.5 border-t border-slate-200 bg-slate-50 px-3 py-2 text-[8px] font-bold text-slate-500 lg:flex-row lg:items-center lg:justify-between">
-        <span>Total em backlog já inclui o pendente. Abra “Semanas backlog” para detalhar pendente + W atual + próximas 4 semanas.</span>
         <span className="text-teal-700">Estoque dobrado = Vendas 60 × 2 para itens que ainda podem ser pedidos.</span>
         <span className="text-amber-700">Novo pedido = V60 - estoque - total em backlog.</span>
       </div>
@@ -1485,7 +1610,7 @@ export function EstoqueVendas() {
           <div>
             <h3 className="text-[11px] font-black uppercase tracking-wide text-slate-900">Resumo dos pedidos</h3>
             <p className="mt-0.5 text-[9px] font-semibold text-slate-400">
-              Pedido Rufino e Controladoria são editáveis aqui. A alteração atualiza imediatamente a mesma linha no Planejamento e é salva ao sair do campo.
+              Sugestão Rufino e Controladoria são editáveis aqui. A alteração atualiza imediatamente a mesma linha no Planejamento e é salva ao sair do campo.
             </p>
           </div>
           <div className="flex flex-wrap items-center justify-end gap-1.5 text-[8px] font-black uppercase tracking-wide">
@@ -1506,7 +1631,7 @@ export function EstoqueVendas() {
                 <th className="px-2 py-2 text-center">Sug. faturar backlog</th>
                 <th className="px-2 py-2 text-center">Sug. novo pedido</th>
                 <th className="px-2 py-2 text-center">Controladoria</th>
-                <th className="px-2 py-2 text-center">Pedido Rufino</th>
+                <th className="px-2 py-2 text-center">Sugestão Rufino</th>
                 <th className="px-2 py-2 text-center">Previsão</th>
               </tr>
             </thead>
@@ -1670,15 +1795,241 @@ export function EstoqueVendas() {
     </div>
   );
 
-  const renderAiPanel = () => {
-    const quickQuestions = [
-      'Monte o ponto de pedido completo da REDE. Analise todos os estados juntos, use transferências das sobras antes de comprar e entregue o pedido final por estado e modelo, com quantidade, prioridade e justificativa.',
-      'Monte um plano de TRANSFERÊNCIAS entre os estados. Use apenas sobras acima de 4 semanas, procure o mesmo modelo/cor em estados com necessidade e diga origem, destino, quantidade e quanto de compra nova pode ser evitado.',
-      'Monte o plano completo de FATURAMENTO DE BACKLOG e NOVOS PEDIDOS da rede. Considere Vendas 60, estoque, pedido faturado, backlog e transferências; nunca recomende itens Não há como pedir ou Obsoletos.',
-      'Audite Sistema x Controladoria x Pedido Rufino em TODOS os estados. Diga objetivamente o que deve aumentar, reduzir, manter ou zerar e explique as maiores divergências.',
-      'Faça a revisão executiva final da rede: riscos de ruptura, sobras acima de 4 semanas, transferências possíveis, lançamentos, pedidos excessivos e pedido final recomendado. Itens bloqueados/obsoletos devem aparecer somente como alerta, nunca como sugestão de compra.',
-    ];
+  const renderSurplusByState = () => {
+    const orderedStates = [...stateSummaries].sort((a, b) => Number(b.sobra || 0) - Number(a.sobra || 0));
 
+    return (
+      <div className="space-y-3">
+        <div className="rounded-2xl border border-emerald-200 bg-white shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-emerald-100 bg-emerald-50 px-3 py-2.5">
+            <div>
+              <p className="text-[8px] font-black uppercase tracking-[0.16em] text-emerald-700">Resumo regional</p>
+              <h3 className="mt-0.5 text-[12px] font-black text-slate-900">Sobras por estado</h3>
+              <p className="mt-0.5 text-[9px] font-semibold text-slate-500">
+                Mostra, por região, o volume de aparelhos com sobra acima de 4 semanas. Clique em um estado para abrir a aba correspondente.
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => loadStateSummaries(activeCategory, true)}
+              disabled={stateSummaryLoading}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-[8px] font-black uppercase tracking-wide text-slate-600 transition hover:border-emerald-200 hover:text-emerald-700 disabled:opacity-40"
+            >
+              <RefreshCw size={12} className={stateSummaryLoading ? 'animate-spin' : ''} />
+              Atualizar resumo
+            </button>
+          </div>
+
+          <div className="border-b border-slate-100 px-3 py-3">
+            <div className="flex flex-wrap gap-2">
+              {orderedStates.length ? orderedStates.map((item) => (
+                <button
+                  key={`surplus-chip-${item.category}-${item.state}-${item.id}`}
+                  type="button"
+                  onClick={() => {
+                    handleTabChange(item.id);
+                    setPageMode('planejamento');
+                  }}
+                  className={`rounded-xl border px-3 py-2 text-left transition ${
+                    item.id === activeTab
+                      ? 'border-emerald-300 bg-emerald-100 text-emerald-900'
+                      : 'border-slate-200 bg-white text-slate-700 hover:border-emerald-200 hover:bg-emerald-50'
+                  }`}
+                >
+                  <div className="text-[8px] font-black uppercase tracking-wide text-slate-400">{item.label}</div>
+                  <div className="mt-1 text-[11px] font-black">{item.stateLabel || item.state}</div>
+                  <div className="mt-1 text-[11px] font-black text-emerald-700">+{number(item.sobra)} sobra</div>
+                </button>
+              )) : (
+                <span className="text-[9px] font-bold text-slate-400">Sem sobras regionais para exibir.</span>
+              )}
+            </div>
+          </div>
+
+          <div className="max-h-[70vh] overflow-auto">
+            <table className="w-full min-w-[920px] border-collapse text-[10px]">
+              <thead className="sticky top-0 z-10 bg-slate-50 text-[8px] font-black uppercase tracking-wide text-slate-500">
+                <tr>
+                  <th className="px-3 py-2 text-left">Estado</th>
+                  <th className="px-2 py-2 text-center">Vendas 60</th>
+                  <th className="px-2 py-2 text-center">Estoque</th>
+                  <th className="px-2 py-2 text-center">Total backlog</th>
+                  <th className="px-2 py-2 text-center">Sug. novos pedidos</th>
+                  <th className="px-2 py-2 text-center">Sobra &gt; 4 semanas</th>
+                  <th className="px-2 py-2 text-center">Ação</th>
+                </tr>
+              </thead>
+              <tbody>
+                {stateSummaryLoading ? (
+                  <tr>
+                    <td colSpan={7} className="px-4 py-14 text-center text-xs font-black uppercase tracking-widest text-slate-400">
+                      Calculando sobras por estado...
+                    </td>
+                  </tr>
+                ) : orderedStates.length ? (
+                  orderedStates.map((item, index) => (
+                    <tr key={`surplus-row-${item.id}`} className={index % 2 === 0 ? 'bg-white' : 'bg-emerald-50/20'}>
+                      <td className="border-t border-slate-100 px-3 py-2">
+                        <div className="font-black uppercase text-slate-900">{item.stateLabel || item.state}</div>
+                        <div className="text-[8px] font-bold uppercase text-slate-400">{item.label}</div>
+                      </td>
+                      <td className="border-t border-slate-100 px-2 py-2 text-center font-black text-blue-800">{number(item.vendas60)}</td>
+                      <td className="border-t border-slate-100 px-2 py-2 text-center font-bold">{number(item.estoque)}</td>
+                      <td className="border-t border-slate-100 px-2 py-2 text-center font-black text-violet-800">{number(item.backlogTotal)}</td>
+                      <td className="border-t border-slate-100 px-2 py-2 text-center font-black text-amber-900">{number(item.sugestaoNovosPedidos)}</td>
+                      <td className="border-t border-slate-100 bg-emerald-50 px-2 py-2 text-center font-black text-emerald-800">{number(item.sobra)}</td>
+                      <td className="border-t border-slate-100 px-2 py-2 text-center">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            handleTabChange(item.id);
+                            setPageMode('planejamento');
+                          }}
+                          className="inline-flex items-center rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[8px] font-black uppercase tracking-wide text-slate-600 transition hover:border-indigo-200 hover:text-indigo-700"
+                        >
+                          Abrir estado
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan={7} className="px-4 py-14 text-center text-xs font-black uppercase tracking-widest text-slate-400">
+                      Nenhuma sobra acima de 4 semanas foi encontrada.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderReadyOrders = () => (
+    <div className="space-y-3">
+      <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
+        <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+          <div>
+            <p className="text-[8px] font-black uppercase tracking-[0.16em] text-slate-400">Histórico operacional</p>
+            <h3 className="mt-0.5 text-base font-black text-slate-950">Pedidos prontos</h3>
+            <p className="mt-1 max-w-3xl text-[10px] font-semibold leading-5 text-slate-500">
+              Cada finalização salva uma fotografia do ponto de pedido da categoria. Em “Editar”, o sistema restaura as quantidades salvas para o Planejamento, onde você pode ajustar e finalizar novamente.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => loadReadyOrders(activeCategory)}
+            disabled={readyOrdersLoading}
+            className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-wide text-slate-600 transition hover:border-indigo-200 hover:text-indigo-700 disabled:opacity-40"
+          >
+            <RefreshCw size={13} className={readyOrdersLoading ? 'animate-spin' : ''} />
+            Atualizar
+          </button>
+        </div>
+      </div>
+
+      {readyOrdersLoading ? (
+        <div className="flex min-h-[260px] items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white text-xs font-bold text-slate-400">
+          <RefreshCw size={15} className="animate-spin" />
+          Carregando pedidos prontos...
+        </div>
+      ) : readyOrders.length ? (
+        <div className="grid gap-2 xl:grid-cols-2">
+          {readyOrders.map((order) => (
+            <div key={order.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <Archive size={15} className="shrink-0 text-indigo-600" />
+                    <h4 className="truncate text-sm font-black text-slate-950" title={order.nome}>{order.nome}</h4>
+                  </div>
+                  <p className="mt-1 text-[9px] font-bold uppercase tracking-wide text-slate-400">
+                    {order.categoria} · {new Date(order.criadoEm).toLocaleString('pt-BR')}
+                  </p>
+                </div>
+
+                <span className="shrink-0 rounded-full bg-emerald-50 px-2 py-1 text-[8px] font-black uppercase text-emerald-700">
+                  Finalizado
+                </span>
+              </div>
+
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                <div className="rounded-xl bg-slate-50 px-3 py-2">
+                  <p className="text-[7px] font-black uppercase tracking-wide text-slate-400">Modelos pedidos</p>
+                  <p className="mt-1 text-lg font-black text-slate-950">{number(order.totalModelos)}</p>
+                </div>
+                <div className="rounded-xl bg-indigo-50 px-3 py-2">
+                  <p className="text-[7px] font-black uppercase tracking-wide text-indigo-400">Unidades</p>
+                  <p className="mt-1 text-lg font-black text-indigo-900">{number(order.totalUnidades)}</p>
+                </div>
+              </div>
+
+              <div className="mt-3 flex flex-wrap justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => editReadyOrder(order)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-[8px] font-black uppercase tracking-wide text-indigo-700 transition hover:bg-indigo-100"
+                >
+                  <Pencil size={12} />
+                  Editar
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => deleteReadyOrder(order)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-[8px] font-black uppercase tracking-wide text-red-700 transition hover:bg-red-100"
+                >
+                  <Trash2 size={12} />
+                  Excluir
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="flex min-h-[260px] flex-col items-center justify-center rounded-2xl border border-dashed border-slate-300 bg-white px-6 text-center">
+          <Archive size={28} className="text-slate-300" />
+          <h4 className="mt-3 text-sm font-black text-slate-700">Nenhum pedido finalizado</h4>
+          <p className="mt-1 max-w-xl text-[10px] font-semibold leading-5 text-slate-400">
+            Quando o usuário clicar em “Finalizar ponto de pedido”, a fotografia completa do pedido ficará armazenada aqui.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+
+  const renderAiPanel = () => {
+    const quickQuestions: Array<{ label: string; prompt: string; action: AiAction }> = [
+      {
+        label: 'Fazer ponto de pedido',
+        prompt: 'Fazer ponto de pedido',
+        action: 'AUTO_PLAN',
+      },
+      {
+        label: 'Planejar transferências',
+        prompt: 'Monte um plano de transferências entre os estados. Use apenas sobras acima de 4 semanas, procure o mesmo modelo/cor em estados com necessidade e diga origem, destino, quantidade e quanto de compra nova pode ser evitado.',
+        action: '',
+      },
+      {
+        label: 'Faturar backlog e novos pedidos',
+        prompt: 'Monte o plano completo de faturamento de backlog e novos pedidos da rede. Considere Vendas 60, estoque atual, pedido faturado, backlog e transferências; nunca recomende itens Não há como pedir ou Obsoletos.',
+        action: '',
+      },
+      {
+        label: 'Auditar sugestões atuais',
+        prompt: 'Audite Sistema x Controladoria x Sugestão Rufino em todos os estados. Diga objetivamente o que deve aumentar, reduzir, manter ou zerar e explique as maiores divergências.',
+        action: '',
+      },
+      {
+        label: 'Revisão executiva final',
+        prompt: 'Faça a revisão executiva final da rede: riscos de ruptura, sobras acima de 4 semanas, transferências possíveis, lançamentos, pedidos excessivos e pedido final recomendado. Itens bloqueados/obsoletos devem aparecer somente como alerta, nunca como sugestão de compra.',
+        action: '',
+      },
+    ];
     return (
       <div className="grid gap-3 xl:grid-cols-[0.72fr_1.28fr]">
         <div className="rounded-2xl border border-violet-200 bg-gradient-to-br from-violet-950 to-slate-950 p-4 text-white shadow-sm">
@@ -1703,9 +2054,12 @@ export function EstoqueVendas() {
             <div className="grid gap-2">
               {quickQuestions.map((question, index) => (
                 <button
-                  key={question}
+                  key={question.label}
                   type="button"
-                  onClick={() => setAiQuestion(question)}
+                  onClick={() => {
+                    setAiQuestion(question.prompt);
+                    setAiAction(question.action);
+                  }}
                   className={`rounded-xl border px-3 py-2.5 text-left text-[9px] font-bold leading-4 transition ${
                     index === 0
                       ? 'border-violet-400/50 bg-violet-500/20 text-white hover:bg-violet-500/30'
@@ -1713,7 +2067,7 @@ export function EstoqueVendas() {
                   }`}
                 >
                   <span className="mr-2 text-violet-300">{String(index + 1).padStart(2, '0')}</span>
-                  {question}
+                  {question.label}
                 </button>
               ))}
             </div>
@@ -1766,7 +2120,10 @@ export function EstoqueVendas() {
 
           <textarea
             value={aiQuestion}
-            onChange={(event) => setAiQuestion(event.target.value)}
+            onChange={(event) => {
+              setAiQuestion(event.target.value);
+              setAiAction('');
+            }}
             rows={3}
             placeholder="Escreva o que deseja analisar..."
             className="mt-3 w-full resize-none rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs font-semibold text-slate-700 outline-none transition focus:border-violet-400 focus:bg-white"
@@ -1814,10 +2171,7 @@ export function EstoqueVendas() {
             <div>
               <h2 className="text-xl font-black uppercase tracking-tight text-slate-950 md:text-2xl">
                 Ponto de Pedido
-              </h2>
-              <p className="mt-0.5 text-[10px] font-bold uppercase tracking-[0.15em] text-slate-400">
-                Google Sheets + vendas + estoque + pedidos em trânsito
-              </p>
+              </h2>              
             </div>
           </div>
 
@@ -1832,27 +2186,18 @@ export function EstoqueVendas() {
               />
             </div>
 
-            {data?.sourceUrl && (
-              <a
-                href={data.sourceUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex h-10 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-[9px] font-black uppercase tracking-wide text-slate-600 shadow-sm transition hover:border-indigo-200 hover:text-indigo-700"
-              >
-                <ExternalLink size={13} />
-                Sheets
-              </a>
-            )}
 
             <button
               type="button"
-              onClick={handleRefresh}
-              disabled={loading}
-              className="inline-flex h-10 items-center gap-2 rounded-xl bg-slate-950 px-4 text-[9px] font-black uppercase tracking-wide text-white shadow-sm transition hover:bg-slate-800 disabled:opacity-50"
+              onClick={finalizePointOrder}
+              disabled={finalizing || loading}
+              className="inline-flex h-10 items-center gap-2 rounded-xl bg-orange-500 px-4 text-[9px] font-black uppercase tracking-wide text-white shadow-sm transition hover:bg-orange-600 disabled:opacity-50"
+              title="Salva uma fotografia completa do ponto de pedido atual da categoria em Pedidos prontos."
             >
-              <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
-              Atualizar
+              {finalizing ? <RefreshCw size={13} className="animate-spin" /> : <CheckCircle2 size={13} />}
+              Finalizar ponto de pedido
             </button>
+
           </div>
         </div>
       </div>
@@ -1922,49 +2267,17 @@ export function EstoqueVendas() {
           <ModeButton active={pageMode === 'resumo'} onClick={() => setPageMode('resumo')} icon={BarChart3}>
             Resumo dos pedidos
           </ModeButton>
+          <ModeButton active={pageMode === 'sobras'} onClick={() => setPageMode('sobras')} icon={TrendingUp}>
+            Sobras por estado
+          </ModeButton>
           <ModeButton active={pageMode === 'ia'} onClick={() => setPageMode('ia')} icon={BrainCircuit}>
             Assistente IA
           </ModeButton>
+          <ModeButton active={pageMode === 'prontos'} onClick={() => setPageMode('prontos')} icon={Archive}>
+            Pedidos prontos
+          </ModeButton>
         </div>
 
-        {pageMode === 'planejamento' && (
-          <>
-            <div className="mb-2.5 grid grid-cols-2 gap-1.5 md:grid-cols-3 xl:grid-cols-5">
-              <CompactSummaryCard label="Total backlog" value={number(liveSummary.backlog)} icon={Clock3} tone="violet" />
-              <CompactSummaryCard label="Faturar backlog" value={number(liveSummary.faturarBacklog)} icon={TrendingUp} tone="amber" />
-              <CompactSummaryCard label="Novos pedidos" value={number(liveSummary.novosPedidos)} icon={ShoppingCart} tone="amber" />
-              <CompactSummaryCard label="Controladoria" value={number(liveSummary.controladoria)} icon={BarChart3} tone="violet" />
-              <CompactSummaryCard label="Pedido Rufino" value={number(liveSummary.pedidoRufino)} icon={ShoppingCart} tone="emerald" />
-            </div>
-
-            <div className="mb-2.5 rounded-2xl border border-slate-200 bg-white px-3 py-2 shadow-sm">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-[8px] font-black uppercase tracking-[0.14em] text-slate-400" title="Estoque físico acima de quatro semanas de cobertura, calculado por estado.">Sobra &gt; 4 semanas por estado</span>
-                {stateSummaryLoading ? (
-                  <span className="inline-flex items-center gap-1 text-[9px] font-bold text-slate-400"><RefreshCw size={10} className="animate-spin" /> Calculando...</span>
-                ) : stateSummaries.length ? (
-                  stateSummaries.map((item) => (
-                    <button
-                      key={`${item.category}-${item.state}-${item.id}`}
-                      type="button"
-                      onClick={() => handleTabChange(item.id)}
-                      className={`inline-flex items-center gap-2 rounded-xl border px-2.5 py-1.5 text-[9px] font-black transition ${
-                        item.id === activeTab
-                          ? 'border-emerald-300 bg-emerald-100 text-emerald-900'
-                          : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-white'
-                      }`}
-                    >
-                      <span>{item.stateLabel || item.state}</span>
-                      <span className="text-emerald-700">+{number(item.sobra)}</span>
-                    </button>
-                  ))
-                ) : (
-                  <span className="text-[9px] font-bold text-slate-400">Sem resumo disponível.</span>
-                )}
-              </div>
-            </div>
-          </>
-        )}
 
         {pageMode === 'planejamento' && (
           <>
@@ -2015,6 +2328,21 @@ export function EstoqueVendas() {
                 >
                   Saldos
                 </GroupButton>
+
+
+                <button
+                  type="button"
+                  onClick={() => setHideBlockedRows((value) => !value)}
+                  title="Oculta ou mostra os itens com status Obsoleto e Não há como pedir."
+                  className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[8px] font-black uppercase tracking-wide shadow-sm transition ${
+                    hideBlockedRows
+                      ? 'border-red-200 bg-red-50 text-red-700'
+                      : 'border-amber-200 bg-amber-50 text-amber-800 hover:border-amber-300'
+                  }`}
+                >
+                  <EyeOff size={11} />
+                  Obsoletos / Fora pedido
+                </button>
               </div>
             </div>
 
@@ -2024,7 +2352,9 @@ export function EstoqueVendas() {
 
         {pageMode === 'sugestoes' && renderSystemSummary()}
         {pageMode === 'resumo' && renderOrderSummary()}
+        {pageMode === 'sobras' && renderSurplusByState()}
         {pageMode === 'ia' && renderAiPanel()}
+        {pageMode === 'prontos' && renderReadyOrders()}
       </div>
     </div>
   );

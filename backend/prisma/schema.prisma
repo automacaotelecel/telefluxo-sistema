@@ -115,11 +115,13 @@ model Stock {
   acquisitionCost Float?
   updatedAt       DateTime @updatedAt
   serial          String?
+  barcode         String?
   emLinha         String?
   cluster         String?
   stockType       String   @default("ESTOQUE")
 
   @@index([serial])
+  @@index([barcode])
   @@index([storeName, productCode, stockType])
 }
 
@@ -234,6 +236,7 @@ model InventoryAuditSession {
   userId          String
   operatorName    String
   storeName       String
+  auditType       String    @default("APARELHOS")
   status          String    @default("ACTIVE")
   expectedCount   Int       @default(0)
   sourceUpdatedAt DateTime?
@@ -244,7 +247,7 @@ model InventoryAuditSession {
   expectedItems InventoryAuditExpectedItem[]
   scans         InventoryAuditScan[]
 
-  @@index([userId, storeName, status])
+  @@index([userId, storeName, auditType, status])
   @@index([storeName, startedAt])
 }
 

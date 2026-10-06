@@ -1246,13 +1246,6 @@ const DISCOUNT_FIELD_LABELS: Record<EditableDiscountField, string> = DISCOUNT_CO
   {} as Record<EditableDiscountField, string>
 );
 
-const PRICE_TO_DISCOUNT_FIELD: Record<EditablePriceField, EditableDiscountField> = {
-  priceRebate: 'descontoRebate',
-  priceTradeIn: 'descontoTradeIn',
-  priceBogo: 'descontoBogo',
-  priceSip: 'descontoSip',
-};
-
 const getVisibleColumnKeys = (
   showDiscountDetails: boolean,
   visibleDiscountFields: EditableDiscountField[],
@@ -1319,8 +1312,9 @@ const recalculateRow = (row: LinhaTabela): LinhaTabela => {
   // O preço promocional usa o total desconto já sem centavos.
   const precoPromocional = row.precoSamsung > 0 ? Math.max(row.precoSamsung - totalDesconto, 0) : 0;
 
-  // Coluna T do comparativo: NOVO CUSTO MÉDIO ESTOQUE (PRICE)
-  // Aqui entram os campos Price, não os descontos brutos da Samsung.
+  // Coluna T do comparativo: NOVO CUSTO MÉDIO ESTOQUE (PRICE).
+  // PRICE é receita/verba recuperada: reduz o custo efetivo da operação,
+  // mas NÃO altera preço promocional nem qualquer coluna de desconto.
   const novoCustoMedioBruto =
     row.custoMedioEstoque -
     row.priceRebate -
@@ -1336,7 +1330,9 @@ const recalculateRow = (row: LinhaTabela): LinhaTabela => {
       ? 1 - row.custoMedioEstoque / precoTelecel
       : null;
 
-  // Fórmula fiel ao Excel: =100%-(NOVO CUSTO MÉDIO ESTOQUE / PREÇO PROMOCIONAL)
+  // Fórmula fiel ao Excel (anexo):
+  // MARGEM PRICE = 100% - (NOVO CUSTO MÉDIO ESTOQUE / PREÇO PROMOCIONAL).
+  // Logo, aumentando PRICE -> novo custo médio cai -> Margem Price aumenta.
   const margemPrice =
     precoPromocional > 0 && novoCustoMedio !== null
       ? 1 - novoCustoMedio / precoPromocional
@@ -1480,7 +1476,7 @@ type TableHeaderProps = {
 const TableHeader = ({ children, className = '', style, onResizeStart }: TableHeaderProps) => (
   <th
     style={style}
-    className={`relative border-b border-r border-slate-200 px-1.5 py-1 text-center text-[9px] font-black uppercase tracking-[0.08em] text-slate-500 whitespace-normal select-none ${className}`}
+    className={`relative border-b border-r border-[#9fb3c8] px-1.5 py-1 text-center text-[9px] font-black uppercase tracking-[0.08em] text-slate-500 whitespace-normal select-none ${className}`}
   >
     <div
       className={typeof children === 'string' ? 'min-w-0 truncate pr-2' : 'min-w-0 pr-2'}
@@ -1510,7 +1506,7 @@ const TableCell = ({
   <td
     {...tdProps}
     style={style}
-    className={`overflow-hidden border-b border-r border-slate-100 px-1 py-[3px] text-[10px] leading-4 text-slate-700 align-middle ${className}`}
+    className={`overflow-hidden border-b border-r border-[#b7c3cf] px-1 py-[3px] text-[10px] leading-4 text-slate-700 align-middle ${className}`}
   >
     {children}
   </td>
@@ -1519,7 +1515,7 @@ const TableCell = ({
 const GroupHeader = ({ children, className = '', colSpan }: { children: React.ReactNode; className?: string; colSpan: number }) => (
   <th
     colSpan={colSpan}
-    className={`border-b border-r border-slate-200 px-1.5 py-1 text-center text-[9px] font-black uppercase tracking-[0.12em] whitespace-nowrap ${className}`}
+    className={`border-b border-r border-[#9fb3c8] px-1.5 py-1 text-center text-[9px] font-black uppercase tracking-[0.12em] whitespace-nowrap ${className}`}
   >
     {children}
   </th>
@@ -1595,10 +1591,15 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
     [visibleDiscountFields]
   );
 
-  const visibleColumnKeys = useMemo(
+  const allVisibleColumnKeys = useMemo(
     () => getVisibleColumnKeys(showDiscountDetails, activeDiscountFields, showPriceDetails, showOfferDetails),
     [showDiscountDetails, activeDiscountFields, showPriceDetails, showOfferDetails]
   );
+
+  // O comparativo permanece sempre completo em uma única tabela, com rolagem horizontal.
+  const firstHalfOnly = false;
+  const secondHalfOnly = false;
+  const visibleColumnKeys = allVisibleColumnKeys;
 
   const getColumnWidth = (columnKey: string) =>
     clampColumnWidth(columnWidths[columnKey] || DEFAULT_COLUMN_WIDTHS[columnKey] || 96);
@@ -1713,9 +1714,10 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
 
   const renderDiscountCell = (row: LinhaTabela, field: EditableDiscountField) => {
     const value = Number(row[field] || 0);
+    const cellBackground = field === 'totalDescontoTelecel' ? 'bg-[#edffed]' : 'bg-[#dff1ff]';
 
     return (
-      <TableCell key={field} className="bg-[#dff1ff]" style={getColumnStyle(field)}>
+      <TableCell key={field} className={cellBackground} style={getColumnStyle(field)}>
         {renderMoneyInput(row.rowKey, field, value)}
       </TableCell>
     );
@@ -1728,21 +1730,17 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
     rawValue: string
   ) => {
     const value = toNumber(rawValue);
-    const discountField = PRICE_TO_DISCOUNT_FIELD[field];
 
     setRows((prevRows) =>
       prevRows.map((row) => {
         if (row.rowKey !== rowKey) return row;
 
-        const productType = resolveDiscountProductType('', row.descricao);
-        const formulaFactor = getDiscountFormulaFactor(productType);
-
+        // PRICE é verba/ganho da operação e NÃO é desconto ao cliente.
+        // Portanto, editar Price altera somente o novo custo médio e a Margem Price.
+        // O preço promocional e os campos de desconto permanecem inalterados.
         return recalculateRow({
           ...row,
           [field]: value,
-          // Mantém Price e Desconto coerentes: ao editar o Price, o desconto
-          // correspondente é recalculado pela mesma fórmula usada na carta.
-          [discountField]: calculateDiscountFromPrice(value, formulaFactor),
         });
       })
     );
@@ -1763,7 +1761,7 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
         onChange={(event) => updatePriceField(row.rowKey, field, event.target.value)}
         className="block w-full min-w-0 bg-transparent py-[2px] pl-5 pr-1 text-right text-[10px] font-black text-slate-800 outline-none"
         placeholder="0,00"
-        title="Price editável - altera o desconto correspondente e recalcula o comparativo"
+        title="Price editável - altera somente o novo custo médio e a Margem Price; não altera o preço promocional"
       />
     </div>
   );
@@ -1954,17 +1952,36 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
         stock?.productType || '',
         resolvedDescription
       );
-      const discountFormulaFactor = getDiscountFormulaFactor(productType);
       const hasOperationalStock = Number(stock?.quantidade || 0) > 0;
       const shouldIgnoreAutomatically = !hasOperationalStock || productType === 'COMPUTER';
 
-      // Cada investimento é direcionado exclusivamente pelo tipo identificado
-      // na carta lida. Uma carta Rebate não preenche Trade In/Bogo/SIP, e assim
-      // sucessivamente. Sem carta/oferta, nenhum desconto de investimento nasce.
+      // PRICE representa verba/ganho e é independente do desconto concedido.
+      // A carta define qual investimento está ativo; o valor de desconto vem
+      // exclusivamente das colunas de desconto da planilha guia de preços.
+      // Assim, alterar PRICE nunca modifica o preço promocional.
+      const campaignText = campaignItem ? getCampaignText(campaignItem) : '';
+      const hasRebateCampaign = hasOferta && /\b(REBATE|SELL\s*OUT|SELLOUT)\b/i.test(campaignText);
+      const hasTradeInCampaign = hasOferta && /\b(VOUCHER|TRADE\s*IN|TRADE-IN|TRADEIN)\b/i.test(campaignText);
+      const hasBogoCampaign = hasOferta && /\b(BUNDLE|BOGO|MULTI\s*BUY|MULTI-BUY|MULTIBUY)\b/i.test(campaignText);
+      const hasSipCampaign = hasOferta && /\b(SIP)\b/i.test(campaignText);
+
       const effectivePriceRebate = hasOferta ? (campaignPrices?.priceRebate || 0) : 0;
       const effectivePriceTradeIn = hasOferta ? (campaignPrices?.priceTradeIn || 0) : 0;
       const effectivePriceBogo = hasOferta ? (campaignPrices?.priceBogo || 0) : 0;
       const effectivePriceSip = hasOferta ? (campaignPrices?.priceSip || 0) : 0;
+
+      const effectiveDiscountRebate = hasRebateCampaign
+        ? Math.max(Number(priceGuide?.descontoRebate || 0), 0)
+        : 0;
+      const effectiveDiscountTradeIn = hasTradeInCampaign
+        ? Math.max(Number(priceGuide?.descontoTradeIn || 0), 0)
+        : 0;
+      const effectiveDiscountBogo = hasBogoCampaign
+        ? Math.max(Number(priceGuide?.descontoBogo || 0), 0)
+        : 0;
+      const effectiveDiscountSip = hasSipCampaign
+        ? Math.max(Number(priceGuide?.descontoSip || 0), 0)
+        : 0;
 
       const baseRow: LinhaTabela = {
         rowKey,
@@ -1977,14 +1994,12 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
         precoSamsung,
         precoTelecel,
         totalDescontoTelecel,
-        // Os descontos de campanha agora nascem sempre do respectivo Price.
-        // Ex.: Price Rebate -> Desc. Rebate; Price Trade In -> Desc. Trade In.
-        // Se Price = 0, então o desconto também precisa ser 0.
-        // O usuário ainda pode editar manualmente os campos na tela.
-        descontoRebate: calculateDiscountFromPrice(effectivePriceRebate, discountFormulaFactor),
-        descontoTradeIn: calculateDiscountFromPrice(effectivePriceTradeIn, discountFormulaFactor),
-        descontoBogo: calculateDiscountFromPrice(effectivePriceBogo, discountFormulaFactor),
-        descontoSip: calculateDiscountFromPrice(effectivePriceSip, discountFormulaFactor),
+        // Descontos e PRICE são independentes.
+        // Desconto altera o preço promocional; PRICE altera somente custo/margem.
+        descontoRebate: effectiveDiscountRebate,
+        descontoTradeIn: effectiveDiscountTradeIn,
+        descontoBogo: effectiveDiscountBogo,
+        descontoSip: effectiveDiscountSip,
         descontoGeral: 0,
         totalDesconto: 0,
         precoPromocional: 0,
@@ -2836,11 +2851,6 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
               </button>
             </div>
 
-            <div className="text-[11px] font-semibold text-slate-500">
-              Comparativo: <span className="font-black text-slate-800">{getComparativoKindLabel(selectedComparativoKind)}</span> ·
-              Produtos na tela: <span className="font-black text-slate-800">{formatNumber(summary.modelos)}</span> ·
-              Selecionados: <span className="font-black text-emerald-700">{formatNumber(filteredRows.length)}</span> · Desconsiderados: <span className="font-black text-orange-600">{formatNumber(ignoredRowsCount)}</span>
-            </div>
           </div>
 
           {isOnlineTab && (
@@ -2874,7 +2884,7 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
                 maxHeight: 'calc(100vh - 180px)',
               }}
             >
-              <table style={tableWidthStyle} className="table-fixed border-separate border-spacing-0 bg-white">
+              <table style={tableWidthStyle} className="table-fixed border-separate border-spacing-0 border-l border-t border-[#9fb3c8] bg-white">
                 <colgroup>
                   {visibleColumnKeys.map((columnKey) => (
                     <col key={columnKey} style={getColumnStyle(columnKey)} />
@@ -2882,117 +2892,143 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
                 </colgroup>
                 <thead className="sticky top-0 z-30 shadow-[0_1px_0_0_rgba(226,232,240,1)]">
                   <tr>
-                    <GroupHeader colSpan={1} className="sticky left-0 top-0 z-40 bg-[#d9d9d9] text-[#003366] shadow-[1px_0_0_0_rgba(148,163,184,0.55)]">
+                    <GroupHeader colSpan={1} className="sticky left-0 top-0 z-40 bg-white text-[#003366] shadow-[1px_0_0_0_rgba(148,163,184,0.55)]">
                       Produto
                     </GroupHeader>
-                    <GroupHeader colSpan={2} className="bg-[#d7ffe3] text-[#006100]">Preços</GroupHeader>
-                    <GroupHeader colSpan={discountColSpan} className="bg-[#dff1ff] text-[#003366]">
-                      <div className="flex min-w-0 flex-col items-center justify-center gap-1">
-                        <ToggleGroupButton
-                          open={showDiscountDetails}
-                          label="Descontos"
-                          onClick={() => setShowDiscountDetails((prev) => !prev)}
-                        />
-                        {showDiscountDetails && (
-                          <div className="flex max-w-full flex-wrap items-center justify-center gap-1">
-                            {DISCOUNT_COLUMN_OPTIONS.map((item) => {
-                              const checked = visibleDiscountFields.includes(item.key);
-                              return (
-                                <button
-                                  key={item.key}
-                                  type="button"
-                                  onClick={() => toggleDiscountFieldVisibility(item.key)}
-                                  className={`rounded-full border px-2 py-0.5 text-[9px] font-black uppercase tracking-wide transition ${
-                                    checked
-                                      ? 'border-sky-500 bg-white text-sky-800 shadow-sm'
-                                      : 'border-slate-200 bg-slate-100 text-slate-400'
-                                  }`}
-                                  title={checked ? `Ocultar ${item.label}` : `Mostrar ${item.label}`}
-                                >
-                                  {checked ? '−' : '+'} {item.label}
-                                </button>
-                              );
-                            })}
+
+                    {!secondHalfOnly && (
+                      <>
+                        <GroupHeader colSpan={2} className="bg-white text-[#003366]">Preços</GroupHeader>
+                        <GroupHeader colSpan={discountColSpan} className="bg-[#dff1ff] text-[#003366]">
+                          <div className="flex min-w-0 flex-col items-center justify-center gap-1">
+                            <ToggleGroupButton
+                              open={showDiscountDetails}
+                              label="Descontos"
+                              onClick={() => setShowDiscountDetails((prev) => !prev)}
+                            />
+                            {showDiscountDetails && (
+                              <div className="flex max-w-full flex-wrap items-center justify-center gap-1">
+                                {DISCOUNT_COLUMN_OPTIONS.map((item) => {
+                                  const checked = visibleDiscountFields.includes(item.key);
+                                  return (
+                                    <button
+                                      key={item.key}
+                                      type="button"
+                                      onClick={() => toggleDiscountFieldVisibility(item.key)}
+                                      className={`rounded-full border px-2 py-0.5 text-[9px] font-black uppercase tracking-wide transition ${
+                                        checked
+                                          ? 'border-sky-500 bg-white text-sky-800 shadow-sm'
+                                          : 'border-slate-200 bg-slate-100 text-slate-400'
+                                      }`}
+                                      title={checked ? `Ocultar ${item.label}` : `Mostrar ${item.label}`}
+                                    >
+                                      {checked ? '−' : '+'} {item.label}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            )}
                           </div>
-                        )}
-                      </div>
-                    </GroupHeader>
-                    <GroupHeader colSpan={2} className="bg-[#fff2cc] text-[#7f6000]">Preço Promo</GroupHeader>
-                    <GroupHeader colSpan={6} className="bg-[#eaf2f8] text-[#1f4e79]">Operação</GroupHeader>
-                    <GroupHeader colSpan={priceColSpan} className="bg-[#e2f0d9] text-[#003b8f]">
-                      <ToggleGroupButton
-                        open={showPriceDetails}
-                        label="Prices"
-                        onClick={() => setShowPriceDetails((prev) => !prev)}
-                      />
-                    </GroupHeader>
-                    <GroupHeader colSpan={offerColSpan} className="bg-[#92d050] text-[#003b8f]">
-                      <ToggleGroupButton
-                        open={showOfferDetails}
-                        label="Oferta"
-                        onClick={() => setShowOfferDetails((prev) => !prev)}
-                      />
-                    </GroupHeader>
-                    <GroupHeader colSpan={1} className="bg-[#fff2cc] text-[#7f6000]">
-                      Mercado
-                    </GroupHeader>
+                        </GroupHeader>
+                        <GroupHeader colSpan={2} className="bg-[#fff2cc] text-[#7f6000]">Preço Promo</GroupHeader>
+                      </>
+                    )}
+
+                    <GroupHeader colSpan={firstHalfOnly || secondHalfOnly ? 3 : 6} className="bg-white text-[#1f4e79]">Operação</GroupHeader>
+
+                    {!firstHalfOnly && (
+                      <>
+                        <GroupHeader colSpan={priceColSpan} className="bg-[#e2f0d9] text-[#003b8f]">
+                          <ToggleGroupButton
+                            open={showPriceDetails}
+                            label="Prices"
+                            onClick={() => setShowPriceDetails((prev) => !prev)}
+                          />
+                        </GroupHeader>
+                        <GroupHeader colSpan={offerColSpan} className="bg-[#92d050] text-[#003b8f]">
+                          <ToggleGroupButton
+                            open={showOfferDetails}
+                            label="Oferta"
+                            onClick={() => setShowOfferDetails((prev) => !prev)}
+                          />
+                        </GroupHeader>
+                        <GroupHeader colSpan={1} className="bg-[#fff2cc] text-[#7f6000]">
+                          Mercado
+                        </GroupHeader>
+                      </>
+                    )}
                   </tr>
                   <tr className="sticky top-[29px] z-30 bg-white">
-                    {renderResizableHeader('descricao', 'Descrição', 'sticky left-0 z-40 bg-[#d9d9d9] text-[#003366] shadow-[1px_0_0_0_rgba(148,163,184,0.55)]')}
+                    {renderResizableHeader('descricao', 'Descrição', 'sticky left-0 z-40 bg-white text-[#003366] shadow-[1px_0_0_0_rgba(148,163,184,0.55)]')}
 
-                    {renderResizableHeader('precoSamsung', <HeaderStack top="Preço" bottom="Samsung" />, 'bg-[#d9ffd9] text-[#006100]')}
-                    {renderResizableHeader('precoTelecel', <HeaderStack top="Preço" bottom="Telecel" />, 'bg-[#d9ffd9] text-[#006100]')}
-
-                    {showDiscountDetails && activeDiscountFields.length > 0 ? (
-                      activeDiscountFields.map((field) =>
-                        renderResizableHeader(field, DISCOUNT_FIELD_LABELS[field].replace('Desc. ', '').includes(' ') ? <HeaderStack top={DISCOUNT_FIELD_LABELS[field].replace('Desc. ', '').split(' ')[0]} bottom={DISCOUNT_FIELD_LABELS[field].replace('Desc. ', '').split(' ').slice(1).join(' ') || 'Desconto'} /> : DISCOUNT_FIELD_LABELS[field], 'bg-[#dff1ff] text-[#003366]')
-                      )
-                    ) : (
-                      renderResizableHeader('descontoCollapsed', '+ Descontos', 'bg-[#dff1ff] text-center text-[#003366]')
-                    )}
-                    {renderResizableHeader('totalDesconto', <HeaderStack top="Total" bottom="Desconto" />, 'bg-[#fff2cc] text-[#7f6000]')}
-                    {renderResizableHeader('precoPromocional', <HeaderStack top="Preço" bottom="Final" />, 'bg-emerald-200 text-[#c00000] border-x border-emerald-300 shadow-[inset_0_0_0_1px_rgba(16,185,129,0.16)]')}
-
-                    {renderResizableHeader('qtdEstoque', <HeaderStack top="Qtd" bottom="Est." />, 'bg-[#eaf2f8] text-right')}
-                    {renderResizableHeader('custoMedioEstoque', <HeaderStack top="Custo" bottom="Médio" />, 'bg-[#eaf2f8] text-right')}
-                    {renderResizableHeader('margemEstoque', <HeaderStack top="Margem" bottom="Est." />, 'bg-[#eaf2f8] text-right')}
-                    {renderResizableHeader('novoCustoMedio', <HeaderStack top="Novo Custo" bottom="Médio" />, 'bg-[#eaf2f8] text-right')}
-                    {renderResizableHeader('margemPrice', <HeaderStack top="Margem" bottom="Price" />, 'bg-[#eaf2f8] text-right')}
-                    {renderResizableHeader('qtdVendida', <HeaderStack top="Qtd" bottom="Vend." />, 'bg-[#eaf2f8] text-right')}
-
-                    {showPriceDetails ? (
+                    {!secondHalfOnly && (
                       <>
-                        {renderResizableHeader('priceRebate', <HeaderStack top="Price" bottom="Rebate" />, 'bg-[#e2f0d9]')}
-                        {renderResizableHeader('priceTradeIn', <HeaderStack top="Price" bottom="Trade In" />, 'bg-[#e2f0d9]')}
-                        {renderResizableHeader('priceBogo', <HeaderStack top="Price" bottom="Bogo" />, 'bg-[#e2f0d9]')}
-                        {renderResizableHeader('priceSip', <HeaderStack top="Price" bottom="SIP" />, 'bg-[#e2f0d9]')}
+                        {renderResizableHeader('precoSamsung', <HeaderStack top="Preço" bottom="Samsung" />, 'bg-white text-[#003366]')}
+                        {renderResizableHeader('precoTelecel', <HeaderStack top="Preço" bottom="Telecel" />, 'bg-[#edffed] text-[#006100]')}
+
+                        {showDiscountDetails && activeDiscountFields.length > 0 ? (
+                          activeDiscountFields.map((field) =>
+                            renderResizableHeader(
+                              field,
+                              DISCOUNT_FIELD_LABELS[field].replace('Desc. ', '').includes(' ')
+                                ? <HeaderStack top={DISCOUNT_FIELD_LABELS[field].replace('Desc. ', '').split(' ')[0]} bottom={DISCOUNT_FIELD_LABELS[field].replace('Desc. ', '').split(' ').slice(1).join(' ') || 'Desconto'} />
+                                : DISCOUNT_FIELD_LABELS[field],
+                              field === 'totalDescontoTelecel'
+                                ? 'bg-[#edffed] text-[#006100]'
+                                : 'bg-[#dff1ff] text-[#003366]'
+                            )
+                          )
+                        ) : (
+                          renderResizableHeader('descontoCollapsed', '+ Descontos', 'bg-[#dff1ff] text-center text-[#003366]')
+                        )}
+                        {renderResizableHeader('totalDesconto', <HeaderStack top="Total" bottom="Desconto" />, 'bg-[#fff2cc] text-[#7f6000]')}
+                        {renderResizableHeader('precoPromocional', <HeaderStack top="Preço" bottom="Final" />, 'bg-emerald-200 text-[#c00000] border-x border-emerald-300 shadow-[inset_0_0_0_1px_rgba(16,185,129,0.16)]')}
+
+                        {renderResizableHeader('qtdEstoque', <HeaderStack top="Qtd" bottom="Est." />, 'bg-white text-right')}
+                        {renderResizableHeader('custoMedioEstoque', <HeaderStack top="Custo" bottom="Médio" />, 'bg-white text-right')}
+                        {renderResizableHeader('margemEstoque', <HeaderStack top="Margem" bottom="Est." />, 'bg-white text-right')}
                       </>
-                    ) : (
-                      renderResizableHeader('priceCollapsed', '+', 'bg-[#e2f0d9] text-center')
                     )}
 
-                    {showOfferDetails ? (
+                    {!firstHalfOnly && (
                       <>
-                        {renderResizableHeader('ofertaAtual', <HeaderStack top="Oferta" bottom="Atual" />, 'bg-[#92d050] text-[#003b8f]')}
-                        {renderResizableHeader('status', 'Status', 'bg-[#92d050] text-[#003b8f]')}
-                      </>
-                    ) : (
-                      renderResizableHeader('ofertaCollapsed', '+', 'bg-[#92d050] text-center text-[#003b8f]')
-                    )}
+                        {renderResizableHeader('novoCustoMedio', <HeaderStack top="Novo Custo" bottom="Médio" />, 'bg-white text-right')}
+                        {renderResizableHeader('margemPrice', <HeaderStack top="Margem" bottom="Price" />, 'bg-white text-right')}
+                        {renderResizableHeader('qtdVendida', <HeaderStack top="Qtd" bottom="Vend." />, 'bg-white text-right')}
 
-                    {renderResizableHeader(
-                      'differenceCheapest',
-                      <HeaderStack top="Diferença p/" bottom="Mais barata" />,
-                      'bg-[#fff2cc] text-[#7f6000] text-right'
+                        {showPriceDetails ? (
+                          <>
+                            {renderResizableHeader('priceRebate', <HeaderStack top="Price" bottom="Rebate" />, 'bg-[#e2f0d9]')}
+                            {renderResizableHeader('priceTradeIn', <HeaderStack top="Price" bottom="Trade In" />, 'bg-[#e2f0d9]')}
+                            {renderResizableHeader('priceBogo', <HeaderStack top="Price" bottom="Bogo" />, 'bg-[#e2f0d9]')}
+                            {renderResizableHeader('priceSip', <HeaderStack top="Price" bottom="SIP" />, 'bg-[#e2f0d9]')}
+                          </>
+                        ) : (
+                          renderResizableHeader('priceCollapsed', '+', 'bg-[#e2f0d9] text-center')
+                        )}
+
+                        {showOfferDetails ? (
+                          <>
+                            {renderResizableHeader('ofertaAtual', <HeaderStack top="Oferta" bottom="Atual" />, 'bg-[#92d050] text-[#003b8f]')}
+                            {renderResizableHeader('status', 'Status', 'bg-[#92d050] text-[#003b8f]')}
+                          </>
+                        ) : (
+                          renderResizableHeader('ofertaCollapsed', '+', 'bg-[#92d050] text-center text-[#003b8f]')
+                        )}
+
+                        {renderResizableHeader(
+                          'differenceCheapest',
+                          <HeaderStack top="Diferença p/" bottom="Mais barata" />,
+                          'bg-[#fff2cc] text-[#7f6000] text-right'
+                        )}
+                      </>
                     )}
                   </tr>
                 </thead>
                 <tbody>
                   {filteredRows.map((row, idx) => {
                     const baseRow = idx % 2 === 0 ? 'bg-white hover:bg-slate-50' : 'bg-slate-50 hover:bg-slate-100';
-                    const descBg = idx % 2 === 0
-                      ? 'bg-white group-hover:bg-slate-50'
-                      : 'bg-slate-50 group-hover:bg-slate-100';
+                    const descBg = 'bg-white group-hover:bg-slate-50';
                     const margemPriceProblem = row.margemPrice !== null && row.margemPrice < 0.25;
                     const isDragging = draggedRowKey === row.rowKey;
 
@@ -3029,101 +3065,110 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
                           </div>
                         </TableCell>
 
-                        <TableCell className="whitespace-nowrap bg-[#edffed] text-right font-semibold">{formatMoney(row.precoSamsung)}</TableCell>
-                        <TableCell className="whitespace-nowrap bg-[#edffed] text-right font-semibold">{formatMoney(row.precoTelecel)}</TableCell>
-
-                        {showDiscountDetails && activeDiscountFields.length > 0 ? (
-                          activeDiscountFields.map((field) => renderDiscountCell(row, field))
-                        ) : (
-                          <TableCell className="bg-[#dff1ff] text-center" style={getColumnStyle('descontoCollapsed')}>
-                            <button
-                              type="button"
-                              onClick={() => setShowDiscountDetails(true)}
-                              className="rounded-full border border-sky-200 bg-white px-2 py-0.5 text-xs font-black text-sky-700 shadow-sm hover:bg-sky-50"
-                              title="Abrir descontos"
-                            >
-                              +
-                            </button>
-                          </TableCell>
-                        )}
-                        <TableCell className="whitespace-nowrap bg-[#fff2cc] text-right font-black text-red-600">{formatMoney(row.totalDesconto)}</TableCell>
-
-                        <TableCell className="whitespace-nowrap border-x border-emerald-300 bg-emerald-100 text-right text-[11px] font-black text-[#c00000] shadow-[inset_0_0_0_1px_rgba(16,185,129,0.12)]">{formatMoney(row.precoPromocional)}</TableCell>
-
-                        <TableCell className="bg-[#f2f7fb] text-right font-black text-emerald-600">{formatNumber(row.qtdEstoque)}</TableCell>
-                        <TableCell className="whitespace-nowrap bg-[#f2f7fb] text-right">{formatMoney(row.custoMedioEstoque)}</TableCell>
-                        <TableCell className="whitespace-nowrap bg-[#f2f7fb] text-right">{formatPercent(row.margemEstoque)}</TableCell>
-                        <TableCell className="whitespace-nowrap bg-[#f2f7fb] text-right">{row.novoCustoMedio === null ? '-' : formatMoney(row.novoCustoMedio)}</TableCell>
-                        <TableCell className={`whitespace-nowrap text-right font-black ${margemPriceProblem ? 'bg-red-50 text-red-600' : 'bg-[#f2f7fb] text-slate-700'}`}>
-                          {formatPercent(row.margemPrice)}
-                        </TableCell>
-                        <TableCell className="bg-[#f2f7fb] text-right font-black text-blue-600">{formatNumber(row.qtdVendida)}</TableCell>
-
-                        {showPriceDetails ? (
+                        {!secondHalfOnly && (
                           <>
-                            <TableCell className="bg-[#edf7e8]">{renderPriceInput(row, 'priceRebate')}</TableCell>
-                            <TableCell className="bg-[#edf7e8]">{renderPriceInput(row, 'priceTradeIn')}</TableCell>
-                            <TableCell className="bg-[#edf7e8]">{renderPriceInput(row, 'priceBogo')}</TableCell>
-                            <TableCell className="bg-[#edf7e8]">{renderPriceInput(row, 'priceSip')}</TableCell>
+                            <TableCell className="whitespace-nowrap bg-white text-right font-semibold">{formatMoney(row.precoSamsung)}</TableCell>
+                            <TableCell className="whitespace-nowrap bg-[#edffed] text-right font-semibold">{formatMoney(row.precoTelecel)}</TableCell>
+
+                            {showDiscountDetails && activeDiscountFields.length > 0 ? (
+                              activeDiscountFields.map((field) => renderDiscountCell(row, field))
+                            ) : (
+                              <TableCell className="bg-[#dff1ff] text-center" style={getColumnStyle('descontoCollapsed')}>
+                                <button
+                                  type="button"
+                                  onClick={() => setShowDiscountDetails(true)}
+                                  className="rounded-full border border-sky-200 bg-white px-2 py-0.5 text-xs font-black text-sky-700 shadow-sm hover:bg-sky-50"
+                                  title="Abrir descontos"
+                                >
+                                  +
+                                </button>
+                              </TableCell>
+                            )}
+                            <TableCell className="whitespace-nowrap bg-[#fff2cc] text-right font-black text-red-600">{formatMoney(row.totalDesconto)}</TableCell>
+
+                            <TableCell className="whitespace-nowrap border-x border-emerald-300 bg-emerald-100 text-right text-[11px] font-black text-[#c00000] shadow-[inset_0_0_0_1px_rgba(16,185,129,0.12)]">{formatMoney(row.precoPromocional)}</TableCell>
+
+                            <TableCell className="bg-white text-right font-black text-emerald-600">{formatNumber(row.qtdEstoque)}</TableCell>
+                            <TableCell className="whitespace-nowrap bg-white text-right">{formatMoney(row.custoMedioEstoque)}</TableCell>
+                            <TableCell className="whitespace-nowrap bg-white text-right">{formatPercent(row.margemEstoque)}</TableCell>
                           </>
-                        ) : (
-                          <TableCell className="bg-[#edf7e8] text-center">
-                            <button
-                              type="button"
-                              onClick={() => setShowPriceDetails(true)}
-                              className="rounded-full border border-blue-200 bg-white px-2 py-0.5 text-xs font-black text-blue-700 shadow-sm hover:bg-blue-50"
-                              title="Abrir prices"
-                            >
-                              +
-                            </button>
-                          </TableCell>
                         )}
 
-                        {showOfferDetails ? (
+                        {!firstHalfOnly && (
                           <>
-                            <TableCell className="whitespace-nowrap bg-[#e2f0d9] text-right font-semibold text-blue-700">{formatMoney(row.ofertaAtual)}</TableCell>
-                            <TableCell className={`whitespace-nowrap bg-[#e2f0d9] font-black ${row.status === 'MENOR' ? 'text-emerald-700' : row.status === 'MAIOR' ? 'text-red-600' : 'text-slate-700'}`}>
-                              {row.status}
+                            <TableCell className="whitespace-nowrap bg-white text-right">{row.novoCustoMedio === null ? '-' : formatMoney(row.novoCustoMedio)}</TableCell>
+                            <TableCell className={`whitespace-nowrap text-right font-black ${margemPriceProblem ? 'bg-red-500 text-white ring-1 ring-inset ring-red-600' : 'bg-white text-slate-700'}`}>
+                              {formatPercent(row.margemPrice)}
                             </TableCell>
+                            <TableCell className="bg-white text-right font-black text-blue-600">{formatNumber(row.qtdVendida)}</TableCell>
+
+                            {showPriceDetails ? (
+                              <>
+                                <TableCell className="bg-[#edf7e8]">{renderPriceInput(row, 'priceRebate')}</TableCell>
+                                <TableCell className="bg-[#edf7e8]">{renderPriceInput(row, 'priceTradeIn')}</TableCell>
+                                <TableCell className="bg-[#edf7e8]">{renderPriceInput(row, 'priceBogo')}</TableCell>
+                                <TableCell className="bg-[#edf7e8]">{renderPriceInput(row, 'priceSip')}</TableCell>
+                              </>
+                            ) : (
+                              <TableCell className="bg-[#edf7e8] text-center">
+                                <button
+                                  type="button"
+                                  onClick={() => setShowPriceDetails(true)}
+                                  className="rounded-full border border-blue-200 bg-white px-2 py-0.5 text-xs font-black text-blue-700 shadow-sm hover:bg-blue-50"
+                                  title="Abrir prices"
+                                >
+                                  +
+                                </button>
+                              </TableCell>
+                            )}
+
+                            {showOfferDetails ? (
+                              <>
+                                <TableCell className="whitespace-nowrap bg-[#e2f0d9] text-right font-semibold text-blue-700">{formatMoney(row.ofertaAtual)}</TableCell>
+                                <TableCell className={`whitespace-nowrap bg-[#e2f0d9] font-black ${row.status === 'MENOR' ? 'text-emerald-700' : row.status === 'MAIOR' ? 'text-red-600' : 'text-slate-700'}`}>
+                                  {row.status}
+                                </TableCell>
+                              </>
+                            ) : (
+                              <TableCell className="bg-[#e2f0d9] text-center">
+                                <button
+                                  type="button"
+                                  onClick={() => setShowOfferDetails(true)}
+                                  className="rounded-full border border-lime-300 bg-white px-2 py-0.5 text-xs font-black text-lime-700 shadow-sm hover:bg-lime-50"
+                                  title="Abrir oferta e status"
+                                >
+                                  +
+                                </button>
+                              </TableCell>
+                            )}
+
+                            {(() => {
+                              const marketComparison = onlineMarketComparison[row.rowKey];
+                              const difference = marketComparison?.differenceToTelecel ?? null;
+
+                              return (
+                                <TableCell
+                                  className={`whitespace-nowrap text-right font-black ${
+                                    difference === null
+                                      ? 'bg-slate-50 text-slate-400'
+                                      : difference > 0.005
+                                        ? 'bg-emerald-100 text-emerald-800'
+                                        : difference < -0.005
+                                          ? 'bg-red-100 text-red-700'
+                                          : 'bg-slate-100 text-slate-700'
+                                  }`}
+                                  title={
+                                    marketComparison?.marketStoreName
+                                      ? `Comparação com ${marketComparison.marketStoreName} no menor preço 12x do mercado.`
+                                      : 'Sem preço 12x de mercado localizado para este modelo.'
+                                  }
+                                >
+                                  {formatSignedMoney(difference)}
+                                </TableCell>
+                              );
+                            })()}
                           </>
-                        ) : (
-                          <TableCell className="bg-[#e2f0d9] text-center">
-                            <button
-                              type="button"
-                              onClick={() => setShowOfferDetails(true)}
-                              className="rounded-full border border-lime-300 bg-white px-2 py-0.5 text-xs font-black text-lime-700 shadow-sm hover:bg-lime-50"
-                              title="Abrir oferta e status"
-                            >
-                              +
-                            </button>
-                          </TableCell>
                         )}
-
-                        {(() => {
-                          const marketComparison = onlineMarketComparison[row.rowKey];
-                          const difference = marketComparison?.differenceToTelecel ?? null;
-
-                          return (
-                            <TableCell
-                              className={`whitespace-nowrap text-right font-black ${
-                                difference === null
-                                  ? 'bg-slate-50 text-slate-400'
-                                  : difference > 0.005
-                                    ? 'bg-emerald-100 text-emerald-800'
-                                    : difference < -0.005
-                                      ? 'bg-red-100 text-red-700'
-                                      : 'bg-slate-100 text-slate-700'
-                              }`}
-                              title={
-                                marketComparison?.marketStoreName
-                                  ? `Comparação com ${marketComparison.marketStoreName} no menor preço 12x do mercado.`
-                                  : 'Sem preço 12x de mercado localizado para este modelo.'
-                              }
-                            >
-                              {formatSignedMoney(difference)}
-                            </TableCell>
-                          );
-                        })()}
                       </tr>
                     );
                   })}
@@ -3151,81 +3196,90 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
                       TOTAL
                     </td>
 
-                    <td className="whitespace-nowrap border-r border-slate-700 px-1 py-1.5 text-right text-[10px] font-black">
-                      {formatMoney(tableTotals.precoSamsung)}
-                    </td>
-                    <td className="whitespace-nowrap border-r border-slate-700 px-1 py-1.5 text-right text-[10px] font-black">
-                      {formatMoney(tableTotals.precoTelecel)}
-                    </td>
-
-                    {showDiscountDetails && activeDiscountFields.length > 0 ? (
-                      activeDiscountFields.map((field) => (
-                        <td
-                          key={`total-${field}`}
-                          className="whitespace-nowrap border-r border-slate-700 px-1 py-1.5 text-right text-[10px] font-black"
-                        >
-                          {formatMoney(tableTotals[field])}
-                        </td>
-                      ))
-                    ) : (
-                      <td className="border-r border-slate-700 px-1 py-1.5 text-center text-[10px] font-black text-slate-400">—</td>
-                    )}
-
-                    <td className="whitespace-nowrap border-r border-slate-700 bg-amber-100 px-1 py-1.5 text-right text-[10px] font-black text-red-700">
-                      {formatMoney(tableTotals.totalDesconto)}
-                    </td>
-                    <td className="whitespace-nowrap border-x border-emerald-300 bg-emerald-200 px-1 py-1.5 text-right text-[11px] font-black text-[#c00000]">
-                      {formatMoney(tableTotals.precoPromocional)}
-                    </td>
-
-                    <td className="whitespace-nowrap border-r border-slate-700 px-1 py-1.5 text-right text-[10px] font-black">
-                      {formatNumber(tableTotals.qtdEstoque)}
-                    </td>
-                    <td className="whitespace-nowrap border-r border-slate-700 px-1 py-1.5 text-right text-[10px] font-black">
-                      {formatMoney(tableTotals.custoMedioEstoque)}
-                    </td>
-                    <td className="border-r border-slate-700 px-1 py-1.5 text-center text-[10px] font-black text-slate-400">—</td>
-                    <td className="whitespace-nowrap border-r border-slate-700 px-1 py-1.5 text-right text-[10px] font-black">
-                      {formatMoney(tableTotals.novoCustoMedio)}
-                    </td>
-                    <td className="border-r border-slate-700 px-1 py-1.5 text-center text-[10px] font-black text-slate-400">—</td>
-                    <td className="whitespace-nowrap border-r border-slate-700 px-1 py-1.5 text-right text-[10px] font-black">
-                      {formatNumber(tableTotals.qtdVendida)}
-                    </td>
-
-                    {showPriceDetails ? (
-                      <>
-                        <td className="whitespace-nowrap border-r border-slate-700 px-1 py-1.5 text-right text-[10px] font-black">{formatMoney(tableTotals.priceRebate)}</td>
-                        <td className="whitespace-nowrap border-r border-slate-700 px-1 py-1.5 text-right text-[10px] font-black">{formatMoney(tableTotals.priceTradeIn)}</td>
-                        <td className="whitespace-nowrap border-r border-slate-700 px-1 py-1.5 text-right text-[10px] font-black">{formatMoney(tableTotals.priceBogo)}</td>
-                        <td className="whitespace-nowrap border-r border-slate-700 px-1 py-1.5 text-right text-[10px] font-black">{formatMoney(tableTotals.priceSip)}</td>
-                      </>
-                    ) : (
-                      <td className="border-r border-slate-700 px-1 py-1.5 text-center text-[10px] font-black text-slate-400">—</td>
-                    )}
-
-                    {showOfferDetails ? (
+                    {!secondHalfOnly && (
                       <>
                         <td className="whitespace-nowrap border-r border-slate-700 px-1 py-1.5 text-right text-[10px] font-black">
-                          {formatMoney(tableTotals.ofertaAtual)}
+                          {formatMoney(tableTotals.precoSamsung)}
+                        </td>
+                        <td className="whitespace-nowrap border-r border-slate-700 px-1 py-1.5 text-right text-[10px] font-black">
+                          {formatMoney(tableTotals.precoTelecel)}
+                        </td>
+
+                        {showDiscountDetails && activeDiscountFields.length > 0 ? (
+                          activeDiscountFields.map((field) => (
+                            <td
+                              key={`total-${field}`}
+                              className="whitespace-nowrap border-r border-slate-700 px-1 py-1.5 text-right text-[10px] font-black"
+                            >
+                              {formatMoney(tableTotals[field])}
+                            </td>
+                          ))
+                        ) : (
+                          <td className="border-r border-slate-700 px-1 py-1.5 text-center text-[10px] font-black text-slate-400">—</td>
+                        )}
+
+                        <td className="whitespace-nowrap border-r border-slate-700 bg-amber-100 px-1 py-1.5 text-right text-[10px] font-black text-red-700">
+                          {formatMoney(tableTotals.totalDesconto)}
+                        </td>
+                        <td className="whitespace-nowrap border-x border-emerald-300 bg-emerald-200 px-1 py-1.5 text-right text-[11px] font-black text-[#c00000]">
+                          {formatMoney(tableTotals.precoPromocional)}
+                        </td>
+
+                        <td className="whitespace-nowrap border-r border-slate-700 px-1 py-1.5 text-right text-[10px] font-black">
+                          {formatNumber(tableTotals.qtdEstoque)}
+                        </td>
+                        <td className="whitespace-nowrap border-r border-slate-700 px-1 py-1.5 text-right text-[10px] font-black">
+                          {formatMoney(tableTotals.custoMedioEstoque)}
                         </td>
                         <td className="border-r border-slate-700 px-1 py-1.5 text-center text-[10px] font-black text-slate-400">—</td>
                       </>
-                    ) : (
-                      <td className="border-r border-slate-700 px-1 py-1.5 text-center text-[10px] font-black text-slate-400">—</td>
                     )}
 
-                    <td
-                      className={`whitespace-nowrap px-1 py-1.5 text-right text-[10px] font-black ${
-                        tableTotals.differenceCheapest > 0.005
-                          ? 'bg-emerald-200 text-emerald-900'
-                          : tableTotals.differenceCheapest < -0.005
-                            ? 'bg-red-200 text-red-800'
-                            : 'bg-slate-800 text-white'
-                      }`}
-                    >
-                      {formatSignedMoney(tableTotals.differenceCheapest)}
-                    </td>
+                    {!firstHalfOnly && (
+                      <>
+                        <td className="whitespace-nowrap border-r border-slate-700 px-1 py-1.5 text-right text-[10px] font-black">
+                          {formatMoney(tableTotals.novoCustoMedio)}
+                        </td>
+                        <td className="border-r border-slate-700 px-1 py-1.5 text-center text-[10px] font-black text-slate-400">—</td>
+                        <td className="whitespace-nowrap border-r border-slate-700 px-1 py-1.5 text-right text-[10px] font-black">
+                          {formatNumber(tableTotals.qtdVendida)}
+                        </td>
+
+                        {showPriceDetails ? (
+                          <>
+                            <td className="whitespace-nowrap border-r border-slate-700 px-1 py-1.5 text-right text-[10px] font-black">{formatMoney(tableTotals.priceRebate)}</td>
+                            <td className="whitespace-nowrap border-r border-slate-700 px-1 py-1.5 text-right text-[10px] font-black">{formatMoney(tableTotals.priceTradeIn)}</td>
+                            <td className="whitespace-nowrap border-r border-slate-700 px-1 py-1.5 text-right text-[10px] font-black">{formatMoney(tableTotals.priceBogo)}</td>
+                            <td className="whitespace-nowrap border-r border-slate-700 px-1 py-1.5 text-right text-[10px] font-black">{formatMoney(tableTotals.priceSip)}</td>
+                          </>
+                        ) : (
+                          <td className="border-r border-slate-700 px-1 py-1.5 text-center text-[10px] font-black text-slate-400">—</td>
+                        )}
+
+                        {showOfferDetails ? (
+                          <>
+                            <td className="whitespace-nowrap border-r border-slate-700 px-1 py-1.5 text-right text-[10px] font-black">
+                              {formatMoney(tableTotals.ofertaAtual)}
+                            </td>
+                            <td className="border-r border-slate-700 px-1 py-1.5 text-center text-[10px] font-black text-slate-400">—</td>
+                          </>
+                        ) : (
+                          <td className="border-r border-slate-700 px-1 py-1.5 text-center text-[10px] font-black text-slate-400">—</td>
+                        )}
+
+                        <td
+                          className={`whitespace-nowrap px-1 py-1.5 text-right text-[10px] font-black ${
+                            tableTotals.differenceCheapest > 0.005
+                              ? 'bg-emerald-200 text-emerald-900'
+                              : tableTotals.differenceCheapest < -0.005
+                                ? 'bg-red-200 text-red-800'
+                                : 'bg-slate-800 text-white'
+                          }`}
+                        >
+                          {formatSignedMoney(tableTotals.differenceCheapest)}
+                        </td>
+                      </>
+                    )}
                   </tr>
                 </tfoot>
               </table>
@@ -3307,7 +3361,7 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
                           <td className="whitespace-nowrap border-b border-orange-100 bg-amber-100/80 px-2 py-2 text-right font-black text-amber-950">{formatMoney(row.precoPromocional)}</td>
                           <td className="border-b border-orange-100 px-2 py-2 text-right font-black text-slate-700">{formatNumber(row.qtdEstoque)}</td>
                           <td className="whitespace-nowrap border-b border-orange-100 px-2 py-2 text-right text-slate-700">{formatMoney(row.custoMedioEstoque)}</td>
-                          <td className={`whitespace-nowrap border-b border-orange-100 px-2 py-2 text-right font-black ${margemPriceProblem ? 'bg-red-50 text-red-600' : 'text-slate-700'}`}>{formatPercent(row.margemPrice)}</td>
+                          <td className={`whitespace-nowrap border-b border-orange-100 px-2 py-2 text-right font-black ${margemPriceProblem ? 'bg-red-500 text-white ring-1 ring-inset ring-red-600' : 'text-slate-700'}`}>{formatPercent(row.margemPrice)}</td>
                           <td className="whitespace-nowrap border-b border-orange-100 px-2 py-2 text-right font-semibold text-slate-700">{formatMoney(row.ofertaAtual)}</td>
                           <td className="whitespace-nowrap border-b border-orange-100 px-2 py-2 text-center font-black text-slate-700">{row.status || '-'}</td>
                           <td className="border-b border-orange-100 px-2 py-2 text-center">

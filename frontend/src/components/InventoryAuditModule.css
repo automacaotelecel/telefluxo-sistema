@@ -66,3 +66,28 @@
 @media (max-width:1100px){.inventory-audit-kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.inventory-audit-main-grid{grid-template-columns:1fr}.inventory-audit-pending-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.inventory-audit-recent-list{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (max-width:760px){.inventory-audit-page{padding:12px}.inventory-audit-hero{min-height:0;flex-direction:column;padding:20px;border-radius:20px}.inventory-audit-hero h1{font-size:29px}.inventory-audit-sample-link{width:100%;justify-content:center}.inventory-audit-store-box{width:100%}.inventory-audit-start-card{grid-template-columns:auto 1fr;padding:16px}.inventory-audit-start-card button{grid-column:1/-1;width:100%}.inventory-audit-session-strip{align-items:flex-start;flex-direction:column}.inventory-audit-session-actions{width:100%}.inventory-audit-session-actions button{flex:1}.inventory-audit-kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}.inventory-audit-kpi{min-height:102px;padding:12px}.inventory-audit-kpi-icon{width:32px;height:32px}.inventory-audit-kpi strong{font-size:23px}.inventory-audit-kpi small{font-size:7px}.inventory-audit-main-grid{grid-template-columns:1fr}.inventory-audit-scanner-card,.inventory-audit-bi-card,.inventory-audit-pending-card,.inventory-audit-history-card,.inventory-audit-recent-card{padding:12px;border-radius:16px}.inventory-audit-card-title{align-items:flex-start;flex-direction:column}.inventory-audit-camera,.inventory-audit-camera video{height:310px;min-height:310px}.inventory-audit-manual{grid-template-columns:1fr}.inventory-audit-manual form{grid-template-columns:1fr auto}.inventory-audit-camera-controls>span{width:100%;margin-left:0}.inventory-audit-pending-summary{grid-template-columns:1fr 1fr}.inventory-audit-recent-list{grid-template-columns:1fr}.inventory-audit-tabs{width:100%}.inventory-audit-tabs button{flex:1;justify-content:center}.inventory-audit-history-list button{grid-template-columns:auto 1fr auto}.inventory-audit-history-list button .inventory-audit-status{grid-column:2}.inventory-audit-history-list button>svg{grid-row:1/3;grid-column:3}.inventory-audit-progress-legend{gap:8px}}
 @media (max-width:430px){.inventory-audit-kpi-grid{grid-template-columns:1fr 1fr}.inventory-audit-kpi{display:grid;grid-template-columns:auto 1fr}.inventory-audit-kpi-icon{width:30px;height:30px}.inventory-audit-kpi strong{font-size:21px}.inventory-audit-pending-summary{grid-template-columns:1fr}.inventory-audit-manual form{grid-template-columns:1fr}.inventory-audit-manual button{min-height:40px}.inventory-audit-camera,.inventory-audit-camera video{height:285px;min-height:285px}.inventory-audit-session-actions button{min-width:calc(50% - 4px)}.inventory-audit-product-list b small{display:none}}
+
+/* ============================================================
+   BIPADOR MULTICATEGORIA
+   ============================================================ */
+.inventory-audit-type-selector { margin-top:18px; }
+.inventory-audit-type-selector>span { display:block; margin-bottom:7px; color:#94a3b8; font-size:8px; font-weight:950; letter-spacing:.12em; }
+.inventory-audit-type-selector>div { display:flex; flex-wrap:wrap; gap:7px; }
+.inventory-audit-type-selector button { display:inline-flex; align-items:center; gap:6px; min-height:36px; padding:0 11px; border:1px solid rgba(255,255,255,.15); border-radius:10px; background:rgba(255,255,255,.06); color:#cbd5e1; font-size:8px; font-weight:900; cursor:pointer; transition:.16s ease; }
+.inventory-audit-type-selector button:hover { border-color:rgba(251,146,60,.55); color:#fff; background:rgba(249,115,22,.12); }
+.inventory-audit-type-selector button.active { border-color:#fb923c; color:#fff; background:#ea580c; box-shadow:0 7px 18px rgba(234,88,12,.22); }
+.inventory-audit-store-warning { display:flex!important; align-items:flex-start; gap:6px; margin-top:9px!important; padding:8px 9px; border:1px solid rgba(251,191,36,.3); border-radius:9px; color:#fde68a!important; background:rgba(146,64,14,.18); }
+.inventory-audit-warning { display:flex; align-items:center; gap:9px; margin-top:14px; padding:12px 14px; border:1px solid #fde68a; border-radius:12px; background:#fffbeb; color:#92400e; font-size:11px; font-weight:750; }
+.inventory-audit-divergence-box { grid-template-columns:repeat(3,minmax(0,1fr)); }
+.inventory-audit-divergence-box>div:nth-child(3){color:#7c3aed;background:#f5f3ff}
+.inventory-audit-badge.excess{color:#b45309;background:#fef3c7}
+
+@media (max-width:900px){
+  .inventory-audit-type-selector>div{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
+  .inventory-audit-type-selector button{justify-content:center}
+  .inventory-audit-divergence-box{grid-template-columns:1fr}
+}
+@media (max-width:520px){
+  .inventory-audit-type-selector>div{grid-template-columns:1fr 1fr}
+  .inventory-audit-type-selector button{padding:0 8px;font-size:7px}
+}

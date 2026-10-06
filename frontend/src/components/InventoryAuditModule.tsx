@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   BarChart3,
+  Boxes,
   Camera,
   CameraOff,
   Check,
@@ -13,6 +14,7 @@ import {
   Download,
   History,
   Keyboard,
+  Laptop,
   Loader2,
   Package,
   Play,
@@ -22,7 +24,9 @@ import {
   ShieldCheck,
   Smartphone,
   Store,
+  Tablet,
   Volume2,
+  Watch,
   XCircle,
   Zap,
 } from 'lucide-react';
@@ -42,6 +46,8 @@ type StoreOption = {
   name: string;
   expected: number;
   products: number;
+  missingIdentifierUnits?: number;
+  missingIdentifierProducts?: number;
 };
 
 type AuditSession = {
@@ -49,6 +55,10 @@ type AuditSession = {
   userId: string;
   operatorName: string;
   storeName: string;
+  auditType: AuditType;
+  auditLabel?: string;
+  identifierMode?: 'IMEI' | 'BARCODE';
+  identifierLabel?: string;
   status: 'ACTIVE' | 'COMPLETED' | 'CANCELLED';
   expectedCount: number;
   sourceUpdatedAt?: string | null;
@@ -63,6 +73,7 @@ type AuditStats = {
   pending: number;
   unexpected: number;
   duplicates: number;
+  excess: number;
   invalid: number;
   progress: number;
 };
@@ -80,6 +91,8 @@ type ProductSummary = {
 type MissingItem = {
   id: string;
   imei: string;
+  identifier?: string;
+  quantity?: number;
   productCode: string;
   reference: string;
   description: string;
@@ -88,8 +101,9 @@ type MissingItem = {
 type ScanItem = {
   id: string;
   imei: string;
+  identifier?: string;
   rawValue?: string;
-  result: 'FOUND' | 'UNEXPECTED' | 'DUPLICATE' | 'INVALID';
+  result: 'FOUND' | 'UNEXPECTED' | 'DUPLICATE' | 'EXCESS' | 'INVALID';
   source?: string;
   productCode?: string | null;
   reference?: string | null;
@@ -100,6 +114,7 @@ type ScanItem = {
 
 type ReadFeedback = {
   imei: string;
+  identifier?: string;
   result: ScanItem['result'];
   title: string;
   message: string;
@@ -118,8 +133,30 @@ type SessionPayload = {
   unexpectedScans: ScanItem[];
   recentScans: ScanItem[];
   read?: ReadFeedback;
+  warning?: string | null;
+  audit?: { auditType: AuditType; label: string; identifierMode: 'IMEI' | 'BARCODE'; identifierLabel: string };
   error?: string;
 };
+
+type AuditType = 'APARELHOS' | 'ACESSORIOS' | 'WEARABLES' | 'TABLETS' | 'NOTEBOOKS';
+
+type AuditTypeOption = {
+  key: AuditType;
+  label: string;
+  singular: string;
+  plural: string;
+  identifierMode: 'IMEI' | 'BARCODE';
+  identifierLabel: string;
+  icon: typeof Smartphone;
+};
+
+const AUDIT_TYPE_OPTIONS: AuditTypeOption[] = [
+  { key: 'APARELHOS', label: 'Aparelhos', singular: 'aparelho', plural: 'aparelhos', identifierMode: 'IMEI', identifierLabel: 'IMEI', icon: Smartphone },
+  { key: 'ACESSORIOS', label: 'Acessórios', singular: 'acessório', plural: 'acessórios', identifierMode: 'BARCODE', identifierLabel: 'Código de barras', icon: Boxes },
+  { key: 'WEARABLES', label: 'Wearables', singular: 'wearable', plural: 'wearables', identifierMode: 'BARCODE', identifierLabel: 'Código de barras', icon: Watch },
+  { key: 'TABLETS', label: 'Tablets', singular: 'tablet', plural: 'tablets', identifierMode: 'BARCODE', identifierLabel: 'Código de barras', icon: Tablet },
+  { key: 'NOTEBOOKS', label: 'Notebooks', singular: 'notebook', plural: 'notebooks', identifierMode: 'BARCODE', identifierLabel: 'Código de barras', icon: Laptop },
+];
 
 type TabKey = 'conference' | 'pending' | 'history';
 
@@ -136,6 +173,7 @@ const EMPTY_STATS: AuditStats = {
   pending: 0,
   unexpected: 0,
   duplicates: 0,
+  excess: 0,
   invalid: 0,
   progress: 0,
 };
@@ -147,6 +185,9 @@ const CAMERA_FORMATS = [
   BarcodeFormat.ITF,
   BarcodeFormat.CODABAR,
   BarcodeFormat.EAN_13,
+  BarcodeFormat.EAN_8,
+  BarcodeFormat.UPC_A,
+  BarcodeFormat.UPC_E,
   BarcodeFormat.QR_CODE,
 ];
 
@@ -194,6 +235,8 @@ function resultMeta(result?: ScanItem['result']) {
       return { label: 'FORA DA BASE', className: 'audit-result-danger', icon: XCircle };
     case 'DUPLICATE':
       return { label: 'JÁ BIPADO', className: 'audit-result-warning', icon: AlertCircle };
+    case 'EXCESS':
+      return { label: 'EXCEDENTE', className: 'audit-result-warning', icon: AlertTriangle };
     case 'INVALID':
       return { label: 'INVÁLIDO', className: 'audit-result-danger', icon: AlertTriangle };
     default:
@@ -207,21 +250,26 @@ function csvCell(value: unknown) {
 }
 
 function downloadCsv(session: AuditSession, missingItems: MissingItem[], unexpected: ScanItem[]) {
+  const identifierLabel = session.identifierLabel || (session.auditType === 'APARELHOS' ? 'IMEI' : 'CODIGO_BARRAS');
   const lines = [
-    ['TIPO', 'LOJA', 'IMEI', 'CODIGO', 'REFERENCIA', 'PRODUTO', 'LOJA_ENCONTRADA'].map(csvCell).join(';'),
+    ['TIPO', 'CONFERENCIA', 'LOJA', identifierLabel, 'QTD', 'CODIGO', 'REFERENCIA', 'PRODUTO', 'LOJA_ENCONTRADA'].map(csvCell).join(';'),
     ...missingItems.map((item) => [
       'FALTANTE',
+      session.auditLabel || session.auditType,
       session.storeName,
-      item.imei,
+      item.identifier || item.imei,
+      item.quantity || 1,
       item.productCode,
       item.reference,
       item.description,
       '',
     ].map(csvCell).join(';')),
     ...unexpected.map((item) => [
-      'FORA_DA_BASE',
+      item.result === 'EXCESS' ? 'EXCEDENTE' : 'FORA_DA_BASE',
+      session.auditLabel || session.auditType,
       session.storeName,
-      item.imei,
+      item.identifier || item.imei,
+      1,
       item.productCode || '',
       item.reference || '',
       item.description || '',
@@ -233,7 +281,7 @@ function downloadCsv(session: AuditSession, missingItems: MissingItem[], unexpec
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
   anchor.href = url;
-  anchor.download = `telefluxo_conferencia_${session.storeName.replace(/[^a-z0-9]+/gi, '_').toLowerCase()}_${session.id.slice(0, 8)}.csv`;
+  anchor.download = `telefluxo_conferencia_${session.auditType.toLowerCase()}_${session.storeName.replace(/[^a-z0-9]+/gi, '_').toLowerCase()}_${session.id.slice(0, 8)}.csv`;
   anchor.click();
   URL.revokeObjectURL(url);
 }
@@ -267,6 +315,7 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
   const API_URL = useMemo(() => getApiUrl(), []);
   const userId = String(currentUser?.id || '');
 
+  const [auditType, setAuditType] = useState<AuditType>('APARELHOS');
   const [stores, setStores] = useState<StoreOption[]>([]);
   const [selectedStore, setSelectedStore] = useState('');
   const [session, setSession] = useState<AuditSession | null>(null);
@@ -282,6 +331,7 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
   const [scanning, setScanning] = useState(false);
   const [completing, setCompleting] = useState(false);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
   const [manualValue, setManualValue] = useState('');
   const [lastRead, setLastRead] = useState<ReadFeedback | null>(null);
   const [searchMissing, setSearchMissing] = useState('');
@@ -345,12 +395,13 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
     const json = await response.json();
     if (!response.ok || !json.success) throw new Error(json.error || 'Não foi possível carregar a conferência.');
     applyPayload(json as SessionPayload);
+    if (json.session?.auditType) setAuditType(json.session.auditType as AuditType);
     if (json.session?.storeName) setSelectedStore(json.session.storeName);
   }, [API_URL, applyPayload, userId]);
 
   const loadHistory = useCallback(async (store = selectedStore) => {
     if (!userId) return [];
-    const params = new URLSearchParams({ userId, limit: '30' });
+    const params = new URLSearchParams({ userId, limit: '30', auditType });
     if (store) params.set('store', store);
     const response = await fetch(`${API_URL}/api/inventory-audit/sessions?${params.toString()}`);
     const json = await response.json();
@@ -358,7 +409,7 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
     const list = Array.isArray(json.sessions) ? json.sessions : [];
     setHistory(list);
     return list as AuditSession[];
-  }, [API_URL, selectedStore, userId]);
+  }, [API_URL, auditType, selectedStore, userId]);
 
   useEffect(() => {
     let alive = true;
@@ -368,26 +419,42 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
         setLoading(false);
         return;
       }
+
       setLoading(true);
       setError('');
+      setNotice('');
+      applyPayload(null);
+      setHistory([]);
+      stopCamera();
+      setCameraOpen(false);
+      setLastRead(null);
+
       try {
-        const response = await fetch(`${API_URL}/api/inventory-audit/stores?userId=${encodeURIComponent(userId)}`);
+        const params = new URLSearchParams({ userId, auditType });
+        const response = await fetch(`${API_URL}/api/inventory-audit/stores?${params.toString()}`);
         const json = await response.json();
         if (!response.ok || !json.success) throw new Error(json.error || 'Não foi possível carregar as lojas.');
         if (!alive) return;
+
         const list: StoreOption[] = Array.isArray(json.stores) ? json.stores : [];
         setStores(list);
-        const firstStore = list[0]?.name || '';
-        setSelectedStore(firstStore);
+        setSelectedStore((current) => {
+          if (current && list.some((item) => item.name === current)) return current;
+          return list[0]?.name || '';
+        });
       } catch (err: any) {
-        if (alive) setError(err?.message || 'Erro ao carregar o módulo de conferência.');
+        if (alive) {
+          setStores([]);
+          setSelectedStore('');
+          setError(err?.message || 'Erro ao carregar o módulo de conferência.');
+        }
       } finally {
         if (alive) setLoading(false);
       }
     }
     void boot();
     return () => { alive = false; };
-  }, [API_URL, userId]);
+  }, [API_URL, applyPayload, auditType, stopCamera, userId]);
 
   useEffect(() => {
     if (!selectedStore || !userId) {
@@ -398,6 +465,7 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
 
     let alive = true;
     setError('');
+    setNotice('');
     stopCamera();
     setCameraOpen(false);
     setLastRead(null);
@@ -439,6 +507,25 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
     return () => navigator.mediaDevices.removeEventListener?.('devicechange', refresh);
   }, [selectedDeviceId]);
 
+  const auditMeta = AUDIT_TYPE_OPTIONS.find((item) => item.key === auditType) || AUDIT_TYPE_OPTIONS[0];
+  const AuditIcon = auditMeta.icon;
+  const isImeiMode = auditMeta.identifierMode === 'IMEI';
+
+  function changeAuditType(nextType: AuditType) {
+    if (nextType === auditType) return;
+    if (session?.status === 'ACTIVE') {
+      const ok = window.confirm(
+        `Existe uma conferência de ${session.auditLabel || auditMeta.label} em andamento. Ela continuará salva no histórico. Deseja trocar o tipo de produto?`,
+      );
+      if (!ok) return;
+    }
+    setAuditType(nextType);
+    setTab('conference');
+    setManualValue('');
+    setSearchMissing('');
+    setLastRead(null);
+  }
+
   function feedbackSound(result: ScanItem['result']) {
     try {
       navigator.vibrate?.(result === 'FOUND' ? [90, 35, 60] : [180, 60, 160]);
@@ -471,10 +558,11 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
     const raw = String(rawValue || '').trim();
     if (!raw) return;
 
-    const dedupeKey = onlyDigits(raw) || raw;
+    const dedupeKey = onlyDigits(raw) || raw.toUpperCase();
     const now = Date.now();
     const last = recentReadsRef.current.get(dedupeKey) || 0;
-    if (source === 'CAMERA' && now - last < 2600) return;
+    const cameraCooldown = isImeiMode ? 2600 : 1200;
+    if (source === 'CAMERA' && now - last < cameraCooldown) return;
     recentReadsRef.current.set(dedupeKey, now);
 
     scanInFlightRef.current = true;
@@ -498,7 +586,7 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
       setScanning(false);
       if (source === 'MANUAL') window.setTimeout(() => manualInputRef.current?.focus(), 50);
     }
-  }, [API_URL, applyPayload, session, userId]);
+  }, [API_URL, applyPayload, isImeiMode, session, userId]);
 
   function startPrecisionScanner() {
     if (precisionTimerRef.current) window.clearTimeout(precisionTimerRef.current);
@@ -511,7 +599,7 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
     const Detector = (window as WindowWithBarcodeDetector).BarcodeDetector;
     if (Detector) {
       try {
-        nativeDetectorRef.current = new Detector({ formats: ['code_128', 'code_39', 'code_93', 'codabar', 'itf'] });
+        nativeDetectorRef.current = new Detector({ formats: ['code_128', 'code_39', 'code_93', 'codabar', 'itf', 'ean_13', 'ean_8', 'upc_a', 'upc_e'] });
       } catch {
         try { nativeDetectorRef.current = new Detector(); } catch { nativeDetectorRef.current = null; }
       }
@@ -545,7 +633,12 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
           if (nativeDetectorRef.current) {
             try {
               const detections = await nativeDetectorRef.current.detect(canvas);
-              const preferred = detections.find((item) => /\d{15}/.test(onlyDigits(item.rawValue))) || detections[0];
+              const preferred = isImeiMode
+                ? detections.find((item) => /\d{15}/.test(onlyDigits(item.rawValue))) || detections[0]
+                : detections.find((item) => {
+                    const digits = onlyDigits(item.rawValue);
+                    return digits.length >= 8 && digits.length <= 18;
+                  }) || detections[0];
               if (preferred?.rawValue) {
                 nativeRead = true;
                 void submitScan(preferred.rawValue, 'CAMERA');
@@ -664,11 +757,12 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
       const response = await fetch(`${API_URL}/api/inventory-audit/sessions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId, store: selectedStore, forceNew }),
+        body: JSON.stringify({ userId, store: selectedStore, auditType, forceNew }),
       });
       const json = await response.json();
       if (!response.ok || !json.success) throw new Error(json.error || 'Não foi possível iniciar a conferência.');
       applyPayload(json as SessionPayload);
+      setNotice(String(json.warning || ''));
       await loadHistory(selectedStore);
       setTab('conference');
       window.setTimeout(() => manualInputRef.current?.focus(), 100);
@@ -682,7 +776,7 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
   async function completeAudit() {
     if (!session || session.status !== 'ACTIVE') return;
     const text = stats.pending > 0 || stats.unexpected > 0
-      ? `Ainda existem ${stats.pending} aparelho(s) faltante(s) e ${stats.unexpected} divergência(s). Deseja encerrar mesmo assim?`
+      ? `Ainda existem ${stats.pending} item(ns) faltante(s) e ${stats.unexpected + stats.excess} divergência(s). Deseja encerrar mesmo assim?`
       : 'Conferência 100% concluída. Deseja finalizar e salvar o resultado?';
     if (!window.confirm(text)) return;
 
@@ -708,6 +802,7 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
   }
 
   const selectedStoreMeta = stores.find((item) => item.name === selectedStore);
+  const identifierLabel = session?.identifierLabel || auditMeta.identifierLabel;
   const readMeta = resultMeta(lastRead?.result);
   const ReadIcon = readMeta.icon;
 
@@ -715,7 +810,7 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
   const filteredMissingItems = useMemo(() => {
     const q = searchMissing.trim().toUpperCase();
     if (!q) return missingItems;
-    return missingItems.filter((item) => [item.imei, item.productCode, item.reference, item.description].some((value) => String(value || '').toUpperCase().includes(q)));
+    return missingItems.filter((item) => [item.identifier || item.imei, item.productCode, item.reference, item.description].some((value) => String(value || '').toUpperCase().includes(q)));
   }, [missingItems, searchMissing]);
 
   if (loading) {
@@ -723,7 +818,7 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
       <div className="flex-1 overflow-y-auto bg-slate-50 p-6">
         <div className="mx-auto flex min-h-[420px] max-w-7xl items-center justify-center rounded-3xl border border-slate-200 bg-white">
           <div className="flex items-center gap-3 text-sm font-black uppercase tracking-wider text-slate-500">
-            <Loader2 className="animate-spin" size={20} /> Carregando base de aparelhos
+            <Loader2 className="animate-spin" size={20} /> Carregando base de {auditMeta.plural}
           </div>
         </div>
       </div>
@@ -736,7 +831,30 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
         <section className="inventory-audit-hero">
           <div className="inventory-audit-hero-copy">
             <div className="inventory-audit-eyebrow"><ShieldCheck size={14} /> TELEFLUXO • CONFERÊNCIA INTELIGENTE</div>
-            <h1>Bipador de aparelhos</h1>
+            <h1>Bipador de estoque</h1>
+            <p>Escolha o tipo de produto que será conferido. O estoque comercial fica separado por categoria e AMOSTRA/DOA não entram nesta contagem.</p>
+
+            <div className="inventory-audit-type-selector">
+              <span>TIPO DE PRODUTO</span>
+              <div>
+                {AUDIT_TYPE_OPTIONS.map((option) => {
+                  const Icon = option.icon;
+                  return (
+                    <button
+                      key={option.key}
+                      type="button"
+                      className={auditType === option.key ? 'active' : ''}
+                      onClick={() => changeAuditType(option.key)}
+                      title={option.identifierMode === 'IMEI' ? 'Conferência por IMEI' : 'Conferência por código de barras'}
+                    >
+                      <Icon size={15} />
+                      {option.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
             {onOpenSampleConference && (
               <button type="button" className="inventory-audit-sample-link" onClick={onOpenSampleConference}>
                 <ClipboardCheck size={16} />
@@ -754,31 +872,43 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
             </select>
             <small>
               {selectedStoreMeta
-                ? `${formatNumber(selectedStoreMeta.expected)} aparelhos • ${formatNumber(selectedStoreMeta.products)} produtos na base atual`
+                ? `${formatNumber(selectedStoreMeta.expected)} unidades • ${formatNumber(selectedStoreMeta.products)} produtos • leitura por ${auditMeta.identifierLabel.toLowerCase()}`
                 : 'O acesso respeita as lojas permitidas para o usuário logado.'}
             </small>
+            {!!selectedStoreMeta?.missingIdentifierUnits && (
+              <small className="inventory-audit-store-warning">
+                <AlertTriangle size={12} /> {formatNumber(selectedStoreMeta.missingIdentifierUnits)} unidade(s) de {formatNumber(selectedStoreMeta.missingIdentifierProducts || 0)} produto(s) ainda sem {auditMeta.identifierLabel.toLowerCase()} na base.
+              </small>
+            )}
           </div>
         </section>
 
         {error && (
           <div className="inventory-audit-error"><AlertTriangle size={18} /><span>{error}</span></div>
         )}
+        {notice && (
+          <div className="inventory-audit-warning"><AlertTriangle size={18} /><span>{notice}</span></div>
+        )}
 
         {!selectedStore ? (
           <section className="inventory-audit-empty">
-            <Store size={36} />
-            <h2>Nenhuma loja disponível para conferência</h2>
-            <p>Verifique se o usuário possui lojas liberadas e se existem Smartphones com IMEI na base de estoque.</p>
+            <AuditIcon size={36} />
+            <h2>Nenhuma loja disponível para {auditMeta.label.toLowerCase()}</h2>
+            <p>
+              Verifique se o usuário possui lojas liberadas e se existem itens da categoria no estoque comercial. Para {auditMeta.identifierMode === 'BARCODE' ? 'essa categoria também é necessário ter código de barras cadastrado.' : 'aparelhos é necessário ter IMEI válido.'}
+            </p>
           </section>
         ) : !session ? (
           <section className="inventory-audit-start-card">
-            <div className="inventory-audit-start-icon"><Smartphone size={34} /></div>
+            <div className="inventory-audit-start-icon"><AuditIcon size={34} /></div>
             <div>
-              <span>PRONTO PARA COMEÇAR</span>
+              <span>{auditMeta.label.toUpperCase()} • PRONTO PARA COMEÇAR</span>
               <h2>Criar conferência de {selectedStore}</h2>
-              <p>O Telefluxo vai congelar uma foto dos {formatNumber(selectedStoreMeta?.expected || 0)} aparelhos que estão na base agora. Essa será a referência da contagem física.</p>
+              <p>
+                O Telefluxo vai congelar uma foto de {formatNumber(selectedStoreMeta?.expected || 0)} unidade(s) de {auditMeta.plural} que estão em ESTOQUE agora. AMOSTRA e DOA ficam fora desta conferência.
+              </p>
             </div>
-            <button onClick={() => void beginAudit(false)} disabled={starting}>
+            <button onClick={() => void beginAudit(false)} disabled={starting || !selectedStoreMeta?.expected}>
               {starting ? <Loader2 className="animate-spin" size={18} /> : <Play size={18} />}
               Iniciar conferência
             </button>
@@ -789,7 +919,7 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
               <div>
                 <span className={`inventory-audit-status ${session.status.toLowerCase()}`}>{session.status === 'ACTIVE' ? 'EM CONFERÊNCIA' : session.status === 'COMPLETED' ? 'FINALIZADA' : 'CANCELADA'}</span>
                 <strong>{session.storeName}</strong>
-                <small>Iniciada por {session.operatorName} • {formatDateTime(session.startedAt)}</small>
+                <small>{session.auditLabel || auditMeta.label} • {session.identifierLabel || auditMeta.identifierLabel} • iniciada por {session.operatorName} • {formatDateTime(session.startedAt)}</small>
               </div>
               <div className="inventory-audit-session-actions">
                 <button className="secondary" onClick={() => void beginAudit(true)} disabled={starting}><RefreshCw size={15} /> Nova conferência</button>
@@ -799,23 +929,24 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
             </section>
 
             <section className="inventory-audit-kpi-grid">
-              <KpiCard icon={Package} label="Base esperada" value={formatNumber(stats.expected)} helper="Aparelhos na foto do estoque" tone="blue" />
+              <KpiCard icon={Package} label="Base esperada" value={formatNumber(stats.expected)} helper={`${auditMeta.label} no estoque comercial`} tone="blue" />
               <KpiCard icon={CheckCircle2} label="Bipados" value={formatNumber(stats.checked)} helper={`${stats.progress.toFixed(1)}% da conferência`} tone="green" />
               <KpiCard icon={Clock3} label="Faltando bipar" value={formatNumber(stats.pending)} helper={`${missingProducts.length} produto(s) com pendência`} tone="orange" />
-              <KpiCard icon={AlertTriangle} label="Divergências" value={formatNumber(stats.unexpected)} helper={`${stats.duplicates} repetidos • ${stats.invalid} inválidos`} tone="red" />
+              <KpiCard icon={AlertTriangle} label="Divergências" value={formatNumber(stats.unexpected + stats.excess)} helper={`${stats.excess} excedentes • ${stats.duplicates} repetidos • ${stats.invalid} inválidos`} tone="red" />
             </section>
 
             <section className="inventory-audit-progress-card">
               <div className="inventory-audit-progress-copy">
                 <span>PROGRESSO GERAL DA CONFERÊNCIA</span>
                 <strong>{stats.progress.toFixed(1)}%</strong>
-                <small>{formatNumber(stats.checked)} de {formatNumber(stats.expected)} aparelhos conferidos</small>
+                <small>{formatNumber(stats.checked)} de {formatNumber(stats.expected)} unidades conferidas</small>
               </div>
               <div className="inventory-audit-progress-track"><i style={{ width: `${Math.min(stats.progress, 100)}%` }} /></div>
               <div className="inventory-audit-progress-legend">
                 <span><i className="ok" /> Conferidos {stats.checked}</span>
                 <span><i className="pending" /> Pendentes {stats.pending}</span>
                 <span><i className="danger" /> Fora da base {stats.unexpected}</span>
+                {stats.excess > 0 && <span><i className="danger" /> Excedentes {stats.excess}</span>}
               </div>
             </section>
 
@@ -829,12 +960,12 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
               <section className="inventory-audit-main-grid">
                 <div className="inventory-audit-scanner-card">
                   <div className="inventory-audit-card-title">
-                    <div><span>LEITURA EM TEMPO REAL</span><h2>Bipar aparelho</h2></div>
+                    <div><span>LEITURA EM TEMPO REAL</span><h2>Bipar {auditMeta.singular}</h2></div>
                     <div className={`inventory-audit-live-dot ${cameraActive ? 'on' : ''}`}><i /> {cameraActive ? 'CÂMERA ATIVA' : 'LEITOR PRONTO'}</div>
                   </div>
 
                   {session.status !== 'ACTIVE' ? (
-                    <div className="inventory-audit-finished"><CheckCircle2 size={38} /><strong>Conferência encerrada</strong><span>Abra uma nova conferência para continuar bipando aparelhos.</span></div>
+                    <div className="inventory-audit-finished"><CheckCircle2 size={38} /><strong>Conferência encerrada</strong><span>Abra uma nova conferência para continuar bipando {auditMeta.plural}.</span></div>
                   ) : (
                     <>
                       <div className={`inventory-audit-camera ${cameraOpen ? 'open' : ''} ${lastRead?.result ? `read-${lastRead.result.toLowerCase()}` : ''}`}>
@@ -843,7 +974,7 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
                           <div className="inventory-audit-camera-placeholder">
                             {cameraStarting ? <Loader2 className="animate-spin" size={34} /> : <Camera size={38} />}
                             <strong>{cameraStarting ? 'Ativando câmera...' : 'Câmera pronta para iniciar'}</strong>
-                            <span>Aponte a câmera traseira para o código de barras do IMEI 1.</span>
+                            <span>{isImeiMode ? 'Aponte a câmera traseira para o código do IMEI 1.' : 'Aponte a câmera traseira para o código de barras da embalagem.'}</span>
                           </div>
                         )}
                         <div className="inventory-audit-scan-guide"><i /></div>
@@ -860,15 +991,22 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
                             {videoDevices.map((device, index) => <option key={device.deviceId} value={device.deviceId}>{device.label || `Câmera ${index + 1}`}</option>)}
                           </select>
                         )}
-                        <span><Zap size={14} /> foco contínuo e leitura 1D</span>
+                        <span><Zap size={14} /> foco contínuo • {isImeiMode ? 'IMEI' : 'EAN / código 1D'}</span>
                       </div>
 
                       {cameraError && <div className="inventory-audit-camera-error"><AlertTriangle size={16} /> {cameraError}</div>}
 
                       <div className="inventory-audit-manual">
-                        <div className="inventory-audit-manual-label"><Keyboard size={16} /><div><strong>Leitor físico ou digitação</strong><span>Também aceita scanner USB/Bluetooth.</span></div></div>
+                        <div className="inventory-audit-manual-label"><Keyboard size={16} /><div><strong>Leitor físico ou digitação</strong><span>{isImeiMode ? 'Bipe o IMEI do aparelho.' : 'O mesmo código pode ser bipado várias vezes, uma vez por unidade física.'}</span></div></div>
                         <form onSubmit={(event) => { event.preventDefault(); void submitScan(manualValue, 'MANUAL'); }}>
-                          <input ref={manualInputRef} value={manualValue} onChange={(event) => setManualValue(event.target.value)} placeholder="Bipe ou digite o IMEI" inputMode="numeric" autoComplete="off" />
+                          <input
+                            ref={manualInputRef}
+                            value={manualValue}
+                            onChange={(event) => setManualValue(event.target.value)}
+                            placeholder={`Bipe ou digite ${identifierLabel.toLowerCase()}`}
+                            inputMode={isImeiMode ? 'numeric' : 'text'}
+                            autoComplete="off"
+                          />
                           <button disabled={!manualValue.trim() || scanning}>{scanning ? <Loader2 className="animate-spin" size={16} /> : <ScanLine size={16} />} Conferir</button>
                         </form>
                       </div>
@@ -880,12 +1018,12 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
                     {lastRead ? (
                       <div className="min-w-0">
                         <span>ÚLTIMA LEITURA • {readMeta.label}</span>
-                        <code>{lastRead.imei || 'Código não identificado'}</code>
+                        <code>{lastRead.identifier || lastRead.imei || 'Código não identificado'}</code>
                         <strong>{lastRead.description || lastRead.title}</strong>
                         <small>{lastRead.message}</small>
                       </div>
                     ) : (
-                      <div><span>ÚLTIMA LEITURA</span><strong>Aguardando primeiro aparelho</strong><small>Quando um IMEI for reconhecido, o resultado aparecerá aqui imediatamente.</small></div>
+                      <div><span>ÚLTIMA LEITURA</span><strong>Aguardando primeira leitura</strong><small>Quando {identifierLabel.toLowerCase()} for reconhecido, o resultado aparecerá aqui imediatamente.</small></div>
                     )}
                     {lastRead?.result === 'FOUND' && <Volume2 size={18} className="inventory-audit-sound" />}
                   </div>
@@ -898,7 +1036,7 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
                   </div>
 
                   {missingProducts.length === 0 ? (
-                    <div className="inventory-audit-all-ok"><CheckCircle2 size={34} /><strong>Nenhum produto faltante</strong><span>Todos os aparelhos esperados já foram conferidos.</span></div>
+                    <div className="inventory-audit-all-ok"><CheckCircle2 size={34} /><strong>Nenhum produto faltante</strong><span>Todas as unidades esperadas já foram conferidas.</span></div>
                   ) : (
                     <div className="inventory-audit-product-list">
                       {missingProducts.slice(0, 12).map((product, index) => (
@@ -917,6 +1055,7 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
 
                   <div className="inventory-audit-divergence-box">
                     <div><XCircle size={18} /><span><strong>{stats.unexpected}</strong> fora da base</span></div>
+                    <div><AlertTriangle size={18} /><span><strong>{stats.excess}</strong> excedentes</span></div>
                     <div><AlertCircle size={18} /><span><strong>{stats.duplicates}</strong> leituras repetidas</span></div>
                   </div>
 
@@ -924,7 +1063,7 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
                     <div className="inventory-audit-unexpected-preview">
                       <span>ÚLTIMAS DIVERGÊNCIAS</span>
                       {unexpectedScans.slice(0, 4).map((item) => (
-                        <div key={item.id}><code>{item.imei}</code><small>{item.description || 'IMEI não localizado'}{item.foundStore ? ` • base: ${item.foundStore}` : ''}</small></div>
+                        <div key={item.id}><code>{item.identifier || item.imei}</code><small>{item.description || 'Código não localizado'}{item.foundStore ? ` • base: ${item.foundStore}` : ''}</small></div>
                       ))}
                     </div>
                   )}
@@ -935,30 +1074,30 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
             {tab === 'pending' && (
               <section className="inventory-audit-pending-card">
                 <div className="inventory-audit-card-title">
-                  <div><span>DETALHAMENTO DA DIFERENÇA</span><h2>Aparelhos que ainda não foram encontrados</h2></div>
-                  <div className="inventory-audit-search"><Search size={15} /><input value={searchMissing} onChange={(event) => setSearchMissing(event.target.value)} placeholder="Buscar produto, referência ou IMEI" /></div>
+                  <div><span>DETALHAMENTO DA DIFERENÇA</span><h2>{auditMeta.label} que ainda não foram encontrados</h2></div>
+                  <div className="inventory-audit-search"><Search size={15} /><input value={searchMissing} onChange={(event) => setSearchMissing(event.target.value)} placeholder={`Buscar produto, referência ou ${identifierLabel.toLowerCase()}`} /></div>
                 </div>
 
                 <div className="inventory-audit-pending-summary">
                   {missingProducts.slice(0, 8).map((product) => (
-                    <div key={`${product.productCode}-${product.reference}`}><Smartphone size={16} /><span><strong>{product.missing}x</strong>{product.description}<small>{product.reference || product.productCode}</small></span></div>
+                    <div key={`${product.productCode}-${product.reference}`}><AuditIcon size={16} /><span><strong>{product.missing}x</strong>{product.description}<small>{product.reference || product.productCode}</small></span></div>
                   ))}
                   {missingProducts.length === 0 && <div className="inventory-audit-all-ok inline"><CheckCircle2 size={24} /><strong>Sem faltantes</strong></div>}
                 </div>
 
                 <div className="inventory-audit-table-wrap">
                   <table>
-                    <thead><tr><th>Status</th><th>Produto</th><th>Referência</th><th>IMEI esperado</th></tr></thead>
+                    <thead><tr><th>Status</th><th>Produto</th><th>Referência</th><th>{identifierLabel} esperado</th></tr></thead>
                     <tbody>
                       {filteredMissingItems.map((item) => (
                         <tr key={item.id}>
                           <td><span className="inventory-audit-badge pending">PENDENTE</span></td>
-                          <td><strong>{item.description}</strong><small>Cód. {item.productCode}</small></td>
+                          <td><strong>{item.description}</strong><small>Cód. {item.productCode}{!isImeiMode && (item.quantity || 1) > 1 ? ` • ${item.quantity} un. pendentes` : ''}</small></td>
                           <td>{item.reference || '—'}</td>
-                          <td><code>{item.imei}</code></td>
+                          <td><code>{item.identifier || item.imei}</code></td>
                         </tr>
                       ))}
-                      {filteredMissingItems.length === 0 && <tr><td colSpan={4} className="inventory-audit-table-empty">Nenhum aparelho pendente com este filtro.</td></tr>}
+                      {filteredMissingItems.length === 0 && <tr><td colSpan={4} className="inventory-audit-table-empty">Nenhum item pendente com este filtro.</td></tr>}
                     </tbody>
                   </table>
                 </div>
@@ -967,17 +1106,17 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
 
             {tab === 'history' && (
               <section className="inventory-audit-history-card">
-                <div className="inventory-audit-card-title"><div><span>RASTREABILIDADE</span><h2>Histórico de conferências</h2></div></div>
+                <div className="inventory-audit-card-title"><div><span>RASTREABILIDADE</span><h2>Histórico de {auditMeta.label.toLowerCase()}</h2></div></div>
                 <div className="inventory-audit-history-list">
                   {history.map((item) => (
                     <button key={item.id} className={session.id === item.id ? 'selected' : ''} onClick={() => void loadSession(item.id)}>
                       <div className={`inventory-audit-history-icon ${item.status.toLowerCase()}`}>{item.status === 'COMPLETED' ? <CheckCircle2 size={18} /> : item.status === 'ACTIVE' ? <ScanLine size={18} /> : <XCircle size={18} />}</div>
-                      <div><strong>{item.storeName}</strong><span>{item.operatorName} • {formatDateTime(item.startedAt)}</span></div>
+                      <div><strong>{item.storeName}</strong><span>{item.auditLabel || item.auditType} • {item.operatorName} • {formatDateTime(item.startedAt)}</span></div>
                       <span className={`inventory-audit-status ${item.status.toLowerCase()}`}>{item.status === 'ACTIVE' ? 'EM ANDAMENTO' : item.status === 'COMPLETED' ? 'FINALIZADA' : 'CANCELADA'}</span>
                       <ChevronRight size={17} />
                     </button>
                   ))}
-                  {history.length === 0 && <div className="inventory-audit-empty-history"><History size={30} />Nenhuma conferência registrada para esta loja.</div>}
+                  {history.length === 0 && <div className="inventory-audit-empty-history"><History size={30} />Nenhuma conferência registrada para esta loja e categoria.</div>}
                 </div>
               </section>
             )}
@@ -990,7 +1129,7 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
                   return (
                     <div key={item.id}>
                       <span className={`inventory-audit-badge ${item.result.toLowerCase()}`}>{meta.label}</span>
-                      <code>{item.imei || item.rawValue || '—'}</code>
+                      <code>{item.identifier || item.imei || item.rawValue || '—'}</code>
                       <strong>{item.description || 'Código sem produto associado'}</strong>
                       <small>{item.foundStore && item.foundStore !== session.storeName ? `Base: ${item.foundStore} • ` : ''}{formatDateTime(item.createdAt)}</small>
                     </div>

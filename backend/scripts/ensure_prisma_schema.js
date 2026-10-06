@@ -6,6 +6,10 @@ const REQUIRED_COLUMNS = {
   Stock: [
     ['acquisitionCost', 'REAL'],
     ['stockType', "TEXT NOT NULL DEFAULT 'ESTOQUE'"],
+    ['barcode', 'TEXT'],
+  ],
+  InventoryAuditSession: [
+    ['auditType', "TEXT NOT NULL DEFAULT 'APARELHOS'"],
   ],
   ImeiHistory: [
     ['acquisitionCost', 'REAL'],
@@ -56,6 +60,7 @@ async function ensureInventoryAuditTables() {
       "userId" TEXT NOT NULL,
       "operatorName" TEXT NOT NULL,
       "storeName" TEXT NOT NULL,
+      "auditType" TEXT NOT NULL DEFAULT 'APARELHOS',
       "status" TEXT NOT NULL DEFAULT 'ACTIVE',
       "expectedCount" INTEGER NOT NULL DEFAULT 0,
       "sourceUpdatedAt" DATETIME,
@@ -104,6 +109,7 @@ async function ensureInventoryAuditTables() {
 
   const statements = [
     'CREATE INDEX IF NOT EXISTS "InventoryAuditSession_userId_storeName_status_idx" ON "InventoryAuditSession"("userId", "storeName", "status")',
+    'CREATE INDEX IF NOT EXISTS "InventoryAuditSession_userId_storeName_auditType_status_idx" ON "InventoryAuditSession"("userId", "storeName", "auditType", "status")',
     'CREATE INDEX IF NOT EXISTS "InventoryAuditSession_storeName_startedAt_idx" ON "InventoryAuditSession"("storeName", "startedAt")',
     'CREATE UNIQUE INDEX IF NOT EXISTS "InventoryAuditExpectedItem_sessionId_imei_key" ON "InventoryAuditExpectedItem"("sessionId", "imei")',
     'CREATE INDEX IF NOT EXISTS "InventoryAuditExpectedItem_sessionId_checkedAt_idx" ON "InventoryAuditExpectedItem"("sessionId", "checkedAt")',
@@ -170,18 +176,13 @@ async function ensureSampleConferenceTables() {
 
 async function main() {
   console.log('🔎 Verificando compatibilidade do banco Prisma...');
+
+  // 1) Garante primeiro que as tabelas existam.
   await ensureInventoryAuditTables();
   await ensureSampleConferenceTables();
 
-  const integrity = await prisma.$queryRawUnsafe('PRAGMA integrity_check');
-  const integrityResult = String(integrity?.[0]?.integrity_check || '');
-
-  if (integrityResult.toLowerCase() !== 'ok') {
-    throw new Error(
-      `O SQLite não passou na verificação de integridade: ${integrityResult || 'resultado desconhecido'}`
-    );
-  }
-
+  // 2) Em bancos antigos, as colunas precisam existir ANTES dos índices
+  // que dependem delas e antes da verificação final de integridade.
   let createdColumns = 0;
 
   for (const [tableName, columns] of Object.entries(REQUIRED_COLUMNS)) {
@@ -192,20 +193,58 @@ async function main() {
     }
   }
 
+  // 3) Recria os índices alterados por esta atualização.
+  // DROP/CREATE de índice não apaga dados da tabela.
+  // Isso também corrige índices SQLite inconsistentes de execuções anteriores.
+
+  await prisma.$executeRawUnsafe(
+    'DROP INDEX IF EXISTS "InventoryAuditSession_userId_storeName_status_idx"'
+  );
+
+  await prisma.$executeRawUnsafe(
+    'DROP INDEX IF EXISTS "InventoryAuditSession_userId_storeName_auditType_status_idx"'
+  );
+
+  await prisma.$executeRawUnsafe(
+    'CREATE INDEX "InventoryAuditSession_userId_storeName_auditType_status_idx" ON "InventoryAuditSession"("userId", "storeName", "auditType", "status")'
+  );
+
+  await prisma.$executeRawUnsafe(
+    'CREATE INDEX IF NOT EXISTS "InventoryAuditSession_storeName_startedAt_idx" ON "InventoryAuditSession"("storeName", "startedAt")'
+  );
+
   await prisma.$executeRawUnsafe(
     'CREATE INDEX IF NOT EXISTS "Stock_serial_idx" ON "Stock"("serial")'
+  );
+
+  await prisma.$executeRawUnsafe(
+    'DROP INDEX IF EXISTS "Stock_barcode_idx"'
+  );
+
+  await prisma.$executeRawUnsafe(
+    'CREATE INDEX "Stock_barcode_idx" ON "Stock"("barcode")'
   );
 
   await prisma.$executeRawUnsafe(
     'CREATE INDEX IF NOT EXISTS "Stock_storeName_productCode_stockType_idx" ON "Stock"("storeName", "productCode", "stockType")'
   );
 
+  // 4) Valida se todas as colunas esperadas realmente existem.
   const stockColumns = await getColumnNames('Stock');
+  const auditSessionColumns = await getColumnNames('InventoryAuditSession');
   const historyColumns = await getColumnNames('ImeiHistory');
 
   for (const [columnName] of REQUIRED_COLUMNS.Stock) {
     if (!stockColumns.has(columnName)) {
       throw new Error(`Falha ao validar Stock.${columnName}.`);
+    }
+  }
+
+  for (const [columnName] of REQUIRED_COLUMNS.InventoryAuditSession) {
+    if (!auditSessionColumns.has(columnName)) {
+      throw new Error(
+        `Falha ao validar InventoryAuditSession.${columnName}.`
+      );
     }
   }
 
@@ -215,16 +254,42 @@ async function main() {
     }
   }
 
+  // 5) Somente depois de recriar os índices fazemos o integrity_check.
+  const integrityRows =
+    await prisma.$queryRawUnsafe('PRAGMA integrity_check');
+
+  const integrityMessages = Array.isArray(integrityRows)
+    ? integrityRows
+        .map((row) => String(row?.integrity_check || ''))
+        .filter(Boolean)
+    : [];
+
+  const integrityOk =
+    integrityMessages.length === 1 &&
+    integrityMessages[0].toLowerCase() === 'ok';
+
+  if (!integrityOk) {
+    throw new Error(
+      `O SQLite não passou na verificação de integridade: ${
+        integrityMessages.join(' | ') || 'resultado desconhecido'
+      }`
+    );
+  }
+
   console.log(
     createdColumns > 0
-      ? `✅ Banco atualizado com segurança: ${createdColumns} coluna(s) adicionada(s).`
-      : '✅ Banco já estava compatível. Nenhuma alteração necessária.'
+      ? `✅ Banco atualizado com segurança: ${createdColumns} coluna(s) adicionada(s) e índices validados.`
+      : '✅ Banco já estava compatível. Índices validados com sucesso.'
   );
 }
 
 main()
   .catch((error) => {
-    console.error('❌ Não foi possível preparar o banco Prisma:', error);
+    console.error(
+      '❌ Não foi possível preparar o banco Prisma:',
+      error
+    );
+
     process.exitCode = 1;
   })
   .finally(async () => {

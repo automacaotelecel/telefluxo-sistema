@@ -42,8 +42,11 @@ auth    = HTTPBasicAuth(USUARIO, SENHA)
 #   LinxProdutosSerial -> LinxMovimentoSerial -> LinxMovimento.
 #
 # No LinxMovimento, o campo que reproduz o "CUSTO_SERIAL_ENTRADA" do ERP é
-# preco_unitario da compra original. preco_custo e custo_medio NÃO representam
-# o preço de aquisição individual do IMEI.
+# preco_unitario da compra original. A partir desta versão, o custo operacional
+# do IMEI passa a incluir também o IPI da mesma entrada:
+#   CUSTO_SERIAL_ENTRADA = preco_unitario + (valor_ipi / quantidade)
+# O valor_ipi é rateado pela quantidade da linha, pois a API o entrega no
+# movimento do item. preco_custo e custo_medio continuam apenas como fallback.
 SCRIPT_DIR = Path(__file__).resolve().parent
 CUSTO_IMEI_CACHE = Path(
     os.getenv(
@@ -720,6 +723,11 @@ def importar_mapas_csv(
             coluna_custo = localizar_coluna_csv(
                 colunas,
                 (
+                    # mapear_custos_imei.py já calcula o custo final com IPI.
+                    # Quando existir, essa é a fonte preferencial.
+                    "CUSTO_COM_IPI",
+                    "PRECO_CUSTO_SERIAL_COM_IPI",
+                    "CUSTO_SERIAL_ENTRADA_COM_IPI",
                     "PRECO_CUSTO_SERIAL",
                     "CUSTO_SERIAL_ENTRADA",
                     "PRECO_UNITARIO",
@@ -799,7 +807,18 @@ def importar_mapas_csv(
                             else ""
                         ),
                         "",
-                        f"FATURAMENTO_5298::{coluna_custo}",
+                        (
+                            f"FATURAMENTO_5298::{coluna_custo}::IPI_INCLUDED"
+                            if normalizar_texto_custo(coluna_custo)
+                            .upper()
+                            .replace(" ", "_")
+                            in {
+                                "CUSTO_COM_IPI",
+                                "PRECO_CUSTO_SERIAL_COM_IPI",
+                                "CUSTO_SERIAL_ENTRADA_COM_IPI",
+                            }
+                            else f"FATURAMENTO_5298::{coluna_custo}"
+                        ),
                         agora,
                     )
                 )
@@ -873,6 +892,7 @@ def buscar_custos_no_cache(
             FROM custo_imei
             WHERE serial_normalizado IN ({placeholders})
               AND custo_aquisicao > 0
+              AND campo_origem LIKE '%IPI_INCLUDED%'
             """,
             lote,
         ).fetchall()
@@ -1135,26 +1155,54 @@ def classificar_compra_original(
 def extrair_custo_compra(
     linha: pd.Series,
 ) -> tuple[float, str]:
-    preco_unitario = numero_api(linha.get("preco_unitario"))
-    if preco_unitario > 0:
-        return round(preco_unitario, 4), "preco_unitario"
+    """
+    Resolve o custo unitário da compra já COM IPI.
 
+    Regra principal:
+        custo final = preço unitário da compra + IPI unitário
+        IPI unitário = valor_ipi / quantidade
+
+    O campo valor_ipi pertence ao item do LinxMovimento. Por isso, quando a
+    linha possui mais de uma unidade, o imposto é rateado pela quantidade.
+    Quando usamos valor_total/quantidade como último fallback, não somamos o
+    IPI novamente para evitar dupla tributação do total da linha.
+    """
     quantidade = abs(numero_api(linha.get("quantidade")))
     divisor = quantidade if quantidade > 0 else 1.0
+
+    valor_ipi = abs(numero_api(linha.get("valor_ipi")))
+    ipi_unitario = valor_ipi / divisor if valor_ipi > 0 else 0.0
+
+    preco_unitario = numero_api(linha.get("preco_unitario"))
+    if preco_unitario > 0:
+        return (
+            round(preco_unitario + ipi_unitario, 4),
+            "preco_unitario+valor_ipi_rateado::IPI_INCLUDED",
+        )
+
+    preco_custo = numero_api(linha.get("preco_custo"))
+    if preco_custo > 0:
+        return (
+            round(preco_custo + ipi_unitario, 4),
+            "preco_custo+valor_ipi_rateado::IPI_INCLUDED",
+        )
 
     valor_total_unitario = (
         numero_api(linha.get("valor_total")) / divisor
     )
     if valor_total_unitario > 0:
-        return round(valor_total_unitario, 4), "valor_total/quantidade"
+        return (
+            round(valor_total_unitario, 4),
+            "valor_total/quantidade::IPI_INCLUDED_NO_TOTAL",
+        )
 
     valor_liquido_unitario = (
         numero_api(linha.get("valor_liquido")) / divisor
     )
     if valor_liquido_unitario > 0:
         return (
-            round(valor_liquido_unitario, 4),
-            "valor_liquido/quantidade",
+            round(valor_liquido_unitario + ipi_unitario, 4),
+            "valor_liquido/quantidade+valor_ipi_rateado::IPI_INCLUDED",
         )
 
     return 0.0, ""
@@ -1885,7 +1933,8 @@ def extrair_estoque(cnpj, modo_completo=False):
         "quantidade": "QUANTIDADE",
         "preco_custo": "PRECO_CUSTO",
         "preco_venda": "PRECO_VENDA",
-        "custo_medio": "CUSTO_MEDIO"
+        "custo_medio": "CUSTO_MEDIO",
+        "ipi": "IPI_ALIQUOTA"
     }, inplace=True)
 
     tipos_encontrados = base["TIPO_ESTOQUE"].value_counts().to_dict() if "TIPO_ESTOQUE" in base.columns else {}
@@ -2026,6 +2075,7 @@ def aplicar_precos_nos_saldos(
         "PRECO_CUSTO",
         "PRECO_VENDA",
         "CUSTO_MEDIO",
+        "IPI_ALIQUOTA",
     ]
 
     if not detalhes.empty and "CODIGO_PRODUTO" in detalhes.columns:
@@ -2068,11 +2118,33 @@ def aplicar_precos_nos_saldos(
                 .astype(float)
             )
 
+    # Guarda os custos sem imposto para auditoria e aplica a alíquota de IPI
+    # como fallback quando não houver custo exato por IMEI.
+    resultado["PRECO_CUSTO_SEM_IPI"] = resultado["PRECO_CUSTO"].astype(float)
+    resultado["CUSTO_MEDIO_SEM_IPI"] = resultado["CUSTO_MEDIO"].astype(float)
+
+    aliquota_ipi = resultado["IPI_ALIQUOTA"].astype(float).clip(lower=0)
+    fator_ipi = 1.0 + (aliquota_ipi / 100.0)
+
+    resultado["PRECO_CUSTO"] = (
+        resultado["PRECO_CUSTO"] * fator_ipi
+    ).round(4)
+    resultado["CUSTO_MEDIO"] = (
+        resultado["CUSTO_MEDIO"] * fator_ipi
+    ).round(4)
+
     # AMOSTRA e DOA nunca compõem custo ou cálculos operacionais.
     especiais = resultado["TIPO_ESTOQUE"].isin(
         ["AMOSTRA", "DOA"]
     )
-    for coluna in colunas_preco:
+    for coluna in [
+        "PRECO_CUSTO",
+        "PRECO_VENDA",
+        "CUSTO_MEDIO",
+        "IPI_ALIQUOTA",
+        "PRECO_CUSTO_SEM_IPI",
+        "CUSTO_MEDIO_SEM_IPI",
+    ]:
         resultado[coluna] = resultado[coluna].mask(
             especiais,
             0.0,
@@ -2414,7 +2486,13 @@ def main():
     df_estoque["REFERENCIA"] = df_estoque["REF_REAL"].fillna("-")
     df_estoque["CATEGORIA"] = df_estoque["CAT_REAL"].fillna("GERAL")
 
-    for col in ["QUANTIDADE", "PRECO_CUSTO", "PRECO_VENDA", "CUSTO_MEDIO"]:
+    for col in [
+        "QUANTIDADE",
+        "PRECO_CUSTO",
+        "PRECO_VENDA",
+        "CUSTO_MEDIO",
+        "IPI_ALIQUOTA",
+    ]:
         df_estoque[col] = to_float(df_estoque.get(col, 0))
 
     # Os saldos já chegam em linhas separadas por depósito. Não use a

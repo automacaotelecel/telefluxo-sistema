@@ -100,6 +100,7 @@ const STORE_ALLOWED_VIEWS = new Set([
   'alertas_inteligentes',
   'estoque_detalhado',
   'estoque_vendas',
+  'ponto_pedido_prontos',
   'estoque_inteligente',
   'stockout',
   'sales_dash',
@@ -340,11 +341,12 @@ function App() {
     avaliacoes_lojas: 'PAINEL DIRETORIA / AVALIAÇÕES DAS LOJAS',
     acesso_rapido_aparelhos: 'PAINEL DIRETORIA / ACESSO RÁPIDO',
     stock: 'CONTROLE DE ESTOQUE',
-    inventory_audit: 'CONFERÊNCIA DE APARELHOS / BIPADOR',
+    inventory_audit: 'BIPADOR DE ESTOQUE / CONFERÊNCIA',
     sample_conference: 'CONFERÊNCIA DE AMOSTRAS',
     alertas_inteligentes: 'ALERTAS',
     estoque_detalhado: 'PREVISÃO ESTOQUE',
     estoque_vendas: 'PONTO DE PEDIDO',
+    ponto_pedido_prontos: 'PONTO DE PEDIDO / PEDIDOS PRONTOS',
     estoque_inteligente: 'ESTOQUE INTELIGENTE',
     stockout: 'STOCKOUT',
     contract_analyzer: 'LEITOR DE CONTRATOS (CLARK JURÍDICA)', // Título da Nova Tela
@@ -517,6 +519,7 @@ function App() {
     if (view === 'sales_dash') return <SalesDashboard />;
     if (view === 'comparativo') return <ComparativoAnual />;
     if (view === 'estoque_vendas') return <EstoqueVendas />;
+    if (view === 'ponto_pedido_prontos') return <EstoqueVendas initialMode="prontos" />;
     if (view === 'estoque_inteligente') return <EstoqueInteligente currentUser={user} />;
     if (view === 'estoque_detalhado') return <EstoqueDetalhado />;
     if (view === 'stockout') return <Stockout currentUser={user} />;
@@ -830,6 +833,7 @@ function App() {
                   'inventory_audit_dashboard',
                   'alertas_inteligentes',
                   'estoque_vendas',
+                  'ponto_pedido_prontos',
                   'estoque_inteligente',
                   'estoque_detalhado',
                   'stockout',
@@ -845,7 +849,7 @@ function App() {
                   <SubMenuItem label="Visão Geral" view="stock" active={currentView === 'stock'} />
 
                   <SubMenuItem
-                    label="Bipador de Aparelhos"
+                    label="Bipador de Estoque"
                     view="inventory_audit"
                     active={currentView === 'inventory_audit'}
                   />
@@ -875,6 +879,13 @@ function App() {
                     label="Ponto de Pedido"
                     view="estoque_vendas"
                     active={currentView === 'estoque_vendas'}
+                  />
+
+                  <SubMenuItem
+                    label="Pedidos prontos"
+                    view="ponto_pedido_prontos"
+                    active={currentView === 'ponto_pedido_prontos'}
+                    nested
                   />
 
                   <SubMenuItem

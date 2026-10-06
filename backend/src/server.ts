@@ -11437,6 +11437,15 @@ app.post('/stock/sync', async (req, res) => {
             item.SERIAL ?? item.serial
           ),
 
+          barcode: safeStr(
+            item.CODIGO_BARRAS ??
+              item.COD_BARRA ??
+              item.CODIGO_BARRA ??
+              item.EAN ??
+              item.GTIN ??
+              item.barcode
+          ),
+
           emLinha: emLinhaValue,
           cluster: clusterValue,
 
@@ -14918,7 +14927,9 @@ async function pontoPedidoBuildSheetData(params: {
           ? 0
           : Math.max(0, estoque);
 
-    const coberturaAtualDias = vmdPonderada > 0 ? estoque / vmdPonderada : null;
+    // COBERTURA ATUAL = somente estoque físico atual / ritmo real dos últimos 60 dias.
+    // Backlog, pedido faturado e qualquer outra entrada futura NÃO entram nesta conta.
+    const coberturaAtualDias = vmd60 > 0 ? estoque / vmd60 : null;
     const coberturaAtualData = coberturaAtualDias === null
       ? ''
       : pontoPedidoDateAddDays(today, Math.max(0, Math.floor(coberturaAtualDias)));
@@ -15202,6 +15213,133 @@ async function pontoPedidoSaveManualValue(params: {
   }
 }
 
+type PontoPedidoManualSnapshotRow = {
+  aba: string;
+  modelo: string;
+  pedidoRufino: number;
+  pedidoControladoria: number;
+};
+
+async function pontoPedidoSaveManualSnapshot(
+  items: PontoPedidoManualSnapshotRow[],
+  restoreControladoria = false
+) {
+  if (!items.length) return;
+
+  let db: any;
+  try {
+    db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+    await db.exec('BEGIN IMMEDIATE TRANSACTION');
+
+    for (const item of items) {
+      const modelo = String(item.modelo || '').trim().toUpperCase();
+      const aba = String(item.aba || '').trim();
+      if (!modelo || !aba) continue;
+
+      const pedidoRufino = Math.max(0, pontoPedidoNumber(item.pedidoRufino));
+      const pedidoControladoria = Math.max(0, pontoPedidoNumber(item.pedidoControladoria));
+
+      if (restoreControladoria) {
+        await db.run(`
+          INSERT INTO sugestao_compras_manual (
+            modelo, regiao_aba, faturado, sugestao_coordenador, pedido_rufino
+          ) VALUES (?, ?, 0, ?, ?)
+          ON CONFLICT(modelo, regiao_aba)
+          DO UPDATE SET
+            sugestao_coordenador = excluded.sugestao_coordenador,
+            pedido_rufino = excluded.pedido_rufino
+        `, [modelo, aba, pedidoControladoria, pedidoRufino]);
+      } else {
+        await db.run(`
+          INSERT INTO sugestao_compras_manual (
+            modelo, regiao_aba, faturado, sugestao_coordenador, pedido_rufino
+          ) VALUES (?, ?, 0, 0, ?)
+          ON CONFLICT(modelo, regiao_aba)
+          DO UPDATE SET pedido_rufino = excluded.pedido_rufino
+        `, [modelo, aba, pedidoRufino]);
+      }
+    }
+
+    await db.exec('COMMIT');
+  } catch (error) {
+    if (db) {
+      try { await db.exec('ROLLBACK'); } catch {}
+    }
+    throw error;
+  } finally {
+    if (db) {
+      try { await db.close(); } catch {}
+    }
+  }
+}
+
+async function pontoPedidoEnsureReadyOrdersTable(db: any) {
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS ponto_pedido_prontos (
+      id TEXT PRIMARY KEY,
+      nome TEXT NOT NULL,
+      categoria TEXT NOT NULL,
+      criado_em TEXT NOT NULL,
+      atualizado_em TEXT NOT NULL,
+      total_modelos INTEGER NOT NULL DEFAULT 0,
+      total_unidades REAL NOT NULL DEFAULT 0,
+      payload_json TEXT NOT NULL
+    )
+  `);
+}
+
+async function pontoPedidoBuildCategoryNetworkRows(
+  categoryRaw: any,
+  includeManual = true,
+  forceRefresh = false
+) {
+  const category = pontoPedidoNormalizeHeader(categoryRaw || 'APARELHOS');
+  const cache = await pontoPedidoLoadWorkbook(forceRefresh);
+  const workbook = cache.workbook;
+  const today = pontoPedidoBrazilTodayIso();
+
+  const planningTabs = workbook.SheetNames
+    .filter(pontoPedidoIsPlanningSheet)
+    .map(pontoPedidoPlanningTabMeta)
+    .filter(
+      (tab) => pontoPedidoNormalizeHeader(tab.category) === category
+    );
+
+  const builtTabs = await Promise.all(
+    planningTabs.map(async (tab) => {
+      const built = await pontoPedidoBuildSheetData({
+        workbook,
+        sheetName: tab.id,
+        today,
+        forceRefresh,
+        includeManual,
+      });
+
+      return { tab, built };
+    })
+  );
+
+  const rows = builtTabs.flatMap(({ tab, built }) =>
+    built.rows.map((row: any) => ({
+      ...row,
+      aba: tab.id,
+      state: tab.state,
+      stateLabel: tab.stateLabel || tab.state,
+      category: tab.category,
+    }))
+  );
+
+  return {
+    category,
+    cache,
+    workbook,
+    today,
+    planningTabs,
+    builtTabs,
+    rows,
+  };
+}
+
 app.post('/api/ponto-pedido/pedido-rufino', async (req, res) => {
   try {
     const aba = String(req.body?.aba || '').trim();
@@ -15320,7 +15458,7 @@ function pontoPedidoBuildTransferSuggestions(
           Math.ceil(
             pontoPedidoNumber(
               row?.sugestaoNovoPedido ?? row?.sugestao
-            )
+            ) - pontoPedidoNumber(row?.pedidoFaturado)
           )
         ),
       }))
@@ -15391,6 +15529,352 @@ function pontoPedidoBuildTransferSuggestions(
     .sort((a, b) => b.quantidade - a.quantidade)
     .slice(0, 120);
 }
+
+app.post('/api/ponto-pedido/auto-planejar', async (req, res) => {
+  try {
+    const category = pontoPedidoNormalizeHeader(
+      req.body?.categoria || 'APARELHOS'
+    );
+
+    const network = await pontoPedidoBuildCategoryNetworkRows(
+      category,
+      false,
+      false
+    );
+
+    if (!network.planningTabs.length || !network.rows.length) {
+      return res.status(404).json({
+        ok: false,
+        error: 'Nenhuma aba/modelo foi encontrado para montar o ponto de pedido.',
+      });
+    }
+
+    const transfers = pontoPedidoBuildTransferSuggestions(network.rows);
+
+    const transferInMap = new Map<string, number>();
+    transfers.forEach((item) => {
+      const key =
+        `${pontoPedidoProductKey(item.modelo)}::` +
+        `${pontoPedidoNormalizeHeader(item.destino)}`;
+
+      transferInMap.set(
+        key,
+        (transferInMap.get(key) || 0) + item.quantidade
+      );
+    });
+
+    const updates: PontoPedidoManualSnapshotRow[] = network.rows.map((row: any) => {
+      const blocked = pontoPedidoStatusBlocksPurchase(row?.status);
+      const transferKey =
+        `${pontoPedidoProductKey(row?.modeloComCor || row?.modelo)}::` +
+        `${pontoPedidoNormalizeHeader(row?.stateLabel || row?.state || row?.aba)}`;
+
+      const transferenciaEntrada = transferInMap.get(transferKey) || 0;
+      const pedidoFaturado = Math.max(0, pontoPedidoNumber(row?.pedidoFaturado));
+      const sugestaoBruta = Math.max(
+        0,
+        Math.ceil(
+          pontoPedidoNumber(
+            row?.sugestaoNovoPedido ?? row?.sugestaoPedido ?? row?.sugestao
+          )
+        )
+      );
+
+      // A sugestão automática do Rufino parte da necessidade de novo pedido
+      // calculada pelo sistema e desconta compromissos já faturados e
+      // transferências disponíveis na rede. O LLM não inventa a quantidade.
+      const pedidoRufino = blocked
+        ? 0
+        : Math.max(
+            0,
+            Math.ceil(
+              sugestaoBruta - pedidoFaturado - transferenciaEntrada
+            )
+          );
+
+      return {
+        aba: String(row?.aba || ''),
+        modelo: String(row?.modeloComCor || row?.modelo || ''),
+        pedidoRufino,
+        pedidoControladoria: pontoPedidoNumber(row?.pedidoControladoria),
+      };
+    });
+
+    await pontoPedidoSaveManualSnapshot(updates, false);
+
+    const modelosComPedido = updates.filter((item) => item.pedidoRufino > 0).length;
+    const totalUnidades = updates.reduce(
+      (sum, item) => sum + item.pedidoRufino,
+      0
+    );
+
+    return res.json({
+      ok: true,
+      category,
+      modelosAtualizados: updates.length,
+      modelosComPedido,
+      totalUnidades,
+      transferencias: transfers,
+      statesAnalyzed: Array.from(
+        new Set(
+          network.planningTabs.map(
+            (tab) => tab.stateLabel || tab.state || tab.label
+          )
+        )
+      ),
+    });
+  } catch (error: any) {
+    console.error('Erro /api/ponto-pedido/auto-planejar:', error);
+    return res.status(500).json({
+      ok: false,
+      error: error?.message || 'Falha ao preencher automaticamente o ponto de pedido.',
+    });
+  }
+});
+
+app.post('/api/ponto-pedido/finalizar', async (req, res) => {
+  let db: any;
+  try {
+    const category = pontoPedidoNormalizeHeader(
+      req.body?.categoria || 'APARELHOS'
+    );
+
+    const network = await pontoPedidoBuildCategoryNetworkRows(
+      category,
+      true,
+      false
+    );
+
+    if (!network.planningTabs.length || !network.rows.length) {
+      return res.status(404).json({
+        ok: false,
+        error: 'Nenhum dado disponível para finalizar o ponto de pedido.',
+      });
+    }
+
+    const snapshotRows = network.rows.map((row: any) => ({
+      aba: String(row?.aba || ''),
+      state: String(row?.state || ''),
+      stateLabel: String(row?.stateLabel || row?.state || ''),
+      modelo: String(row?.modelo || ''),
+      modeloComCor: String(row?.modeloComCor || row?.modelo || ''),
+      status: String(row?.status || ''),
+      vendas60: pontoPedidoNumber(row?.vendas60),
+      estoque: pontoPedidoNumber(row?.estoque),
+      backlogTotal: pontoPedidoNumber(row?.backlogTotal),
+      pedidoFaturado: pontoPedidoNumber(row?.pedidoFaturado),
+      sugestaoFaturarBacklog: pontoPedidoNumber(row?.sugestaoFaturarBacklog),
+      sugestaoNovoPedido: pontoPedidoNumber(row?.sugestaoNovoPedido),
+      pedidoControladoria: pontoPedidoNumber(row?.pedidoControladoria),
+      pedidoRufino: pontoPedidoNumber(row?.pedidoRufino),
+      sobra: pontoPedidoNumber(row?.sobra),
+    }));
+
+    const finalRows = snapshotRows.filter((row) => row.pedidoRufino > 0);
+    const totalUnidades = finalRows.reduce(
+      (sum, row) => sum + row.pedidoRufino,
+      0
+    );
+
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+    const displayDate = new Date().toLocaleString('pt-BR', {
+      timeZone: 'America/Sao_Paulo',
+    });
+    const nome = String(req.body?.nome || '').trim() ||
+      `Ponto de Pedido ${category} - ${displayDate}`;
+
+    const payload = {
+      version: 1,
+      categoria: category,
+      criadoEm: now,
+      tabs: network.planningTabs,
+      rows: snapshotRows,
+    };
+
+    db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+    await pontoPedidoEnsureReadyOrdersTable(db);
+    await db.run(`
+      INSERT INTO ponto_pedido_prontos (
+        id, nome, categoria, criado_em, atualizado_em,
+        total_modelos, total_unidades, payload_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
+      id,
+      nome,
+      category,
+      now,
+      now,
+      finalRows.length,
+      totalUnidades,
+      JSON.stringify(payload),
+    ]);
+
+    return res.json({
+      ok: true,
+      pedido: {
+        id,
+        nome,
+        categoria: category,
+        criadoEm: now,
+        totalModelos: finalRows.length,
+        totalUnidades,
+      },
+    });
+  } catch (error: any) {
+    console.error('Erro /api/ponto-pedido/finalizar:', error);
+    return res.status(500).json({
+      ok: false,
+      error: error?.message || 'Falha ao finalizar o ponto de pedido.',
+    });
+  } finally {
+    if (db) {
+      try { await db.close(); } catch {}
+    }
+  }
+});
+
+app.get('/api/ponto-pedido/pedidos-prontos', async (req, res) => {
+  let db: any;
+  try {
+    const category = pontoPedidoNormalizeHeader(req.query.categoria || '');
+    db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+    await pontoPedidoEnsureReadyOrdersTable(db);
+
+    const rows = category
+      ? await db.all(`
+          SELECT id, nome, categoria, criado_em, atualizado_em,
+                 total_modelos, total_unidades
+          FROM ponto_pedido_prontos
+          WHERE categoria = ?
+          ORDER BY criado_em DESC
+        `, [category])
+      : await db.all(`
+          SELECT id, nome, categoria, criado_em, atualizado_em,
+                 total_modelos, total_unidades
+          FROM ponto_pedido_prontos
+          ORDER BY criado_em DESC
+        `);
+
+    return res.json({
+      ok: true,
+      rows: (rows || []).map((row: any) => ({
+        id: String(row.id),
+        nome: String(row.nome),
+        categoria: String(row.categoria),
+        criadoEm: String(row.criado_em),
+        atualizadoEm: String(row.atualizado_em),
+        totalModelos: pontoPedidoNumber(row.total_modelos),
+        totalUnidades: pontoPedidoNumber(row.total_unidades),
+      })),
+    });
+  } catch (error: any) {
+    console.error('Erro /api/ponto-pedido/pedidos-prontos:', error);
+    return res.status(500).json({
+      ok: false,
+      error: error?.message || 'Falha ao listar pedidos prontos.',
+    });
+  } finally {
+    if (db) {
+      try { await db.close(); } catch {}
+    }
+  }
+});
+
+app.post('/api/ponto-pedido/pedidos-prontos/:id/restaurar', async (req, res) => {
+  let db: any;
+  try {
+    const id = String(req.params.id || '').trim();
+    if (!id) {
+      return res.status(400).json({ ok: false, error: 'Pedido não informado.' });
+    }
+
+    db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+    await pontoPedidoEnsureReadyOrdersTable(db);
+
+    const saved = await db.get(`
+      SELECT id, nome, categoria, payload_json
+      FROM ponto_pedido_prontos
+      WHERE id = ?
+    `, [id]);
+
+    if (!saved) {
+      return res.status(404).json({ ok: false, error: 'Pedido pronto não encontrado.' });
+    }
+
+    let payload: any = null;
+    try {
+      payload = JSON.parse(String(saved.payload_json || '{}'));
+    } catch {
+      payload = null;
+    }
+
+    const snapshotRows = Array.isArray(payload?.rows) ? payload.rows : [];
+    const items: PontoPedidoManualSnapshotRow[] = snapshotRows.map((row: any) => ({
+      aba: String(row?.aba || ''),
+      modelo: String(row?.modeloComCor || row?.modelo || ''),
+      pedidoRufino: pontoPedidoNumber(row?.pedidoRufino),
+      pedidoControladoria: pontoPedidoNumber(row?.pedidoControladoria),
+    }));
+
+    await db.close();
+    db = null;
+
+    await pontoPedidoSaveManualSnapshot(items, true);
+
+    return res.json({
+      ok: true,
+      id,
+      nome: String(saved.nome),
+      categoria: String(saved.categoria),
+      restoredRows: items.length,
+      firstTab: String(payload?.tabs?.[0]?.id || ''),
+    });
+  } catch (error: any) {
+    console.error('Erro ao restaurar pedido pronto:', error);
+    return res.status(500).json({
+      ok: false,
+      error: error?.message || 'Falha ao restaurar pedido pronto.',
+    });
+  } finally {
+    if (db) {
+      try { await db.close(); } catch {}
+    }
+  }
+});
+
+app.delete('/api/ponto-pedido/pedidos-prontos/:id', async (req, res) => {
+  let db: any;
+  try {
+    const id = String(req.params.id || '').trim();
+    if (!id) {
+      return res.status(400).json({ ok: false, error: 'Pedido não informado.' });
+    }
+
+    db = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+    await pontoPedidoEnsureReadyOrdersTable(db);
+    const result = await db.run(
+      'DELETE FROM ponto_pedido_prontos WHERE id = ?',
+      [id]
+    );
+
+    if (!result?.changes) {
+      return res.status(404).json({ ok: false, error: 'Pedido pronto não encontrado.' });
+    }
+
+    return res.json({ ok: true, id });
+  } catch (error: any) {
+    console.error('Erro ao excluir pedido pronto:', error);
+    return res.status(500).json({
+      ok: false,
+      error: error?.message || 'Falha ao excluir pedido pronto.',
+    });
+  } finally {
+    if (db) {
+      try { await db.close(); } catch {}
+    }
+  }
+});
 
 function pontoPedidoDeterministicPurchaseAnalysis(
   rows: any[],
