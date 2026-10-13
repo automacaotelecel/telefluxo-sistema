@@ -1007,6 +1007,7 @@ function App() {
       </aside>
 
       <main className="flex-1 flex flex-col overflow-hidden w-full">
+        {!['estoque_vendas', 'ponto_pedido_prontos'].includes(currentView) && (
         <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-4 md:px-8 shadow-sm shrink-0">
           <div className="flex items-center gap-3">
             <button
@@ -1078,6 +1079,7 @@ function App() {
             <NotificationBell currentUser={user} />
           </div>
         </header>
+        )}
 
         <div className="flex-1 overflow-hidden relative flex flex-col">
           {(

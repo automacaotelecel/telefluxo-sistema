@@ -91,3 +91,11 @@
   .inventory-audit-type-selector>div{grid-template-columns:1fr 1fr}
   .inventory-audit-type-selector button{padding:0 8px;font-size:7px}
 }
+
+/* Conferência única: tipo de estoque identificado automaticamente */
+.inventory-audit-stock-kind { display:inline-flex!important; width:max-content; padding:5px 9px; margin:5px 0 3px; border-radius:8px; color:#334155; background:#e2e8f0; font-size:9px!important; font-weight:900; letter-spacing:.04em; }
+.inventory-audit-stock-kind.amostra { color:#1d4ed8; background:#dbeafe; }
+.inventory-audit-stock-kind.doa { color:#9a3412; background:#ffedd5; border:1px solid #fb923c; }
+.inventory-audit-badge.ambiguous { color:#9a3412; background:#ffedd5; }
+.inventory-audit-camera.read-ambiguous { box-shadow:0 0 0 3px rgba(249,115,22,.55); }
+.inventory-audit-last-read:has(.inventory-audit-stock-kind.doa) { border-color:#fb923c; background:#fff7ed; }

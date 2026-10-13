@@ -45,6 +45,9 @@ type PontoPedidoRow = {
   sourceRow: number;
   modelo: string;
   modeloComCor: string;
+  referencia?: string;
+  codigo?: string;
+  procv?: string;
   precoSamsung: number;
   precoTelecel: number;
   desc: number;
@@ -150,6 +153,119 @@ type AiAnalysisContext = {
   transferencias?: AiTransferSuggestion[];
 };
 
+type AiVisualReportItem = {
+  state: string;
+  model: string;
+  status?: string;
+  action: string;
+  quantity: number;
+  priority: 'ALTA' | 'MEDIA' | 'BAIXA';
+  vendas60: number;
+  estoque: number;
+  backlog: number;
+  pedidoFaturado: number;
+  coberturaDias: number | null;
+  sobra: number;
+  saldo60: number;
+  faturarBacklog: number;
+  novoPedidoBruto: number;
+  transferenciaEntrada: number;
+  novoPedidoLiquido: number;
+  justificativa: string;
+  blocked?: boolean;
+  riscoRuptura?: boolean;
+};
+
+type AiVisualReport = {
+  version?: number;
+  escopo?: string;
+  generatedAt?: string;
+  totals: {
+    vendas60: number;
+    estoque: number;
+    backlog: number;
+    pedidoFaturado: number;
+    faturarBacklog: number;
+    novosPedidos: number;
+    sobra: number;
+    transferencias: number;
+    unidadesTransferir: number;
+    riscos: number;
+    bloqueados: number;
+  };
+  states?: Array<{
+    estado: string;
+    vendas60: number;
+    estoque: number;
+    backlog: number;
+    sobra: number;
+    novosPedidos: number;
+    faturarBacklog: number;
+  }>;
+  priorityItems?: AiVisualReportItem[];
+  backlogItems?: AiVisualReportItem[];
+  newOrderItems?: AiVisualReportItem[];
+  riskItems?: AiVisualReportItem[];
+  surplusItems?: AiVisualReportItem[];
+  blockedItems?: AiVisualReportItem[];
+  transfers?: AiTransferSuggestion[];
+};
+
+type PontoPedidoAuditResponse = {
+  ok: boolean;
+  error?: string;
+  suggestions?: string[];
+  tab?: SheetTab;
+  sheetRow?: {
+    sourceRow: number;
+    modelo: string;
+    modeloComCor: string;
+    referencia?: string;
+    codigo?: string;
+    procv?: string;
+    status?: string;
+  };
+  normalized?: {
+    colorKey: string;
+    baseKey: string;
+    signature?: Record<string, string>;
+    colorTokens?: string[];
+    accessorySpecs?: string[];
+    allowBaseFallback?: boolean;
+    allowNetworkFallback?: boolean;
+  };
+  calculated?: PontoPedidoRow | null;
+  sales?: {
+    method: string;
+    confidence: string;
+    ambiguous: boolean;
+    matchedDescription: string;
+    productCode?: string;
+    reference?: string;
+    value?: { vendas15?: number; vendas30?: number; vendas45?: number; vendas60?: number };
+    sources?: any[];
+    candidates?: any[];
+    nearby?: any[];
+  };
+  stock?: {
+    method: string;
+    confidence: string;
+    ambiguous: boolean;
+    matchedDescription: string;
+    productCode?: string;
+    reference?: string;
+    value?: { estoque?: number };
+    sources?: any[];
+    candidates?: any[];
+    nearby?: any[];
+  };
+  backlog?: {
+    totalMatchedRows: number;
+    quantity: number;
+    rows?: any[];
+  };
+};
+
 type ReadyOrder = {
   id: string;
   nome: string;
@@ -189,7 +305,7 @@ const API_URL = getApiUrl();
 async function fetchJsonWithTimeout(
   url: string,
   options: RequestInit = {},
-  timeoutMs = 35000,
+  timeoutMs = 60000,
 ) {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
@@ -204,8 +320,9 @@ async function fetchJsonWithTimeout(
     return { response, json };
   } catch (error: any) {
     if (error?.name === 'AbortError') {
+      const seconds = Math.ceil(timeoutMs / 1000);
       throw new Error(
-        'O backend demorou mais de 35 segundos para responder. Verifique a rota /api/ponto-pedido e a leitura do Google Sheets.',
+        `O backend excedeu ${seconds} segundos para responder. A solicitação foi cancelada pelo navegador; tente novamente. Em uma primeira carga, o Render e a leitura do Google Sheets podem levar mais tempo.`,
       );
     }
     throw error;
@@ -259,6 +376,16 @@ const isBlockedOrderStatus = (status: string) => {
     normalized.includes('NAO HA COMO PEDIR') ||
     normalized.includes('OBSOLETO')
   );
+};
+
+const isOpenAccessoryStatus = (status: string) => {
+  const normalized = String(status || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toUpperCase();
+
+  return normalized === 'OPEN';
 };
 
 function GroupButton({
@@ -343,7 +470,9 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
   const [showSales, setShowSales] = useState(false);
   const [showFutureWeeks, setShowFutureWeeks] = useState(false);
   const [showForecasts, setShowForecasts] = useState(false);
+  const [showSamsungPrice, setShowSamsungPrice] = useState(false);
   const [hideBlockedRows, setHideBlockedRows] = useState(true);
+  const [hideOpenRows, setHideOpenRows] = useState(true);
   const [stateSummaries, setStateSummaries] = useState<StateSurplusRow[]>([]);
   const [stateSummaryLoading, setStateSummaryLoading] = useState(false);
   const [savingRowKey, setSavingRowKey] = useState('');
@@ -352,10 +481,17 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
   const [aiAction, setAiAction] = useState<AiAction>('AUTO_PLAN');
   const [aiAnswer, setAiAnswer] = useState('');
   const [aiContext, setAiContext] = useState<AiAnalysisContext | null>(null);
+  const [aiReport, setAiReport] = useState<AiVisualReport | null>(null);
+  const [aiSource, setAiSource] = useState('');
   const [aiLoading, setAiLoading] = useState(false);
   const [readyOrders, setReadyOrders] = useState<ReadyOrder[]>([]);
   const [readyOrdersLoading, setReadyOrdersLoading] = useState(false);
   const [finalizing, setFinalizing] = useState(false);
+  const [auditOpen, setAuditOpen] = useState(false);
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [auditQuery, setAuditQuery] = useState('');
+  const [auditData, setAuditData] = useState<PontoPedidoAuditResponse | null>(null);
+  const [auditError, setAuditError] = useState('');
   const [tableScrollWidth, setTableScrollWidth] = useState(0);
   const topScrollRef = useRef<HTMLDivElement | null>(null);
   const tableScrollRef = useRef<HTMLDivElement | null>(null);
@@ -368,7 +504,7 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
     const { response, json } = await fetchJsonWithTimeout(
       `${API_URL}/api/ponto-pedido/meta${force ? '?refresh=1' : ''}`,
       { cache: 'no-store' },
-      35000,
+      70000,
     );
 
     if (!response.ok || !json?.ok) {
@@ -379,7 +515,7 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
 
     if (!nextTabs.length) {
       throw new Error(
-        'O backend respondeu, mas não encontrou nenhuma aba de Ponto de Pedido. Confira as abas APA*, API-CABEDELO e AP - FORTALEZA.',
+        'O backend respondeu, mas não encontrou nenhuma aba de Ponto de Pedido. Confira as abas APA* e ACE* do Ponto de Pedido.',
       );
     }
 
@@ -410,7 +546,7 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
       const { response, json: rawJson } = await fetchJsonWithTimeout(
         `${API_URL}/api/ponto-pedido?${params.toString()}`,
         { cache: 'no-store' },
-        45000,
+        75000,
       );
       const json = rawJson as PontoPedidoResponse | null;
 
@@ -447,7 +583,7 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
       const { response, json } = await fetchJsonWithTimeout(
         `${API_URL}/api/ponto-pedido/resumo-estados?${params.toString()}`,
         { cache: 'no-store' },
-        60000,
+        90000,
       );
 
       if (!response.ok || !json?.ok) {
@@ -532,16 +668,6 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
     loadData(tab, false);
   };
 
-  const searchedRows = useMemo(() => {
-    const term = searchTerm.trim().toUpperCase();
-
-    return rows.filter((row) => {
-      if (hideBlockedRows && isBlockedOrderStatus(row.status)) return false;
-      if (!term) return true;
-      return `${row.modelo} ${row.modeloComCor}`.toUpperCase().includes(term);
-    });
-  }, [rows, searchTerm, hideBlockedRows]);
-
   const categories = useMemo(
     () => Array.from(new Set(tabs.map((tab) => tab.category || 'APARELHOS'))),
     [tabs],
@@ -553,6 +679,18 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
   );
 
   const activeCategory = activeTabMeta?.category || categories[0] || 'APARELHOS';
+  const isAccessories = activeCategory === 'ACESSÓRIOS';
+
+  const searchedRows = useMemo(() => {
+    const term = searchTerm.trim().toUpperCase();
+
+    return rows.filter((row) => {
+      if (hideBlockedRows && isBlockedOrderStatus(row.status)) return false;
+      if (isAccessories && hideOpenRows && isOpenAccessoryStatus(row.status)) return false;
+      if (!term) return true;
+      return `${row.modelo} ${row.modeloComCor} ${row.referencia || ''} ${row.codigo || ''} ${row.procv || ''}`.toUpperCase().includes(term);
+    });
+  }, [rows, searchTerm, hideBlockedRows, hideOpenRows, isAccessories]);
 
   useEffect(() => {
     if (pageMode === 'prontos' && activeCategory) {
@@ -578,7 +716,14 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
       observer?.disconnect();
       window.removeEventListener('resize', updateWidth);
     };
-  }, [showSales, showFutureWeeks, showForecasts, hideBlockedRows, searchedRows.length]);
+  }, [
+    showSales,
+    showFutureWeeks,
+    showForecasts,
+    showSamsungPrice,
+    hideBlockedRows,
+    searchedRows.length,
+  ]);
 
   const syncHorizontalScroll = (
     source: HTMLDivElement | null,
@@ -605,6 +750,39 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
     setSearchTerm('');
     loadData(firstTab.id, false);
     loadStateSummaries(category, false);
+  };
+
+  const runDataAudit = async () => {
+    const model = auditQuery.trim();
+    if (!activeTab || !model || auditLoading) return;
+
+    setAuditLoading(true);
+    setAuditError('');
+    setAuditData(null);
+
+    try {
+      const params = new URLSearchParams({ aba: activeTab, modelo: model });
+      const { response, json } = await fetchJsonWithTimeout(
+        `${API_URL}/api/ponto-pedido/auditoria?${params.toString()}`,
+        { cache: 'no-store' },
+        90000,
+      );
+
+      if (!response.ok || !json?.ok) {
+        const suggestions = Array.isArray(json?.suggestions) ? json.suggestions : [];
+        const suffix = suggestions.length
+          ? ` Sugestões: ${suggestions.slice(0, 5).join(' | ')}`
+          : '';
+        throw new Error(`${json?.error || 'Não foi possível auditar o modelo.'}${suffix}`);
+      }
+
+      setAuditData(json as PontoPedidoAuditResponse);
+    } catch (error: any) {
+      console.error('Auditoria Ponto de Pedido:', error);
+      setAuditError(error?.message || 'Falha ao auditar os dados do modelo.');
+    } finally {
+      setAuditLoading(false);
+    }
   };
 
   const finalizePointOrder = async () => {
@@ -864,15 +1042,20 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
   };
 
   const totalVisibleColumns =
-    16 +
+    11 +
+    (showSamsungPrice ? 1 : 0) +
     (showSales ? 4 : 1) +
     (showFutureWeeks ? 6 : 0) +
-    (showForecasts ? 4 : 0);
+    (showForecasts ? 4 : 0) +
+    (isAccessories ? 0 : 3);
+
 
   const runAiAnalysis = async () => {
     if (!activeTab || aiLoading) return;
     setAiLoading(true);
     setErrorMsg('');
+    setAiReport(null);
+    setAiSource('');
 
     try {
       let automationSummary = '';
@@ -957,6 +1140,8 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
       const report = String(json.answer || '').trim();
       setAiAnswer(automationSummary ? `${automationSummary}\n\n${report}` : report);
       setAiContext((json.context || null) as AiAnalysisContext | null);
+      setAiReport((json.report || null) as AiVisualReport | null);
+      setAiSource(String(json.source || ''));
     } catch (error: any) {
       console.error(error);
       setErrorMsg(error?.message || 'Falha ao consultar a IA de compras.');
@@ -994,6 +1179,59 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
       const summarySheet = XLSX.utils.aoa_to_sheet(summaryData);
       summarySheet['!cols'] = [{ wch: 30 }, { wch: 120 }];
       XLSX.utils.book_append_sheet(workbook, summarySheet, 'Relatório IA');
+
+      if (aiReport) {
+        const totalsSheet = XLSX.utils.json_to_sheet([
+          {
+            'Vendas 60': Number(aiReport.totals?.vendas60 || 0),
+            Estoque: Number(aiReport.totals?.estoque || 0),
+            Backlog: Number(aiReport.totals?.backlog || 0),
+            ...(!isAccessories ? { 'Pedido faturado': Number(aiReport.totals?.pedidoFaturado || 0) } : {}),
+            'Faturar backlog': Number(aiReport.totals?.faturarBacklog || 0),
+            'Novos pedidos': Number(aiReport.totals?.novosPedidos || 0),
+            'Unidades em transferência': Number(aiReport.totals?.unidadesTransferir || 0),
+            'Sobra > 4 semanas': Number(aiReport.totals?.sobra || 0),
+            'Riscos de ruptura': Number(aiReport.totals?.riscos || 0),
+            Bloqueados: Number(aiReport.totals?.bloqueados || 0),
+          },
+        ]);
+        totalsSheet['!cols'] = Array.from({ length: 10 }, () => ({ wch: 22 }));
+        XLSX.utils.book_append_sheet(workbook, totalsSheet, 'Painel Executivo');
+
+        const appendItemsSheet = (name: string, items?: AiVisualReportItem[]) => {
+          if (!items?.length) return;
+          const sheet = XLSX.utils.json_to_sheet(
+            items.map((item) => ({
+              Estado: item.state,
+              Modelo: item.model,
+              Ação: item.action,
+              Prioridade: item.priority,
+              Quantidade: Number(item.quantity || 0),
+              'Vendas 60': Number(item.vendas60 || 0),
+              Estoque: Number(item.estoque || 0),
+              Backlog: Number(item.backlog || 0),
+              ...(!isAccessories ? { 'Pedido faturado': Number(item.pedidoFaturado || 0) } : {}),
+              'Transferência entrada': Number(item.transferenciaEntrada || 0),
+              'Novo pedido líquido': Number(item.novoPedidoLiquido || 0),
+              'Sobra > 4 semanas': Number(item.sobra || 0),
+              Justificativa: item.justificativa || '',
+            })),
+          );
+          sheet['!cols'] = [
+            { wch: 20 }, { wch: 38 }, { wch: 22 }, { wch: 14 }, { wch: 14 },
+            { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 18 }, { wch: 22 },
+            { wch: 20 }, { wch: 20 }, { wch: 70 },
+          ];
+          XLSX.utils.book_append_sheet(workbook, sheet, name);
+        };
+
+        appendItemsSheet('Ações Prioritárias', aiReport.priorityItems);
+        appendItemsSheet('Novos Pedidos', aiReport.newOrderItems);
+        appendItemsSheet('Faturar Backlog', aiReport.backlogItems);
+        appendItemsSheet('Riscos', aiReport.riskItems);
+        appendItemsSheet('Sobras', aiReport.surplusItems);
+        appendItemsSheet('Bloqueados', aiReport.blockedItems);
+      }
 
       if (aiContext?.stateSummary?.length) {
         const statesSheet = XLSX.utils.json_to_sheet(
@@ -1083,7 +1321,7 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
         ['INDICADORES'],
         ['Vendas 60 dias', total('vendas60')],
         ['Estoque atual', total('estoque')],
-        ['Pedido faturado', total('pedidoFaturado')],
+        ...(!isAccessories ? [['Pedido faturado', total('pedidoFaturado')] as [string, number]] : []),
         ['Total em backlog', total('backlogTotal')],
         ['Sug. faturar backlog', total('sugestaoFaturarBacklog')],
         ['Sug. novos pedidos', total('sugestaoNovoPedido')],
@@ -1104,7 +1342,7 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
         Estoque: Number(row.estoque || 0),
         'Cobertura atual (dias)':
           row.coberturaAtualDias == null ? '' : Number(row.coberturaAtualDias),
-        'Pedido faturado': Number(row.pedidoFaturado || 0),
+        ...(!isAccessories ? { 'Pedido faturado': Number(row.pedidoFaturado || 0) } : {}),
         'Total em backlog': Number(row.backlogTotal || 0),
         'Sug. faturar backlog': Number(row.sugestaoFaturarBacklog || 0),
         'Sug. novos pedidos': Number(row.sugestaoNovoPedido || 0),
@@ -1139,7 +1377,7 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
           row.coberturaAtualDias == null ? '' : Number(row.coberturaAtualDias),
         'Sobra > 4 semanas': Number(row.sobra || 0),
         Backlog: Number(row.backlogTotal || 0),
-        'Pedido faturado': Number(row.pedidoFaturado || 0),
+        ...(!isAccessories ? { 'Pedido faturado': Number(row.pedidoFaturado || 0) } : {}),
       }));
 
       const surplusSheet = XLSX.utils.json_to_sheet(surplusData);
@@ -1244,7 +1482,7 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
             updatePedidoRufino(row.rowKey, Number(event.target.value || 0))
           }
           onBlur={() => savePedidoRufino(row)}
-          className={`w-full rounded-lg border px-2 py-1.5 text-center text-[11px] font-black outline-none transition focus:ring-2 focus:ring-indigo-300 ${
+          className={`w-full rounded-md border px-1 py-[3px] text-center text-[9px] font-black leading-4 outline-none transition focus:ring-1 focus:ring-indigo-300 ${
             pedidoCompleto
               ? 'border-emerald-300 bg-emerald-50 text-emerald-800'
               : 'border-indigo-200 bg-white text-indigo-800'
@@ -1271,7 +1509,7 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
           updatePedidoControladoria(row.rowKey, Number(event.target.value || 0))
         }
         onBlur={() => savePedidoControladoria(row)}
-        className="w-full rounded-lg border border-violet-200 bg-white px-2 py-1.5 text-center text-[11px] font-black text-violet-800 outline-none transition focus:ring-2 focus:ring-violet-300"
+        className="w-full rounded-md border border-violet-200 bg-white px-1 py-[3px] text-center text-[9px] font-black leading-4 text-violet-800 outline-none transition focus:ring-1 focus:ring-violet-300"
       />
       {savingControladoriaKey === row.rowKey && (
         <RefreshCw
@@ -1293,13 +1531,13 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
     const normalized = normalizedStatus(status);
 
     if (normalized.includes('NAO HA COMO PEDIR')) {
-      return '[&>td]:!bg-red-50 [&>td]:!border-red-100';
+      return '[&>td]:!bg-red-50';
     }
     if (normalized.includes('LANCAMENTO')) {
-      return '[&>td]:!bg-emerald-50 [&>td]:!border-emerald-100';
+      return '[&>td]:!bg-emerald-50';
     }
     if (normalized.includes('OBSOLETO')) {
-      return '[&>td]:!bg-red-900 [&>td]:!border-red-800 [&>td]:!text-white [&>td_span]:!text-white [&>td_div]:!text-white';
+      return '[&>td]:!bg-red-900 [&>td]:!text-white [&>td_span]:!text-white [&>td_div]:!text-white';
     }
 
     return index % 2 === 0 ? 'bg-white' : 'bg-slate-50/50';
@@ -1318,18 +1556,18 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
           : 'border-slate-200 bg-slate-100 text-slate-600';
 
     return (
-      <span className={`mt-1 inline-flex rounded-full border px-1.5 py-0.5 text-[7px] font-black uppercase tracking-wide ${className}`}>
+      <span className={`mt-0.5 inline-flex rounded-full border px-1 py-px text-[6px] font-black uppercase tracking-wide ${className}`}>
         {status}
       </span>
     );
   };
 
   const renderMainTable = () => (
-    <div className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-[0_18px_40px_-26px_rgba(15,23,42,0.35)]">
+    <div className="overflow-hidden rounded-xl border border-[#9fb3c8] bg-white shadow-sm">
       <div
         ref={topScrollRef}
         onScroll={() => syncHorizontalScroll(topScrollRef.current, tableScrollRef.current)}
-        className="h-3 overflow-x-auto overflow-y-hidden border-b border-slate-200 bg-slate-50"
+        className="h-4 overflow-x-auto overflow-y-hidden border-b border-[#9fb3c8] bg-slate-100"
         aria-label="Rolagem horizontal superior da tabela"
       >
         <div style={{ width: Math.max(tableScrollWidth, 1), height: 1 }} />
@@ -1338,62 +1576,64 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
       <div
         ref={tableScrollRef}
         onScroll={() => syncHorizontalScroll(tableScrollRef.current, topScrollRef.current)}
-        className="max-h-[76vh] overflow-auto"
+        className="max-h-[76vh] overflow-auto pb-1"
       >
-        <table ref={tableRef} className="min-w-max border-separate border-spacing-0 text-left text-[10px]">
-          <thead className="sticky top-0 z-30 bg-slate-100/95 backdrop-blur">
-            <tr className="text-[8px] font-black uppercase tracking-[0.10em] text-slate-500">
-              <th className="sticky left-0 z-40 w-[260px] min-w-[260px] max-w-[260px] border-b border-r border-slate-200 bg-slate-100 px-3 py-2">
+        <table ref={tableRef} className="min-w-max border-separate border-spacing-0 border-l border-t border-[#9fb3c8] bg-white text-left text-[9px] leading-4">
+          <thead className="sticky top-0 z-30 bg-slate-100">
+            <tr className="text-[7px] font-black uppercase tracking-[0.08em] text-slate-500">
+              <th className="sticky left-0 z-40 w-[220px] min-w-[220px] max-w-[220px] border-b border-r border-[#9fb3c8] bg-slate-100 px-1.5 py-1">
                 <ColumnLabel
                   label="Modelo com cor"
                   help="Modelo exatamente como está na planilha de Ponto de Pedido, preservando a variação de cor."
                 />
               </th>
 
-              <th className="min-w-[118px] border-b border-r border-emerald-100 bg-emerald-50 px-3 py-2 text-right text-emerald-700">
-                <ColumnLabel label="Preço Samsung" help="Preço Samsung informado na aba atual do Google Sheets." />
-              </th>
+              {showSamsungPrice && (
+                <th className="min-w-[92px] border-b border-r border-[#9fb3c8] bg-emerald-50 px-1.5 py-1 text-right text-emerald-700">
+                  <ColumnLabel label={<>Preço<br />Samsung</>} help="Preço Samsung informado na aba atual do Google Sheets." />
+                </th>
+              )}
 
-              <th className="min-w-[118px] border-b border-r border-emerald-100 bg-emerald-50 px-3 py-2 text-right text-emerald-700">
+              <th className="min-w-[92px] border-b border-r border-[#9fb3c8] bg-emerald-50 px-1.5 py-1 text-right text-emerald-700">
                 <ColumnLabel label="Preço Telecel" help="Preço Telecel informado na aba atual do Google Sheets." />
               </th>
 
-              <th className="min-w-[118px] border-b border-r border-emerald-100 bg-emerald-50 px-3 py-2 text-right text-emerald-700">
+              <th className="min-w-[92px] border-b border-r border-[#9fb3c8] bg-emerald-50 px-1.5 py-1 text-right text-emerald-700">
                 <ColumnLabel label="Preço final" help="Preço final considerado na planilha para este modelo." />
               </th>
 
               {showSales ? (
                 <>
-                  <th className="min-w-[84px] border-b border-r border-blue-100 bg-blue-100 px-2 py-2 text-center text-blue-800">
+                  <th className="min-w-[66px] border-b border-r border-[#9fb3c8] bg-blue-100 px-1 py-1 text-center text-blue-800">
                     <ColumnLabel label="Vendas 60" help="Quantidade total vendida deste modelo/cor nos últimos 60 dias. É a principal referência do planejamento." />
                   </th>
-                  <th className="min-w-[84px] border-b border-r border-blue-100 bg-blue-50 px-2 py-2 text-center text-blue-700">
+                  <th className="min-w-[66px] border-b border-r border-[#9fb3c8] bg-blue-50 px-1 py-1 text-center text-blue-700">
                     <ColumnLabel label="Vendas 45" help="Quantidade vendida nos últimos 45 dias. Usada como tendência complementar." />
                   </th>
-                  <th className="min-w-[84px] border-b border-r border-blue-100 bg-blue-50 px-2 py-2 text-center text-blue-700">
+                  <th className="min-w-[66px] border-b border-r border-[#9fb3c8] bg-blue-50 px-1 py-1 text-center text-blue-700">
                     <ColumnLabel label="Vendas 30" help="Quantidade vendida nos últimos 30 dias. Usada como tendência complementar." />
                   </th>
-                  <th className="min-w-[84px] border-b border-r border-blue-100 bg-blue-50 px-2 py-2 text-center text-blue-700">
+                  <th className="min-w-[66px] border-b border-r border-[#9fb3c8] bg-blue-50 px-1 py-1 text-center text-blue-700">
                     <ColumnLabel label="Vendas 15" help="Quantidade vendida nos últimos 15 dias. Ajuda a identificar aceleração ou desaceleração recente." />
                   </th>
                 </>
               ) : (
-                <th className="min-w-[105px] border-b border-r border-blue-200 bg-blue-100 px-2 py-2 text-center text-blue-800">
+                <th className="min-w-[76px] border-b border-r border-[#9fb3c8] bg-blue-100 px-1 py-1 text-center text-blue-800">
                   <ColumnLabel label="Vendas 60d ▸" help="Foco principal do relatório: vendas acumuladas dos últimos 60 dias. Clique em Vendas para abrir 15/30/45/60 dias." />
                 </th>
               )}
 
-              <th className="min-w-[88px] border-b border-r border-slate-200 bg-slate-100 px-2 py-2 text-center text-slate-700">
+              <th className="min-w-[64px] border-b border-r border-[#9fb3c8] bg-slate-100 px-1 py-1 text-center text-slate-700">
                 <ColumnLabel label="Estoque" help="Estoque atual encontrado para este modelo/cor na região da aba selecionada." />
               </th>
 
-              <th className="min-w-[104px] border-b border-r border-violet-200 bg-violet-100 px-2 py-2 text-center text-violet-800">
+              <th className="min-w-[82px] border-b border-r border-[#9fb3c8] bg-violet-100 px-1 py-1 text-center text-violet-800">
                 <ColumnLabel label={<>Total em<br />backlog</>} help="Backlog total considerado no planejamento: pendente/atrasado + semana atual + próximas quatro semanas." />
               </th>
 
               {showFutureWeeks && (
                 <>
-                  <th className="min-w-[90px] border-b border-r border-red-100 bg-red-50 px-2 py-2 text-center text-red-700">
+                  <th className="min-w-[66px] border-b border-r border-[#9fb3c8] bg-red-50 px-1 py-1 text-center text-red-700">
                     <ColumnLabel label="Pendente" help="Parte do backlog sem semana válida ou com semana anterior à atual. Já está incluída no Total em backlog." />
                   </th>
 
@@ -1401,7 +1641,7 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
                     <th
                       key={week.key}
                       title="Quantidade de backlog prevista especificamente para esta semana."
-                      className="min-w-[165px] border-b border-r border-violet-100 bg-violet-50 px-2 py-2 text-center text-violet-700"
+                      className="min-w-[116px] border-b border-r border-[#9fb3c8] bg-violet-50 px-1 py-1 text-center text-violet-700"
                     >
                       {renderWeekHeaderContent(week)}
                     </th>
@@ -1409,65 +1649,69 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
                 </>
               )}
 
-              <th className="min-w-[92px] border-b border-r border-sky-200 bg-sky-50 px-2 py-2 text-center text-sky-800">
-                <ColumnLabel label={<>Pedido<br />faturado</>} help="Quantidade informada na coluna K — PEDIDO FATURADO — da planilha oficial. Representa pedido já faturado." />
-              </th>
+              {!isAccessories && (
+                <th className="min-w-[74px] border-b border-r border-[#9fb3c8] bg-sky-50 px-1 py-1 text-center text-sky-800">
+                  <ColumnLabel label={<>Pedido<br />faturado</>} help="Quantidade informada na coluna PEDIDO FATURADO da aba de aparelhos. Representa pedido já faturado." />
+                </th>
+              )}
 
-              <th className="min-w-[110px] border-b border-r border-cyan-100 bg-cyan-50 px-2 py-2 text-center text-cyan-700">
+              <th className="min-w-[84px] border-b border-r border-[#9fb3c8] bg-cyan-50 px-1 py-1 text-center text-cyan-700">
                 <ColumnLabel label={<>Cobertura<br />atual</>} help="Cobertura calculada somente com o estoque físico atual dividido pela média diária das Vendas 60. Backlog e pedidos futuros não entram nesta conta." />
               </th>
 
               {showForecasts && (
                 <>
-                  <th className="min-w-[88px] border-b border-r border-cyan-100 bg-cyan-50 px-2 py-2 text-center text-cyan-700">
+                  <th className="min-w-[68px] border-b border-r border-[#9fb3c8] bg-cyan-50 px-1 py-1 text-center text-cyan-700">
                     <ColumnLabel label="Saldo 15d" help="Saldo projetado para 15 dias considerando estoque, demanda e pedidos com chegada dentro do horizonte." />
                   </th>
-                  <th className="min-w-[88px] border-b border-r border-cyan-100 bg-cyan-50 px-2 py-2 text-center text-cyan-700">
+                  <th className="min-w-[68px] border-b border-r border-[#9fb3c8] bg-cyan-50 px-1 py-1 text-center text-cyan-700">
                     <ColumnLabel label="Saldo 30d" help="Saldo projetado para 30 dias considerando estoque, demanda e pedidos com chegada dentro do horizonte." />
                   </th>
-                  <th className="min-w-[88px] border-b border-r border-cyan-100 bg-cyan-50 px-2 py-2 text-center text-cyan-700">
+                  <th className="min-w-[68px] border-b border-r border-[#9fb3c8] bg-cyan-50 px-1 py-1 text-center text-cyan-700">
                     <ColumnLabel label="Saldo 45d" help="Saldo projetado para 45 dias considerando estoque, demanda e pedidos com chegada dentro do horizonte." />
                   </th>
-                  <th className="min-w-[88px] border-b border-r border-cyan-100 bg-cyan-50 px-2 py-2 text-center text-cyan-700">
+                  <th className="min-w-[68px] border-b border-r border-[#9fb3c8] bg-cyan-50 px-1 py-1 text-center text-cyan-700">
                     <ColumnLabel label="Saldo 60d" help="Saldo projetado para 60 dias. Valor negativo indica necessidade de reposição dentro do horizonte." />
                   </th>
                 </>
               )}
 
-              <th className="min-w-[126px] border-b border-r border-teal-200 bg-teal-100 px-2 py-2 text-center text-teal-900">
-                <ColumnLabel
-                  label={<>Sug. estoque<br />dobrado</>}
-                  help="Referência gerencial simples: Vendas 60 dias × 2. Fica zerada para itens com status Não há como pedir ou Obsoleto."
-                />
-              </th>
-
-              <th className="min-w-[110px] border-b border-r border-orange-200 bg-orange-100 px-2 py-2 text-center text-orange-800">
+              <th className="min-w-[88px] border-b border-r border-[#9fb3c8] bg-orange-100 px-1 py-1 text-center text-orange-800">
                 <ColumnLabel label={<>Sug. faturar<br />backlog</>} help="Quanto do backlog existente deve ser priorizado para faturamento, limitado pela necessidade calculada." />
               </th>
 
-              <th className="min-w-[108px] border-b border-r border-amber-200 bg-amber-100 px-2 py-2 text-center text-amber-900">
-                <ColumnLabel label={<>Sug. novos<br />pedidos</>} help="Necessidade adicional após considerar vendas de 60 dias, estoque e total em backlog." />
+              <th className="min-w-[86px] border-b border-r border-[#9fb3c8] bg-amber-100 px-1 py-1 text-center text-amber-900">
+                <ColumnLabel
+                  label={<>Sug. novos<br />pedidos</>}
+                  help={isAccessories
+                    ? 'Sugestão de novos pedidos: (Vendas 60 × 2) - (Estoque + Total em backlog). As abas ACE não possuem Pedido faturado.'
+                    : 'Sugestão de novos pedidos: (Vendas 60 × 2) - (Estoque + Total em backlog + Pedido faturado). Itens bloqueados permanecem zerados.'}
+                />
               </th>
 
-              <th className="min-w-[122px] border-b border-r border-violet-200 bg-violet-600 px-2 py-2 text-center text-white">
+              <th className="min-w-[104px] border-b border-r border-[#9fb3c8] bg-violet-600 px-1 py-1 text-center text-white">
                 <ColumnLabel label={<>Sug. pedido<br />Controladoria</>} help="Quantidade manual definida pela Controladoria. Campo editável e salvo no sistema." />
               </th>
 
-              <th className="min-w-[102px] border-b border-r border-indigo-200 bg-indigo-600 px-2 py-2 text-center text-white">
+              <th className="min-w-[88px] border-b border-r border-[#9fb3c8] bg-indigo-600 px-1 py-1 text-center text-white">
                 <ColumnLabel label={<>Sugestão<br />Rufino</>} help="Quantidade final sugerida para Rufino. Pode ser preenchida pela IA ou editada manualmente e fica sincronizada com o Resumo dos Pedidos." />
               </th>
 
-              <th className="min-w-[120px] border-b border-r border-slate-200 bg-slate-950 px-2 py-2 text-center text-white">
+              <th className="min-w-[96px] border-b border-r border-[#9fb3c8] bg-slate-950 px-1 py-1 text-center text-white">
                 <ColumnLabel label={<>Previsão de<br />estoque</>} help="Cobertura estimada após considerar estoque, entradas previstas e Sugestão Rufino." />
               </th>
 
-              <th className="min-w-[110px] border-b border-r border-emerald-100 bg-emerald-50 px-3 py-2 text-right text-emerald-700">
-                <ColumnLabel label="Sell in" help="Valor de Sell In informado na planilha original." />
-              </th>
+              {!isAccessories && (
+                <>
+                  <th className="min-w-[78px] border-b border-r border-[#9fb3c8] bg-emerald-50 px-1.5 py-1 text-right text-emerald-700">
+                    <ColumnLabel label="Sell in" help="Valor de Sell In informado na planilha original." />
+                  </th>
 
-              <th className="min-w-[105px] border-b border-slate-200 bg-slate-100 px-3 py-2 text-center">
-                <ColumnLabel label="Alteração" help="Observação de alteração trazida diretamente da planilha original." />
-              </th>
+                  <th className="min-w-[82px] border-b border-r border-[#9fb3c8] bg-slate-100 px-1.5 py-1 text-center">
+                    <ColumnLabel label="Alteração" help="Observação de alteração trazida diretamente da planilha original." />
+                  </th>
+                </>
+              )}
             </tr>
           </thead>
 
@@ -1489,46 +1733,47 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
                 const forecast = finalForecast(row);
                 const coverageDays = row.coberturaAtualDias;
                 const rowTone = statusRowClass(row.status, index);
-                const estoqueDobrado = doubleStockSuggestion(row);
 
                 return (
                   <tr key={row.rowKey} className={`${rowTone} transition hover:brightness-[0.99]`}>
-                    <td className="sticky left-0 z-20 w-[260px] min-w-[260px] max-w-[260px] border-b border-r border-slate-100 px-3 py-2 font-black text-slate-950">
+                    <td className="sticky left-0 z-20 w-[260px] min-w-[260px] max-w-[260px] border-b border-r border-[#b7c3cf] px-1.5 py-[3px] font-black text-slate-950">
                       <span className="block truncate uppercase tracking-[0.02em]" title={row.modeloComCor}>{row.modeloComCor}</span>
                       {statusBadge(row.status)}
                     </td>
 
-                    <td className="border-b border-r border-emerald-50 bg-emerald-50/30 px-3 py-2 text-right font-bold text-slate-700">{money(row.precoSamsung)}</td>
-                    <td className="border-b border-r border-emerald-50 bg-emerald-50/30 px-3 py-2 text-right font-bold text-slate-700">{money(row.precoTelecel)}</td>
-                    <td className="border-b border-r border-emerald-50 bg-emerald-50/30 px-3 py-2 text-right font-black text-slate-950">{money(row.precoFinal)}</td>
+                    {showSamsungPrice && (
+                      <td className="border-b border-r border-[#b7c3cf] bg-white px-1.5 py-[3px] text-right font-semibold text-slate-700">{money(row.precoSamsung)}</td>
+                    )}
+                    <td className="border-b border-r border-[#b7c3cf] bg-[#edffed] px-1.5 py-[3px] text-right font-semibold text-slate-700">{money(row.precoTelecel)}</td>
+                    <td className="border-b border-r border-[#b7c3cf] bg-emerald-100 px-1.5 py-[3px] text-right font-black text-slate-950">{money(row.precoFinal)}</td>
 
                     {showSales ? (
                       <>
-                        <td className="border-b border-r border-blue-100 bg-blue-100/60 px-2 py-2 text-center font-black text-blue-900">{number(row.vendas60)}</td>
-                        <td className="border-b border-r border-blue-50 bg-blue-50/20 px-2 py-2 text-center font-black text-blue-800">{number(row.vendas45)}</td>
-                        <td className="border-b border-r border-blue-50 bg-blue-50/20 px-2 py-2 text-center font-black text-blue-800">{number(row.vendas30)}</td>
-                        <td className="border-b border-r border-blue-50 bg-blue-50/20 px-2 py-2 text-center font-black text-blue-800">{number(row.vendas15)}</td>
+                        <td className="border-b border-r border-[#b7c3cf] bg-blue-50 px-1 py-[3px] text-center font-black text-blue-900">{number(row.vendas60)}</td>
+                        <td className="border-b border-r border-[#b7c3cf] bg-blue-50/60 px-1 py-[3px] text-center font-black text-blue-800">{number(row.vendas45)}</td>
+                        <td className="border-b border-r border-[#b7c3cf] bg-blue-50/60 px-1 py-[3px] text-center font-black text-blue-800">{number(row.vendas30)}</td>
+                        <td className="border-b border-r border-[#b7c3cf] bg-blue-50/60 px-1 py-[3px] text-center font-black text-blue-800">{number(row.vendas15)}</td>
                       </>
                     ) : (
-                      <td className="border-b border-r border-blue-100 bg-blue-100/60 px-2 py-2 text-center font-black text-blue-900">{number(row.vendas60)}</td>
+                      <td className="border-b border-r border-[#b7c3cf] bg-blue-50 px-1 py-[3px] text-center font-black text-blue-900">{number(row.vendas60)}</td>
                     )}
 
-                    <td className="border-b border-r border-slate-100 px-2 py-2 text-center font-black text-slate-900">{number(row.estoque)}</td>
+                    <td className="border-b border-r border-[#b7c3cf] px-1 py-[3px] text-center font-black text-slate-900">{number(row.estoque)}</td>
 
-                    <td className="border-b border-r border-violet-200 bg-violet-100/70 px-2 py-2 text-center font-black text-violet-900">
+                    <td className="border-b border-r border-[#b7c3cf] bg-violet-50 px-1 py-[3px] text-center font-black text-violet-900">
                       {number(row.backlogTotal)}
                     </td>
 
                     {showFutureWeeks && (
                       <>
-                        <td className={`border-b border-r border-red-100 px-2 py-2 text-center font-black ${row.pendente > 0 ? 'bg-red-100 text-red-700' : 'bg-red-50/20 text-slate-400'}`}>
+                        <td className={`border-b border-r border-[#b7c3cf] px-1 py-[3px] text-center font-black ${row.pendente > 0 ? 'bg-red-100 text-red-700' : 'bg-red-50/20 text-slate-400'}`}>
                           {number(row.pendente)}
                         </td>
 
                         {(data?.weeks || []).slice(0, 5).map((week) => (
                           <td
                             key={`${row.rowKey}-${week.key}`}
-                            className="border-b border-r border-violet-100 bg-violet-50/40 px-2 py-2 text-center font-black text-violet-800"
+                            className="border-b border-r border-[#b7c3cf] bg-violet-50/40 px-1 py-[3px] text-center font-black text-violet-800"
                           >
                             {number(row.weeks?.[week.key] || 0)}
                           </td>
@@ -1536,11 +1781,13 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
                       </>
                     )}
 
-                    <td className="border-b border-r border-sky-100 bg-sky-50/60 px-2 py-2 text-center font-black text-sky-900">
-                      {number(row.pedidoFaturado)}
-                    </td>
+                    {!isAccessories && (
+                      <td className="border-b border-r border-[#b7c3cf] bg-sky-50 px-1 py-[3px] text-center font-black text-sky-900">
+                        {number(row.pedidoFaturado)}
+                      </td>
+                    )}
 
-                    <td className="border-b border-r border-cyan-100 bg-cyan-50/30 px-2 py-2 text-center">
+                    <td className="border-b border-r border-[#b7c3cf] bg-cyan-50/60 px-1 py-[3px] text-center">
                       {coverageDays === null ? (
                         <span className="font-black text-slate-400">Sem giro</span>
                       ) : (
@@ -1553,29 +1800,25 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
 
                     {showForecasts && (
                       <>
-                        <td className={`border-b border-r border-cyan-100 px-2 py-2 text-center font-black ${metricTone(row.previsao15)}`}>{number(row.previsao15)}</td>
-                        <td className={`border-b border-r border-cyan-100 px-2 py-2 text-center font-black ${metricTone(row.previsao30)}`}>{number(row.previsao30)}</td>
-                        <td className={`border-b border-r border-cyan-100 px-2 py-2 text-center font-black ${metricTone(row.previsao45)}`}>{number(row.previsao45)}</td>
-                        <td className={`border-b border-r border-cyan-100 px-2 py-2 text-center font-black ${metricTone(row.previsao60)}`}>{number(row.previsao60)}</td>
+                        <td className={`border-b border-r border-[#b7c3cf] px-1 py-[3px] text-center font-black ${metricTone(row.previsao15)}`}>{number(row.previsao15)}</td>
+                        <td className={`border-b border-r border-[#b7c3cf] px-1 py-[3px] text-center font-black ${metricTone(row.previsao30)}`}>{number(row.previsao30)}</td>
+                        <td className={`border-b border-r border-[#b7c3cf] px-1 py-[3px] text-center font-black ${metricTone(row.previsao45)}`}>{number(row.previsao45)}</td>
+                        <td className={`border-b border-r border-[#b7c3cf] px-1 py-[3px] text-center font-black ${metricTone(row.previsao60)}`}>{number(row.previsao60)}</td>
                       </>
                     )}
 
-                    <td className={`border-b border-r border-teal-200 px-2 py-2 text-center font-black ${estoqueDobrado > 0 ? 'bg-teal-100 text-teal-900' : 'bg-teal-50/30 text-slate-400'}`}>
-                      {number(estoqueDobrado)}
-                    </td>
-
-                    <td className={`border-b border-r border-orange-200 px-2 py-2 text-center font-black ${row.sugestaoFaturarBacklog > 0 ? 'bg-orange-100 text-orange-900' : 'bg-orange-50/40 text-slate-400'}`}>
+                    <td className={`border-b border-r border-[#b7c3cf] px-1 py-[3px] text-center font-black ${row.sugestaoFaturarBacklog > 0 ? 'bg-orange-100 text-orange-900' : 'bg-orange-50/40 text-slate-400'}`}>
                       {number(row.sugestaoFaturarBacklog)}
                     </td>
 
-                    <td className={`border-b border-r border-amber-200 px-2 py-2 text-center font-black ${row.sugestaoNovoPedido > 0 ? 'bg-amber-100 text-amber-900' : 'bg-amber-50/40 text-slate-400'}`}>
+                    <td className={`border-b border-r border-[#b7c3cf] px-1 py-[3px] text-center font-black ${row.sugestaoNovoPedido > 0 ? 'bg-amber-100 text-amber-900' : 'bg-amber-50/40 text-slate-400'}`}>
                       {number(row.sugestaoNovoPedido)}
                     </td>
 
-                    <td className="border-b border-r border-violet-100 bg-violet-50 px-1.5 py-1.5">{renderControladoriaInput(row)}</td>
-                    <td className="border-b border-r border-indigo-100 bg-indigo-50 px-1.5 py-1.5">{renderPedidoInput(row)}</td>
+                    <td className="border-b border-r border-[#b7c3cf] bg-violet-50 px-1 py-[2px]">{renderControladoriaInput(row)}</td>
+                    <td className="border-b border-r border-[#b7c3cf] bg-indigo-50 px-1 py-[2px]">{renderPedidoInput(row)}</td>
 
-                    <td className="border-b border-r border-slate-100 bg-slate-950 px-2 py-2 text-center text-white">
+                    <td className="border-b border-r border-[#b7c3cf] bg-slate-950 px-1 py-[3px] text-center text-white">
                       {forecast.days === null ? (
                         <span className="font-black text-slate-400">Sem giro</span>
                       ) : (
@@ -1586,8 +1829,12 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
                       )}
                     </td>
 
-                    <td className="border-b border-r border-emerald-50 bg-emerald-50/30 px-3 py-2 text-right font-bold text-slate-700">{money(row.sellIn)}</td>
-                    <td className="border-b border-slate-100 px-3 py-2 text-center font-bold text-slate-500">{row.alteracao || '—'}</td>
+                    {!isAccessories && (
+                      <>
+                        <td className="border-b border-r border-[#b7c3cf] bg-emerald-50/40 px-1.5 py-[3px] text-right font-semibold text-slate-700">{money(row.sellIn)}</td>
+                        <td className="border-b border-r border-[#b7c3cf] px-1.5 py-[3px] text-center font-semibold text-slate-500">{row.alteracao || '—'}</td>
+                      </>
+                    )}
                   </tr>
                 );
               })
@@ -1596,17 +1843,20 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
         </table>
       </div>
 
-      <div className="flex flex-col gap-1.5 border-t border-slate-200 bg-slate-50 px-3 py-2 text-[8px] font-bold text-slate-500 lg:flex-row lg:items-center lg:justify-between">
-        <span className="text-teal-700">Estoque dobrado = Vendas 60 × 2 para itens que ainda podem ser pedidos.</span>
-        <span className="text-amber-700">Novo pedido = V60 - estoque - total em backlog.</span>
+      <div className="flex flex-col gap-1 border-t border-[#9fb3c8] bg-slate-50 px-2 py-1 text-[7px] font-bold text-slate-500 lg:flex-row lg:items-center lg:justify-between">
+        <span className="text-amber-700">
+          {isAccessories
+            ? 'Novo pedido = (Vendas 60 × 2) - (Estoque + Total em backlog).'
+            : 'Novo pedido = (Vendas 60 × 2) - (Estoque + Total em backlog + Pedido faturado).'}
+        </span>
       </div>
     </div>
   );
 
   const renderOrderSummary = () => (
     <div className="space-y-3">
-      <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-        <div className="flex items-center justify-between gap-2 border-b border-slate-200 px-3 py-2.5">
+      <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+        <div className="flex items-center justify-between gap-2 border-b border-slate-200 px-2 py-1.5">
           <div>
             <h3 className="text-[11px] font-black uppercase tracking-wide text-slate-900">Resumo dos pedidos</h3>
             <p className="mt-0.5 text-[9px] font-semibold text-slate-400">
@@ -1621,18 +1871,18 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
         </div>
 
         <div className="max-h-[65vh] overflow-auto">
-          <table className="w-full min-w-[1180px] border-collapse text-[10px]">
+          <table className="w-full min-w-[1060px] border-separate border-spacing-0 border-l border-t border-[#9fb3c8] bg-white text-[9px] leading-4 [&_th]:border-b [&_th]:border-r [&_th]:border-[#9fb3c8] [&_td]:border-b [&_td]:border-r [&_td]:border-[#b7c3cf]">
             <thead className="sticky top-0 z-10 bg-slate-50 text-[8px] font-black uppercase tracking-wide text-slate-500">
               <tr>
-                <th className="px-3 py-2 text-left">Modelo</th>
-                <th className="px-2 py-2 text-center">Vendas 60</th>
-                <th className="px-2 py-2 text-center">Estoque</th>
-                <th className="px-2 py-2 text-center">Backlog</th>
-                <th className="px-2 py-2 text-center">Sug. faturar backlog</th>
-                <th className="px-2 py-2 text-center">Sug. novo pedido</th>
-                <th className="px-2 py-2 text-center">Controladoria</th>
-                <th className="px-2 py-2 text-center">Sugestão Rufino</th>
-                <th className="px-2 py-2 text-center">Previsão</th>
+                <th className="px-1.5 py-1 text-left">Modelo</th>
+                <th className="px-1 py-[3px] text-center">Vendas 60</th>
+                <th className="px-1 py-[3px] text-center">Estoque</th>
+                <th className="px-1 py-[3px] text-center">Backlog</th>
+                <th className="px-1 py-[3px] text-center">Sug. faturar backlog</th>
+                <th className="px-1 py-[3px] text-center">Sug. novo pedido</th>
+                <th className="px-1 py-[3px] text-center">Controladoria</th>
+                <th className="px-1 py-[3px] text-center">Sugestão Rufino</th>
+                <th className="px-1 py-[3px] text-center">Previsão</th>
               </tr>
             </thead>
             <tbody>
@@ -1641,15 +1891,15 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
                   const forecast = finalForecast(row);
                   return (
                     <tr key={`summary-${row.rowKey}`} className={index % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}>
-                      <td className="border-t border-slate-100 px-3 py-2 font-black uppercase text-slate-900">{row.modeloComCor}</td>
-                      <td className="border-t border-slate-100 px-2 py-2 text-center font-black text-blue-800">{number(row.vendas60)}</td>
-                      <td className="border-t border-slate-100 px-2 py-2 text-center font-bold">{number(row.estoque)}</td>
-                      <td className="border-t border-slate-100 px-2 py-2 text-center font-bold text-violet-800">{number(row.backlogTotal)}</td>
-                      <td className="border-t border-slate-100 px-2 py-2 text-center font-black text-orange-800">{number(row.sugestaoFaturarBacklog)}</td>
-                      <td className="border-t border-slate-100 px-2 py-2 text-center font-black text-amber-800">{number(row.sugestaoNovoPedido)}</td>
-                      <td className="border-t border-slate-100 px-2 py-1.5">{renderControladoriaInput(row)}</td>
-                      <td className="border-t border-slate-100 px-2 py-1.5">{renderPedidoInput(row)}</td>
-                      <td className="border-t border-slate-100 px-2 py-2 text-center font-bold text-slate-700">
+                      <td className="border-b border-r border-[#b7c3cf] px-1.5 py-[3px] font-black uppercase text-slate-900">{row.modeloComCor}</td>
+                      <td className="border-b border-r border-[#b7c3cf] px-1 py-[3px] text-center font-black text-blue-800">{number(row.vendas60)}</td>
+                      <td className="border-b border-r border-[#b7c3cf] px-1 py-[3px] text-center font-bold">{number(row.estoque)}</td>
+                      <td className="border-b border-r border-[#b7c3cf] px-1 py-[3px] text-center font-bold text-violet-800">{number(row.backlogTotal)}</td>
+                      <td className="border-b border-r border-[#b7c3cf] px-1 py-[3px] text-center font-black text-orange-800">{number(row.sugestaoFaturarBacklog)}</td>
+                      <td className="border-b border-r border-[#b7c3cf] px-1 py-[3px] text-center font-black text-amber-800">{number(row.sugestaoNovoPedido)}</td>
+                      <td className="border-b border-r border-[#b7c3cf] px-1 py-[2px]">{renderControladoriaInput(row)}</td>
+                      <td className="border-b border-r border-[#b7c3cf] px-1 py-[2px]">{renderPedidoInput(row)}</td>
+                      <td className="border-b border-r border-[#b7c3cf] px-1 py-[3px] text-center font-bold text-slate-700">
                         {forecast.days === null ? 'Sem giro' : `${number(forecast.days)} dias · ${shortDate(forecast.date)}`}
                       </td>
                     </tr>
@@ -1666,7 +1916,7 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
             {orderedRows.length > 0 && (
               <tfoot className="sticky bottom-0 z-10 border-t-2 border-slate-300 bg-slate-950 text-white">
                 <tr>
-                  <td className="px-3 py-2.5 text-left font-black uppercase tracking-wide">
+                  <td className="px-2 py-1.5 text-left font-black uppercase tracking-wide">
                     Total geral · {number(orderSummary.modelos)} modelos
                   </td>
                   <td className="px-2 py-2.5 text-center font-black">{number(orderSummary.vendas60)}</td>
@@ -1687,8 +1937,8 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
   );
 
   const renderSystemSummary = () => (
-    <div className="overflow-hidden rounded-2xl border border-amber-200 bg-white shadow-sm">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-amber-100 bg-amber-50 px-3 py-2.5">
+    <div className="overflow-hidden rounded-xl border border-amber-200 bg-white shadow-sm">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-amber-100 bg-amber-50 px-2 py-1.5">
         <div>
           <p className="text-[8px] font-black uppercase tracking-[0.16em] text-amber-700">Resumo</p>
           <h3 className="mt-0.5 text-[12px] font-black text-slate-900">
@@ -1716,17 +1966,17 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
       </div>
 
       <div className="max-h-[70vh] overflow-auto">
-        <table className="w-full min-w-[1160px] border-collapse text-[10px]">
+        <table className="w-full min-w-[980px] border-separate border-spacing-0 border-l border-t border-[#9fb3c8] bg-white text-[9px] leading-4 [&_th]:border-b [&_th]:border-r [&_th]:border-[#9fb3c8] [&_td]:border-b [&_td]:border-r [&_td]:border-[#b7c3cf]">
           <thead className="sticky top-0 z-10 bg-slate-50 text-[8px] font-black uppercase tracking-wide text-slate-500">
             <tr>
-              <th className="px-3 py-2 text-left">Modelo</th>
-              <th className="px-2 py-2 text-center">Vendas 60</th>
-              <th className="px-2 py-2 text-center">Estoque</th>
-              <th className="px-2 py-2 text-center">Cobertura</th>
-              <th className="px-2 py-2 text-center">Total backlog</th>
-              <th className="px-2 py-2 text-center">Faturar backlog</th>
-              <th className="px-2 py-2 text-center">Novo pedido</th>
-              <th className="px-2 py-2 text-center">Sobra &gt; 4 semanas</th>
+              <th className="px-1.5 py-1 text-left">Modelo</th>
+              <th className="px-1 py-[3px] text-center">Vendas 60</th>
+              <th className="px-1 py-[3px] text-center">Estoque</th>
+              <th className="px-1 py-[3px] text-center">Cobertura</th>
+              <th className="px-1 py-[3px] text-center">Total backlog</th>
+              <th className="px-1 py-[3px] text-center">Faturar backlog</th>
+              <th className="px-1 py-[3px] text-center">Novo pedido</th>
+              <th className="px-1 py-[3px] text-center">Sobra &gt; 4 semanas</th>
             </tr>
           </thead>
 
@@ -1737,38 +1987,38 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
                   key={`system-${row.rowKey}`}
                   className={index % 2 === 0 ? 'bg-white' : 'bg-amber-50/20'}
                 >
-                  <td className="border-t border-slate-100 px-3 py-2 font-black uppercase text-slate-900">
+                  <td className="border-b border-r border-[#b7c3cf] px-1.5 py-[3px] font-black uppercase text-slate-900">
                     {row.modeloComCor}
                   </td>
 
-                  <td className="border-t border-slate-100 px-2 py-2 text-center font-black text-blue-800">
+                  <td className="border-b border-r border-[#b7c3cf] px-1 py-[3px] text-center font-black text-blue-800">
                     {number(row.vendas60)}
                   </td>
 
-                  <td className="border-t border-slate-100 px-2 py-2 text-center font-bold">
+                  <td className="border-b border-r border-[#b7c3cf] px-1 py-[3px] text-center font-bold">
                     {number(row.estoque)}
                   </td>
 
-                  <td className="border-t border-slate-100 px-2 py-2 text-center font-bold text-cyan-800">
+                  <td className="border-b border-r border-[#b7c3cf] px-1 py-[3px] text-center font-bold text-cyan-800">
                     {row.coberturaAtualDias == null
                       ? 'Sem giro'
                       : `${number(row.coberturaAtualDias)} dias`}
                   </td>
 
-                  <td className="border-t border-slate-100 px-2 py-2 text-center font-black text-violet-800">
+                  <td className="border-b border-r border-[#b7c3cf] px-1 py-[3px] text-center font-black text-violet-800">
                     {number(row.backlogTotal)}
                   </td>
 
-                  <td className="border-t border-slate-100 bg-orange-50 px-2 py-2 text-center font-black text-orange-900">
+                  <td className="border-b border-r border-[#b7c3cf] bg-orange-50 px-1 py-[3px] text-center font-black text-orange-900">
                     {number(row.sugestaoFaturarBacklog)}
                   </td>
 
-                  <td className="border-t border-slate-100 bg-amber-50 px-2 py-2 text-center font-black text-amber-900">
+                  <td className="border-b border-r border-[#b7c3cf] bg-amber-50 px-1 py-[3px] text-center font-black text-amber-900">
                     {number(row.sugestaoNovoPedido)}
                   </td>
 
                   <td
-                    className={`border-t border-slate-100 px-2 py-2 text-center font-black ${
+                    className={`border-b border-r border-[#b7c3cf] px-1 py-[3px] text-center font-black ${
                       Number(row.sobra || 0) > 0
                         ? 'bg-emerald-50 text-emerald-800'
                         : 'text-slate-400'
@@ -1800,8 +2050,8 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
 
     return (
       <div className="space-y-3">
-        <div className="rounded-2xl border border-emerald-200 bg-white shadow-sm">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-emerald-100 bg-emerald-50 px-3 py-2.5">
+        <div className="rounded-xl border border-emerald-200 bg-white shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-emerald-100 bg-emerald-50 px-2 py-1.5">
             <div>
               <p className="text-[8px] font-black uppercase tracking-[0.16em] text-emerald-700">Resumo regional</p>
               <h3 className="mt-0.5 text-[12px] font-black text-slate-900">Sobras por estado</h3>
@@ -1831,7 +2081,7 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
                     handleTabChange(item.id);
                     setPageMode('planejamento');
                   }}
-                  className={`rounded-xl border px-3 py-2 text-left transition ${
+                  className={`rounded-xl border px-1.5 py-1 text-left transition ${
                     item.id === activeTab
                       ? 'border-emerald-300 bg-emerald-100 text-emerald-900'
                       : 'border-slate-200 bg-white text-slate-700 hover:border-emerald-200 hover:bg-emerald-50'
@@ -1848,16 +2098,16 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
           </div>
 
           <div className="max-h-[70vh] overflow-auto">
-            <table className="w-full min-w-[920px] border-collapse text-[10px]">
+            <table className="w-full min-w-[820px] border-separate border-spacing-0 border-l border-t border-[#9fb3c8] bg-white text-[9px] leading-4 [&_th]:border-b [&_th]:border-r [&_th]:border-[#9fb3c8] [&_td]:border-b [&_td]:border-r [&_td]:border-[#b7c3cf]">
               <thead className="sticky top-0 z-10 bg-slate-50 text-[8px] font-black uppercase tracking-wide text-slate-500">
                 <tr>
-                  <th className="px-3 py-2 text-left">Estado</th>
-                  <th className="px-2 py-2 text-center">Vendas 60</th>
-                  <th className="px-2 py-2 text-center">Estoque</th>
-                  <th className="px-2 py-2 text-center">Total backlog</th>
-                  <th className="px-2 py-2 text-center">Sug. novos pedidos</th>
-                  <th className="px-2 py-2 text-center">Sobra &gt; 4 semanas</th>
-                  <th className="px-2 py-2 text-center">Ação</th>
+                  <th className="px-1.5 py-1 text-left">Estado</th>
+                  <th className="px-1 py-[3px] text-center">Vendas 60</th>
+                  <th className="px-1 py-[3px] text-center">Estoque</th>
+                  <th className="px-1 py-[3px] text-center">Total backlog</th>
+                  <th className="px-1 py-[3px] text-center">Sug. novos pedidos</th>
+                  <th className="px-1 py-[3px] text-center">Sobra &gt; 4 semanas</th>
+                  <th className="px-1 py-[3px] text-center">Ação</th>
                 </tr>
               </thead>
               <tbody>
@@ -1870,16 +2120,16 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
                 ) : orderedStates.length ? (
                   orderedStates.map((item, index) => (
                     <tr key={`surplus-row-${item.id}`} className={index % 2 === 0 ? 'bg-white' : 'bg-emerald-50/20'}>
-                      <td className="border-t border-slate-100 px-3 py-2">
+                      <td className="border-b border-r border-[#b7c3cf] px-3 py-2">
                         <div className="font-black uppercase text-slate-900">{item.stateLabel || item.state}</div>
                         <div className="text-[8px] font-bold uppercase text-slate-400">{item.label}</div>
                       </td>
-                      <td className="border-t border-slate-100 px-2 py-2 text-center font-black text-blue-800">{number(item.vendas60)}</td>
-                      <td className="border-t border-slate-100 px-2 py-2 text-center font-bold">{number(item.estoque)}</td>
-                      <td className="border-t border-slate-100 px-2 py-2 text-center font-black text-violet-800">{number(item.backlogTotal)}</td>
-                      <td className="border-t border-slate-100 px-2 py-2 text-center font-black text-amber-900">{number(item.sugestaoNovosPedidos)}</td>
-                      <td className="border-t border-slate-100 bg-emerald-50 px-2 py-2 text-center font-black text-emerald-800">{number(item.sobra)}</td>
-                      <td className="border-t border-slate-100 px-2 py-2 text-center">
+                      <td className="border-b border-r border-[#b7c3cf] px-1 py-[3px] text-center font-black text-blue-800">{number(item.vendas60)}</td>
+                      <td className="border-b border-r border-[#b7c3cf] px-1 py-[3px] text-center font-bold">{number(item.estoque)}</td>
+                      <td className="border-b border-r border-[#b7c3cf] px-1 py-[3px] text-center font-black text-violet-800">{number(item.backlogTotal)}</td>
+                      <td className="border-b border-r border-[#b7c3cf] px-1 py-[3px] text-center font-black text-amber-900">{number(item.sugestaoNovosPedidos)}</td>
+                      <td className="border-b border-r border-[#b7c3cf] bg-emerald-50 px-1 py-[3px] text-center font-black text-emerald-800">{number(item.sobra)}</td>
+                      <td className="border-b border-r border-[#b7c3cf] px-1 py-[3px] text-center">
                         <button
                           type="button"
                           onClick={() => {
@@ -1940,7 +2190,7 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
       ) : readyOrders.length ? (
         <div className="grid gap-2 xl:grid-cols-2">
           {readyOrders.map((order) => (
-            <div key={order.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div key={order.id} className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
@@ -2002,6 +2252,266 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
     </div>
   );
 
+  const aiPriorityClass = (priority: string) => {
+    if (priority === 'ALTA') return 'border-red-200 bg-red-50 text-red-700';
+    if (priority === 'MEDIA') return 'border-amber-200 bg-amber-50 text-amber-800';
+    return 'border-slate-200 bg-slate-50 text-slate-600';
+  };
+
+  const aiActionClass = (action: string) => {
+    const normalized = action.toUpperCase();
+    if (normalized.includes('NOVO PEDIDO')) return 'bg-violet-100 text-violet-800';
+    if (normalized.includes('FATURAR')) return 'bg-orange-100 text-orange-800';
+    if (normalized.includes('RUPTURA')) return 'bg-red-100 text-red-700';
+    if (normalized.includes('TRANSFER')) return 'bg-emerald-100 text-emerald-800';
+    if (normalized.includes('BLOQUE')) return 'bg-slate-200 text-slate-700';
+    return 'bg-blue-50 text-blue-700';
+  };
+
+  const renderAiStructuredReport = () => {
+    if (!aiReport) return null;
+
+    const totals = aiReport.totals || ({} as AiVisualReport['totals']);
+    const priorityItems = aiReport.priorityItems || [];
+    const transfers = aiReport.transfers || aiContext?.transferencias || [];
+    const riskItems = aiReport.riskItems || [];
+    const surplusItems = aiReport.surplusItems || [];
+    const states = aiReport.states || aiContext?.stateSummary || [];
+
+    const executiveCards = [
+      {
+        label: 'Novos pedidos',
+        value: number(totals.novosPedidos || 0),
+        helper: 'após transferências',
+        className: 'border-violet-200 bg-violet-50 text-violet-900',
+      },
+      {
+        label: 'Faturar backlog',
+        value: number(totals.faturarBacklog || 0),
+        helper: 'unidades prioritárias',
+        className: 'border-orange-200 bg-orange-50 text-orange-900',
+      },
+      {
+        label: 'Transferir',
+        value: number(totals.unidadesTransferir || 0),
+        helper: `${number(totals.transferencias || 0)} movimentação(ões)`,
+        className: 'border-emerald-200 bg-emerald-50 text-emerald-900',
+      },
+      {
+        label: 'Sobra > 4 semanas',
+        value: number(totals.sobra || 0),
+        helper: 'estoque físico excedente',
+        className: 'border-cyan-200 bg-cyan-50 text-cyan-900',
+      },
+      {
+        label: 'Riscos',
+        value: number(totals.riscos || 0),
+        helper: `${number(totals.bloqueados || 0)} bloqueado(s)`,
+        className: 'border-red-200 bg-red-50 text-red-900',
+      },
+    ];
+
+    return (
+      <div className="space-y-3">
+        <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+          <div className="flex flex-wrap items-center justify-between gap-3 bg-gradient-to-r from-slate-950 via-violet-950 to-slate-950 px-3 py-3 text-white">
+            <div>
+              <div className="flex items-center gap-2">
+                <Sparkles size={14} className="text-violet-300" />
+                <span className="text-[8px] font-black uppercase tracking-[0.16em] text-violet-200">Relatório executivo</span>
+              </div>
+              <h4 className="mt-1 text-sm font-black">Decisão de compra da rede</h4>
+              <p className="mt-0.5 text-[9px] font-semibold text-slate-300">
+                Vendas, estoque, backlog, transferências e necessidade final consolidados.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-1.5">
+              <span className="rounded-full border border-white/15 bg-white/10 px-2 py-1 text-[8px] font-black uppercase tracking-wide text-slate-200">
+                {aiReport.escopo === 'REDE' ? 'Rede completa' : 'Aba atual'}
+              </span>
+              <span className="rounded-full border border-violet-400/30 bg-violet-400/15 px-2 py-1 text-[8px] font-black uppercase tracking-wide text-violet-100">
+                {aiSource === 'claude' ? 'Claude + cálculos' : 'Cálculos do sistema'}
+              </span>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-px bg-slate-200 sm:grid-cols-3 xl:grid-cols-5">
+            {executiveCards.map((card) => (
+              <div key={card.label} className={`min-h-[72px] border-0 p-2.5 ${card.className}`}>
+                <p className="text-[7px] font-black uppercase tracking-[0.12em] opacity-70">{card.label}</p>
+                <p className="mt-1 text-xl font-black leading-none">{card.value}</p>
+                <p className="mt-1 text-[8px] font-bold opacity-65">{card.helper}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {states.length > 0 && (
+          <div className="rounded-xl border border-slate-200 bg-white p-2.5">
+            <div className="mb-2 flex items-center gap-2">
+              <BarChart3 size={13} className="text-violet-600" />
+              <h4 className="text-[9px] font-black uppercase tracking-wide text-slate-900">Resumo por estado</h4>
+            </div>
+            <div className="flex gap-2 overflow-x-auto pb-1">
+              {states.map((state) => (
+                <div key={state.estado} className="min-w-[150px] rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2">
+                  <p className="text-[9px] font-black uppercase text-slate-800">{state.estado}</p>
+                  <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-1 text-[8px] font-bold text-slate-500">
+                    <span>V60</span><span className="text-right text-blue-700">{number(state.vendas60)}</span>
+                    <span>Estoque</span><span className="text-right text-slate-800">{number(state.estoque)}</span>
+                    <span>Backlog</span><span className="text-right text-violet-700">{number(state.backlog)}</span>
+                    <span>Novo pedido</span><span className="text-right text-amber-700">{number(state.novosPedidos)}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+          <div className="flex items-center justify-between gap-2 border-b border-slate-200 bg-slate-50 px-3 py-2">
+            <div className="flex items-center gap-2">
+              <TrendingUp size={13} className="text-violet-600" />
+              <h4 className="text-[9px] font-black uppercase tracking-wide text-slate-900">Ações prioritárias</h4>
+            </div>
+            <span className="rounded-full bg-white px-2 py-1 text-[8px] font-black text-slate-500 shadow-sm">
+              {number(priorityItems.length)} itens
+            </span>
+          </div>
+
+          <div className="max-h-[330px] overflow-auto">
+            <table className="w-full min-w-[980px] border-collapse text-[9px]">
+              <thead className="sticky top-0 z-10 bg-white text-[7px] font-black uppercase tracking-wide text-slate-400">
+                <tr>
+                  <th className="border-b border-r border-slate-200 px-2 py-1.5 text-left">Estado</th>
+                  <th className="border-b border-r border-slate-200 px-2 py-1.5 text-left">Modelo</th>
+                  <th className="border-b border-r border-slate-200 px-2 py-1.5 text-center">Ação</th>
+                  <th className="border-b border-r border-slate-200 px-2 py-1.5 text-center">Qtde.</th>
+                  <th className="border-b border-r border-slate-200 px-2 py-1.5 text-center">Prioridade</th>
+                  <th className="border-b border-r border-slate-200 px-2 py-1.5 text-center">V60</th>
+                  <th className="border-b border-r border-slate-200 px-2 py-1.5 text-center">Estoque</th>
+                  <th className="border-b border-r border-slate-200 px-2 py-1.5 text-center">Backlog</th>
+                  <th className="border-b border-slate-200 px-2 py-1.5 text-left">Base da decisão</th>
+                </tr>
+              </thead>
+              <tbody>
+                {priorityItems.length ? priorityItems.map((item, index) => (
+                  <tr key={`${item.state}-${item.model}-${index}`} className={index % 2 === 0 ? 'bg-white' : 'bg-slate-50/60'}>
+                    <td className="border-b border-r border-slate-100 px-2 py-1.5 font-black uppercase text-slate-700">{item.state}</td>
+                    <td className="border-b border-r border-slate-100 px-2 py-1.5 font-black uppercase text-slate-900">{item.model}</td>
+                    <td className="border-b border-r border-slate-100 px-2 py-1.5 text-center">
+                      <span className={`inline-flex rounded-full px-2 py-1 text-[7px] font-black uppercase ${aiActionClass(item.action)}`}>
+                        {item.action}
+                      </span>
+                    </td>
+                    <td className="border-b border-r border-slate-100 px-2 py-1.5 text-center text-[11px] font-black text-slate-950">{number(item.quantity)}</td>
+                    <td className="border-b border-r border-slate-100 px-2 py-1.5 text-center">
+                      <span className={`inline-flex rounded-full border px-2 py-1 text-[7px] font-black ${aiPriorityClass(item.priority)}`}>
+                        {item.priority}
+                      </span>
+                    </td>
+                    <td className="border-b border-r border-slate-100 px-2 py-1.5 text-center font-black text-blue-700">{number(item.vendas60)}</td>
+                    <td className="border-b border-r border-slate-100 px-2 py-1.5 text-center font-bold">{number(item.estoque)}</td>
+                    <td className="border-b border-r border-slate-100 px-2 py-1.5 text-center font-black text-violet-700">{number(item.backlog)}</td>
+                    <td className="border-b border-slate-100 px-2 py-1.5 text-[8px] font-semibold text-slate-500">{item.justificativa}</td>
+                  </tr>
+                )) : (
+                  <tr>
+                    <td colSpan={9} className="px-4 py-8 text-center text-[9px] font-black uppercase tracking-wide text-slate-400">
+                      Nenhuma ação prioritária encontrada.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {transfers.length > 0 && (
+          <div className="overflow-hidden rounded-xl border border-emerald-200 bg-white">
+            <div className="flex items-center gap-2 border-b border-emerald-100 bg-emerald-50 px-3 py-2">
+              <Package size={13} className="text-emerald-700" />
+              <h4 className="text-[9px] font-black uppercase tracking-wide text-emerald-900">Transferências antes de comprar</h4>
+            </div>
+            <div className="grid gap-px bg-emerald-100 sm:grid-cols-2 xl:grid-cols-3">
+              {transfers.slice(0, 12).map((item, index) => (
+                <div key={`${item.modelo}-${item.origem}-${item.destino}-${index}`} className="bg-white px-3 py-2">
+                  <p className="truncate text-[9px] font-black uppercase text-slate-900" title={item.modelo}>{item.modelo}</p>
+                  <div className="mt-1 flex items-center gap-1.5 text-[8px] font-bold text-slate-500">
+                    <span>{item.origem}</span>
+                    <ChevronRight size={11} className="text-emerald-600" />
+                    <span>{item.destino}</span>
+                  </div>
+                  <p className="mt-1 text-sm font-black text-emerald-700">{number(item.quantidade)} un.</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="grid gap-3 xl:grid-cols-2">
+          <div className="overflow-hidden rounded-xl border border-red-200 bg-white">
+            <div className="flex items-center justify-between border-b border-red-100 bg-red-50 px-3 py-2">
+              <div className="flex items-center gap-2">
+                <AlertTriangle size={13} className="text-red-600" />
+                <h4 className="text-[9px] font-black uppercase tracking-wide text-red-900">Riscos de ruptura</h4>
+              </div>
+              <span className="text-[8px] font-black text-red-700">{number(riskItems.length)}</span>
+            </div>
+            <div className="max-h-[190px] overflow-auto">
+              {riskItems.length ? riskItems.slice(0, 10).map((item, index) => (
+                <div key={`risk-${item.state}-${item.model}-${index}`} className="flex items-center justify-between gap-3 border-b border-slate-100 px-3 py-2 last:border-b-0">
+                  <div className="min-w-0">
+                    <p className="truncate text-[9px] font-black uppercase text-slate-900">{item.model}</p>
+                    <p className="text-[8px] font-bold text-slate-400">{item.state} · V60 {number(item.vendas60)} · estoque {number(item.estoque)}</p>
+                  </div>
+                  <span className="shrink-0 rounded-full bg-red-100 px-2 py-1 text-[8px] font-black text-red-700">saldo {number(item.saldo60)}</span>
+                </div>
+              )) : (
+                <div className="px-3 py-8 text-center text-[9px] font-bold text-slate-400">Sem riscos críticos identificados.</div>
+              )}
+            </div>
+          </div>
+
+          <div className="overflow-hidden rounded-xl border border-cyan-200 bg-white">
+            <div className="flex items-center justify-between border-b border-cyan-100 bg-cyan-50 px-3 py-2">
+              <div className="flex items-center gap-2">
+                <Archive size={13} className="text-cyan-700" />
+                <h4 className="text-[9px] font-black uppercase tracking-wide text-cyan-900">Maiores sobras</h4>
+              </div>
+              <span className="text-[8px] font-black text-cyan-700">{number(surplusItems.length)}</span>
+            </div>
+            <div className="max-h-[190px] overflow-auto">
+              {surplusItems.length ? surplusItems.slice(0, 10).map((item, index) => (
+                <div key={`surplus-${item.state}-${item.model}-${index}`} className="flex items-center justify-between gap-3 border-b border-slate-100 px-3 py-2 last:border-b-0">
+                  <div className="min-w-0">
+                    <p className="truncate text-[9px] font-black uppercase text-slate-900">{item.model}</p>
+                    <p className="text-[8px] font-bold text-slate-400">{item.state} · estoque {number(item.estoque)} · V60 {number(item.vendas60)}</p>
+                  </div>
+                  <span className="shrink-0 rounded-full bg-cyan-100 px-2 py-1 text-[8px] font-black text-cyan-800">+{number(item.sobra)}</span>
+                </div>
+              )) : (
+                <div className="px-3 py-8 text-center text-[9px] font-bold text-slate-400">Sem sobras relevantes acima de quatro semanas.</div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {aiAnswer && (
+          <details className="rounded-xl border border-slate-200 bg-white">
+            <summary className="cursor-pointer select-none px-3 py-2.5 text-[9px] font-black uppercase tracking-wide text-slate-700">
+              Leitura detalhada da IA
+            </summary>
+            <div className="border-t border-slate-100 bg-slate-50 px-3 py-3">
+              <div className="whitespace-pre-wrap text-[10px] font-semibold leading-5 text-slate-600">{aiAnswer}</div>
+            </div>
+          </details>
+        )}
+      </div>
+    );
+  };
+
   const renderAiPanel = () => {
     const quickQuestions: Array<{ label: string; prompt: string; action: AiAction }> = [
       {
@@ -2031,7 +2541,7 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
       },
     ];
     return (
-      <div className="grid gap-3 xl:grid-cols-[0.72fr_1.28fr]">
+      <div className="grid gap-3 xl:grid-cols-[0.55fr_1.45fr]">
         <div className="rounded-2xl border border-violet-200 bg-gradient-to-br from-violet-950 to-slate-950 p-4 text-white shadow-sm">
           <div className="flex items-start gap-3">
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white/10">
@@ -2060,7 +2570,7 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
                     setAiQuestion(question.prompt);
                     setAiAction(question.action);
                   }}
-                  className={`rounded-xl border px-3 py-2.5 text-left text-[9px] font-bold leading-4 transition ${
+                  className={`rounded-xl border px-2 py-1.5 text-left text-[9px] font-bold leading-4 transition ${
                     index === 0
                       ? 'border-violet-400/50 bg-violet-500/20 text-white hover:bg-violet-500/30'
                       : 'border-white/10 bg-white/5 text-slate-200 hover:border-violet-400/40 hover:bg-white/10'
@@ -2073,7 +2583,7 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
             </div>
           </div>
 
-          <div className="mt-5 rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-[9px] font-semibold leading-5 text-slate-300">
+          <div className="mt-5 rounded-xl border border-white/10 bg-white/5 px-2 py-1.5 text-[9px] font-semibold leading-5 text-slate-300">
             Escopo padrão: <strong className="text-white">todos os estados da categoria</strong>. O foco é Vendas 60,
             estoque, pedido faturado, backlog, sobra acima de 4 semanas e redistribuição entre estados.
             <br />
@@ -2083,14 +2593,14 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
           </div>
         </div>
 
-        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2">
               <Sparkles size={15} className="text-violet-600" />
               <h3 className="text-[11px] font-black uppercase tracking-wide text-slate-900">Análise da IA</h3>
             </div>
 
-            {aiAnswer && (
+            {(aiAnswer || aiReport) && (
               <button
                 type="button"
                 onClick={exportAiReportExcel}
@@ -2126,7 +2636,7 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
             }}
             rows={3}
             placeholder="Escreva o que deseja analisar..."
-            className="mt-3 w-full resize-none rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs font-semibold text-slate-700 outline-none transition focus:border-violet-400 focus:bg-white"
+            className="mt-3 w-full resize-none rounded-xl border border-slate-200 bg-slate-50 px-2 py-1.5 text-xs font-semibold text-slate-700 outline-none transition focus:border-violet-400 focus:bg-white"
           />
 
           <div className="mt-2 flex flex-wrap justify-end gap-2">
@@ -2141,17 +2651,21 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
             </button>
           </div>
 
-          <div className="mt-3 min-h-[320px] rounded-xl border border-slate-200 bg-slate-50 p-3">
+          <div className="mt-3">
             {aiLoading ? (
-              <div className="flex min-h-[280px] items-center justify-center gap-2 text-xs font-bold text-slate-400">
+              <div className="flex min-h-[260px] items-center justify-center gap-2 rounded-xl border border-slate-200 bg-slate-50 text-xs font-bold text-slate-400">
                 <RefreshCw size={15} className="animate-spin" />
-                Analisando vendas, estoque, pedido faturado, backlog e pedidos...
+                Montando relatório executivo da rede...
               </div>
+            ) : aiReport ? (
+              renderAiStructuredReport()
             ) : aiAnswer ? (
-              <div className="whitespace-pre-wrap text-[11px] font-semibold leading-6 text-slate-700">{aiAnswer}</div>
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <div className="whitespace-pre-wrap text-[11px] font-semibold leading-6 text-slate-700">{aiAnswer}</div>
+              </div>
             ) : (
-              <div className="flex min-h-[280px] items-center justify-center px-8 text-center text-[11px] font-semibold leading-5 text-slate-400">
-                Use “Gerar relatório completo” para receber uma recomendação pronta ou escolha uma das análises específicas ao lado.
+              <div className="flex min-h-[260px] items-center justify-center rounded-xl border border-dashed border-slate-300 bg-slate-50 px-8 text-center text-[11px] font-semibold leading-5 text-slate-400">
+                Escolha “Fazer ponto de pedido” para gerar o painel executivo completo ou faça uma pergunta livre sobre a operação.
               </div>
             )}
           </div>
@@ -2162,43 +2676,14 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-[#f5f7fb]">
-      <div className="shrink-0 border-b border-slate-200 bg-white px-4 py-3 md:px-6">
-        <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-          <div className="flex items-center gap-2">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-indigo-600 text-white shadow-sm">
-              <Package size={18} />
-            </div>
-            <div>
-              <h2 className="text-xl font-black uppercase tracking-tight text-slate-950 md:text-2xl">
-                Ponto de Pedido
-              </h2>              
-            </div>
+      <div className="shrink-0 border-b border-slate-200 bg-white px-3 py-2 md:px-5">
+        <div className="flex items-center gap-2">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-600 text-white shadow-sm">
+            <Package size={16} />
           </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="relative min-w-[220px] flex-1 xl:w-[310px] xl:flex-none">
-              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-              <input
-                value={searchTerm}
-                onChange={(event) => setSearchTerm(event.target.value)}
-                placeholder="Buscar modelo ou cor..."
-                className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2.5 pl-9 pr-3 text-xs font-semibold text-slate-700 outline-none transition focus:border-indigo-400 focus:bg-white"
-              />
-            </div>
-
-
-            <button
-              type="button"
-              onClick={finalizePointOrder}
-              disabled={finalizing || loading}
-              className="inline-flex h-10 items-center gap-2 rounded-xl bg-orange-500 px-4 text-[9px] font-black uppercase tracking-wide text-white shadow-sm transition hover:bg-orange-600 disabled:opacity-50"
-              title="Salva uma fotografia completa do ponto de pedido atual da categoria em Pedidos prontos."
-            >
-              {finalizing ? <RefreshCw size={13} className="animate-spin" /> : <CheckCircle2 size={13} />}
-              Finalizar ponto de pedido
-            </button>
-
-          </div>
+          <h2 className="text-lg font-black uppercase tracking-tight text-slate-950 md:text-xl">
+            Ponto de Pedido
+          </h2>
         </div>
       </div>
 
@@ -2224,34 +2709,59 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
             </div>
           </div>
 
-          <div className="flex items-center gap-2 overflow-x-auto">
-            <span className="shrink-0 text-[8px] font-black uppercase tracking-[0.14em] text-slate-400">Estados</span>
-            <div className="flex gap-1">
-              {stateTabs.map((tab) => (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => handleTabChange(tab.id)}
-                  className={`flex min-w-[82px] flex-col rounded-xl px-3 py-1.5 text-left transition ${
-                    activeTab === tab.id
-                      ? 'bg-indigo-600 text-white shadow-sm'
-                      : 'border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 hover:text-slate-900'
-                  }`}
-                >
-                  <span className="text-[10px] font-black uppercase">{tab.stateLabel || tab.state}</span>
-                  <span className={`mt-0.5 max-w-[150px] truncate text-[7px] font-bold uppercase ${activeTab === tab.id ? 'text-indigo-100' : 'text-slate-400'}`}>
-                    {tab.label}
-                  </span>
-                </button>
-              ))}
+          <div className="flex flex-col gap-2 xl:flex-row xl:items-center xl:justify-between">
+            <div className="flex min-w-0 items-center gap-2 overflow-x-auto">
+              <span className="shrink-0 text-[8px] font-black uppercase tracking-[0.14em] text-slate-400">Estados</span>
+              <div className="flex gap-1">
+                {stateTabs.map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => handleTabChange(tab.id)}
+                    className={`flex min-w-[82px] flex-col rounded-xl px-3 py-1.5 text-left transition ${
+                      activeTab === tab.id
+                        ? 'bg-indigo-600 text-white shadow-sm'
+                        : 'border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+                    }`}
+                  >
+                    <span className="text-[10px] font-black uppercase">{tab.stateLabel || tab.state}</span>
+                    <span className={`mt-0.5 max-w-[150px] truncate text-[7px] font-bold uppercase ${activeTab === tab.id ? 'text-indigo-100' : 'text-slate-400'}`}>
+                      {tab.label}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex shrink-0 items-center justify-end gap-2">
+              <div className="relative w-[230px]">
+                <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  value={searchTerm}
+                  onChange={(event) => setSearchTerm(event.target.value)}
+                  placeholder="Buscar modelo ou cor..."
+                  className="h-9 w-full rounded-lg border border-slate-200 bg-slate-50 pl-8 pr-3 text-[10px] font-semibold text-slate-700 outline-none transition focus:border-indigo-400 focus:bg-white"
+                />
+              </div>
+
+              <button
+                type="button"
+                onClick={finalizePointOrder}
+                disabled={finalizing || loading}
+                className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-orange-500 px-3 text-[8px] font-black uppercase tracking-wide text-white shadow-sm transition hover:bg-orange-600 disabled:opacity-50"
+                title="Salva uma fotografia completa do ponto de pedido atual da categoria em Pedidos prontos."
+              >
+                {finalizing ? <RefreshCw size={12} className="animate-spin" /> : <CheckCircle2 size={12} />}
+                Finalizar ponto de pedido
+              </button>
             </div>
           </div>
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-auto p-3 md:p-5">
+      <div className="min-h-0 flex-1 overflow-auto p-2 md:p-3">
         {errorMsg && (
-          <div className="mb-3 flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-xs font-bold text-red-700">
+          <div className="mb-3 flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 px-2 py-1.5 text-xs font-bold text-red-700">
             <AlertTriangle size={16} className="mt-0.5 shrink-0" />
             {errorMsg}
           </div>
@@ -2281,7 +2791,7 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
 
         {pageMode === 'planejamento' && (
           <>
-            <div className="mb-3 flex flex-col gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2.5 shadow-sm lg:flex-row lg:items-center lg:justify-between">
+            <div className="mb-2 flex flex-col gap-1.5 rounded-xl border border-slate-200 bg-white px-1 py-[2px] shadow-sm lg:flex-row lg:items-center lg:justify-between">
               <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
                 <div className="flex items-center gap-2">
                   <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-violet-50 text-violet-700">
@@ -2329,6 +2839,45 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
                   Saldos
                 </GroupButton>
 
+                <GroupButton
+                  open={showSamsungPrice}
+                  onClick={() => setShowSamsungPrice((value) => !value)}
+                  help="Mostra ou oculta a coluna Preço Samsung para ganhar espaço horizontal."
+                >
+                  Preço Samsung
+                </GroupButton>
+
+
+                {isAccessories && (
+                  <button
+                    type="button"
+                    onClick={() => setHideOpenRows((value) => !value)}
+                    title="Oculta ou mostra os acessórios com status OPEN."
+                    className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[8px] font-black uppercase tracking-wide shadow-sm transition ${
+                      hideOpenRows
+                        ? 'border-sky-200 bg-sky-50 text-sky-700'
+                        : 'border-slate-200 bg-white text-slate-600 hover:border-sky-200 hover:text-sky-700'
+                    }`}
+                  >
+                    <EyeOff size={11} />
+                    {hideOpenRows ? 'Mostrar OPEN' : 'Ocultar OPEN'}
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuditQuery(searchTerm || '');
+                    setAuditData(null);
+                    setAuditError('');
+                    setAuditOpen(true);
+                  }}
+                  title="Mostra exatamente de onde vieram Vendas 60, Estoque e Backlog do modelo."
+                  className="inline-flex items-center gap-1 rounded-md border border-indigo-200 bg-indigo-50 px-2 py-1 text-[8px] font-black uppercase tracking-wide text-indigo-700 shadow-sm transition hover:bg-indigo-100"
+                >
+                  <Search size={11} />
+                  Auditar dados
+                </button>
 
                 <button
                   type="button"
@@ -2356,6 +2905,128 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
         {pageMode === 'ia' && renderAiPanel()}
         {pageMode === 'prontos' && renderReadyOrders()}
       </div>
+
+      {auditOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/45 p-4 backdrop-blur-sm">
+          <div className="flex max-h-[88vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+              <div>
+                <p className="text-[8px] font-black uppercase tracking-[0.16em] text-indigo-600">Auditoria do Ponto de Pedido</p>
+                <h3 className="text-sm font-black text-slate-950">Rastrear Vendas 60, Estoque e Backlog</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAuditOpen(false)}
+                className="rounded-lg border border-slate-200 px-3 py-1.5 text-[9px] font-black uppercase text-slate-500 hover:bg-slate-50"
+              >
+                Fechar
+              </button>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 bg-slate-50 px-4 py-3">
+              <div className="relative min-w-[320px] flex-1">
+                <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  value={auditQuery}
+                  onChange={(event) => setAuditQuery(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') runDataAudit();
+                  }}
+                  placeholder="Ex.: GALAXY S26 FE 256GB AZUL COBALTO"
+                  className="h-10 w-full rounded-xl border border-slate-200 bg-white pl-9 pr-3 text-xs font-semibold outline-none focus:border-indigo-400"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={runDataAudit}
+                disabled={auditLoading || !auditQuery.trim()}
+                className="inline-flex h-10 items-center gap-2 rounded-xl bg-indigo-600 px-4 text-[9px] font-black uppercase text-white hover:bg-indigo-700 disabled:opacity-40"
+              >
+                {auditLoading ? <RefreshCw size={13} className="animate-spin" /> : <Search size={13} />}
+                Auditar
+              </button>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-auto p-4">
+              {auditError && (
+                <div className="mb-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-[10px] font-bold text-red-700">{auditError}</div>
+              )}
+
+              {!auditData && !auditLoading && !auditError && (
+                <div className="py-16 text-center text-xs font-semibold text-slate-400">
+                  Digite o modelo exatamente como aparece no Ponto de Pedido. O sistema mostrará qual descrição foi usada nas vendas e no estoque.
+                </div>
+              )}
+
+              {auditData && (
+                <div className="space-y-4">
+                  <div className="grid gap-2 md:grid-cols-4">
+                    <div className="rounded-xl border border-blue-200 bg-blue-50 p-3">
+                      <div className="text-[8px] font-black uppercase text-blue-500">Vendas 60</div>
+                      <div className="mt-1 text-xl font-black text-blue-950">{number(auditData.sales?.value?.vendas60)}</div>
+                    </div>
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                      <div className="text-[8px] font-black uppercase text-slate-500">Estoque</div>
+                      <div className="mt-1 text-xl font-black text-slate-950">{number(auditData.stock?.value?.estoque)}</div>
+                    </div>
+                    <div className="rounded-xl border border-violet-200 bg-violet-50 p-3">
+                      <div className="text-[8px] font-black uppercase text-violet-500">Backlog encontrado</div>
+                      <div className="mt-1 text-xl font-black text-violet-950">{number(auditData.backlog?.quantity)}</div>
+                    </div>
+                    <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3">
+                      <div className="text-[8px] font-black uppercase text-emerald-600">Modelo da planilha</div>
+                      <div className="mt-1 text-[10px] font-black uppercase leading-4 text-emerald-950">{auditData.sheetRow?.modeloComCor}</div>
+                    </div>
+                  </div>
+
+                  <div className="grid gap-3 lg:grid-cols-2">
+                    {[['VENDAS', auditData.sales], ['ESTOQUE', auditData.stock]].map(([title, match]: any) => (
+                      <div key={title} className="overflow-hidden rounded-xl border border-slate-200">
+                        <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-3 py-2">
+                          <span className="text-[9px] font-black uppercase text-slate-700">Match de {title}</span>
+                          <span className={`rounded-full px-2 py-1 text-[7px] font-black ${match?.confidence === 'HIGH' ? 'bg-emerald-100 text-emerald-700' : match?.confidence === 'MEDIUM' ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700'}`}>
+                            {match?.confidence || 'NONE'} · {match?.method || 'SEM MATCH'}
+                          </span>
+                        </div>
+                        <div className="space-y-2 p-3 text-[9px]">
+                          <div><span className="font-black text-slate-500">Descrição encontrada:</span> <span className="font-bold text-slate-900">{match?.matchedDescription || 'Nenhuma correspondência segura'}</span></div>
+                          {(match?.reference || match?.productCode) && (
+                            <div className="text-slate-500">Referência: <b>{match?.reference || '—'}</b> · Código: <b>{match?.productCode || '—'}</b></div>
+                          )}
+                        </div>
+                        {Array.isArray(match?.sources) && match.sources.length > 0 && (
+                          <div className="max-h-52 overflow-auto border-t border-slate-100">
+                            <table className="w-full text-[8px]">
+                              <thead className="sticky top-0 bg-white text-slate-400"><tr><th className="px-2 py-1 text-left">ORIGEM</th><th className="px-2 py-1 text-left">DESCRIÇÃO</th><th className="px-2 py-1 text-right">VALOR</th></tr></thead>
+                              <tbody>{match.sources.slice(0, 50).map((source: any, index: number) => (
+                                <tr key={`${title}-${index}`} className="border-t border-slate-100">
+                                  <td className="px-2 py-1 font-bold">{source.loja || source.cnpj || '—'}</td>
+                                  <td className="px-2 py-1">{source.descricao || '—'}</td>
+                                  <td className="px-2 py-1 text-right font-black">{title === 'VENDAS' ? number(source.vendas60) : number(source.quantidade)}</td>
+                                </tr>
+                              ))}</tbody>
+                            </table>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+
+                  {(!auditData.sales?.matchedDescription || !auditData.stock?.matchedDescription) && (
+                    <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
+                      <div className="text-[9px] font-black uppercase text-amber-800">Candidatos próximos rejeitados pelo matcher seguro</div>
+                      <div className="mt-2 grid gap-2 lg:grid-cols-2">
+                        <div>{(auditData.sales?.nearby || []).slice(0, 6).map((item: any, index: number) => <div key={`sale-near-${index}`} className="border-t border-amber-100 py-1 text-[8px]"><b>{item.descricao}</b> · V60 {number(item.vendas60)}</div>)}</div>
+                        <div>{(auditData.stock?.nearby || []).slice(0, 6).map((item: any, index: number) => <div key={`stock-near-${index}`} className="border-t border-amber-100 py-1 text-[8px]"><b>{item.descricao}</b> · estoque {number(item.estoque)}</div>)}</div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

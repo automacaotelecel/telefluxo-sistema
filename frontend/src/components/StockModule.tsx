@@ -8,7 +8,7 @@ import {
 import * as XLSX from 'xlsx';
 
 // --- COMPONENTE AUXILIAR PARA MULTI-SELECT ---
-const MultiSelectDropdown = ({ options, selected, onChange, placeholder }: any) => {
+const MultiSelectDropdown = ({ options, selected, onChange, placeholder, compact = false, alignRight = false }: any) => {
   const [isOpen, setIsOpen] = useState(false);
   const wrapperRef = React.useRef<HTMLDivElement>(null);
 
@@ -36,10 +36,10 @@ const MultiSelectDropdown = ({ options, selected, onChange, placeholder }: any) 
   };
 
   return (
-    <div ref={wrapperRef} className="relative w-full md:w-auto shrink-0 z-20">
+    <div ref={wrapperRef} className={`relative z-20 min-w-0 ${compact ? 'w-full xl:w-auto' : 'w-full md:w-auto shrink-0'}`}>
       <div
         onClick={() => setIsOpen(!isOpen)}
-        className="bg-white border border-slate-200 text-slate-600 text-[10px] md:text-xs font-bold uppercase px-3 md:px-4 py-2 md:py-2.5 rounded-xl outline-none cursor-pointer hover:border-indigo-300 shadow-sm flex items-center justify-between gap-2 min-w-[160px] h-full"
+        className={`flex w-full items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white font-bold uppercase text-slate-600 outline-none transition-colors ${compact ? 'hover:border-orange-300' : 'hover:border-indigo-300'} ${compact ? 'h-9 min-w-0 px-2.5 text-[9px] sm:text-[10px] xl:min-w-[116px]' : 'h-full min-w-[160px] px-3 py-2 text-[10px] shadow-sm md:px-4 md:py-2.5 md:text-xs'}`}
       >
         <span className="truncate">
           {selected.length === 0 ? placeholder : `${selected.length} selecionado(s)`}
@@ -49,14 +49,14 @@ const MultiSelectDropdown = ({ options, selected, onChange, placeholder }: any) 
         )}
       </div>
       {isOpen && (
-        <div className="absolute top-full left-0 mt-1 w-64 bg-white border border-slate-200 shadow-xl rounded-xl max-h-60 overflow-y-auto flex flex-col p-2 z-50">
+        <div className={`absolute top-full z-50 mt-1 flex w-64 max-w-[calc(100vw-2rem)] flex-col overflow-y-auto rounded-xl border border-slate-200 bg-white p-2 shadow-xl max-h-60 ${compact && alignRight ? 'right-0' : 'left-0'}`}>
           {options.map((opt: string) => (
             <label key={opt} className="flex items-center gap-2 px-2 py-2 hover:bg-slate-50 rounded cursor-pointer">
               <input
                 type="checkbox"
                 checked={selected.includes(opt)}
                 onChange={() => toggleOption(opt)}
-                className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer"
+                className={`h-4 w-4 cursor-pointer rounded border-slate-300 ${compact ? 'text-orange-600 focus:ring-orange-500' : 'text-indigo-600 focus:ring-indigo-500'}`}
               />
               <span className="text-xs font-bold text-slate-700 uppercase">{opt}</span>
             </label>
@@ -270,6 +270,27 @@ const getStockProductIdentityKey = (item: any) =>
     description: item?.description,
   });
 
+// Usa abreviações consistentes em todas as visões de estoque (MM = milhão).
+const stockMoney = (value: number, compact = false): string => {
+  const number = Number.isFinite(value) ? value : 0;
+  const abs = Math.abs(number);
+  if (compact && abs >= 1_000_000) {
+    return `R$ ${(number / 1_000_000).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} MM`;
+  }
+  if (compact && abs >= 1_000) {
+    return `R$ ${(number / 1_000).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} mil`;
+  }
+  return `R$ ${number.toLocaleString('pt-BR', {
+    minimumFractionDigits: compact ? 0 : 2,
+    maximumFractionDigits: compact ? 0 : 2,
+  })}`;
+};
+
+const getUnitSalePrice = (item: any): number => {
+  const price = toNumericValue(item?.salePrice);
+  return Number.isFinite(price) && price > 0 ? price : 0;
+};
+
 const getUnitCost = (item: any): number => {
   const groupedUnitCost = Number(item?.unitCost);
 
@@ -385,6 +406,8 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
               stockType,
               quantity: 0,
               totalAcquisitionCost: 0,
+              totalSaleValue: 0,
+              pricedSaleQuantity: 0,
               exactCostQuantity: 0,
               fallbackCostQuantity: 0,
             };
@@ -400,6 +423,15 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
           groupedStock[key].quantity += itemQuantity;
           groupedStock[key].totalAcquisitionCost +=
             itemCost * itemQuantity;
+
+          // Mesmo SKU/loja pode ter linhas com preços de venda diferentes.
+          // Acumular quantidade x preço ANTES do agrupamento evita usar só o
+          // primeiro preço do grupo e distorcer o valor de venda da rede.
+          const itemSalePrice = getUnitSalePrice(item);
+          groupedStock[key].totalSaleValue += itemSalePrice * itemQuantity;
+          if (itemSalePrice > 0) {
+            groupedStock[key].pricedSaleQuantity += itemQuantity;
+          }
 
           const exactAcquisitionCost =
             Number(item?.acquisitionCost);
@@ -432,6 +464,9 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
               ...item,
               quantity,
               unitCost: averageAcquisitionCost,
+              salePrice: quantity > 0
+                ? Number(item.totalSaleValue || 0) / quantity
+                : 0,
               acquisitionCost:
                 Number(item.fallbackCostQuantity || 0) === 0
                   ? averageAcquisitionCost
@@ -1249,6 +1284,12 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
     const totalStockValue = base.reduce((acc, item) => {
       return acc + ((Number(item.quantity) || 0) * (getUnitCost(item)));
     }, 0);
+    const totalSaleValue = base.reduce((acc, item) => {
+      return acc + Math.max(0, Number(item.totalSaleValue) || 0);
+    }, 0);
+    const pricedSaleQty = base.reduce((acc, item) => {
+      return acc + Math.max(0, Number(item.pricedSaleQuantity) || 0);
+    }, 0);
     const exactCostQty = base.reduce(
       (acc, item) =>
         acc + (Number(item.exactCostQuantity) || 0),
@@ -1277,6 +1318,8 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
       totalItems,
       totalStockQty,
       totalStockValue,
+      totalSaleValue,
+      unpricedSaleQty: Math.max(0, totalStockQty - pricedSaleQty),
       exactCostQty,
       fallbackCostQty,
       totalSalesQty,
@@ -1506,13 +1549,16 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
     document.body.removeChild(link);
   };
 
+  // CORREÇÃO DA ROLAGEM: o App possui altura fixa (h-screen) e oculta o excesso.
+  // min-h-screen forçava este painel a ultrapassar a área disponível abaixo do cabeçalho.
+  // Com min-h-0, o overflow-y-auto passa a rolar até o último card.
   return (
-    <div className="flex-1 p-6 md:p-8 overflow-y-auto font-sans bg-[#F0F2F5] min-h-screen">
-      <div className="max-w-[1600px] mx-auto space-y-6">
+    <div className={`min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-y-contain font-sans bg-[#F0F2F5] ${moduleMode === 'stock' ? 'p-3 sm:p-4 xl:p-5' : 'p-6 md:p-8'}`}>
+      <div className={`max-w-[1600px] mx-auto ${moduleMode === 'stock' ? 'space-y-3' : 'space-y-6'}`}>
 
         {/* HEADER */}
-        <div className="flex flex-col gap-4 bg-white p-4 rounded-2xl shadow-sm border border-slate-200">
-          <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+        <div className={`flex flex-col rounded-2xl border border-slate-200 bg-white shadow-sm ${moduleMode === 'stock' ? 'gap-2.5 p-3 sm:p-4' : 'gap-4 p-4'}`}>
+          <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between md:gap-4">
             <div className="flex items-center gap-3">
               {expandedStore ? (
                 <button
@@ -1525,7 +1571,7 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
                   <ArrowLeft size={24} />
                 </button>
               ) : (
-                <div className={`p-2.5 rounded-xl text-white shadow-md ${moduleMode === 'analysis' ? 'bg-purple-600 shadow-purple-200' : 'bg-indigo-600 shadow-indigo-200'}`}>
+                <div className={`p-2.5 rounded-xl text-white shadow-md ${moduleMode === 'analysis' ? 'bg-purple-600 shadow-purple-200' : moduleMode === 'stock' ? 'bg-orange-500 shadow-orange-100' : 'bg-indigo-600 shadow-indigo-200'}`}>
                   {moduleMode === 'stock' ? <Box size={20} /> :
                     moduleMode === 'redistribution' ? <Truck size={20} /> :
                     moduleMode === 'purchases' ? <ShoppingCart size={20} /> :
@@ -1552,14 +1598,14 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
               </div>
             </div>
 
-            <div className="flex gap-2 flex-wrap">
-              <div className="flex bg-slate-100 p-1 rounded-xl overflow-x-auto">
-                <button onClick={() => setModuleMode('stock')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all ${moduleMode === 'stock' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-indigo-500'}`}>Estoque</button>
-                <button onClick={() => setModuleMode('malote')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all ${moduleMode === 'malote' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-indigo-500'}`}>Malote</button>
-                <button onClick={() => setModuleMode('redistribution')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all ${moduleMode === 'redistribution' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-indigo-500'}`}>Remanejamento</button>
-                <button onClick={() => setModuleMode('purchases')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all ${moduleMode === 'purchases' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-indigo-500'}`}>Compras</button>
+            <div className="flex min-w-0 w-full flex-wrap items-center gap-2 md:w-auto md:justify-end">
+              <div className="flex min-w-0 max-w-full overflow-x-auto rounded-xl bg-slate-100 p-1">
+                <button onClick={() => setModuleMode('stock')} className={`shrink-0 rounded-lg font-bold uppercase transition-all ${moduleMode === 'stock' ? 'px-3 py-1.5 text-[10px]' : 'px-4 py-2 text-xs'} ${moduleMode === 'stock' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-indigo-500'}`}>Estoque</button>
+                <button onClick={() => setModuleMode('malote')} className={`shrink-0 rounded-lg font-bold uppercase transition-all ${moduleMode === 'stock' ? 'px-3 py-1.5 text-[10px]' : 'px-4 py-2 text-xs'} ${moduleMode === 'malote' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-indigo-500'}`}>Malote</button>
+                <button onClick={() => setModuleMode('redistribution')} className={`shrink-0 rounded-lg font-bold uppercase transition-all ${moduleMode === 'stock' ? 'px-3 py-1.5 text-[10px]' : 'px-4 py-2 text-xs'} ${moduleMode === 'redistribution' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-indigo-500'}`}>Remanejamento</button>
+                <button onClick={() => setModuleMode('purchases')} className={`shrink-0 rounded-lg font-bold uppercase transition-all ${moduleMode === 'stock' ? 'px-3 py-1.5 text-[10px]' : 'px-4 py-2 text-xs'} ${moduleMode === 'purchases' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-indigo-500'}`}>Compras</button>
                 {/* 👇 BOTÃO NOVO AQUI 👇 */}
-                <button onClick={() => setModuleMode('predictive')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all ${moduleMode === 'predictive' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-indigo-500'}`}>Ruptura</button>
+                <button onClick={() => setModuleMode('predictive')} className={`shrink-0 rounded-lg font-bold uppercase transition-all ${moduleMode === 'stock' ? 'px-3 py-1.5 text-[10px]' : 'px-4 py-2 text-xs'} ${moduleMode === 'predictive' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-indigo-500'}`}>Ruptura</button>
               </div>
 
               <button onClick={handleExport} className="p-2 bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 rounded-xl transition-all" title="Exportar Excel">
@@ -1569,16 +1615,16 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
           </div>
 
           {/* NOVO: calendário global do módulo */}
-          <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center gap-4 border-t border-slate-100 pt-4">
-            <div className="flex flex-col md:flex-row gap-3 w-full xl:w-auto">
-              <div className="flex items-center bg-slate-50 border border-slate-200 rounded-xl p-1 shadow-sm">
+          <div className={`flex flex-col border-t border-slate-100 xl:flex-row xl:items-center xl:justify-between ${moduleMode === 'stock' ? 'gap-2 pt-2.5' : 'gap-4 pt-4'}`}>
+            <div className="flex w-full flex-col gap-2 sm:flex-row sm:items-center xl:w-auto">
+              <div className="grid min-w-0 w-full grid-cols-2 rounded-xl border border-slate-200 bg-slate-50 p-1 shadow-sm sm:w-auto sm:flex sm:items-center">
                 <div className="flex items-center px-2 border-r border-slate-200">
                   <Calendar size={14} className="text-slate-400 mr-2" />
                   <input
                     type="date"
                     value={startDate}
                     onChange={e => setStartDate(e.target.value)}
-                    className="bg-transparent border-none text-[10px] font-bold text-slate-600 uppercase focus:outline-none w-28"
+                    className="min-w-0 w-full border-none bg-transparent text-[10px] font-bold uppercase text-slate-600 outline-none sm:w-28"
                   />
                 </div>
                 <div className="flex items-center px-2">
@@ -1587,12 +1633,12 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
                     type="date"
                     value={endDate}
                     onChange={e => setEndDate(e.target.value)}
-                    className="bg-transparent border-none text-[10px] font-bold text-slate-600 uppercase focus:outline-none w-28"
+                    className="min-w-0 w-full border-none bg-transparent text-[10px] font-bold uppercase text-slate-600 outline-none sm:w-28"
                   />
                 </div>
               </div>
 
-              <div className="bg-indigo-50 border border-indigo-100 text-indigo-700 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-wider flex items-center gap-2">
+              <div className="flex items-center gap-1.5 rounded-xl border border-orange-100 bg-orange-50 px-3 py-2 text-[10px] font-black uppercase tracking-wide text-orange-700">
                 <Clock size={14} />
                 Período: {periodDays} dias
               </div>
@@ -1601,7 +1647,7 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
             <button
               onClick={loadData}
               disabled={loading}
-              className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-xl text-xs font-bold uppercase transition-all shadow-md flex items-center gap-2 disabled:opacity-50"
+              className="flex h-9 w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 px-3 text-[10px] font-bold uppercase text-white shadow-sm transition-colors hover:bg-indigo-700 disabled:opacity-50 sm:w-auto"
             >
               <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
               {loading ? 'Atualizando...' : 'Atualizar dados'}
@@ -1735,7 +1781,7 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
           <div className="space-y-6 animate-fadeIn">
             <div className="flex justify-between items-center bg-white p-4 rounded-xl border border-slate-200 z-20 relative">
               <div className="flex items-center gap-2">
-                <MapPin className="text-indigo-600" size={20} />
+                <MapPin className="text-orange-600" size={20} />
                 <span className="text-sm font-bold text-slate-700 uppercase">Filtrar Região:</span>
                 <MultiSelectDropdown
                   options={purchaseRegions}
@@ -1827,19 +1873,19 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
                 </div>
 
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-                  <div className="bg-white/10 border border-white/10 rounded-2xl p-3 min-w-[120px]">
+                  <div className="bg-white/10 border border-white/10 rounded-xl p-3 min-w-0">
                     <p className="text-[9px] font-black uppercase text-white/50">Transferências</p>
                     <p className="text-2xl font-black">{redistributionMetrics.totalMoves}</p>
                   </div>
-                  <div className="bg-white/10 border border-white/10 rounded-2xl p-3 min-w-[120px]">
+                  <div className="bg-white/10 border border-white/10 rounded-xl p-3 min-w-0">
                     <p className="text-[9px] font-black uppercase text-white/50">Peças</p>
                     <p className="text-2xl font-black text-indigo-200">{redistributionMetrics.totalUnits}</p>
                   </div>
-                  <div className="bg-white/10 border border-white/10 rounded-2xl p-3 min-w-[120px]">
+                  <div className="bg-white/10 border border-white/10 rounded-xl p-3 min-w-0">
                     <p className="text-[9px] font-black uppercase text-white/50">Críticas</p>
                     <p className="text-2xl font-black text-red-200">{redistributionMetrics.criticalMoves}</p>
                   </div>
-                  <div className="bg-white/10 border border-white/10 rounded-2xl p-3 min-w-[120px]">
+                  <div className="bg-white/10 border border-white/10 rounded-xl p-3 min-w-0">
                     <p className="text-[9px] font-black uppercase text-white/50">Destinos</p>
                     <p className="text-2xl font-black text-emerald-200">{redistributionMetrics.destinationStores}</p>
                   </div>
@@ -2189,84 +2235,55 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
         {moduleMode === 'stock' && (
           <>
             {!expandedStore && (
-              <div className="space-y-4">
-                {/* FILTROS PRINCIPAIS: primeira linha abaixo do cabeçalho */}
-                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-3">
-                  <div className="flex flex-col xl:flex-row xl:items-stretch gap-2">
-                    <div className="relative flex-1 min-w-[260px]">
-                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={17} />
+              <div className="space-y-2.5">
+                {/* AJUSTE 1: pesquisa, filtros e tipos em um único painel compacto. */}
+                <div className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+                  <div className="grid grid-cols-1 gap-2 xl:grid-cols-[minmax(220px,1fr)_auto] xl:items-center">
+                    <div className="relative min-w-0">
+                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
                       <input
                         type="text"
                         placeholder="BUSCAR PRODUTO OU CÓDIGO..."
                         value={filter}
                         onChange={(e) => setFilter(e.target.value)}
-                        className="w-full h-[42px] pl-10 pr-4 bg-slate-50 border border-slate-200 text-slate-700 text-[10px] md:text-xs font-bold uppercase rounded-xl outline-none focus:bg-white focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 transition-all"
+                        className="h-9 w-full rounded-xl border border-slate-200 bg-slate-50 pl-9 pr-3 text-[10px] font-bold uppercase text-slate-700 outline-none transition-colors focus:border-orange-400 focus:bg-white focus:ring-2 focus:ring-orange-100 sm:text-xs"
                       />
                     </div>
-
-                    <div className="flex gap-2 flex-wrap xl:flex-nowrap xl:items-stretch z-20">
-                      <MultiSelectDropdown
-                        options={uniqueRegions}
-                        selected={regionFilter}
-                        onChange={setRegionFilter}
-                        placeholder="Todas Regiões"
-                      />
-                      <MultiSelectDropdown
-                        options={uniqueCategories}
-                        selected={categoryFilter}
-                        onChange={setCategoryFilter}
-                        placeholder="Todas Categorias"
-                      />
-                      <MultiSelectDropdown
-                        options={uniqueLines}
-                        selected={lineFilter}
-                        onChange={setLineFilter}
-                        placeholder="Todas Linhas"
-                      />
-                      <MultiSelectDropdown
-                        options={uniqueClusters}
-                        selected={clusterFilter}
-                        onChange={setClusterFilter}
-                        placeholder="Todos Clusters"
-                      />
-
+                    <div className="relative z-20 grid min-w-0 grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:flex xl:flex-wrap xl:items-center xl:justify-end">
+                      <MultiSelectDropdown compact options={uniqueRegions} selected={regionFilter} onChange={setRegionFilter} placeholder="Todas Regiões" />
+                      <MultiSelectDropdown compact alignRight options={uniqueCategories} selected={categoryFilter} onChange={setCategoryFilter} placeholder="Todas Categorias" />
+                      <MultiSelectDropdown compact options={uniqueLines} selected={lineFilter} onChange={setLineFilter} placeholder="Todas Linhas" />
+                      <MultiSelectDropdown compact alignRight options={uniqueClusters} selected={clusterFilter} onChange={setClusterFilter} placeholder="Todos Clusters" />
                       <select
                         value={stockViewFilter}
                         onChange={e => setStockViewFilter(e.target.value as any)}
-                        className="h-[42px] bg-white border border-slate-200 text-slate-600 text-[10px] md:text-xs font-bold uppercase px-3 rounded-xl outline-none cursor-pointer hover:border-indigo-300 shrink-0"
+                        aria-label="Filtro de vendas"
+                        className="h-9 min-w-0 rounded-xl border border-slate-200 bg-white px-2.5 text-[9px] font-bold uppercase text-slate-600 outline-none hover:border-orange-300 sm:text-[10px] xl:max-w-[150px]"
                       >
                         <option value="TODOS">Todas as Vendas</option>
                         <option value="COM_GIRO">Com Vendas</option>
                         <option value="SEM_GIRO">Sem Vendas</option>
                         <option value="ESTOQUE_BAIXO">Estoque Baixo</option>
                       </select>
-
-                      <div className="flex bg-slate-100 p-1 rounded-xl shrink-0 h-[42px]">
+                      <div className="flex h-9 items-center justify-center gap-1 rounded-xl bg-slate-100 p-1">
                         <button
+                          type="button"
                           onClick={() => setStoreViewMode('list')}
-                          className={`px-2.5 rounded-lg transition-all ${storeViewMode === 'list' ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-400 hover:text-slate-600'}`}
-                          title="Visualização em lista"
-                        >
-                          <ListIcon size={16} />
-                        </button>
+                          aria-label="Visualização em lista"
+                          aria-pressed={storeViewMode === 'list'}
+                          className={`flex h-7 flex-1 items-center justify-center rounded-lg px-2 transition-all ${storeViewMode === 'list' ? 'bg-white text-orange-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
+                        ><ListIcon size={15} /></button>
                         <button
+                          type="button"
                           onClick={() => setStoreViewMode('grid')}
-                          className={`px-2.5 rounded-lg transition-all ${storeViewMode === 'grid' ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-400 hover:text-slate-600'}`}
-                          title="Visualização em cards"
-                        >
-                          <LayoutGrid size={16} />
-                        </button>
+                          aria-label="Visualização em cards"
+                          aria-pressed={storeViewMode === 'grid'}
+                          className={`flex h-7 flex-1 items-center justify-center rounded-lg px-2 transition-all ${storeViewMode === 'grid' ? 'bg-white text-orange-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
+                        ><LayoutGrid size={15} /></button>
                       </div>
-
-                      {(
-                        regionFilter.length > 0 ||
-                        categoryFilter.length > 0 ||
-                        lineFilter.length > 0 ||
-                        clusterFilter.length > 0 ||
-                        filter !== '' ||
-                        stockViewFilter !== 'TODOS'
-                      ) && (
+                      {(regionFilter.length > 0 || categoryFilter.length > 0 || lineFilter.length > 0 || clusterFilter.length > 0 || filter !== '' || stockViewFilter !== 'TODOS') && (
                         <button
+                          type="button"
                           onClick={() => {
                             setRegionFilter([]);
                             setCategoryFilter([]);
@@ -2275,30 +2292,15 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
                             setFilter('');
                             setStockViewFilter('TODOS');
                           }}
-                          className="h-[42px] bg-slate-50 border border-slate-200 text-slate-500 hover:bg-slate-100 hover:text-slate-700 text-[10px] md:text-xs font-black px-3 rounded-xl transition-colors flex items-center gap-1 shrink-0"
-                        >
-                          <X size={14} /> LIMPAR
-                        </button>
+                          className="flex h-9 items-center justify-center gap-1 rounded-xl border border-slate-200 bg-slate-50 px-3 text-[10px] font-black text-slate-600 hover:bg-orange-50 hover:text-orange-700"
+                        ><X size={14} /> Limpar</button>
                       )}
                     </div>
                   </div>
-                </div>
 
-                {/* TIPO DE ESTOQUE: seletor compacto */}
-                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm px-4 py-3">
-                  <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">Tipo de estoque</p>
-                      <p className="text-[11px] font-semibold text-slate-500 mt-1">
-                        {stockTypeView === 'ESTOQUE'
-                          ? 'Estoque normal com custo e cálculos operacionais.'
-                          : stockTypeView === 'AMOSTRA'
-                            ? 'Amostras com quantidade e custo para consulta.'
-                            : 'DOA com quantidade e custo para consulta.'}
-                      </p>
-                    </div>
-
-                    <div className="inline-flex w-full lg:w-auto bg-slate-100 p-1 rounded-xl gap-1">
+                  <div className="mt-2.5 flex flex-col gap-2 border-t border-slate-100 pt-2.5 sm:flex-row sm:items-center sm:justify-between">
+                    <span className="text-[10px] font-extrabold uppercase tracking-wide text-slate-500">Tipo de estoque</span>
+                    <div className="grid w-full grid-cols-3 gap-1 rounded-xl bg-slate-100 p-1 sm:w-auto">
                       {([
                         { type: 'ESTOQUE' as StockType, label: 'Estoque', qty: stockTypeTotals.ESTOQUE },
                         { type: 'AMOSTRA' as StockType, label: 'Amostra', qty: stockTypeTotals.AMOSTRA },
@@ -2313,76 +2315,60 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
                             setStockViewFilter('TODOS');
                             setFilter('');
                           }}
-                          className={`flex-1 lg:flex-none min-w-[128px] rounded-lg px-3 py-2 text-left transition-all ${
-                            stockTypeView === option.type
-                              ? 'bg-white text-indigo-700 shadow-sm ring-1 ring-slate-200'
-                              : 'text-slate-500 hover:text-slate-700'
-                          }`}
+                          aria-pressed={stockTypeView === option.type}
+                          className={`flex min-w-0 flex-col items-center justify-center gap-0.5 rounded-lg px-2 py-1.5 text-center transition-all sm:min-w-[104px] sm:flex-row sm:gap-2 ${stockTypeView === option.type ? 'bg-white text-orange-700 shadow-sm ring-1 ring-orange-200' : 'text-slate-500 hover:text-slate-700'}`}
                         >
-                          <span className="block text-[9px] font-black uppercase tracking-wider">{option.label}</span>
-                          <span className="block text-sm font-black mt-0.5">{option.qty.toLocaleString('pt-BR')} un</span>
+                          <span className="text-[9px] font-extrabold uppercase">{option.label}</span>
+                          <span className="text-[11px] font-black tabular-nums">{option.qty.toLocaleString('pt-BR')}</span>
                         </button>
                       ))}
                     </div>
                   </div>
                 </div>
 
-                {/* RESUMO: somente os indicadores realmente úteis */}
-                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-12 gap-3">
-                  <div className="xl:col-span-3 bg-white rounded-2xl border border-slate-200 shadow-sm px-4 py-4">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">Peças em Estoque</p>
-                        <p className="text-2xl font-black text-slate-900 mt-2">
-                          {stockSummary.totalStockQty.toLocaleString('pt-BR')}
-                        </p>
-                        <p className="text-[10px] font-semibold text-slate-400 mt-1">Base atual filtrada</p>
-                      </div>
-                      <div className="w-9 h-9 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center shrink-0">
-                        <Box size={17} />
-                      </div>
+                {/* AJUSTE 2: resumo na mesma linha, compacto; custo e venda continuam separados. */}
+                <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-12">
+                  <div className="relative min-w-0 rounded-xl border border-orange-100 bg-white px-3 py-2.5 shadow-sm lg:col-span-3">
+                    <div className="absolute inset-x-0 top-0 h-[2px] rounded-t-xl bg-orange-500" />
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-[9px] font-extrabold uppercase tracking-wide text-slate-500">Peças em estoque</p>
+                      <Box size={15} className="shrink-0 text-orange-500" />
                     </div>
+                    <p className="mt-2 text-[clamp(1.45rem,3vw,1.85rem)] font-black leading-none tracking-tight text-slate-950 tabular-nums">
+                      {stockSummary.totalStockQty.toLocaleString('pt-BR')}
+                    </p>
                   </div>
-
-                  <div className="xl:col-span-3 bg-white rounded-2xl border border-slate-200 shadow-sm px-4 py-4">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">Vendas no Período</p>
-                        <p className="text-2xl font-black text-slate-900 mt-2">
-                          {stockSummary.totalSalesQty.toLocaleString('pt-BR')}
-                        </p>
-                        <p className="text-[10px] font-semibold text-slate-400 mt-1">Período selecionado no cabeçalho</p>
-                      </div>
-                      <div className="w-9 h-9 rounded-xl bg-slate-100 text-slate-600 flex items-center justify-center shrink-0">
-                        <TrendingUp size={17} />
-                      </div>
+                  <div className="min-w-0 rounded-xl border border-slate-200 bg-white px-3 py-2.5 shadow-sm lg:col-span-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-[9px] font-extrabold uppercase tracking-wide text-slate-500">Vendas no período</p>
+                      <TrendingUp size={15} className="shrink-0 text-slate-500" />
                     </div>
+                    <p className="mt-2 text-[clamp(1.45rem,3vw,1.85rem)] font-black leading-none tracking-tight text-slate-950 tabular-nums">
+                      {stockSummary.totalSalesQty.toLocaleString('pt-BR')}
+                    </p>
                   </div>
-
-                  <div className="md:col-span-2 xl:col-span-6 rounded-2xl bg-slate-900 text-white shadow-sm px-5 py-4">
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                      <div>
-                        <p className="text-[9px] font-black uppercase tracking-widest text-white/50">
-                          {stockTypeView === 'ESTOQUE' ? 'Valor Total em Estoque' : `Valor de Custo ${stockTypeView}`}
-                        </p>
-                        <p className="text-2xl md:text-3xl font-black mt-2">
-                          R$ {stockSummary.totalStockValue.toLocaleString('pt-BR', { maximumFractionDigits: 0 })}
-                        </p>
-                        <p className="text-[10px] font-semibold text-white/50 mt-1">
-                          {stockTypeView === 'ESTOQUE'
-                            ? 'Valor calculado sobre o estoque filtrado.'
-                            : 'Valor informativo para consulta.'}
-                        </p>
-                      </div>
-
+                  <div className="col-span-2 min-w-0 rounded-xl bg-[#101827] px-3 py-2.5 text-white shadow-sm lg:col-span-6">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-[9px] font-extrabold uppercase tracking-wide text-slate-300">Valores do estoque</p>
                       <button
+                        type="button"
                         onClick={() => setShowInsightsPanel(prev => !prev)}
-                        className="h-[40px] bg-white/10 hover:bg-white/15 border border-white/10 px-4 rounded-xl text-[10px] font-black uppercase tracking-wide flex items-center justify-center gap-2 transition-all shrink-0"
+                        aria-expanded={showInsightsPanel}
+                        className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-lg border border-orange-400/40 px-2 text-[9px] font-extrabold uppercase text-white hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-orange-400"
                       >
-                        <BarChart3 size={14} />
-                        {showInsightsPanel ? 'Ocultar Maiores Vendas' : 'Maiores Vendas'}
-                        {showInsightsPanel ? <EyeOff size={14} /> : <Eye size={14} />}
+                        <BarChart3 size={13} />
+                        <span>{showInsightsPanel ? 'Ocultar' : 'Maiores vendas'}</span>
                       </button>
+                    </div>
+                    <div className="mt-2 grid grid-cols-2 gap-3">
+                      <div className="min-w-0">
+                        <p className="text-[9px] font-semibold text-slate-400">Valor de custo</p>
+                        <p className="mt-0.5 break-words text-[clamp(0.95rem,1.35vw,1.3rem)] font-black leading-tight tracking-tight tabular-nums text-white">{stockMoney(stockSummary.totalStockValue, false)}</p>
+                      </div>
+                      <div className="min-w-0 border-l border-white/15 pl-3">
+                        <p className="text-[9px] font-semibold text-orange-200">Valor de venda</p>
+                        <p className="mt-0.5 break-words text-[clamp(0.95rem,1.35vw,1.3rem)] font-black leading-tight tracking-tight tabular-nums text-orange-400">{stockMoney(stockSummary.totalSaleValue, false)}</p>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -2476,7 +2462,7 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
             {expandedStore ? (
               <div className="space-y-4 animate-fadeIn">
                 <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-                  <div className="bg-gradient-to-r from-slate-900 to-indigo-900 p-5 text-white">
+                  <div className="bg-gradient-to-r from-slate-950 via-slate-900 to-orange-950 p-4 sm:p-5 text-white">
                     <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4">
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-2 mb-2">
@@ -2494,10 +2480,10 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
                       </div>
 
                       <div className="grid grid-cols-2 md:grid-cols-4 gap-2 w-full xl:w-auto">
-                        <div className="bg-white/10 border border-white/10 rounded-2xl p-3 min-w-[120px]"><p className="text-[9px] font-black uppercase text-white/50">Itens</p><p className="text-xl font-black">{storeDetailProducts.length}</p></div>
-                        <div className="bg-white/10 border border-white/10 rounded-2xl p-3 min-w-[120px]"><p className="text-[9px] font-black uppercase text-white/50">Peças</p><p className="text-xl font-black">{storeDetailProducts.reduce((acc, i) => acc + (Number(i.quantity) || 0), 0).toLocaleString('pt-BR')}</p></div>
-                        <div className="bg-white/10 border border-white/10 rounded-2xl p-3 min-w-[120px]"><p className="text-[9px] font-black uppercase text-white/50">Vendas</p><p className="text-xl font-black text-emerald-300">{storeDetailProducts.reduce((acc, i) => acc + getProductSales(i.storeName, i.description), 0).toLocaleString('pt-BR')}</p></div>
-                        <div className="bg-white/10 border border-white/10 rounded-2xl p-3 min-w-[120px]"><p className="text-[9px] font-black uppercase text-white/50">Custo considerado</p><p className="text-xl font-black">{`R$ ${storeDetailProducts.reduce((acc, i) => acc + (getUnitCost(i) * (Number(i.quantity) || 0)), 0).toLocaleString('pt-BR', { notation: "compact", maximumFractionDigits: 1 })}`}</p></div>
+                        <div className="bg-white/10 border border-white/10 rounded-xl p-3 min-w-0"><p className="text-[9px] font-black uppercase text-white/50">Itens</p><p className="text-xl font-black">{storeDetailProducts.length}</p></div>
+                        <div className="bg-white/10 border border-white/10 rounded-xl p-3 min-w-0"><p className="text-[9px] font-black uppercase text-white/50">Peças</p><p className="text-xl font-black">{storeDetailProducts.reduce((acc, i) => acc + (Number(i.quantity) || 0), 0).toLocaleString('pt-BR')}</p></div>
+                        <div className="bg-white/10 border border-white/10 rounded-xl p-3 min-w-0"><p className="text-[9px] font-black uppercase text-white/50">Vendas</p><p className="text-xl font-black text-emerald-300">{storeDetailProducts.reduce((acc, i) => acc + getProductSales(i.storeName, i.description), 0).toLocaleString('pt-BR')}</p></div>
+                        <div className="bg-white/10 border border-white/10 rounded-xl p-3 min-w-0"><p className="text-[9px] font-black uppercase text-white/50">Custo considerado</p><p className="text-xl font-black">{stockMoney(storeDetailProducts.reduce((acc, i) => acc + (getUnitCost(i) * (Number(i.quantity) || 0)), 0), true)}</p></div>
                       </div>
                     </div>
                   </div>
@@ -2618,8 +2604,8 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
                               </div>
                               <div className="grid grid-cols-3 gap-2 mt-4">
                                 <div className="bg-slate-50 rounded-xl p-2"><p className="text-[8px] font-black text-slate-400 uppercase">Vendas</p><p className={`text-sm font-black ${soldQty > 0 ? 'text-emerald-600' : 'text-slate-300'}`}>{soldQty}</p></div>
-                                <div className="bg-slate-50 rounded-xl p-2"><p className="text-[8px] font-black text-slate-400 uppercase">Custo</p><p className="text-xs font-black text-slate-700">R$ {getUnitCost(item).toLocaleString('pt-BR', { notation: "compact", maximumFractionDigits: 1 })}</p></div>
-                                <div className="bg-slate-50 rounded-xl p-2"><p className="text-[8px] font-black text-slate-400 uppercase">Custo considerado</p><p className="text-xs font-black text-indigo-700">{`R$ ${((getUnitCost(item)) * stockQty).toLocaleString('pt-BR', { notation: "compact", maximumFractionDigits: 1 })}`}</p></div>
+                                <div className="bg-slate-50 rounded-xl p-2"><p className="text-[8px] font-black text-slate-400 uppercase">Custo</p><p className="text-xs font-black text-slate-700">{stockMoney(getUnitCost(item), true)}</p></div>
+                                <div className="bg-slate-50 rounded-xl p-2"><p className="text-[8px] font-black text-slate-400 uppercase">Custo considerado</p><p className="text-xs font-black text-indigo-700">{stockMoney(getUnitCost(item) * stockQty, true)}</p></div>
                               </div>
                             </div>
                           );
@@ -2630,47 +2616,54 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
                 </div>
               </div>
             ) : (
-              <div className="space-y-10 animate-fadeIn pb-10">
+              <div className="space-y-5 animate-fadeIn pb-6">
                 {Object.entries(groupedStores).length > 0 ? Object.entries(groupedStores).map(([region, stores]) => (
-                  <div key={region} className="space-y-4">
-                    <div className="flex items-center gap-3 border-b border-slate-200 pb-2">
-                      <MapPin className="text-indigo-600" size={20} />
-                      <h2 className="text-lg font-black text-slate-700 uppercase tracking-wide">{region}</h2>
-                      <span className="text-xs font-bold bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full">{stores.length} Lojas</span>
-                      <span className="text-xs font-bold bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full">
+                  <div key={region} className="space-y-2.5">
+                    <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 pb-2">
+                      <MapPin className="text-orange-600" size={17} />
+                      <h2 className="text-sm font-black uppercase tracking-wide text-slate-800">{region}</h2>
+                      <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-500">{stores.length} lojas</span>
+                      <span className="rounded-full bg-orange-50 px-2 py-0.5 text-[10px] font-bold text-orange-700">
                         {stores.reduce((acc, s) => acc + s.qty, 0).toLocaleString('pt-BR')} un
                       </span>
                     </div>
 
                     {storeViewMode === 'grid' ? (
-                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                      /* AJUSTE 3: cartões compactos, mais lojas por linha e foco acessível. */
+                      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
                         {stores.map((store) => {
                           const hasLowStockAlert = store.lowStockCount > 0 && filter !== '';
                           return (
-                            <div
+                            <button
                               key={store.name}
+                              type="button"
                               onClick={() => setExpandedStore(store.name)}
-                              className={`group bg-white p-5 rounded-2xl border shadow-sm cursor-pointer transition-all hover:-translate-y-1 hover:shadow-lg relative overflow-hidden ${hasLowStockAlert ? 'border-red-300 ring-4 ring-red-50' : 'border-slate-100 hover:border-indigo-200'}`}
+                              title={`Abrir estoque: ${store.name}`}
+                              className={`group relative min-w-0 overflow-hidden rounded-xl border bg-white p-3 text-left shadow-sm transition-all hover:-translate-y-0.5 hover:border-orange-300 hover:shadow-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-orange-500 ${hasLowStockAlert ? 'border-red-200' : 'border-slate-200'}`}
                             >
-                              {hasLowStockAlert && <div className="absolute top-3 right-3 w-3 h-3 bg-red-500 rounded-full animate-pulse shadow-lg"></div>}
-                              <h3 className="text-sm font-black text-slate-800 uppercase leading-tight mb-2 truncate pr-4">{store.name}</h3>
-                              <div className="mb-3">
-                                <span className="text-[9px] font-bold bg-purple-50 text-purple-700 px-2 py-1 rounded uppercase border border-purple-100">
-                                  {store.cluster || 'SEM CLUSTER'}
-                                </span>
-                              </div>
-                              <div className="space-y-2">
-                                <div className="flex justify-between items-end border-b border-slate-50 pb-2">
-                                  <span className="text-[10px] font-bold text-slate-400 uppercase">Estoque</span>
-                                  <span className={`text-lg font-black ${store.qty === 0 ? 'text-slate-300' : (hasLowStockAlert ? 'text-red-600' : 'text-slate-700')}`}>{store.qty.toLocaleString('pt-BR')}</span>
+                              <span className={`absolute inset-y-0 left-0 w-[3px] ${hasLowStockAlert ? 'bg-red-400' : 'bg-orange-400'}`} />
+                              <div className="flex min-w-0 items-start justify-between gap-2">
+                                <div className="min-w-0 flex-1">
+                                  <h3 className="truncate text-[12px] font-black uppercase leading-tight text-slate-900" title={store.name}>{store.name}</h3>
+                                  <span className="mt-1 inline-flex max-w-full truncate rounded bg-orange-50 px-1.5 py-0.5 text-[9px] font-bold uppercase text-orange-700">
+                                    {store.cluster || 'Sem cluster'}
+                                  </span>
                                 </div>
-                                <div className="flex justify-between items-end">
-                                  <span className="text-[10px] font-bold text-slate-400 uppercase">Custo considerado</span>
-                                  <span className="text-sm font-bold text-indigo-600">{`R$ ${store.value.toLocaleString('pt-BR', { notation: "compact", maximumFractionDigits: 1 })}`}</span>
+                                <ChevronRight size={16} className="mt-0.5 shrink-0 text-slate-400 transition-colors group-hover:text-orange-600" />
+                              </div>
+                              <div className="mt-2.5 grid grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)] items-end gap-2 border-t border-slate-100 pt-2">
+                                <div className="min-w-0">
+                                  <p className="text-[9px] font-bold uppercase text-slate-400">Estoque</p>
+                                  <p className={`mt-0.5 text-xl font-black leading-tight tabular-nums ${hasLowStockAlert ? 'text-red-600' : 'text-slate-950'}`}>
+                                    {store.qty.toLocaleString('pt-BR')}
+                                  </p>
+                                </div>
+                                <div className="min-w-0 text-right">
+                                  <p className="text-[9px] font-bold uppercase text-slate-400">Valor em custo</p>
+                                  <p className="mt-0.5 break-words text-[14px] font-black leading-tight tabular-nums text-orange-600">{stockMoney(store.value, true)}</p>
                                 </div>
                               </div>
-                              <div className="absolute bottom-0 right-0 p-4 opacity-0 group-hover:opacity-100 transition-opacity transform translate-y-2 group-hover:translate-y-0"><ChevronRight className="text-indigo-600" size={20} /></div>
-                            </div>
+                            </button>
                           );
                         })}
                       </div>
@@ -2679,10 +2672,10 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
                         <table className="w-full text-left border-collapse">
                           <thead className="bg-slate-50 text-[10px] font-black uppercase text-slate-400 border-b border-slate-200">
                             <tr>
-                              <th className="p-4">Loja</th>
-                              <th className="p-4">Cluster</th>
-                              <th className="p-4 text-right">Estoque Geral</th>
-                              <th className="p-4 text-right">Custo Considerado</th>
+                              <th className="px-3 py-2.5">Loja</th>
+                              <th className="px-3 py-2.5">Cluster</th>
+                              <th className="px-3 py-2.5 text-right">Estoque Geral</th>
+                              <th className="px-3 py-2.5 text-right">Custo Considerado</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-100">
@@ -2694,21 +2687,21 @@ export default function StockModule({ currentUser }: { currentUser?: any }) {
                                    onClick={() => setExpandedStore(store.name)}
                                    className={`hover:bg-slate-50 cursor-pointer transition-colors group ${hasLowStockAlert ? 'bg-red-50/20' : ''}`}
                                  >
-                                   <td className="p-4 text-xs font-black text-slate-800 uppercase flex items-center gap-3">
+                                   <td className="px-3 py-2.5 text-xs font-black text-slate-800 uppercase flex items-center gap-3">
                                      {hasLowStockAlert && <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse shrink-0"></div>}
                                      {store.name}
-                                     <ChevronRight className="text-slate-300 group-hover:text-indigo-600 opacity-0 group-hover:opacity-100 transition-all ml-2" size={16} />
+                                     <ChevronRight className="text-slate-300 group-hover:text-orange-600 opacity-0 group-hover:opacity-100 transition-all ml-2" size={16} />
                                    </td>
-                                   <td className="p-4">
-                                     <span className="text-[9px] font-bold bg-purple-50 text-purple-700 px-2 py-1 rounded uppercase border border-purple-100 whitespace-nowrap">
+                                   <td className="px-3 py-2.5">
+                                     <span className="text-[9px] font-bold bg-orange-50 text-orange-700 px-2 py-1 rounded uppercase border border-orange-100 whitespace-nowrap">
                                        {store.cluster || 'SEM CLUSTER'}
                                      </span>
                                    </td>
-                                   <td className={`p-4 text-right text-sm font-black whitespace-nowrap ${store.qty === 0 ? 'text-slate-300' : (hasLowStockAlert ? 'text-red-600' : 'text-slate-700')}`}>
+                                   <td className={`px-3 py-2.5 text-right text-sm font-black whitespace-nowrap ${store.qty === 0 ? 'text-slate-300' : (hasLowStockAlert ? 'text-red-600' : 'text-slate-700')}`}>
                                      {store.qty.toLocaleString('pt-BR')} un
                                    </td>
-                                   <td className="p-4 text-right text-sm font-bold text-indigo-600 whitespace-nowrap">
-                                     {`R$ ${store.value.toLocaleString('pt-BR', { notation: "compact", maximumFractionDigits: 1 })}`}
+                                   <td className="px-3 py-2.5 text-right text-sm font-bold text-orange-600 whitespace-nowrap">
+                                     {stockMoney(store.value, true)}
                                    </td>
                                  </tr>
                                )

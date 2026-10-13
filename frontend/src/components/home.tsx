@@ -75,6 +75,8 @@ type DashboardData = {
   kpis?: {
     faturamentoMes?: number;
     faturamentoAnterior?: number;
+    faturamentoAnteriorMesCompleto?: number;
+    referenciaAnoAnterior?: string;
     crescimento?: number | null;
     pecasMes?: number;
     ticketMedio?: number;
@@ -192,7 +194,7 @@ function moneyCompact(value: any) {
     return `R$ ${compact.toLocaleString('pt-BR', {
       minimumFractionDigits: compact >= 10 ? 0 : 1,
       maximumFractionDigits: 1,
-    })}M`;
+    })} MM`;
   }
 
   if (amount >= 1_000) {
@@ -1192,6 +1194,8 @@ export default function Home({ currentUser }: Props) {
         ...networkKpis,
         faturamentoMes: storeView?.kpis?.faturamento || 0,
         faturamentoAnterior: storeView?.kpis?.faturamentoAnterior || 0,
+        faturamentoAnteriorMesCompleto: storeView?.kpis?.faturamentoAnteriorMesCompleto || 0,
+        referenciaAnoAnterior: storeView?.kpis?.referenciaAnoAnterior,
         crescimento: storeView?.kpis?.crescimento ?? networkKpis.crescimento ?? null,
         crescimentoTendencia: storeView?.kpis?.crescimentoTendencia ?? null,
         tendenciaMes: storeView?.kpis?.tendenciaMes || 0,
@@ -1490,11 +1494,13 @@ export default function Home({ currentUser }: Props) {
             title={isCustomCurrent ? 'Faturamento do período' : 'Faturamento do mês'}
             value={viewLoading ? '—' : money(kpis.faturamentoMes)}
             subtitle={
-              isStoreAnalysis
-                ? storeFilter || 'Loja selecionada'
-                : isHistorical
-                  ? effectivePeriod?.label || 'mês selecionado'
-                  : 'realizado até agora'
+              kpis.faturamentoAnterior && kpis.referenciaAnoAnterior
+                ? `vs. mesmo período de ${kpis.referenciaAnoAnterior.slice(0, 4)}`
+                : isStoreAnalysis
+                  ? storeFilter || 'Loja selecionada'
+                  : isHistorical
+                    ? effectivePeriod?.label || 'mês selecionado'
+                    : 'realizado até agora'
             }
             icon={CircleDollarSign}
             change={kpis.crescimento}
@@ -1503,7 +1509,13 @@ export default function Home({ currentUser }: Props) {
           <KpiCard
             title={isHistorical ? 'Fechamento do mês' : 'Tendência mês'}
             value={viewLoading ? '—' : money(kpis.tendenciaMes)}
-            subtitle={isHistorical ? 'mês fechado selecionado' : 'projeção pelo ritmo do período'}
+            subtitle={
+              isHistorical
+                ? 'mês fechado selecionado'
+                : typeof kpis.crescimentoTendencia === 'number' && kpis.faturamentoAnteriorMesCompleto && kpis.referenciaAnoAnterior
+                  ? `vs. ${MONTHS[Number(kpis.referenciaAnoAnterior.slice(5, 7)) - 1]}/${kpis.referenciaAnoAnterior.slice(0, 4)}: ${money(kpis.faturamentoAnteriorMesCompleto)}`
+                  : 'projeção pelo ritmo do período · histórico insuficiente'
+            }
             icon={BarChart3}
             change={kpis.crescimentoTendencia}
           />

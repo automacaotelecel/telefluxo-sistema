@@ -1547,9 +1547,12 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
   const [onlineMarketComparison, setOnlineMarketComparison] = useState<
     Record<string, OnlineMarketComparison>
   >({});
+  // AJUSTE FLUXO: só confirma a captura após a consulta Online terminar.
+  const [onlineSnapshotReady, setOnlineSnapshotReady] = useState(false);
   const handleOnlineMarketComparisonChange = useCallback(
     (comparisons: Record<string, OnlineMarketComparison>) => {
       setOnlineMarketComparison(comparisons);
+      setOnlineSnapshotReady(true);
     },
     []
   );
@@ -2607,6 +2610,13 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
       return;
     }
 
+    // Não envie um comparativo com dados Online incompletos sem avisar.
+    // Se a base estiver temporariamente indisponível, o responsável pode optar
+    // conscientemente por enviar apenas as linhas do comparativo.
+    if (!onlineSnapshotReady && !window.confirm(
+      'A consulta Online ainda não está pronta. Enviar o comparativo sem a fotografia dos preços Online?'
+    )) return;
+
     setSendingToFlow(true);
     setFlowSendMsg('');
 
@@ -2618,6 +2628,21 @@ export default function ComparativosModule({ currentUser }: { currentUser?: any 
         criadoPorNome: String(activeUser?.name || activeUser?.nome || 'Usuário'),
         comOfertas,
         semOfertas,
+        // AJUSTE FLUXO: persiste no mesmo registro os preços Online vistos na montagem.
+        // O backend já grava payload_json; não exige rota nem tabela nova.
+        payload: {
+          onlineSnapshot: {
+            capturedAt: new Date().toISOString(),
+            source: 'COMPARATIVO_ONLINE',
+            complete: onlineSnapshotReady,
+            comparisons: Object.fromEntries(
+              selectedRows
+                .filter((row) => Boolean(row.rowKey))
+                .filter((row) => Boolean(onlineMarketComparison[row.rowKey]))
+                .map((row) => [row.rowKey, onlineMarketComparison[row.rowKey]])
+            ),
+          },
+        },
         resumo: {
           totalSelecionados: selectedRows.length,
           totalComOfertas: comOfertas.length,

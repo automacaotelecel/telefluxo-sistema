@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   ExternalLink,
@@ -73,6 +73,10 @@ type Props = {
   onMarketComparisonChange?: (
     comparisons: Record<string, OnlineMarketComparison>,
   ) => void;
+  /** Na análise, relê periodicamente a planilha publicada no Sheets. */
+  autoRefreshMs?: number;
+  /** Ignora o cache de 5 minutos do backend na abertura da análise. */
+  forceRefreshOnMount?: boolean;
 };
 
 type PreparedModel = OnlineComparativoModel & {
@@ -430,14 +434,20 @@ export default function OnlinePricesAgent({
   scopeLabel = 'Online total',
   headless = false,
   onMarketComparisonChange,
+  autoRefreshMs = 0,
+  forceRefreshOnMount = false,
 }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [data, setData] = useState<OnlineSheetResponse | null>(null);
   const [activeSheet, setActiveSheet] = useState('ONLINE APARELHOS');
   const [searchTerm, setSearchTerm] = useState('');
+  const loadingRef = useRef(false);
+  const mountedRef = useRef(true);
 
   const loadData = async (force = false) => {
+    if (loadingRef.current) return;
+    loadingRef.current = true;
     setLoading(true);
     setError('');
 
@@ -456,26 +466,51 @@ export default function OnlinePricesAgent({
       }
 
       const nextData = json as OnlineSheetResponse;
+      if (!mountedRef.current) return;
       setData(nextData);
-
-      if (
-        nextData.sheets.length &&
-        !nextData.sheets.some((sheet) => sheet.name === activeSheet)
-      ) {
-        setActiveSheet(nextData.sheets[0].name);
-      }
+      setActiveSheet((current) =>
+        nextData.sheets.some((sheet) => sheet.name === current)
+          ? current
+          : (nextData.sheets[0]?.name || current)
+      );
     } catch (err: any) {
-      setError(err?.message || 'Erro ao carregar a base ONLINE.');
-      setData(null);
+      if (mountedRef.current) {
+        setError(err?.message || 'Erro ao carregar a base ONLINE.');
+        // Em erro temporário, mantém último resultado com aviso de falha.
+      }
     } finally {
-      setLoading(false);
+      loadingRef.current = false;
+      if (mountedRef.current) setLoading(false);
     }
   };
 
+  // Mantém referência à função atual sem reinstalar intervalos a cada render.
+  const loadDataRef = useRef(loadData);
+  loadDataRef.current = loadData;
+
   useEffect(() => {
-    loadData(false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    mountedRef.current = true;
+    void loadDataRef.current(forceRefreshOnMount);
+
+    const interval = autoRefreshMs >= 60_000
+      ? window.setInterval(() => {
+          if (document.visibilityState === 'visible') void loadDataRef.current(true);
+        }, autoRefreshMs)
+      : null;
+
+    const onFocus = () => {
+      if (autoRefreshMs >= 60_000 && document.visibilityState === 'visible') {
+        void loadDataRef.current(true);
+      }
+    };
+    if (autoRefreshMs >= 60_000) window.addEventListener('focus', onFocus);
+
+    return () => {
+      mountedRef.current = false;
+      if (interval !== null) window.clearInterval(interval);
+      window.removeEventListener('focus', onFocus);
+    };
+  }, [autoRefreshMs, forceRefreshOnMount]);
 
   const preparedModels = useMemo<PreparedModel[]>(
     () =>
@@ -550,6 +585,8 @@ export default function OnlinePricesAgent({
         headers,
         prefixRows,
         rows: searchedRows,
+        // O campo de busca não pode afetar o matching Online dos demais modelos.
+        comparisonRows: modelFilteredRows,
         totalRows: bodyRows.length,
         matchedRows: modelFilteredRows.length,
         columnCount,
@@ -566,12 +603,13 @@ export default function OnlinePricesAgent({
     null;
 
   useEffect(() => {
-    if (!onMarketComparisonChange) return;
+    // Evita sinalizar consulta concluída com um objeto vazio antes de carregar.
+    if (!onMarketComparisonChange || !data) return;
 
     const bestMarketByRowKey: Record<string, OnlineMarketComparison> = {};
 
     preparedSheets.forEach((sheet) => {
-      sheet.rows.forEach((preparedRow) => {
+      sheet.comparisonRows.forEach((preparedRow) => {
         const rowKey = String(preparedRow.matchedModel?.rowKey || '').trim();
         if (!rowKey) return;
 
