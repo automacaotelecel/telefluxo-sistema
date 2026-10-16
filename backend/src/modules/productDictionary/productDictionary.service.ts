@@ -15,6 +15,8 @@ import {
   parseProductSearchIntent,
 } from './productDictionary.utils';
 
+import { getProductMasterGroups } from '../productMaster/productMaster.service';
+
 const prisma = new PrismaClient();
 
 const GSHEET_TRANSLATION_URL =
@@ -60,6 +62,22 @@ function mergeEntry(
 
   existing.category =
     existing.category || entry.category;
+
+  if (!existing.telefluxoCode && entry.telefluxoCode) {
+  existing.telefluxoCode = entry.telefluxoCode;
+  }
+
+  existing.sourceCodes = Array.from(
+    new Set([...(existing.sourceCodes || []), ...(entry.sourceCodes || [])])
+  );
+
+  existing.barcodes = Array.from(
+    new Set([...(existing.barcodes || []), ...(entry.barcodes || [])])
+  );
+
+  existing.skus = Array.from(
+    new Set([...(existing.skus || []), ...(entry.skus || [])])
+  );
 
   existing.brand =
     existing.brand || entry.brand;
@@ -157,6 +175,73 @@ async function loadMarketingTranslations() {
   }
 }
 
+async function buildDictionaryFromMasterSheet(
+  map: Map<string, ProductDictionaryEntry>
+) {
+  try {
+    const groups = await getProductMasterGroups();
+
+    for (const group of groups) {
+      const description =
+        group.descriptions[0] ||
+        group.fullDescriptions[0] ||
+        group.telefluxoCode;
+
+      const reference = group.references[0] || '';
+      const productCode = group.sourceCodes[0] || '';
+      const category =
+        group.categories2[0] ||
+        group.categories[0] ||
+        group.categories3[0] ||
+        '';
+
+      const base = buildDictionaryEntryFromParts({
+        description,
+        reference,
+        productCode,
+        category,
+        commercialName: description,
+        source: 'base_master',
+      });
+
+      if (!base) continue;
+
+      const aliases = Array.from(
+        new Set([
+          ...base.aliases,
+          group.telefluxoCode,
+          group.telefluxoPrefix,
+          ...group.sourceCodes,
+          ...group.barcodes,
+          ...group.skus,
+          ...group.references,
+          ...group.descriptions,
+          ...group.fullDescriptions,
+          ...group.families,
+        ].filter(Boolean).map((value) => normalizeProductText(value)))
+      );
+
+      const entry: ProductDictionaryEntry = {
+        ...base,
+        key: `MASTER:${group.telefluxoCode}`,
+        telefluxoCode: group.telefluxoCode,
+        sourceCodes: group.sourceCodes,
+        barcodes: group.barcodes,
+        skus: group.skus,
+        aliases,
+        searchableText: normalizeProductText(aliases.join(' ')),
+        sources: ['base_master'],
+      };
+
+      mergeEntry(map, entry);
+    }
+  } catch (error) {
+    // A Base Mestre é a primeira camada, mas nunca pode derrubar o sistema.
+    // Se estiver indisponível, o dicionário antigo continua normalmente.
+    console.warn('⚠️ Dicionário: BASE_MESTRE indisponível; mantendo método antigo.', error);
+  }
+}
+
 async function buildDictionaryFromStock(map: Map<string, ProductDictionaryEntry>) {
   const stock = await prisma.stock.findMany({
     select: {
@@ -215,6 +300,7 @@ export async function getProductDictionary(params?: { forceRefresh?: boolean }) 
 
   const map = new Map<string, ProductDictionaryEntry>();
 
+  await buildDictionaryFromMasterSheet(map);
   await buildDictionaryFromStock(map);
   await buildDictionaryFromMarketingSheet(map);
 
@@ -239,6 +325,27 @@ function scoreEntry(
 
   const searchable = entry.searchableText;
   const normalizedQuery = intent.normalizedQuery;
+
+  if (entry.sources.includes('base_master')) {
+    score += 35;
+    reasons.push('BASE_MESTRE');
+  }
+
+  const exactIdentifiers = [
+    entry.telefluxoCode,
+    entry.productCode,
+    ...(entry.sourceCodes || []),
+    ...(entry.barcodes || []),
+    ...(entry.skus || []),
+    entry.reference,
+  ]
+    .filter(Boolean)
+    .map((value) => normalizeProductText(value));
+
+  if (normalizedQuery && exactIdentifiers.includes(normalizedQuery)) {
+    score += 250;
+    reasons.push('identificador exato na BASE_MESTRE');
+  }
 
   if (normalizedQuery && searchable.includes(normalizedQuery)) {
     score += 80;

@@ -107,7 +107,7 @@ type ScanItem = {
   imei: string;
   identifier?: string;
   rawValue?: string;
-  result: 'FOUND' | 'UNEXPECTED' | 'DUPLICATE' | 'EXCESS' | 'INVALID' | 'AMBIGUOUS';
+  result: 'FOUND' | 'UNEXPECTED' | 'DUPLICATE' | 'EXCESS' | 'INVALID' | 'AMBIGUOUS' | 'QUANTITY_REQUIRED';
   source?: string;
   productCode?: string | null;
   reference?: string | null;
@@ -121,6 +121,7 @@ type ScanItem = {
 type ReadFeedback = {
   imei: string;
   identifier?: string;
+  rawValue?: string;
   result: ScanItem['result'];
   title: string;
   message: string;
@@ -129,6 +130,13 @@ type ReadFeedback = {
   createdAt: string;
   auditType?: string;
   stockType?: string | null;
+  quantityMode?: boolean;
+  quantityExpected?: number;
+  quantityChecked?: number;
+  quantityRemaining?: number;
+  quantityApplied?: number;
+  quantityRequested?: number;
+  sharedProducts?: number;
 };
 
 type SessionPayload = {
@@ -244,6 +252,8 @@ function resultMeta(result?: ScanItem['result']) {
       return { label: 'JÁ BIPADO', className: 'audit-result-warning', icon: AlertCircle };
     case 'EXCESS':
       return { label: 'EXCEDENTE', className: 'audit-result-warning', icon: AlertTriangle };
+    case 'QUANTITY_REQUIRED':
+      return { label: 'INFORME A QUANTIDADE', className: 'audit-result-warning', icon: Package };
     case 'AMBIGUOUS':
       return { label: 'IDENTIFICADOR AMBÍGUO', className: 'audit-result-danger', icon: AlertTriangle };
     case 'INVALID':
@@ -349,6 +359,7 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
   const [notice, setNotice] = useState('');
   const [manualValue, setManualValue] = useState('');
   const [lastRead, setLastRead] = useState<ReadFeedback | null>(null);
+  const [accessoryQuantity, setAccessoryQuantity] = useState('1');
   const [searchMissing, setSearchMissing] = useState('');
 
   const [cameraOpen, setCameraOpen] = useState(false);
@@ -363,6 +374,7 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
   const controlsRef = useRef<CameraControls | null>(null);
   const manualInputRef = useRef<HTMLInputElement | null>(null);
   const recentReadsRef = useRef<Map<string, number>>(new Map());
+  const pendingAccessoryCodeRef = useRef('');
   const scanInFlightRef = useRef(false);
   const audioContextRef = useRef<AudioContext | null>(null);
   const precisionTimerRef = useRef<number | null>(null);
@@ -388,7 +400,9 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
     setMissingItems(payload.missingItems || []);
     setUnexpectedScans(payload.unexpectedScans || []);
     setRecentScans(payload.recentScans || []);
-    if (payload.read) setLastRead(payload.read);
+    // Ao trocar de sessão/histórico, nunca reutiliza o feedback da leitura anterior.
+    // Isso evita exibir um erro antigo como se pertencesse à sessão recém-aberta.
+    setLastRead(payload.read || null);
   }, []);
 
   const stopCamera = useCallback(() => {
@@ -525,6 +539,8 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
 
   const auditMeta = AUDIT_TYPE_OPTIONS.find((item) => item.key === auditType) || AUDIT_TYPE_OPTIONS[0]!;
   const AuditIcon = auditMeta.icon;
+  const isUnifiedSession = session?.auditType === 'GERAL';
+  const isLegacyActiveSession = Boolean(session?.status === 'ACTIVE' && !isUnifiedSession);
   // A detecção do tipo de identificador acontece no backend.
   function changeAuditType(nextType: AuditType) {
     // Filtrar não inicia nova conferência, não apaga a leitura e não fecha câmera.
@@ -533,6 +549,7 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
   }
 
   function feedbackSound(result: ScanItem['result']) {
+    if (result === 'QUANTITY_REQUIRED') return;
     try {
       navigator.vibrate?.(result === 'FOUND' ? [90, 35, 60] : [180, 60, 160]);
     } catch { /* optional */ }
@@ -559,12 +576,26 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
     } catch { /* optional */ }
   }
 
-  const submitScan = useCallback(async (rawValue: string, source: 'CAMERA' | 'MANUAL') => {
+  const submitScan = useCallback(async (
+    rawValue: string,
+    source: 'CAMERA' | 'MANUAL',
+    options?: { quantity?: number; confirmQuantity?: boolean },
+  ) => {
     if (!session || session.status !== 'ACTIVE' || scanInFlightRef.current) return;
+    if (session.auditType !== 'GERAL') {
+      setError('Esta sessão pertence ao formato antigo por categoria. Inicie uma Conferência unificada para continuar a bipagem.');
+      return;
+    }
+
     const raw = String(rawValue || '').trim();
     if (!raw) return;
 
     const dedupeKey = raw.toUpperCase().replace(/\s+/g, '');
+
+    // Enquanto um acessório espera a quantidade, a câmera não troca a leitura
+    // automaticamente por outro código. O usuário confirma a quantidade primeiro.
+    if (source === 'CAMERA' && pendingAccessoryCodeRef.current) return;
+
     const now = Date.now();
     const last = recentReadsRef.current.get(dedupeKey) || 0;
     const cameraCooldown = 1800;
@@ -574,15 +605,34 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
     scanInFlightRef.current = true;
     setScanning(true);
     setError('');
+
     try {
       const response = await fetch(`${API_URL}/api/inventory-audit/sessions/${encodeURIComponent(session.id)}/scan`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId, rawValue: raw, source }),
+        body: JSON.stringify({
+          userId,
+          rawValue: raw,
+          source,
+          ...(options?.confirmQuantity ? {
+            confirmQuantity: true,
+            quantity: Math.max(1, Math.trunc(Number(options.quantity || 1))),
+          } : {}),
+        }),
       });
+
       const json = await response.json();
       if (!response.ok || !json.success) throw new Error(json.error || 'Não foi possível registrar a leitura.');
+
       applyPayload(json as SessionPayload);
+
+      if (json.read?.quantityMode === true && json.read?.auditType === 'ACESSORIOS') {
+        pendingAccessoryCodeRef.current = dedupeKey;
+        setAccessoryQuantity('1');
+      } else {
+        pendingAccessoryCodeRef.current = '';
+      }
+
       if (json.read?.result) feedbackSound(json.read.result);
       setManualValue('');
     } catch (err: any) {
@@ -593,6 +643,16 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
       if (source === 'MANUAL') window.setTimeout(() => manualInputRef.current?.focus(), 50);
     }
   }, [API_URL, applyPayload, session, userId]);
+
+  const confirmAccessoryQuantity = useCallback(async () => {
+    if (!lastRead?.quantityMode || lastRead.auditType !== 'ACESSORIOS') return;
+    const quantity = Math.max(1, Math.trunc(Number(accessoryQuantity || 1)));
+    const raw = String(lastRead.rawValue || lastRead.identifier || lastRead.imei || '').trim();
+    if (!raw) return;
+
+    await submitScan(raw, 'MANUAL', { quantity, confirmQuantity: true });
+    pendingAccessoryCodeRef.current = '';
+  }, [accessoryQuantity, lastRead, submitScan]);
 
   function startPrecisionScanner() {
     if (precisionTimerRef.current) window.clearTimeout(precisionTimerRef.current);
@@ -668,6 +728,10 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
 
   async function startCamera(deviceIdOverride?: string) {
     if (!session || session.status !== 'ACTIVE') return;
+    if (session.auditType !== 'GERAL') {
+      setCameraError('Esta sessão é do formato antigo. Inicie uma Conferência unificada para usar a câmera.');
+      return;
+    }
     if (!navigator.mediaDevices?.getUserMedia) {
       setCameraError('Este navegador não permite acesso à câmera.');
       return;
@@ -750,7 +814,10 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
   async function beginAudit(forceNew = false) {
     if (!selectedStore || !userId) return;
     if (forceNew && session?.status === 'ACTIVE') {
-      const ok = window.confirm('A conferência atual será encerrada como cancelada e uma nova foto do estoque será criada. Continuar?');
+      const confirmText = session.auditType === 'GERAL'
+        ? 'A conferência atual será encerrada como cancelada e uma nova foto do estoque será criada. Continuar?'
+        : 'Esta é uma sessão antiga por categoria. Ela será encerrada e o Bipador abrirá uma nova Conferência unificada. Continuar?';
+      const ok = window.confirm(confirmText);
       if (!ok) return;
     }
     setStarting(true);
@@ -877,16 +944,6 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
               {stores.length === 0 && <option value="">Nenhuma loja disponível</option>}
               {stores.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
             </select>
-            <small>
-              {selectedStoreMeta
-                ? `${formatNumber(selectedStoreMeta.expected)} unidades • ${formatNumber(selectedStoreMeta.products)} produtos • leitura automática de IMEI, serial ou código`
-                : 'O acesso respeita as lojas permitidas para o usuário logado.'}
-            </small>
-            {!!selectedStoreMeta?.missingIdentifierUnits && (
-              <small className="inventory-audit-store-warning">
-                <AlertTriangle size={12} /> {formatNumber(selectedStoreMeta.missingIdentifierUnits)} unidade(s) ainda sem identificador válido ou com identificação ambígua na base.
-              </small>
-            )}
           </div>
         </section>
 
@@ -902,7 +959,7 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
             <AuditIcon size={36} />
             <h2>Nenhuma loja disponível para conferência</h2>
             <p>
-              Verifique as lojas permitidas e os identificadores cadastrados no estoque. AMOSTRA e DOA também são considerados.
+              Verifique as lojas permitidas para o usuário e a base atual do estoque comercial.
             </p>
           </section>
         ) : !session ? (
@@ -912,7 +969,7 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
               <span>CONFERÊNCIA UNIFICADA • PRONTO PARA COMEÇAR</span>
               <h2>Criar conferência de {selectedStore}</h2>
               <p>
-                Uma única foto de {formatNumber(selectedStoreMeta?.expected || 0)} unidades da loja, incluindo ESTOQUE, AMOSTRA e DOA. A categoria é identificada automaticamente ao bipar.
+                A conferência usa o estoque comercial atual da loja e identifica automaticamente a categoria de cada leitura.
               </p>
             </div>
             <button onClick={() => void beginAudit(false)} disabled={starting || !selectedStoreMeta?.expected}>
@@ -926,7 +983,12 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
               <div>
                 <span className={`inventory-audit-status ${session.status.toLowerCase()}`}>{session.status === 'ACTIVE' ? 'EM CONFERÊNCIA' : session.status === 'COMPLETED' ? 'FINALIZADA' : 'CANCELADA'}</span>
                 <strong>{session.storeName}</strong>
-                <small>{session.auditLabel || "Conferência unificada"} • identificação automática • iniciada por {session.operatorName} • {formatDateTime(session.startedAt)}</small>
+                <small>
+                  {session.auditType === 'GERAL'
+                    ? `${session.auditLabel || 'Conferência unificada'} • identificação automática`
+                    : `${session.auditLabel || session.auditType} • sessão legada somente para histórico`}
+                  {' • '}iniciada por {session.operatorName} • {formatDateTime(session.startedAt)}
+                </small>
               </div>
               <div className="inventory-audit-session-actions">
                 <button className="secondary" onClick={() => void beginAudit(true)} disabled={starting}><RefreshCw size={15} /> Nova conferência</button>
@@ -936,7 +998,7 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
             </section>
 
             <section className="inventory-audit-kpi-grid">
-              <KpiCard icon={Package} label="Base esperada" value={formatNumber(visibleStats.expected)} helper={`${allTypes ? "Todas as categorias" : auditMeta.label} • estoque + amostra + DOA`} tone="blue" />
+              <KpiCard icon={Package} label="Base esperada" value={formatNumber(visibleStats.expected)} helper={`${allTypes ? "Todas as categorias" : auditMeta.label} • estoque comercial`} tone="blue" />
               <KpiCard icon={CheckCircle2} label="Bipados" value={formatNumber(visibleStats.checked)} helper={`${visibleStats.progress.toFixed(1)}% da conferência`} tone="green" />
               <KpiCard icon={Clock3} label="Faltando bipar" value={formatNumber(visibleStats.pending)} helper={`${missingProducts.length} produto(s) com pendência`} tone="orange" />
               <KpiCard icon={AlertTriangle} label="Divergências" value={formatNumber(visibleStats.unexpected + visibleStats.excess)} helper={`${visibleStats.excess} excedentes • ${visibleStats.duplicates} repetidos • ${visibleStats.invalid} inválidos`} tone="red" />
@@ -968,11 +1030,21 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
                 <div className="inventory-audit-scanner-card">
                   <div className="inventory-audit-card-title">
                     <div><span>LEITURA EM TEMPO REAL</span><h2>Bipar produtos</h2></div>
-                    <div className={`inventory-audit-live-dot ${cameraActive ? 'on' : ''}`}><i /> {cameraActive ? 'CÂMERA ATIVA' : 'LEITOR PRONTO'}</div>
+                    <div className={`inventory-audit-live-dot ${cameraActive ? 'on' : ''}`}><i /> {cameraActive ? 'CÂMERA ATIVA' : isLegacyActiveSession ? 'SESSÃO LEGADA' : 'LEITOR PRONTO'}</div>
                   </div>
 
                   {session.status !== 'ACTIVE' ? (
                     <div className="inventory-audit-finished"><CheckCircle2 size={38} /><strong>Conferência encerrada</strong><span>Abra uma nova conferência para continuar a bipagem.</span></div>
+                  ) : isLegacyActiveSession ? (
+                    <div className="inventory-audit-finished">
+                      <AlertTriangle size={38} />
+                      <strong>Sessão antiga por categoria</strong>
+                      <span>Esta conferência foi criada no formato anterior. Para evitar tratar wearable como IMEI numérico ou misturar regras antigas, abra a Conferência unificada.</span>
+                      <button className="primary" type="button" onClick={() => void beginAudit(false)} disabled={starting}>
+                        {starting ? <Loader2 className="animate-spin" size={16} /> : <RefreshCw size={16} />}
+                        Abrir conferência unificada
+                      </button>
+                    </div>
                   ) : (
                     <>
                       <div className={`inventory-audit-camera ${cameraOpen ? 'open' : ''} ${lastRead?.result ? `read-${lastRead.result.toLowerCase()}` : ''}`}>
@@ -1004,7 +1076,7 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
                       {cameraError && <div className="inventory-audit-camera-error"><AlertTriangle size={16} /> {cameraError}</div>}
 
                       <div className="inventory-audit-manual">
-                        <div className="inventory-audit-manual-label"><Keyboard size={16} /><div><strong>Leitor físico ou digitação</strong><span>Leia qualquer categoria. Wearables aceitam serial com letras; códigos de barras contam uma unidade por leitura.</span></div></div>
+                        <div className="inventory-audit-manual-label"><Keyboard size={16} /><div><strong>Leitor físico ou digitação</strong><span>IMEI ou serial para os produtos identificados por unidade. Acessórios usam código de barras e permitem informar quantidade.</span></div></div>
                         <form onSubmit={(event) => { event.preventDefault(); void submitScan(manualValue, 'MANUAL'); }}>
                           <input
                             ref={manualInputRef}
@@ -1030,6 +1102,37 @@ export default function InventoryAuditModule({ currentUser, onOpenSampleConferen
                         {lastRead.description && <small>{lastRead.description}</small>}
                         {lastRead.stockType && <span className={`inventory-audit-stock-kind ${lastRead.stockType.toLowerCase()}`}>{lastRead.stockType}{lastRead.auditType ? ` • ${lastRead.auditType}` : ''}</span>}
                         <small>{lastRead.message}</small>
+                        {lastRead.quantityMode && lastRead.auditType === 'ACESSORIOS' && (
+                          <div className="inventory-audit-quantity-box">
+                            <div>
+                              <span>QUANTIDADE FÍSICA</span>
+                              <small>Esperado para este código: {formatNumber(lastRead.quantityExpected || 0)} • já conferido: {formatNumber(lastRead.quantityChecked || 0)} • falta: {formatNumber(lastRead.quantityRemaining || 0)}</small>
+                            </div>
+                            <input
+                              type="number"
+                              min="1"
+                              step="1"
+                              inputMode="numeric"
+                              value={accessoryQuantity}
+                              onChange={(event) => setAccessoryQuantity(event.target.value.replace(/\D/g, ''))}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter') {
+                                  event.preventDefault();
+                                  void confirmAccessoryQuantity();
+                                }
+                              }}
+                              aria-label="Quantidade de acessórios encontrados"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => void confirmAccessoryQuantity()}
+                              disabled={scanning || Number(accessoryQuantity || 0) <= 0}
+                            >
+                              {scanning ? <Loader2 className="animate-spin" size={15} /> : <Check size={15} />}
+                              Confirmar quantidade
+                            </button>
+                          </div>
+                        )}
                       </div>
                     ) : (
                       <div><span>ÚLTIMA LEITURA</span><strong>Aguardando primeira leitura</strong><small>Quando o identificador for reconhecido, o resultado aparecerá aqui imediatamente.</small></div>

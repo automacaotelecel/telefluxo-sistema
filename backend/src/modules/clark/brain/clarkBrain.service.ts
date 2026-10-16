@@ -17,6 +17,8 @@ import { validarResultadoClark } from './clarkVerifier.service';
 import { responderFinalClark } from './clarkFinalResponder.service';
 import { ClarkAgentPlan } from '../agent/clarkAgent.types';
 import { extrairRequisitosClark } from './clarkRequirements.service';
+import { selecionarEspecialistaClark, executarEspecialistaClark } from '../agents/clarkOrchestrator.service';
+import { criarPainelExecutivoClark, enriquecerPainelExecutivoClark } from '../executive/clarkExecutive.service';
 
 const CLARK_PROVIDER = String(process.env.CLARK_PROVIDER || '').trim().toLowerCase();
 
@@ -120,6 +122,29 @@ export async function processarComClarkBrain(input: ClarkPerguntaInput): Promise
     requirements,
   };
 
+  const specialist = selecionarEspecialistaClark(perguntaOriginal);
+  if (specialist !== 'analise_operacional') {
+    const specialReport = executarEspecialistaClark(specialist, context);
+    if (specialReport) {
+      const enriched = await enriquecerPainelExecutivoClark(specialReport);
+      const report = enriched.report;
+      const respostaPreco: ClarkResposta = {
+        ok: report.status !== 'unavailable',
+        clark: [report.title, ...report.diagnosis, ...report.risks.map((r) => `Atenção: ${r}`), ...report.actions.map((a) => `Recomendação: ${a}`)].join('\n\n'),
+        intencao: 'relatorio_analitico_vendas',
+        modo: 'analitico',
+        periodo,
+        filtros,
+        dados: { executivo: report, orquestrador: { agente: specialist, versao: 'v1' } },
+        resposta_origem: enriched.usedAI ? CLARK_PROVIDER === 'claude' ? 'claude_analitico' : 'gemini_analitico' : 'local_precisa',
+        actions: [{ type: 'open_online_prices', label: 'Abrir Preços Online' }],
+        sugestoes: ['Compare os modelos da pesquisa', 'Qual foi a menor oferta verificada?', 'Abrir Preços Online'],
+      };
+      await atualizarMemoriaExecutivaClark({ userId, perguntaOriginal, resposta: respostaPreco });
+      return respostaPreco;
+    }
+  }
+
   const { plan: planned, usedGemini: usedGeminiPlanner } = await planejarClark(context);
 
   let execution = await executarFerramentasClark(planned, context);
@@ -144,6 +169,11 @@ export async function processarComClarkBrain(input: ClarkPerguntaInput): Promise
 
   const { text, usedGemini: usedGeminiResponder } = await responderFinalClark({ pergunta: perguntaOriginal, plan, results, verifier, periodo });
 
+  const executiveBase = criarPainelExecutivoClark({ plan, results, verifier, periodo });
+  const executiveEnriched = executiveBase
+    ? await enriquecerPainelExecutivoClark(executiveBase)
+    : null;
+
   const respostaFinal: ClarkResposta = {
     ok: verifier.ok,
     clark: sanitizeFinalText(text),
@@ -154,6 +184,7 @@ export async function processarComClarkBrain(input: ClarkPerguntaInput): Promise
     dados: {
       plan,
       toolResults: results,
+      ...(executiveEnriched ? { executivo: executiveEnriched.report, orquestrador: { agente: 'analise_operacional', versao: 'v1' } } : {}),
       verifier,
       brain: {
         version: 'v10-requirements-agent',
@@ -165,7 +196,7 @@ export async function processarComClarkBrain(input: ClarkPerguntaInput): Promise
       },
     },
     resposta_origem:
-      usedGeminiPlanner || usedGeminiResponder
+      usedGeminiPlanner || usedGeminiResponder || Boolean(executiveEnriched?.usedAI)
         ? CLARK_PROVIDER === 'claude'
           ? 'claude_analitico'
           : 'gemini_analitico'

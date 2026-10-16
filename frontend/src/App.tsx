@@ -13,6 +13,7 @@ import AlertCenterBell from "./components/AlertCenterBell";
 import GlobalSearch from './components/GlobalSearch';
 import IntelligentAlerts from './components/IntelligentAlerts';
 import ExecutiveDashboard from './components/ExecutiveDashboard';
+import PainelMetas from './components/PainelMetas';
 import AvaliacoesLojas from './components/AvaliacoesLojas';
 import AcessoRapidoAparelhos from './components/AcessoRapidoAparelhos';
 import Home from "./components/home";
@@ -40,6 +41,7 @@ import OnlinePricesAgent from './components/OnlinePricesAgent';
 import InventoryAuditModule from './components/InventoryAuditModule';
 import InventoryAuditDashboard from './components/InventoryAuditDashboard';
 import SampleConferenceModule from './components/SampleConferenceModule';
+import { isTesterReadOnly } from './lib/testerReadOnly';
 
 import {
   FileText,
@@ -63,6 +65,7 @@ import {
   X,
   ShieldCheck,
   ExternalLink,
+  Target,
 } from 'lucide-react';
 
 const DEFAULT_EXPANDED = {
@@ -87,6 +90,7 @@ function clearTelefluxoSession() {
   localStorage.removeItem('user');
   localStorage.removeItem('userId');
   localStorage.removeItem('telefluxo_user_id');
+  sessionStorage.removeItem('telefluxo_metas_token');
   sessionStorage.removeItem(SESSION_STORAGE_KEY);
   sessionStorage.removeItem(SESSION_LAST_ACTIVITY_KEY);
 }
@@ -105,6 +109,7 @@ const STORE_ALLOWED_VIEWS = new Set([
   'stockout',
   'sales_dash',
   'comparativo',
+  'painel_metas',
   'agenda',
   'solicitacoes',
 ]);
@@ -132,6 +137,7 @@ function App() {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [expanded, setExpanded] = useState(DEFAULT_EXPANDED);
   const [mountedViews, setMountedViews] = useState<string[]>(['home']);
+  const testerReadOnly = isTesterReadOnly();
 
   useEffect(() => {
     try {
@@ -278,6 +284,7 @@ function App() {
   const canViewTeam = ['CEO', 'DIRETOR', 'ADM'].includes(userRole) || (isAdmin && userRole !== 'LOJA');
   const canViewComparativos = ['ADM', 'CEO'].includes(userRole) || (isAdmin && userRole !== 'LOJA') || isSamsungUser;
   const canViewExecutiveDashboard = userRole !== 'LOJA' && (userRole === 'ADM' || isAdmin);
+  const canViewMetas = String(user?.operation || '').trim().toUpperCase() !== 'TIM' || ['CEO', 'DIRETOR', 'DIRETORIA'].includes(userRole);
   const canViewAuditDashboard = userRole !== 'LOJA' && (['ADM', 'ADMIN', 'CEO', 'DIRETOR'].includes(userRole) || isAdmin);
   const canUseClarkDiretoria = ['CEO', 'DIRETOR', 'DIRETORIA'].includes(userRole);
 
@@ -338,6 +345,7 @@ function App() {
     comparativo: 'VENDAS ANUAIS',
     rh: 'RH',
     executive_dashboard: 'PAINEL DIRETORIA / RESUMO EXECUTIVO',
+    painel_metas: 'PAINEL DE METAS / PERFORMANCE COMERCIAL',
     avaliacoes_lojas: 'PAINEL DIRETORIA / AVALIAÇÕES DAS LOJAS',
     acesso_rapido_aparelhos: 'PAINEL DIRETORIA / ACESSO RÁPIDO',
     stock: 'CONTROLE DE ESTOQUE',
@@ -369,9 +377,11 @@ function App() {
     return (
       <Login
         onLogin={(data: any) => {
-          const initialView = getInitialViewForUser(data);
-          setUser(data);
-          localStorage.setItem('telefluxo_user', JSON.stringify(data));
+          const { metasToken, ...safeUser } = data;
+          const initialView = getInitialViewForUser(safeUser);
+          setUser(safeUser);
+          if (metasToken) sessionStorage.setItem('telefluxo_metas_token', metasToken);
+          localStorage.setItem('telefluxo_user', JSON.stringify(safeUser));
           sessionStorage.setItem(SESSION_STORAGE_KEY, '1');
           sessionStorage.setItem(SESSION_LAST_ACTIVITY_KEY, String(Date.now()));
           setCurrentView(initialView);
@@ -428,6 +438,8 @@ function App() {
   );
 
   const renderViewContent = (view: string) => {
+    if (view === 'painel_metas') return canViewMetas ? <PainelMetas currentUser={user} /> : <div className="p-8 text-red-600">Acesso não autorizado.</div>;
+
     if (view === 'home') {
       return <Home currentUser={user} onNavigate={handleNavigate} />;
     }
@@ -686,6 +698,16 @@ function App() {
                 </div>
               )}
             </div>
+          )}
+
+          {canViewMetas && (
+          <NavButton
+            icon={Target}
+            label="Painel de Metas"
+            active={currentView === 'painel_metas'}
+            onClick={() => handleNavigate('painel_metas')}
+            customClass="bg-slate-800 text-white shadow-lg ring-1 ring-orange-500/20"
+          />
           )}
 
           {(isAdmin || isManager) && !isStoreOnly && (
@@ -1007,6 +1029,11 @@ function App() {
       </aside>
 
       <main className="flex-1 flex flex-col overflow-hidden w-full">
+        {testerReadOnly && (
+          <div className="shrink-0 border-b border-amber-200 bg-amber-50 px-4 py-2 text-center text-[10px] font-black uppercase tracking-widest text-amber-800">
+            Ambiente Testers • Dados de produção • Somente leitura
+          </div>
+        )}
         {!['estoque_vendas', 'ponto_pedido_prontos'].includes(currentView) && (
         <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-4 md:px-8 shadow-sm shrink-0">
           <div className="flex items-center gap-3">

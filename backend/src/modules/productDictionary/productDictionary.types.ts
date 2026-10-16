@@ -1,6 +1,7 @@
 export type ProductDictionarySource =
   | 'stock'
   | 'translation_sheet'
+  | 'base_master'
   | 'price_guide'
   | 'sales'
   | 'manual';
@@ -16,6 +17,10 @@ export type ProductDictionaryEntry = {
   reference: string;
   referenceFamily: string;
   productCode: string;
+  telefluxoCode?: string;
+  sourceCodes?: string[];
+  barcodes?: string[];
+  skus?: string[];
   category: string;
 
   brand: string | undefined;

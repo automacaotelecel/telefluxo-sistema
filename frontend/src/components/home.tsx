@@ -938,6 +938,35 @@ export default function Home({ currentUser }: Props) {
 
   const [announcements, setAnnouncements] = useState<any[]>([]);
   const [showModal, setShowModal] = useState(false);
+
+  // Preferência visual por usuário: não exclui o informativo do banco.
+  const dailyTipStorageKey = `telefluxo:home:hide-daily-tip:${String(currentUser?.id || 'anon')}`;
+  const [hideDailyTip, setHideDailyTip] = useState(() => {
+    try {
+      return localStorage.getItem(dailyTipStorageKey) === '1';
+    } catch {
+      return false;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      setHideDailyTip(localStorage.getItem(dailyTipStorageKey) === '1');
+    } catch {
+      setHideDailyTip(false);
+    }
+  }, [dailyTipStorageKey]);
+
+  const setDailyTipHidden = (hidden: boolean) => {
+    setHideDailyTip(hidden);
+    try {
+      if (hidden) localStorage.setItem(dailyTipStorageKey, '1');
+      else localStorage.removeItem(dailyTipStorageKey);
+    } catch {
+      // Se o armazenamento estiver indisponível, a preferência vale até recarregar a página.
+    }
+  };
+
   const [newNotice, setNewNotice] = useState({
     title: '',
     content: '',
@@ -1898,15 +1927,35 @@ export default function Home({ currentUser }: Props) {
             </div>
 
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
-              <div className="rounded-[24px] bg-orange-600 p-5 text-white">
-                <Bell size={17} />
-                <p className="mt-4 text-[9px] font-black uppercase tracking-[0.18em] text-orange-100">
-                  Frase do dia
-                </p>
-                <p className="mt-2 text-sm font-black leading-relaxed">
-                  {dailyTip ? dailyTip.content : 'Organização é a base de tudo. Bom trabalho!'}
-                </p>
-              </div>
+              {hideDailyTip ? (
+                <button
+                  type="button"
+                  onClick={() => setDailyTipHidden(false)}
+                  className="flex items-center justify-center gap-2 rounded-[24px] border border-dashed border-slate-200 bg-white px-4 py-3 text-xs font-bold text-slate-500 transition hover:border-orange-300 hover:text-orange-600"
+                  title="Mostrar novamente o quadro Frase do dia"
+                >
+                  <Bell size={14} /> Reexibir frase do dia
+                </button>
+              ) : (
+                <div className="relative rounded-[24px] bg-orange-600 p-5 text-white">
+                  <button
+                    type="button"
+                    onClick={() => setDailyTipHidden(true)}
+                    className="absolute right-3 top-3 flex h-7 w-7 items-center justify-center rounded-lg bg-white/15 text-white transition hover:bg-white/30"
+                    aria-label="Ocultar quadro Frase do dia"
+                    title="Ocultar Frase do dia neste navegador"
+                  >
+                    <X size={16} />
+                  </button>
+                  <Bell size={17} />
+                  <p className="mt-4 text-[9px] font-black uppercase tracking-[0.18em] text-orange-100">
+                    Frase do dia
+                  </p>
+                  <p className="mt-2 text-sm font-black leading-relaxed">
+                    {dailyTip ? dailyTip.content : 'Organização é a base de tudo. Bom trabalho!'}
+                  </p>
+                </div>
+              )}
               <div className="rounded-[24px] border border-slate-200 bg-white p-5">
                 <CalendarDays size={17} className="text-slate-900" />
                 <p className="mt-4 text-[9px] font-black uppercase tracking-[0.18em] text-slate-400">

@@ -16,6 +16,7 @@ export type ProductResolverDictionaryCandidate = {
   reference: string;
   referenceFamily: string;
   productCode: string;
+  telefluxoCode: string | undefined;
   family: string;
   storage: string | undefined;
   color: string | undefined;

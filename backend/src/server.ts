@@ -16,6 +16,11 @@ import dotenv from 'dotenv';
 import clarkRoutes from './modules/clark/clark.routes'; //IMPORT ROTAS DA CLARK
 import rhRoutes from './modules/rh/rh.routes'; 
 import inventoryAuditRoutes from './modules/inventoryAudit/inventoryAudit.routes';
+import productMasterRoutes from './modules/productMaster/productMaster.routes';
+import { createMetasRoutes } from './modules/metas/metas.routes';
+import { issueMetasToken } from './modules/metas/metas.session';
+import { refreshProductMaster, resolveProductMaster } from './modules/productMaster/productMaster.service';
+import { recordProductMasterIssue } from './modules/productMaster/productMasterIssues.service';
 import { google } from 'googleapis';
 import { spawn } from 'child_process';
 import os from 'os';
@@ -27,9 +32,6 @@ import {
   listarHistoricoPrecosOnlineController,
   obterUltimaConsultaPrecosOnlineController,
 } from './modules/clark/onlinePrices/onlinePrices.controller';
-
-
-
 
 dotenv.config();
 
@@ -861,6 +863,15 @@ app.use('/api/clark', clarkRoutes);
 app.use('/api/contracts', contractRoutes); // Injeção do módulo de análise de contratos
 app.use('/api/rh', rhRoutes); // Aproveitei para garantir que a rota RH (importada na linha 19) também esteja registrada
 app.use('/api/inventory-audit', inventoryAuditRoutes);
+app.use('/api/product-master', productMasterRoutes);
+
+// Pré-carrega a Base Mestre sem bloquear a inicialização do servidor.
+refreshProductMaster().catch((error) => {
+  console.warn(
+    '⚠️ BASE_MESTRE não carregou no startup; o sistema seguirá com os métodos antigos.',
+    error
+  );
+});
 
 // ============================================================
 // ✅ ROTAS DO HISTÓRICO ANUAL - CORRIGIDAS PARA FILTROS REAIS
@@ -1742,7 +1753,10 @@ app.post('/login', async (req, res) => {
         if (isPasswordValid || isOldPasswordValid) {
             // Remove a senha do objeto de retorno por segurança
             const { password: _, ...userWithoutPassword } = user;
-            res.json(userWithoutPassword);
+
+            const metasToken = issueMetasToken(user.id, user.password);
+
+            res.json({ ...userWithoutPassword, metasToken });
         } else {
             res.status(401).json({ error: "Senha incorreta." });
         }
@@ -2399,6 +2413,20 @@ async function getSalesFilter(userId: string, tableType: 'vendas' | 'kpi'): Prom
         return `cnpj_empresa IN (${cnpjsSql})`;
     }
 }
+
+// =======================================================
+// PAINEL DE METAS - TELEFLUXO
+// =======================================================
+
+app.use('/api/metas', createMetasRoutes({
+  prisma,
+  globalDbPath: GLOBAL_DB_PATH,
+  annualDbPath: ANUAL_DB_PATH,
+  getCnpjByName,
+  getAllowedStoreNames: getAllowedStoreNamesFromUser,
+  hasNetworkScope: userHasNetworkScope,
+  knownStores: LOJAS_MAP_GLOBAL,
+}));
 
 // =======================================================
 // 📦 VISÃO DETALHADA DE ESTOQUE - BASE CONFIÁVEL
@@ -14328,26 +14356,53 @@ async function pontoPedidoLoadSalesMetrics(
   const combined = new Map<string, PontoPedidoSalesMetric>();
   let annualMaxDate = '';
 
-  const addRows = (rows: any[]) => {
-    (rows || []).forEach((row) => {
+  const addRows = async (rows: any[]) => {
+    for (const row of (rows || [])) {
       const rowState = pontoPedidoStateFromSalesRow(row);
       const isRioVerde = pontoPedidoIsRioVerdeSalesRow(row);
 
       if (!pontoPedidoMatchesGeoScope(rowState, isRioVerde, stateCode, geoScope)) {
-        return;
-      }
-
+            continue;
+          }
       const descricao = String(row.descricao || row.DESCRICAO || '').trim();
       const key = pontoPedidoProductKey(descricao);
-      if (!key) return;
+      if (!key) continue;
 
       const productCode = String(row.codigo_produto || row.CODIGO_PRODUTO || '').trim();
       const reference = String(row.referencia || row.REFERENCIA || '').trim();
-      let identityKey = [
-        key,
-        pontoPedidoNormalizeIdentity(productCode),
-        pontoPedidoNormalizeIdentity(reference),
-      ].join('::');
+      const masterResolution = productCode
+            ? await resolveProductMaster({
+                productCode,
+                reference,
+                description: descricao,
+                source: 'PONTO_PEDIDO_VENDAS',
+              })
+            : null;
+
+          if (masterResolution && masterResolution.status !== 'MASTER') {
+            await recordProductMasterIssue({
+              source: 'PONTO_PEDIDO_VENDAS',
+              productCode,
+              reference,
+              description: descricao,
+              status: masterResolution.status === 'FALLBACK'
+                ? 'FALLBACK'
+                : masterResolution.status === 'AMBIGUOUS'
+                  ? 'AMBIGUOUS'
+                  : 'UNMAPPED',
+              telefluxoCode: masterResolution.telefluxoCode,
+              matchBy: masterResolution.matchBy,
+              details: masterResolution.message,
+            });
+          }
+
+          let identityKey = masterResolution?.telefluxoCode
+            ? `TF::${pontoPedidoNormalizeIdentity(masterResolution.telefluxoCode)}`
+            : [
+                key,
+                pontoPedidoNormalizeIdentity(productCode),
+                pontoPedidoNormalizeIdentity(reference),
+              ].join('::');
 
       // A base mensal antiga não possui código/referência. Quando há um único
       // SKU anual com a mesma descrição, o complemento recente é anexado a ele
@@ -14397,7 +14452,7 @@ async function pontoPedidoLoadSalesMetrics(
         vendas60,
       });
       combined.set(identityKey, target);
-    });
+    }
   };
 
   // Histórico anual = fonte principal, pois cobre integralmente os 60 dias.
@@ -14485,7 +14540,7 @@ async function pontoPedidoLoadSalesMetrics(
         GROUP BY descricao, COALESCE(cnpj_empresa, ''), COALESCE(regiao, '')
       `, [start15, start30, start45, start60, dailyStart, todayIso]);
 
-      addRows(rows);
+      await addRows(rows);
     }
   } catch (error) {
     console.error('Ponto de Pedido: falha ao complementar vendas mensais:', error);
@@ -14536,25 +14591,52 @@ async function pontoPedidoLoadStockMetrics(
 
   const map = new Map<string, PontoPedidoStockMetric>();
 
-  rows.forEach((row: any) => {
+  for (const row of rows as any[]) {
     const rowState = pontoPedidoStateFromText(row.storeName);
     const isRioVerde = pontoPedidoIsRioVerdeText(row.storeName);
 
     if (!pontoPedidoMatchesGeoScope(rowState, isRioVerde, stateCode, geoScope)) {
-      return;
-    }
-
+          continue;
+        }
     const descricao = String(row.description || '').trim();
     const key = pontoPedidoProductKey(descricao);
-    if (!key) return;
+        if (!key) continue;
 
     const productCode = String(row.productCode || '').trim();
     const reference = String(row.reference || '').trim();
-    const identityKey = [
-      key,
-      pontoPedidoNormalizeIdentity(productCode),
-      pontoPedidoNormalizeIdentity(reference),
-    ].join('::');
+    const masterResolution = productCode
+  ? await resolveProductMaster({
+      productCode,
+      reference,
+      description: descricao,
+      source: 'PONTO_PEDIDO_ESTOQUE',
+    })
+  : null;
+
+    if (masterResolution && masterResolution.status !== 'MASTER') {
+      await recordProductMasterIssue({
+        source: 'PONTO_PEDIDO_ESTOQUE',
+        productCode,
+        reference,
+        description: descricao,
+        status: masterResolution.status === 'FALLBACK'
+          ? 'FALLBACK'
+          : masterResolution.status === 'AMBIGUOUS'
+            ? 'AMBIGUOUS'
+            : 'UNMAPPED',
+        telefluxoCode: masterResolution.telefluxoCode,
+        matchBy: masterResolution.matchBy,
+        details: masterResolution.message,
+      });
+    }
+
+    const identityKey = masterResolution?.telefluxoCode
+      ? `TF::${pontoPedidoNormalizeIdentity(masterResolution.telefluxoCode)}`
+      : [
+          key,
+          pontoPedidoNormalizeIdentity(productCode),
+          pontoPedidoNormalizeIdentity(reference),
+        ].join('::');
 
     const current = map.get(identityKey) || {
       descricao,
@@ -14574,8 +14656,7 @@ async function pontoPedidoLoadStockMetrics(
       quantidade,
     });
     map.set(identityKey, current);
-  });
-
+  }
   return Array.from(map.values()).map((item) => ({
     ...item,
     estoque: Math.max(0, item.estoque),

@@ -197,6 +197,7 @@ function buildCandidate(
     reference: entry.reference,
     referenceFamily: entry.referenceFamily,
     productCode: entry.productCode,
+    telefluxoCode: entry.telefluxoCode,
     family,
     storage,
     color,

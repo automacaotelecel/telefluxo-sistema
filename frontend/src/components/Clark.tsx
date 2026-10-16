@@ -1,3 +1,4 @@
+import ClarkExecutiveReport from "./ClarkExecutiveReport";
 import { useEffect, useRef, useState } from "react";
 import {
   Download,
@@ -258,6 +259,11 @@ export default function Clark({
   };
 
   const handleClarkAction = (action: { type: string; label: string; payload?: any }) => {
+    if (action.type === "open_online_prices") {
+      handleOpenOnlinePrices();
+      return;
+    }
+
     if (action.type === "navigate" && action.payload?.view) {
       closeChat();
       onNavigate?.(String(action.payload.view));
@@ -447,11 +453,26 @@ export default function Clark({
                       Bom dia, {firstName}. Como posso te ajudar hoje?
                     </p>
                     <p className="mt-1 text-[12px] font-medium leading-relaxed text-slate-500">
-                      Pergunte naturalmente sobre vendas, estoque, lojas, vendedores, produtos ou relatórios. Também posso abrir telas do TeleFluxo para você.
+                      Consulte indicadores, obtenha diagnósticos e compare preços pesquisados pela equipe. As respostas apresentam fontes, limitações e recomendações.
                     </p>
                   </div>
                 </div>
-
+                <div className="mt-4 flex flex-wrap gap-2">
+                  {[
+                    'Analise as vendas da Samsung hoje',
+                    'Como estão os preços da concorrência?',
+                    'Gere um diagnóstico executivo deste mês',
+                  ].map((question) => (
+                    <button
+                      key={question}
+                      type="button"
+                      onClick={() => sendQuestion(question)}
+                      className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-left text-[11px] font-semibold text-slate-600 transition hover:border-orange-200 hover:bg-orange-50 hover:text-orange-700"
+                    >
+                      {question}
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
 
@@ -467,15 +488,27 @@ export default function Clark({
                     {!isUser && <ClarkAvatar small />}
 
                     <div
-                      className={`${messageMaxClass} rounded-[18px] px-4 py-3 text-sm ${
+                      className={`${!isUser && msg.dados?.executivo ? (isExpanded ? 'w-full min-w-0 max-w-[1000px]' : 'w-full min-w-0 max-w-[calc(100%-42px)]') : messageMaxClass} rounded-[18px] px-4 py-3 text-sm ${
                         isUser
                           ? "bg-slate-950 text-white"
                           : "border border-slate-200 bg-white text-slate-800 shadow-sm"
                       }`}
                     >
-                      <div className="whitespace-pre-wrap text-[13px] font-medium leading-relaxed">
-                        {msg.text}
-                      </div>
+                      {!isUser && msg.dados?.executivo ? (
+                        <div className="space-y-3">
+                          <ClarkExecutiveReport report={msg.dados.executivo} />
+                          {msg.text && (
+                            <details className="border-t border-slate-100 pt-2">
+                              <summary className="cursor-pointer text-[11px] font-semibold text-slate-500 hover:text-orange-600">Ver resposta detalhada</summary>
+                              <div className="mt-2 whitespace-pre-wrap text-[12px] leading-relaxed text-slate-600">{msg.text}</div>
+                            </details>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="whitespace-pre-wrap text-[13px] font-medium leading-relaxed">
+                          {msg.text}
+                        </div>
+                      )}
 
                       {!isUser &&
                         msg.actions?.some((action) => action.type === "download_excel") && (
@@ -503,10 +536,10 @@ export default function Clark({
                         )}
 
                       {!isUser &&
-                        msg.actions?.some((action) => action.type === "navigate" || action.type === "open_store") && (
+                        msg.actions?.some((action) => action.type === "navigate" || action.type === "open_store" || action.type === "open_online_prices") && (
                           <div className="mt-3 flex flex-wrap gap-2">
                             {msg.actions
-                              .filter((action) => action.type === "navigate" || action.type === "open_store")
+                              .filter((action) => action.type === "navigate" || action.type === "open_store" || action.type === "open_online_prices")
                               .map((action, index) => (
                                 <button
                                   key={`${msg.id}-${action.type}-${index}`}
