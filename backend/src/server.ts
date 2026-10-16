@@ -11466,15 +11466,21 @@ app.get('/finance', async (req, res) => {
 
 app.post('/stock/sync', async (req, res) => {
   const data = req.body;
-  const shouldReset = req.query.reset !== 'false';
+  const shouldReset = req.query.reset === 'true';
 
   console.log(
     `📦 Recebendo lote de estoque... Resetar Banco: ${shouldReset}`
   );
 
   if (!Array.isArray(data)) {
+  return res.status(400).json({
+    error: 'Formato inválido. Envie uma lista.',
+  });
+  }
+
+  if (shouldReset && data.length === 0) {
     return res.status(400).json({
-      error: 'Formato inválido. Envie uma lista.',
+      error: 'Reset recusado: lote de estoque vazio.',
     });
   }
 
@@ -11589,6 +11595,14 @@ app.post('/stock/sync', async (req, res) => {
         };
       })
     );
+
+    if (shouldReset && formattedData.length === 0) {
+      console.error('RESET BLOQUEADO: nenhum estoque válido.');
+
+      return res.status(400).json({
+        error: 'Reset bloqueado: nenhum registro válido foi processado.',
+      });
+    }
 
     /*
  * A limpeza e a inserção precisam acontecer na mesma transação.
@@ -14354,81 +14368,126 @@ async function pontoPedidoLoadSalesMetrics(
   const start60 = pontoPedidoDateAddDays(todayIso, -59);
 
   const combined = new Map<string, PontoPedidoSalesMetric>();
-  let annualMaxDate = '';
+  const rawCoverage = new Set<string>();
+  const annualCoverage = new Set<string>();
+  const masterCache = new Map<string, any>();
+  const reportedIssues = new Set<string>();
+
+  const sourceDays = {
+    raw: new Set<string>(),
+    annual: new Set<string>(),
+    monthly: new Set<string>(),
+  };
+
+  // Identifica o mesmo produto, na mesma loja e no mesmo dia.
+  // Evita duplicidade entre as bases mensal e anual.
+  const saleIdentity = (row: any): string => {
+    const day = String(row.data_venda || '').slice(0, 10);
+    const cnpj = String(row.cnpj_empresa || '').replace(/\D/g, '');
+    const store =
+      cnpj ||
+      pontoPedidoNormalizeHeader(row.loja || row.regiao || '');
+    const product = pontoPedidoProductKey(row.descricao);
+
+    return `${day}|${store}|${product}`;
+  };
+
+  const inScope = (row: any): boolean =>
+    Boolean(pontoPedidoProductKey(row.descricao)) &&
+    pontoPedidoMatchesGeoScope(
+      pontoPedidoStateFromSalesRow(row),
+      pontoPedidoIsRioVerdeSalesRow(row),
+      stateCode,
+      geoScope
+    );
 
   const addRows = async (rows: any[]) => {
-    for (const row of (rows || [])) {
-      const rowState = pontoPedidoStateFromSalesRow(row);
-      const isRioVerde = pontoPedidoIsRioVerdeSalesRow(row);
-
-      if (!pontoPedidoMatchesGeoScope(rowState, isRioVerde, stateCode, geoScope)) {
-            continue;
-          }
-      const descricao = String(row.descricao || row.DESCRICAO || '').trim();
+    for (const row of rows) {
+      const descricao = String(row.descricao || '').trim();
       const key = pontoPedidoProductKey(descricao);
       if (!key) continue;
 
-      const productCode = String(row.codigo_produto || row.CODIGO_PRODUTO || '').trim();
-      const reference = String(row.referencia || row.REFERENCIA || '').trim();
-      const masterResolution = productCode
-            ? await resolveProductMaster({
-                productCode,
-                reference,
-                description: descricao,
-                source: 'PONTO_PEDIDO_VENDAS',
-              })
-            : null;
+      const productCode = String(row.codigo_produto || '').trim();
+      const reference = String(row.referencia || '').trim();
 
-          if (masterResolution && masterResolution.status !== 'MASTER') {
-            await recordProductMasterIssue({
-              source: 'PONTO_PEDIDO_VENDAS',
+      let masterResolution: any = null;
+
+      if (productCode) {
+        const masterKey = `${productCode}|${reference}|${descricao}`;
+
+        if (!masterCache.has(masterKey)) {
+          masterCache.set(
+            masterKey,
+            await resolveProductMaster({
               productCode,
               reference,
               description: descricao,
-              status: masterResolution.status === 'FALLBACK'
+              source: 'PONTO_PEDIDO_VENDAS',
+            })
+          );
+        }
+
+        masterResolution = masterCache.get(masterKey);
+
+        if (
+          masterResolution &&
+          masterResolution.status !== 'MASTER' &&
+          !reportedIssues.has(masterKey)
+        ) {
+          reportedIssues.add(masterKey);
+
+          await recordProductMasterIssue({
+            source: 'PONTO_PEDIDO_VENDAS',
+            productCode,
+            reference,
+            description: descricao,
+            status:
+              masterResolution.status === 'FALLBACK'
                 ? 'FALLBACK'
                 : masterResolution.status === 'AMBIGUOUS'
                   ? 'AMBIGUOUS'
                   : 'UNMAPPED',
-              telefluxoCode: masterResolution.telefluxoCode,
-              matchBy: masterResolution.matchBy,
-              details: masterResolution.message,
-            });
-          }
+            telefluxoCode: masterResolution.telefluxoCode,
+            matchBy: masterResolution.matchBy,
+            details: masterResolution.message,
+          });
+        }
+      }
 
-          let identityKey = masterResolution?.telefluxoCode
-            ? `TF::${pontoPedidoNormalizeIdentity(masterResolution.telefluxoCode)}`
-            : [
-                key,
-                pontoPedidoNormalizeIdentity(productCode),
-                pontoPedidoNormalizeIdentity(reference),
-              ].join('::');
+      let identityKey = masterResolution?.telefluxoCode
+        ? `TF::${pontoPedidoNormalizeIdentity(
+            masterResolution.telefluxoCode
+          )}`
+        : [
+            key,
+            pontoPedidoNormalizeIdentity(productCode),
+            pontoPedidoNormalizeIdentity(reference),
+          ].join('::');
 
-      // A base mensal antiga não possui código/referência. Quando há um único
-      // SKU anual com a mesma descrição, o complemento recente é anexado a ele
-      // em vez de criar um segundo candidato artificialmente ambíguo.
+      // Quando a base não possui código, somente associa
+      // a um SKU detalhado se houver um único candidato.
       if (!productCode && !reference) {
-  const existingSameDescription = Array.from(combined.entries())
-    .filter(([, item]) => item.key === key);
+        const sameDescription = Array.from(
+          combined.entries()
+        ).filter(([, item]) => item.key === key);
 
-  const onlyExistingMatch = existingSameDescription[0];
+        if (sameDescription.length === 1 && sameDescription[0]) {
+          identityKey = sameDescription[0][0];
+        }
+      }
 
-    if (existingSameDescription.length === 1 && onlyExistingMatch) {
-      identityKey = onlyExistingMatch[0];
-    }
-  }
-
-  const target = combined.get(identityKey) || {
-        descricao,
-        key,
-        productCode,
-        reference,
-        vendas15: 0,
-        vendas30: 0,
-        vendas45: 0,
-        vendas60: 0,
-        sources: [],
-      };
+      const target: PontoPedidoSalesMetric =
+        combined.get(identityKey) || {
+          descricao,
+          key,
+          productCode,
+          reference,
+          vendas15: 0,
+          vendas30: 0,
+          vendas45: 0,
+          vendas60: 0,
+          sources: [],
+        };
 
       const vendas15 = pontoPedidoNumber(row.vendas15);
       const vendas30 = pontoPedidoNumber(row.vendas30);
@@ -14439,11 +14498,12 @@ async function pontoPedidoLoadSalesMetrics(
       target.vendas30 += vendas30;
       target.vendas45 += vendas45;
       target.vendas60 += vendas60;
+
       target.sources?.push({
         descricao,
-        loja: String(row.loja || row.LOJA || '').trim(),
-        cnpj: String(row.cnpj_empresa || row.CNPJ_EMPRESA || '').trim(),
-        regiao: String(row.regiao || row.REGIAO || '').trim(),
+        loja: String(row.loja || '').trim(),
+        cnpj: String(row.cnpj_empresa || '').trim(),
+        regiao: String(row.regiao || '').trim(),
         productCode,
         reference,
         vendas15,
@@ -14451,104 +14511,270 @@ async function pontoPedidoLoadSalesMetrics(
         vendas45,
         vendas60,
       });
+
       combined.set(identityKey, target);
     }
   };
 
-  // Histórico anual = fonte principal, pois cobre integralmente os 60 dias.
-  if (fs.existsSync(ANUAL_DB_PATH)) {
-    let annualDb: any;
+  const processSource = async (
+    rows: any[],
+    higherPriority: Set<string>[],
+    coverage: Set<string>,
+    days: Set<string>
+  ) => {
+    const selected = rows
+      .filter(inScope)
+      .filter(
+        (row) =>
+          !higherPriority.some((used) =>
+            used.has(saleIdentity(row))
+          )
+      );
 
-    try {
-      annualDb = await open({ filename: ANUAL_DB_PATH, driver: sqlite3.Database });
-      const exists = await annualDb.get(`
-        SELECT name FROM sqlite_master
-        WHERE type='table' AND name='vendas_anuais_raw'
-      `);
-
-      if (exists?.name) {
-        const dateExpr = pontoPedidoSqlDateExpr('data_emissao');
-
-        const maxDateRow = await annualDb.get(`
-          SELECT MAX(${dateExpr}) AS max_date
-          FROM vendas_anuais_raw
-          WHERE ${dateExpr} >= ? AND ${dateExpr} <= ?
-            AND (
-              cancelado IS NULL OR
-              UPPER(TRIM(CAST(cancelado AS TEXT))) NOT IN
-              ('S', 'SIM', 'TRUE', '1', 'CANCELADO', 'CANCELADA')
-            )
-        `, [start60, todayIso]);
-
-        annualMaxDate = String(maxDateRow?.max_date || '').slice(0, 10);
-
-        const rows = await annualDb.all(`
-          SELECT
-            descricao,
-            COALESCE(codigo_produto, '') AS codigo_produto,
-            COALESCE(referencia, '') AS referencia,
-            COALESCE(loja, '') AS loja,
-            COALESCE(cnpj_empresa, '') AS cnpj_empresa,
-            COALESCE(regiao, '') AS regiao,
-            SUM(CASE WHEN ${dateExpr} >= ? THEN COALESCE(qtd_real, quantidade, 0) ELSE 0 END) AS vendas15,
-            SUM(CASE WHEN ${dateExpr} >= ? THEN COALESCE(qtd_real, quantidade, 0) ELSE 0 END) AS vendas30,
-            SUM(CASE WHEN ${dateExpr} >= ? THEN COALESCE(qtd_real, quantidade, 0) ELSE 0 END) AS vendas45,
-            SUM(CASE WHEN ${dateExpr} >= ? THEN COALESCE(qtd_real, quantidade, 0) ELSE 0 END) AS vendas60
-          FROM vendas_anuais_raw
-          WHERE ${dateExpr} >= ? AND ${dateExpr} <= ?
-            AND (
-              cancelado IS NULL OR
-              UPPER(TRIM(CAST(cancelado AS TEXT))) NOT IN
-              ('S', 'SIM', 'TRUE', '1', 'CANCELADO', 'CANCELADA')
-            )
-          GROUP BY descricao, COALESCE(codigo_produto, ''), COALESCE(referencia, ''), COALESCE(loja, ''), COALESCE(cnpj_empresa, ''), COALESCE(regiao, '')
-        `, [start15, start30, start45, start60, start60, todayIso]);
-
-        addRows(rows);
-      }
-    } catch (error) {
-      console.error('Ponto de Pedido: falha ao ler vendas anuais:', error);
-    } finally {
-      if (annualDb) {
-        try { await annualDb.close(); } catch {}
-      }
+    // Respeita também vendas calculadas como zero.
+    for (const row of selected) {
+      coverage.add(saleIdentity(row));
+      days.add(String(row.data_venda).slice(0, 10));
     }
+
+    await addRows(selected);
+  };
+
+  // =====================================================
+  // 1. HISTÓRICO ANUAL — FONTE PRINCIPAL
+  // =====================================================
+
+  if (!fs.existsSync(ANUAL_DB_PATH)) {
+    throw new Error(
+      'Banco de vendas anuais não encontrado. ' +
+      'Vendas 60 não pode ser calculado com segurança.'
+    );
   }
 
-  // Complementa com a base mensal apenas depois da última data disponível
-  // no histórico anual, evitando duplicidade.
-  let globalDb: any;
-  try {
-    globalDb = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
-    const dateExpr = pontoPedidoSqlDateExpr('data_emissao');
-    const dailyStart = annualMaxDate
-      ? pontoPedidoDateAddDays(annualMaxDate, 1)
-      : start60;
+  let annualDb: any;
 
-    if (dailyStart <= todayIso) {
-      const rows = await globalDb.all(`
+  try {
+    annualDb = await open({
+      filename: ANUAL_DB_PATH,
+      driver: sqlite3.Database,
+    });
+
+    const dateExpr = pontoPedidoSqlDateExpr('data_emissao');
+
+    // Base anual detalhada
+    const rawExists = await annualDb.get(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'vendas_anuais_raw'"
+    );
+
+    if (rawExists?.name) {
+      const rawRows = await annualDb.all(
+        `
         SELECT
+          ${dateExpr} AS data_venda,
           descricao,
+          COALESCE(codigo_produto, '') AS codigo_produto,
+          COALESCE(referencia, '') AS referencia,
+          COALESCE(loja, '') AS loja,
           COALESCE(cnpj_empresa, '') AS cnpj_empresa,
           COALESCE(regiao, '') AS regiao,
-          SUM(CASE WHEN ${dateExpr} >= ? THEN COALESCE(quantidade, 0) ELSE 0 END) AS vendas15,
-          SUM(CASE WHEN ${dateExpr} >= ? THEN COALESCE(quantidade, 0) ELSE 0 END) AS vendas30,
-          SUM(CASE WHEN ${dateExpr} >= ? THEN COALESCE(quantidade, 0) ELSE 0 END) AS vendas45,
-          SUM(CASE WHEN ${dateExpr} >= ? THEN COALESCE(quantidade, 0) ELSE 0 END) AS vendas60
-        FROM vendas
-        WHERE ${dateExpr} >= ? AND ${dateExpr} <= ?
-        GROUP BY descricao, COALESCE(cnpj_empresa, ''), COALESCE(regiao, '')
-      `, [start15, start30, start45, start60, dailyStart, todayIso]);
 
-      await addRows(rows);
+          SUM(CASE WHEN ${dateExpr} >= ?
+            THEN COALESCE(qtd_real, quantidade, 0)
+            ELSE 0 END) AS vendas15,
+
+          SUM(CASE WHEN ${dateExpr} >= ?
+            THEN COALESCE(qtd_real, quantidade, 0)
+            ELSE 0 END) AS vendas30,
+
+          SUM(CASE WHEN ${dateExpr} >= ?
+            THEN COALESCE(qtd_real, quantidade, 0)
+            ELSE 0 END) AS vendas45,
+
+          SUM(COALESCE(qtd_real, quantidade, 0)) AS vendas60
+
+        FROM vendas_anuais_raw
+
+        WHERE ${dateExpr} BETWEEN ? AND ?
+          AND (
+            cancelado IS NULL
+            OR UPPER(TRIM(CAST(cancelado AS TEXT))) NOT IN
+              ('S', 'SIM', 'TRUE', '1', 'CANCELADO', 'CANCELADA')
+          )
+
+        GROUP BY
+          ${dateExpr},
+          descricao,
+          codigo_produto,
+          referencia,
+          loja,
+          cnpj_empresa,
+          regiao
+        `,
+        [start15, start30, start45, start60, todayIso]
+      );
+
+      await processSource(
+        rawRows,
+        [],
+        rawCoverage,
+        sourceDays.raw
+      );
+    }
+
+    // Base anual consolidada: complementa o RAW.
+    const annualExists = await annualDb.get(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'vendas_anuais'"
+    );
+
+    if (annualExists?.name) {
+      const annualRows = await annualDb.all(
+        `
+        SELECT
+          ${dateExpr} AS data_venda,
+          descricao,
+          '' AS codigo_produto,
+          '' AS referencia,
+          COALESCE(loja, '') AS loja,
+          COALESCE(cnpj_empresa, '') AS cnpj_empresa,
+          COALESCE(regiao, '') AS regiao,
+
+          SUM(CASE WHEN ${dateExpr} >= ?
+            THEN COALESCE(quantidade, 0)
+            ELSE 0 END) AS vendas15,
+
+          SUM(CASE WHEN ${dateExpr} >= ?
+            THEN COALESCE(quantidade, 0)
+            ELSE 0 END) AS vendas30,
+
+          SUM(CASE WHEN ${dateExpr} >= ?
+            THEN COALESCE(quantidade, 0)
+            ELSE 0 END) AS vendas45,
+
+          SUM(COALESCE(quantidade, 0)) AS vendas60
+
+        FROM vendas_anuais
+
+        WHERE ${dateExpr} BETWEEN ? AND ?
+
+        GROUP BY
+          ${dateExpr},
+          descricao,
+          loja,
+          cnpj_empresa,
+          regiao
+        `,
+        [start15, start30, start45, start60, todayIso]
+      );
+
+      await processSource(
+        annualRows,
+        [rawCoverage],
+        annualCoverage,
+        sourceDays.annual
+      );
+    }
+
+    if (!rawExists?.name && !annualExists?.name) {
+      throw new Error(
+        'Nenhuma tabela anual de vendas foi encontrada.'
+      );
     }
   } catch (error) {
-    console.error('Ponto de Pedido: falha ao complementar vendas mensais:', error);
+    console.error(
+      'Ponto de Pedido: falha ao consultar vendas anuais:',
+      error
+    );
+    throw error;
   } finally {
-    if (globalDb) {
-      try { await globalDb.close(); } catch {}
+    if (annualDb) {
+      await annualDb.close().catch(() => undefined);
     }
   }
+
+  // =====================================================
+  // 2. VENDAS MENSAIS — COMPLEMENTO
+  // =====================================================
+
+  let monthlyDb: any;
+
+  try {
+    monthlyDb = await open({
+      filename: GLOBAL_DB_PATH,
+      driver: sqlite3.Database,
+    });
+
+    const dateExpr = pontoPedidoSqlDateExpr('data_emissao');
+
+    const monthlyRows = await monthlyDb.all(
+      `
+      SELECT
+        ${dateExpr} AS data_venda,
+        descricao,
+        '' AS codigo_produto,
+        '' AS referencia,
+        '' AS loja,
+        COALESCE(cnpj_empresa, '') AS cnpj_empresa,
+        COALESCE(regiao, '') AS regiao,
+
+        SUM(CASE WHEN ${dateExpr} >= ?
+          THEN COALESCE(quantidade, 0)
+          ELSE 0 END) AS vendas15,
+
+        SUM(CASE WHEN ${dateExpr} >= ?
+          THEN COALESCE(quantidade, 0)
+          ELSE 0 END) AS vendas30,
+
+        SUM(CASE WHEN ${dateExpr} >= ?
+          THEN COALESCE(quantidade, 0)
+          ELSE 0 END) AS vendas45,
+
+        SUM(COALESCE(quantidade, 0)) AS vendas60
+
+      FROM vendas
+
+      WHERE ${dateExpr} BETWEEN ? AND ?
+
+      GROUP BY
+        ${dateExpr},
+        descricao,
+        cnpj_empresa,
+        regiao
+      `,
+      [start15, start30, start45, start60, todayIso]
+    );
+
+    await processSource(
+      monthlyRows,
+      [rawCoverage, annualCoverage],
+      new Set<string>(),
+      sourceDays.monthly
+    );
+  } catch (error) {
+    console.error(
+      'Ponto de Pedido: falha ao consultar vendas mensais:',
+      error
+    );
+    throw error;
+  } finally {
+    if (monthlyDb) {
+      await monthlyDb.close().catch(() => undefined);
+    }
+  }
+
+  // =====================================================
+  // 3. DIAGNÓSTICO
+  // =====================================================
+
+  console.info('Ponto de Pedido - fontes Vendas 60:', {
+    periodo: `${start60} a ${todayIso}`,
+    rawDias: sourceDays.raw.size,
+    anualDiasAdicionais: sourceDays.annual.size,
+    mensalDiasAdicionais: sourceDays.monthly.size,
+    vendas60: Array.from(combined.values()).reduce(
+      (sum, item) => sum + item.vendas60,
+      0
+    ),
+  });
 
   return Array.from(combined.values()).map((item) => ({
     ...item,

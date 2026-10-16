@@ -389,19 +389,29 @@ export async function consultarVendasRawClark(
     );
   }
 
-  const [
-    globais,
-    anuaisRawDetalhada,
-    anuaisSeparado,
-    anuaisGlobal,
-    detalhadas,
-  ] = await Promise.all([
-    consultarVendasGlobaisRaw(ctx, periodo),
-    consultarVendasAnuaisRawDetalhada(ctx, periodo),
-    consultarVendasAnuaisRaw(ctx, periodo),
-    consultarVendasAnuaisNoBancoGlobalRaw(ctx, periodo),
-    consultarVendasDetalhadasRaw(ctx, periodo),
-  ]);
+    const globais = await consultarVendasGlobaisRaw(ctx, periodo);
+
+  const anuaisRawDetalhada: VendaClarkRow[] = globais.length
+    ? []
+    : await consultarVendasAnuaisRawDetalhada(ctx, periodo);
+
+  const anuaisSeparado: VendaClarkRow[] =
+    globais.length || anuaisRawDetalhada.length
+      ? []
+      : await consultarVendasAnuaisRaw(ctx, periodo);
+
+  const anuaisGlobal: VendaClarkRow[] =
+    globais.length || anuaisRawDetalhada.length || anuaisSeparado.length
+      ? []
+      : await consultarVendasAnuaisNoBancoGlobalRaw(ctx, periodo);
+
+  const detalhadas: VendaClarkRow[] =
+    globais.length ||
+    anuaisRawDetalhada.length ||
+    anuaisSeparado.length ||
+    anuaisGlobal.length
+      ? []
+      : await consultarVendasDetalhadasRaw(ctx, periodo);
 
   let fonte = 'nenhuma';
   let rows: VendaClarkRow[] = [];
