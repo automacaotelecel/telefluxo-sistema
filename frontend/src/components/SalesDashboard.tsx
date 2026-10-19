@@ -37,11 +37,34 @@ const STORE_MAP: Record<string, string> = {
     "12309173001066": "CD TAGUATINGA"
 };
 
-const getStoreName = (raw: string) => {
-    if (!raw) return "N/D";
-    const clean = String(raw).replace(/\D/g, ''); 
-    return STORE_MAP[clean] || STORE_MAP[String(raw)] || String(raw);
+const getStoreName = (raw: string, saleDate?: string) => {
+  if (!raw) return 'N/D';
+
+  const clean = String(raw).replace(/\D/g, '');
+
+  if (clean === '12309173001651') {
+    const texto = String(saleDate || '').trim();
+    const br = texto.match(/^(\d{2})\/(\d{2})\/(\d{4})/);
+
+    const dataISO = br
+      ? `${br[3]}-${br[2]}-${br[1]}`
+      : /^\d{4}-\d{2}-\d{2}/.test(texto)
+        ? texto.slice(0, 10)
+        : '';
+
+    return dataISO && dataISO >= '2026-10-19'
+      ? 'PARTAGE'
+      : 'TAGUATINGA SHOPPING QQ';
+  }
+
+  return STORE_MAP[clean] || STORE_MAP[raw] || raw;
 };
+
+const getSaleStoreName = (sale: any) =>
+  getStoreName(
+    String(sale?.cnpj_empresa || sale?.CNPJ_EMPRESA || sale?.loja || ''),
+    String(sale?.data_emissao || sale?.DATA_EMISSAO || '')
+  );
 
 const normalizeText = (value: any) =>
     String(value || "")

@@ -2136,6 +2136,7 @@ const LOJAS_MAP_GLOBAL: Record<string, string> = {
     "12309173001228": "CONJUNTO NACIONAL QUIOSQUE",
     "12309173000507": "GOIANIA SHOPPING",
     "12309173000256": "IGUATEMI SHOPPING",
+    
     "12309173000841": "JK SHOPPING",
     "12309173000337": "PARK SHOPPING",
     "12309173000922": "PATIO BRASIL",
@@ -2156,6 +2157,46 @@ const LOJAS_MAP_GLOBAL: Record<string, string> = {
     "12309173002976": "IGUATEMI FORTALEZA",
     "12309173001066": "CD TAGUATINGA"
 };
+
+  const PARTAGE_CNPJ = '12309173001651';
+  const PARTAGE_INICIO = '2026-10-19';
+
+  function nomeLojaEstoque(cnpj: any, loja: any): string {
+    const codigo = String(cnpj || '').replace(/\D/g, '');
+    const nome = String(loja || '').trim().toUpperCase();
+
+    if (
+      codigo === PARTAGE_CNPJ ||
+      nome === 'TAGUATINGA SHOPPING QQ' ||
+      nome === 'QQ TAGUATINGA SHOPPING' ||
+      nome === 'PARTAGE'
+    ) {
+      return 'PARTAGE';
+    }
+
+    return String(loja || '').trim();
+  }
+
+  function nomeLojaVendaPorData(cnpj: any, data: any): string {
+    const codigo = String(cnpj || '').replace(/\D/g, '');
+
+    if (codigo !== PARTAGE_CNPJ) {
+      return LOJAS_MAP_GLOBAL[codigo] || 'LOJA NÃO INFORMADA';
+    }
+
+    const texto = String(data || '').trim();
+    const br = texto.match(/^(\d{2})\/(\d{2})\/(\d{4})/);
+
+    const dataISO = br
+      ? `${br[3]}-${br[2]}-${br[1]}`
+      : /^\d{4}-\d{2}-\d{2}/.test(texto)
+        ? texto.slice(0, 10)
+        : '';
+
+    return dataISO && dataISO >= PARTAGE_INICIO
+      ? 'PARTAGE'
+      : 'TAGUATINGA SHOPPING QQ';
+  }
 
 // 2. LISTA DE CORREÇÃO MANUAL NO SERVIDOR
 // Se o usuário estiver cadastrado como "PARK", o sistema converte para "PARK SHOPPING"
@@ -2192,6 +2233,10 @@ function normStore(s: any): string {
 
 function getCnpjByName(storeName: string): string | null {
   let cleanName = normStore(storeName);
+
+  if (cleanName === 'PARTAGE') {
+  return PARTAGE_CNPJ;
+  }
 
   // 1) aplica correções (PARK -> PARK SHOPPING etc)
   const nomeCorrigido = CORRECAO_NOMES_SERVER[cleanName];
@@ -11883,11 +11928,24 @@ await prisma.$transaction(
           )
         : rawRowStore;
 
+    const normalizarAcessoLoja = (nome: string) => {
+    const valor = normStore(nome);
+
+    return (
+      valor === 'TAGUATINGA SHOPPING QQ' ||
+      valor === 'QQ TAGUATINGA SHOPPING' ||
+      valor === 'PARTAGE'
+    )
+      ? 'PARTAGE'
+      : valor;
+  };
+
     return scope.stores.some(
-      (store) =>
-        rowStore === store
-    );
-  }
+    (store) =>
+      normalizarAcessoLoja(rowStore) ===
+      normalizarAcessoLoja(store)
+  );
+}
 
 app.get('/stock', async (req, res) => {
   try {
@@ -11946,6 +12004,7 @@ app.get('/stock', async (req, res) => {
 
         return {
           ...item,
+          storeName: nomeLojaEstoque(item.cnpj, item.storeName),
 
           costConsidered:
             acquisitionCost > 0
@@ -12094,7 +12153,7 @@ app.get('/stock/analysis', async (req, res) => {
 
             return {
                 id: item.id,
-                storeName: item.storeName,
+                storeName: nomeLojaEstoque(item.cnpj, item.storeName),
                 productCode: item.productCode,
                 description: item.description,
                 category: item.category,
