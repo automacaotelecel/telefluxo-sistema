@@ -28,6 +28,7 @@ type SheetTab = {
   category: string;
   state: string;
   stateLabel: string;
+  geoScope?: string;
 };
 
 type WeekColumn = {
@@ -464,6 +465,7 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
   const [data, setData] = useState<PontoPedidoResponse | null>(null);
   const [rows, setRows] = useState<PontoPedidoRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [loadingStage, setLoadingStage] = useState('Lendo abas do Google Sheets...');
   const [errorMsg, setErrorMsg] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
@@ -497,6 +499,22 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
   const tableScrollRef = useRef<HTMLDivElement | null>(null);
   const tableRef = useRef<HTMLTableElement | null>(null);
   const syncingScrollRef = useRef(false);
+  // Larguras ajustadas pelo usuário para cada coluna do Planejamento.
+  const [planningColumnWidths, setPlanningColumnWidths] = useState<Record<string, number>>(() => {
+    if (typeof window === 'undefined') return {};
+    try {
+      return JSON.parse(window.localStorage.getItem('telefluxo:pp:column-widths:v1') || '{}');
+    } catch {
+      return {};
+    }
+  });
+  const stopResizeRef = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('telefluxo:pp:column-widths:v1', JSON.stringify(planningColumnWidths));
+    } catch { /* Armazenamento opcional: continua funcionando sem ele. */ }
+  }, [planningColumnWidths]);
+  useEffect(() => () => { stopResizeRef.current?.(); }, []);
 
   const loadMeta = useCallback(async (force = false) => {
     setLoadingStage('Lendo abas do Google Sheets...');
@@ -559,11 +577,13 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
       if (Array.isArray(json.tabs)) setTabs(json.tabs);
       setAiAnswer('');
       setAiContext(null);
+      return true;
     } catch (error: any) {
       console.error('Ponto de Pedido:', error);
       setErrorMsg(error?.message || 'Falha ao carregar dados.');
       setData(null);
       setRows([]);
+      return false;
     } finally {
       setLoading(false);
     }
@@ -661,6 +681,48 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
     };
   }, [loadData, loadMeta, loadStateSummaries]);
 
+  // Força uma única leitura nova do Sheets e reutiliza esse workbook para
+  // remontar a aba atual. Evita baixar a mesma planilha três vezes.
+  const handleRefreshSheets = async () => {
+    if (refreshing || loading) return;
+
+    setRefreshing(true);
+    setErrorMsg('');
+
+    try {
+      // /meta?refresh=1 invalida o cache do workbook e das métricas no backend.
+      const nextTabs = await loadMeta(true);
+      const selected = nextTabs.some((tab: SheetTab) => tab.id === activeTab)
+        ? activeTab
+        : nextTabs[0]?.id || '';
+
+      if (!selected) {
+        throw new Error('Nenhuma aba disponível após atualizar o Google Sheets.');
+      }
+
+      const category = nextTabs.find((tab: SheetTab) => tab.id === selected)?.category || 'APARELHOS';
+      setActiveTab(selected);
+
+      // Sem refresh=1 aqui: usa o workbook recém-importado no passo anterior.
+      const loaded = await loadData(selected, false);
+      if (!loaded) return;
+
+      // Análises anteriores não devem permanecer visíveis depois de novos dados.
+      setAiReport(null);
+      setAuditData(null);
+      setAuditError('');
+
+      // Atualiza também o resumo, em separado, sem atrasar a aba principal.
+      void loadStateSummaries(category, false);
+      if (pageMode === 'prontos') void loadReadyOrders(category);
+    } catch (error: any) {
+      console.error('Atualização do Ponto de Pedido:', error);
+      setErrorMsg(error?.message || 'Não foi possível atualizar o Google Sheets.');
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
   const handleTabChange = (tab: string) => {
     if (tab === activeTab) return;
     setActiveTab(tab);
@@ -679,6 +741,9 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
   );
 
   const activeCategory = activeTabMeta?.category || categories[0] || 'APARELHOS';
+  // GO é uma visão analítica sobre o catálogo de Brasília; esse estoque já
+  // está incluído no total DF+GO. Não gerar pedidos manuais duplicados.
+  const isGoConsultation = activeTab.startsWith('GO::');
   const isAccessories = activeCategory === 'ACESSÓRIOS';
 
   const searchedRows = useMemo(() => {
@@ -721,6 +786,7 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
     showFutureWeeks,
     showForecasts,
     showSamsungPrice,
+    planningColumnWidths,
     hideBlockedRows,
     searchedRows.length,
   ]);
@@ -738,10 +804,14 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
   };
 
   const stateTabs = useMemo(
-    () => tabs.filter((tab) => (tab.category || 'APARELHOS') === activeCategory),
+    () =>
+      tabs.filter(
+        (tab) =>
+          (tab.category || 'APARELHOS') === activeCategory &&
+          tab.geoScope !== 'GO_SEM_RIO_VERDE'
+      ),
     [tabs, activeCategory],
   );
-
   const handleCategoryChange = (category: string) => {
     if (!category || category === activeCategory) return;
     const firstTab = tabs.find((tab) => tab.category === category);
@@ -961,7 +1031,7 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
   };
 
   const savePedidoRufino = async (row: PontoPedidoRow) => {
-    if (!activeTab) return;
+    if (!activeTab || isGoConsultation) return;
     setSavingRowKey(row.rowKey);
 
     try {
@@ -989,7 +1059,7 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
   };
 
   const savePedidoControladoria = async (row: PontoPedidoRow) => {
-    if (!activeTab) return;
+    if (!activeTab || isGoConsultation) return;
     setSavingControladoriaKey(row.rowKey);
 
     try {
@@ -1045,9 +1115,90 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
     11 +
     (showSamsungPrice ? 1 : 0) +
     (showSales ? 4 : 1) +
-    (showFutureWeeks ? 6 : 0) +
+    (showFutureWeeks ? 1 + (data?.weeks || []).slice(0, 5).length : 0) +
     (showForecasts ? 4 : 0) +
     (isAccessories ? 0 : 3);
+
+  // A ordem segue EXATAMENTE a primeira linha do cabeçalho do Planejamento.
+  // Chaves estáveis mantêm a largura ao abrir/fechar Vendas, Semanas e Previsões.
+  const planningColumns: Array<{ key: string; width: number }> = [
+    { key: 'modelo', width: 260 },
+    ...(showSamsungPrice ? [{ key: 'precoSamsung', width: 92 }] : []),
+    { key: 'precoTelecel', width: 92 },
+    { key: 'precoFinal', width: 92 },
+    { key: 'vendas60', width: 76 },
+    ...(showSales ? [
+      { key: 'vendas45', width: 66 },
+      { key: 'vendas30', width: 66 },
+      { key: 'vendas15', width: 66 },
+    ] : []),
+    { key: 'estoque', width: 64 },
+    { key: 'backlog', width: 82 },
+    ...(showFutureWeeks ? [
+      { key: 'pendente', width: 66 },
+      ...(data?.weeks || []).slice(0, 5).map((week) => ({ key: `week:${week.key}`, width: 116 })),
+    ] : []),
+    ...(!isAccessories ? [{ key: 'pedidoFaturado', width: 84 }] : []),
+    { key: 'cobertura', width: 84 },
+    ...(showForecasts ? [
+      { key: 'saldo15', width: 68 },
+      { key: 'saldo30', width: 68 },
+      { key: 'saldo45', width: 68 },
+      { key: 'saldo60', width: 68 },
+    ] : []),
+    { key: 'faturarBacklog', width: 88 },
+    { key: 'sugNovos', width: 86 },
+    { key: 'controladoria', width: 104 },
+    { key: 'rufino', width: 88 },
+    { key: 'previsaoEstoque', width: 96 },
+    ...(!isAccessories ? [
+      { key: 'sellIn', width: 78 },
+      { key: 'alteracao', width: 82 },
+    ] : []),
+  ];
+
+  const planningWidthFor = (column: { key: string; width: number }) =>
+    Math.max(column.key === 'modelo' ? 180 : 54, Number(planningColumnWidths[column.key]) || column.width);
+
+  const planningTableWidth = planningColumns.reduce((sum, col) => sum + planningWidthFor(col), 0);
+
+  const startPlanningColumnResize = (event: React.MouseEvent<HTMLTableSectionElement>) => {
+    if (event.button !== 0) return;
+    const target = event.target as HTMLElement;
+    const cell = target.closest('th');
+    if (!cell || !event.currentTarget.contains(cell)) return;
+    // Apenas a faixa de 9px na borda direita inicia o redimensionamento.
+    if (cell.getBoundingClientRect().right - event.clientX > 9) return;
+    const column = planningColumns[cell.cellIndex];
+    if (!column) return;
+    event.preventDefault();
+    stopResizeRef.current?.();
+    const startX = event.clientX;
+    const startWidth = planningWidthFor(column);
+    const minWidth = column.key === 'modelo' ? 180 : 54;
+    const previousCursor = document.body.style.cursor;
+    const previousSelect = document.body.style.userSelect;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    const onMove = (move: MouseEvent) => {
+      const next = Math.max(minWidth, Math.round(startWidth + move.clientX - startX));
+      setPlanningColumnWidths((current) =>
+        current[column.key] === next ? current : { ...current, [column.key]: next }
+      );
+    };
+    const cleanup = () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', cleanup);
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousSelect;
+      stopResizeRef.current = null;
+    };
+    stopResizeRef.current = cleanup;
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', cleanup);
+  };
+
 
 
   const runAiAnalysis = async () => {
@@ -1066,7 +1217,8 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
         .toUpperCase();
 
       const shouldAutoPlan =
-        aiAction === 'AUTO_PLAN' || normalizedQuestion === 'FAZER PONTO DE PEDIDO';
+        !isGoConsultation &&
+        (aiAction === 'AUTO_PLAN' || normalizedQuestion === 'FAZER PONTO DE PEDIDO');
 
       if (shouldAutoPlan) {
         const { response: autoResponse, json: autoJson } = await fetchJsonWithTimeout(
@@ -1124,7 +1276,7 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
         body: JSON.stringify({
           aba: activeTab,
           categoria: activeCategory,
-          escopo: 'REDE',
+          escopo: isGoConsultation ? 'ABA' : 'REDE',
           pergunta: shouldAutoPlan
             ? 'Explique e audite o ponto de pedido automático que acabou de ser preenchido, incluindo transferências, backlog, riscos e quantidades finais por estado.'
             : aiQuestion,
@@ -1478,6 +1630,8 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
           min="0"
           step="1"
           value={Number(row.pedidoRufino || 0)}
+          disabled={isGoConsultation}
+          title={isGoConsultation ? 'GO é um recorte informativo, já somado em DF+GO.' : undefined}
           onChange={(event) =>
             updatePedidoRufino(row.rowKey, Number(event.target.value || 0))
           }
@@ -1505,6 +1659,8 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
         min="0"
         step="1"
         value={Number(row.pedidoControladoria || 0)}
+        disabled={isGoConsultation}
+        title={isGoConsultation ? 'GO é um recorte informativo, já somado em DF+GO.' : undefined}
         onChange={(event) =>
           updatePedidoControladoria(row.rowKey, Number(event.target.value || 0))
         }
@@ -1564,11 +1720,18 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
 
   const renderMainTable = () => (
     <div className="overflow-hidden rounded-xl border border-[#9fb3c8] bg-white shadow-sm">
+      <div className="flex items-center justify-between gap-2 border-b border-slate-200 bg-slate-50 px-2 py-1 text-[9px] text-slate-500">
+        
+        <button type="button" onClick={() => setPlanningColumnWidths({})}
+          className="shrink-0 rounded border border-slate-200 bg-white px-2 py-0.5 font-bold text-slate-600 hover:bg-slate-100">
+          Restaurar larguras
+        </button>
+      </div>
       <div
         ref={topScrollRef}
         onScroll={() => syncHorizontalScroll(topScrollRef.current, tableScrollRef.current)}
         className="h-4 overflow-x-auto overflow-y-hidden border-b border-[#9fb3c8] bg-slate-100"
-        aria-label="Rolagem horizontal superior da tabela"
+        aria-label="Rolagem horizontal superior da tabela; arraste a borda direita dos títulos para ajustar colunas"
       >
         <div style={{ width: Math.max(tableScrollWidth, 1), height: 1 }} />
       </div>
@@ -1578,10 +1741,29 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
         onScroll={() => syncHorizontalScroll(tableScrollRef.current, topScrollRef.current)}
         className="max-h-[76vh] overflow-auto pb-1"
       >
-        <table ref={tableRef} className="min-w-max border-separate border-spacing-0 border-l border-t border-[#9fb3c8] bg-white text-left text-[9px] leading-4">
-          <thead className="sticky top-0 z-30 bg-slate-100">
+        <style>{`
+          .pp-planning-grid thead th { position: relative; overflow: hidden; }
+          .pp-planning-grid thead th:first-child { position: sticky; }
+          .pp-planning-grid thead th::after {
+            content: ''; position: absolute; top: 0; bottom: 0; right: 0;
+            width: 8px; cursor: col-resize; z-index: 4;
+          }
+          .pp-planning-grid thead th:hover::after { background: rgba(79,70,229,.22); }
+          .pp-planning-grid td { overflow: hidden; }
+        `}</style>
+        <table
+          ref={tableRef}
+          className="pp-planning-grid border-separate border-spacing-0 border-l border-t border-[#9fb3c8] bg-white text-left text-[9px] leading-4"
+          style={{ tableLayout: 'fixed', width: planningTableWidth }}
+        >
+          <colgroup>
+            {planningColumns.map((column) => (
+              <col key={column.key} style={{ width: planningWidthFor(column) }} />
+            ))}
+          </colgroup>
+          <thead onMouseDown={startPlanningColumnResize} className="sticky top-0 z-30 bg-slate-100">
             <tr className="text-[7px] font-black uppercase tracking-[0.08em] text-slate-500">
-              <th className="sticky left-0 z-40 w-[220px] min-w-[220px] max-w-[220px] border-b border-r border-[#9fb3c8] bg-slate-100 px-1.5 py-1">
+              <th className="sticky left-0 z-40 max-border-b border-r border-[#9fb3c8] bg-slate-100 px-1.5 py-1">
                 <ColumnLabel
                   label="Modelo com cor"
                   help="Modelo exatamente como está na planilha de Ponto de Pedido, preservando a variação de cor."
@@ -1589,51 +1771,51 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
               </th>
 
               {showSamsungPrice && (
-                <th className="min-w-[92px] border-b border-r border-[#9fb3c8] bg-emerald-50 px-1.5 py-1 text-right text-emerald-700">
+                <th className="border-b border-r border-[#9fb3c8] bg-emerald-50 px-1.5 py-1 text-right text-emerald-700">
                   <ColumnLabel label={<>Preço<br />Samsung</>} help="Preço Samsung informado na aba atual do Google Sheets." />
                 </th>
               )}
 
-              <th className="min-w-[92px] border-b border-r border-[#9fb3c8] bg-emerald-50 px-1.5 py-1 text-right text-emerald-700">
+              <th className="border-b border-r border-[#9fb3c8] bg-emerald-50 px-1.5 py-1 text-right text-emerald-700">
                 <ColumnLabel label="Preço Telecel" help="Preço Telecel informado na aba atual do Google Sheets." />
               </th>
 
-              <th className="min-w-[92px] border-b border-r border-[#9fb3c8] bg-emerald-50 px-1.5 py-1 text-right text-emerald-700">
+              <th className="border-b border-r border-[#9fb3c8] bg-emerald-50 px-1.5 py-1 text-right text-emerald-700">
                 <ColumnLabel label="Preço final" help="Preço final considerado na planilha para este modelo." />
               </th>
 
               {showSales ? (
                 <>
-                  <th className="min-w-[66px] border-b border-r border-[#9fb3c8] bg-blue-100 px-1 py-1 text-center text-blue-800">
+                  <th className="border-b border-r border-[#9fb3c8] bg-blue-100 px-1 py-1 text-center text-blue-800">
                     <ColumnLabel label="Vendas 60" help="Quantidade total vendida deste modelo/cor nos últimos 60 dias. É a principal referência do planejamento." />
                   </th>
-                  <th className="min-w-[66px] border-b border-r border-[#9fb3c8] bg-blue-50 px-1 py-1 text-center text-blue-700">
+                  <th className="border-b border-r border-[#9fb3c8] bg-blue-50 px-1 py-1 text-center text-blue-700">
                     <ColumnLabel label="Vendas 45" help="Quantidade vendida nos últimos 45 dias. Usada como tendência complementar." />
                   </th>
-                  <th className="min-w-[66px] border-b border-r border-[#9fb3c8] bg-blue-50 px-1 py-1 text-center text-blue-700">
+                  <th className="border-b border-r border-[#9fb3c8] bg-blue-50 px-1 py-1 text-center text-blue-700">
                     <ColumnLabel label="Vendas 30" help="Quantidade vendida nos últimos 30 dias. Usada como tendência complementar." />
                   </th>
-                  <th className="min-w-[66px] border-b border-r border-[#9fb3c8] bg-blue-50 px-1 py-1 text-center text-blue-700">
+                  <th className="border-b border-r border-[#9fb3c8] bg-blue-50 px-1 py-1 text-center text-blue-700">
                     <ColumnLabel label="Vendas 15" help="Quantidade vendida nos últimos 15 dias. Ajuda a identificar aceleração ou desaceleração recente." />
                   </th>
                 </>
               ) : (
-                <th className="min-w-[76px] border-b border-r border-[#9fb3c8] bg-blue-100 px-1 py-1 text-center text-blue-800">
+                <th className="border-b border-r border-[#9fb3c8] bg-blue-100 px-1 py-1 text-center text-blue-800">
                   <ColumnLabel label="Vendas 60d ▸" help="Foco principal do relatório: vendas acumuladas dos últimos 60 dias. Clique em Vendas para abrir 15/30/45/60 dias." />
                 </th>
               )}
 
-              <th className="min-w-[64px] border-b border-r border-[#9fb3c8] bg-slate-100 px-1 py-1 text-center text-slate-700">
+              <th className="border-b border-r border-[#9fb3c8] bg-slate-100 px-1 py-1 text-center text-slate-700">
                 <ColumnLabel label="Estoque" help="Estoque atual encontrado para este modelo/cor na região da aba selecionada." />
               </th>
 
-              <th className="min-w-[82px] border-b border-r border-[#9fb3c8] bg-violet-100 px-1 py-1 text-center text-violet-800">
+              <th className="border-b border-r border-[#9fb3c8] bg-violet-100 px-1 py-1 text-center text-violet-800">
                 <ColumnLabel label={<>Total em<br />backlog</>} help="Backlog total considerado no planejamento: pendente/atrasado + semana atual + próximas quatro semanas." />
               </th>
 
               {showFutureWeeks && (
                 <>
-                  <th className="min-w-[66px] border-b border-r border-[#9fb3c8] bg-red-50 px-1 py-1 text-center text-red-700">
+                  <th className="border-b border-r border-[#9fb3c8] bg-red-50 px-1 py-1 text-center text-red-700">
                     <ColumnLabel label="Pendente" help="Parte do backlog sem semana válida ou com semana anterior à atual. Já está incluída no Total em backlog." />
                   </th>
 
@@ -1641,7 +1823,7 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
                     <th
                       key={week.key}
                       title="Quantidade de backlog prevista especificamente para esta semana."
-                      className="min-w-[116px] border-b border-r border-[#9fb3c8] bg-violet-50 px-1 py-1 text-center text-violet-700"
+                      className="border-b border-r border-[#9fb3c8] bg-violet-50 px-1 py-1 text-center text-violet-700"
                     >
                       {renderWeekHeaderContent(week)}
                     </th>
@@ -1650,37 +1832,37 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
               )}
 
               {!isAccessories && (
-                <th className="min-w-[74px] border-b border-r border-[#9fb3c8] bg-sky-50 px-1 py-1 text-center text-sky-800">
+                <th className="border-b border-r border-[#9fb3c8] bg-sky-50 px-1 py-1 text-center text-sky-800">
                   <ColumnLabel label={<>Pedido<br />faturado</>} help="Quantidade informada na coluna PEDIDO FATURADO da aba de aparelhos. Representa pedido já faturado." />
                 </th>
               )}
 
-              <th className="min-w-[84px] border-b border-r border-[#9fb3c8] bg-cyan-50 px-1 py-1 text-center text-cyan-700">
+              <th className="border-b border-r border-[#9fb3c8] bg-cyan-50 px-1 py-1 text-center text-cyan-700">
                 <ColumnLabel label={<>Cobertura<br />atual</>} help="Cobertura calculada somente com o estoque físico atual dividido pela média diária das Vendas 60. Backlog e pedidos futuros não entram nesta conta." />
               </th>
 
               {showForecasts && (
                 <>
-                  <th className="min-w-[68px] border-b border-r border-[#9fb3c8] bg-cyan-50 px-1 py-1 text-center text-cyan-700">
+                  <th className="border-b border-r border-[#9fb3c8] bg-cyan-50 px-1 py-1 text-center text-cyan-700">
                     <ColumnLabel label="Saldo 15d" help="Saldo projetado para 15 dias considerando estoque, demanda e pedidos com chegada dentro do horizonte." />
                   </th>
-                  <th className="min-w-[68px] border-b border-r border-[#9fb3c8] bg-cyan-50 px-1 py-1 text-center text-cyan-700">
+                  <th className="border-b border-r border-[#9fb3c8] bg-cyan-50 px-1 py-1 text-center text-cyan-700">
                     <ColumnLabel label="Saldo 30d" help="Saldo projetado para 30 dias considerando estoque, demanda e pedidos com chegada dentro do horizonte." />
                   </th>
-                  <th className="min-w-[68px] border-b border-r border-[#9fb3c8] bg-cyan-50 px-1 py-1 text-center text-cyan-700">
+                  <th className="border-b border-r border-[#9fb3c8] bg-cyan-50 px-1 py-1 text-center text-cyan-700">
                     <ColumnLabel label="Saldo 45d" help="Saldo projetado para 45 dias considerando estoque, demanda e pedidos com chegada dentro do horizonte." />
                   </th>
-                  <th className="min-w-[68px] border-b border-r border-[#9fb3c8] bg-cyan-50 px-1 py-1 text-center text-cyan-700">
+                  <th className="border-b border-r border-[#9fb3c8] bg-cyan-50 px-1 py-1 text-center text-cyan-700">
                     <ColumnLabel label="Saldo 60d" help="Saldo projetado para 60 dias. Valor negativo indica necessidade de reposição dentro do horizonte." />
                   </th>
                 </>
               )}
 
-              <th className="min-w-[88px] border-b border-r border-[#9fb3c8] bg-orange-100 px-1 py-1 text-center text-orange-800">
+              <th className="border-b border-r border-[#9fb3c8] bg-orange-100 px-1 py-1 text-center text-orange-800">
                 <ColumnLabel label={<>Sug. faturar<br />backlog</>} help="Quanto do backlog existente deve ser priorizado para faturamento, limitado pela necessidade calculada." />
               </th>
 
-              <th className="min-w-[86px] border-b border-r border-[#9fb3c8] bg-amber-100 px-1 py-1 text-center text-amber-900">
+              <th className="border-b border-r border-[#9fb3c8] bg-amber-100 px-1 py-1 text-center text-amber-900">
                 <ColumnLabel
                   label={<>Sug. novos<br />pedidos</>}
                   help={isAccessories
@@ -1689,25 +1871,25 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
                 />
               </th>
 
-              <th className="min-w-[104px] border-b border-r border-[#9fb3c8] bg-violet-600 px-1 py-1 text-center text-white">
+              <th className="border-b border-r border-[#9fb3c8] bg-violet-600 px-1 py-1 text-center text-white">
                 <ColumnLabel label={<>Sug. pedido<br />Controladoria</>} help="Quantidade manual definida pela Controladoria. Campo editável e salvo no sistema." />
               </th>
 
-              <th className="min-w-[88px] border-b border-r border-[#9fb3c8] bg-indigo-600 px-1 py-1 text-center text-white">
+              <th className="border-b border-r border-[#9fb3c8] bg-indigo-600 px-1 py-1 text-center text-white">
                 <ColumnLabel label={<>Sugestão<br />Rufino</>} help="Quantidade final sugerida para Rufino. Pode ser preenchida pela IA ou editada manualmente e fica sincronizada com o Resumo dos Pedidos." />
               </th>
 
-              <th className="min-w-[96px] border-b border-r border-[#9fb3c8] bg-slate-950 px-1 py-1 text-center text-white">
+              <th className="border-b border-r border-[#9fb3c8] bg-slate-950 px-1 py-1 text-center text-white">
                 <ColumnLabel label={<>Previsão de<br />estoque</>} help="Cobertura estimada após considerar estoque, entradas previstas e Sugestão Rufino." />
               </th>
 
               {!isAccessories && (
                 <>
-                  <th className="min-w-[78px] border-b border-r border-[#9fb3c8] bg-emerald-50 px-1.5 py-1 text-right text-emerald-700">
+                  <th className="border-b border-r border-[#9fb3c8] bg-emerald-50 px-1.5 py-1 text-right text-emerald-700">
                     <ColumnLabel label="Sell in" help="Valor de Sell In informado na planilha original." />
                   </th>
 
-                  <th className="min-w-[82px] border-b border-r border-[#9fb3c8] bg-slate-100 px-1.5 py-1 text-center">
+                  <th className="border-b border-r border-[#9fb3c8] bg-slate-100 px-1.5 py-1 text-center">
                     <ColumnLabel label="Alteração" help="Observação de alteração trazida diretamente da planilha original." />
                   </th>
                 </>
@@ -1736,7 +1918,7 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
 
                 return (
                   <tr key={row.rowKey} className={`${rowTone} transition hover:brightness-[0.99]`}>
-                    <td className="sticky left-0 z-20 w-[260px] min-w-[260px] max-w-[260px] border-b border-r border-[#b7c3cf] px-1.5 py-[3px] font-black text-slate-950">
+                    <td className="sticky left-0 z-20 border-b border-r border-[#b7c3cf] px-1.5 py-[3px] font-black text-slate-950">
                       <span className="block truncate uppercase tracking-[0.02em]" title={row.modeloComCor}>{row.modeloComCor}</span>
                       {statusBadge(row.status)}
                     </td>
@@ -2677,13 +2859,26 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-[#f5f7fb]">
       <div className="shrink-0 border-b border-slate-200 bg-white px-3 py-2 md:px-5">
-        <div className="flex items-center gap-2">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-600 text-white shadow-sm">
-            <Package size={16} />
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-2">
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-indigo-600 text-white shadow-sm">
+              <Package size={16} />
+            </div>
+            <h2 className="text-lg font-black uppercase tracking-tight text-slate-950 md:text-xl">
+              Ponto de Pedido
+            </h2>
           </div>
-          <h2 className="text-lg font-black uppercase tracking-tight text-slate-950 md:text-xl">
-            Ponto de Pedido
-          </h2>
+
+          <button
+            type="button"
+            onClick={handleRefreshSheets}
+            disabled={loading || refreshing || finalizing || aiLoading}
+            title="Busca novamente a planilha do Google Sheets e atualiza as vendas, o estoque e os cálculos da aba atual."
+            className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-indigo-200 bg-indigo-50 px-3 text-[9px] font-black uppercase tracking-wide text-indigo-700 transition hover:border-indigo-300 hover:bg-indigo-100 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} />
+            {refreshing ? 'Atualizando...' : 'Atualizar'}
+          </button>
         </div>
       </div>
 
@@ -2747,9 +2942,9 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
               <button
                 type="button"
                 onClick={finalizePointOrder}
-                disabled={finalizing || loading}
+                disabled={finalizing || loading || isGoConsultation}
                 className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-orange-500 px-3 text-[8px] font-black uppercase tracking-wide text-white shadow-sm transition hover:bg-orange-600 disabled:opacity-50"
-                title="Salva uma fotografia completa do ponto de pedido atual da categoria em Pedidos prontos."
+                title={isGoConsultation ? 'GO é consulta: os pedidos do estado já estão no DF+GO.' : 'Salva uma fotografia completa do ponto de pedido atual da categoria em Pedidos prontos.'}
               >
                 {finalizing ? <RefreshCw size={12} className="animate-spin" /> : <CheckCircle2 size={12} />}
                 Finalizar ponto de pedido
@@ -2760,6 +2955,11 @@ export function EstoqueVendas({ initialMode = 'planejamento' }: { initialMode?: 
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto p-2 md:p-3">
+        {(isGoConsultation || activeTabMeta?.geoScope === 'GO_SEM_RIO_VERDE') && (
+          <div className="mb-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[10px] font-semibold text-amber-900">
+            GO = lojas de GO sem BURITI RIO VERDE. O total de GO já está dentro do recorte DF+GO: não somar os dois nem emitir pedidos duplicados.
+          </div>
+        )}
         {errorMsg && (
           <div className="mb-3 flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 px-2 py-1.5 text-xs font-bold text-red-700">
             <AlertTriangle size={16} className="mt-0.5 shrink-0" />

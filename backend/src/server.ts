@@ -21,6 +21,7 @@ import { createMetasRoutes } from './modules/metas/metas.routes';
 import { issueMetasToken } from './modules/metas/metas.session';
 import { refreshProductMaster, resolveProductMaster } from './modules/productMaster/productMaster.service';
 import { recordProductMasterIssue } from './modules/productMaster/productMasterIssues.service';
+import { matchNotebook, parseNotebookIdentity } from './modules/pontoPedido/pontoPedidoDeviceMatch';
 import { google } from 'googleapis';
 import { spawn } from 'child_process';
 import os from 'os';
@@ -13757,6 +13758,7 @@ function pontoPedidoNormalizeHeader(value: any): string {
 type PontoPedidoGeoScope =
   | 'STATE'
   | 'DF_GO_SEM_RIO_VERDE'
+  | 'GO_SEM_RIO_VERDE'
   | 'RIO_VERDE_ONLY';
 
 type PontoPedidoPlanningTabMeta = {
@@ -13768,26 +13770,58 @@ type PontoPedidoPlanningTabMeta = {
   geoScope: PontoPedidoGeoScope;
 };
 
-function pontoPedidoIsPlanningSheet(value: any): boolean {
-  const normalized = pontoPedidoNormalizeHeader(value);
+  // GO consulta a mesma relação de produtos de Brasília, mas com volumes
+  // independentes de GO e sem Buriti Rio Verde. Não é uma aba física do Sheets.
+  const PONTO_PEDIDO_GO_PREFIX = 'GO::';
+  function pontoPedidoPhysicalSheet(value: string): string {
+    return value.startsWith(PONTO_PEDIDO_GO_PREFIX)
+      ? value.slice(PONTO_PEDIDO_GO_PREFIX.length)
+      : value;
+  }
+  function pontoPedidoAvailableTabNames(workbook: XLSX.WorkBook): string[] {
+    const physical = workbook.SheetNames.filter(pontoPedidoIsPlanningSheet);
+    const result = [...physical];
+    const explicitGo = (category: string) => physical.some((s) => {
+      const text = pontoPedidoNormalizeHeader(s);
+      return pontoPedidoPlanningTabMeta(s).category === category &&
+        /\b(?:GO|GOIAS)\b/.test(text) && !text.includes('RIO VERDE');
+    });
+    for (const s of physical) {
+      const meta = pontoPedidoPlanningTabMeta(s);
+      if (meta.geoScope !== 'DF_GO_SEM_RIO_VERDE') continue;
+      if (explicitGo(meta.category)) continue;
+      result.push(`${PONTO_PEDIDO_GO_PREFIX}${s}`);
+    }
+    return result;
+  }
 
-  return (
-    normalized.startsWith('APA') ||
-    normalized.startsWith('API') ||
-    normalized.startsWith('AP ') ||
-    normalized.startsWith('TAB') ||
-    normalized.startsWith('WEA') ||
-    normalized.startsWith('ACE') ||
-    normalized.startsWith('ACESS') ||
-    normalized.includes('CABEDELO') ||
-    normalized.includes('MANAIRA') ||
-    normalized.includes('MANAIRA') ||
-    normalized.includes('FORTALEZA')
-  );
+  function pontoPedidoIsPlanningSheet(value: any): boolean {
+    const normalized = pontoPedidoNormalizeHeader(pontoPedidoPhysicalSheet(String(value || '')));
+
+    return (
+      normalized.startsWith('APA') ||
+      normalized.startsWith('API') ||
+      normalized.startsWith('AP ') ||
+      normalized.startsWith('TAB') ||
+      normalized.startsWith('NOTEBOOK') ||
+      normalized.startsWith('NOTE ') ||
+      normalized.startsWith('NB ') ||
+      normalized.startsWith('WEA') ||
+      normalized.startsWith('ACE') ||
+      normalized.startsWith('ACESS')
+    );
 }
 
 function pontoPedidoPlanningTabMeta(value: any): PontoPedidoPlanningTabMeta {
-  const raw = String(value ?? '').trim();
+  const raw = String(value || '').trim();
+
+  if (raw.startsWith(PONTO_PEDIDO_GO_PREFIX)) {
+    const base = pontoPedidoPlanningTabMeta(pontoPedidoPhysicalSheet(raw));
+    return {
+      ...base, id: raw, label: 'GOIÁS', state: 'GO',
+      stateLabel: 'GO (SEM RIO VERDE)', geoScope: 'GO_SEM_RIO_VERDE',
+    };
+  }
   const normalized = pontoPedidoNormalizeHeader(raw);
 
   let state = 'OUTROS';
@@ -13809,6 +13843,11 @@ function pontoPedidoPlanningTabMeta(value: any): PontoPedidoPlanningTabMeta {
     stateLabel = 'RIO VERDE';
     label = 'RIO VERDE';
     geoScope = 'RIO_VERDE_ONLY';
+  } else if (/\b(?:GO|GOIAS)\b/.test(normalized)) {
+    state = 'GO';
+    stateLabel = 'GO (SEM RIO VERDE)';
+    label = 'GOIÁS';
+    geoScope = 'GO_SEM_RIO_VERDE';
   } else if (normalized.includes('RECIFE')) {
     state = 'PE';
     stateLabel = 'PERNAMBUCO';
@@ -13825,12 +13864,14 @@ function pontoPedidoPlanningTabMeta(value: any): PontoPedidoPlanningTabMeta {
 
   let category = 'APARELHOS';
   if (normalized.includes('WEAR') || normalized.includes('WATCH') || normalized.includes('BUDS')) {
-    category = 'WEARABLES';
-  } else if (normalized.includes('TABLET') || normalized.startsWith('TAB')) {
-    category = 'TABLETS';
-  } else if (normalized.includes('ACESS') || normalized.startsWith('ACE')) {
-    category = 'ACESSÓRIOS';
-  }
+        category = 'WEARABLES';
+    } else if (normalized.includes('TABLET') || normalized.startsWith('TAB')) {
+        category = 'TABLETS';
+    } else if (normalized.includes('NOTEBOOK') || normalized.startsWith('NOTE ') || normalized.startsWith('NB ')) {
+        category = 'NOTEBOOKS';
+    } else if (normalized.includes('ACESS') || normalized.startsWith('ACE')) {
+        category = 'ACESSÓRIOS';
+    }
 
   return {
     id: raw,
@@ -13855,7 +13896,7 @@ function pontoPedidoStateFromText(value: any): string {
   if (normalized === 'PE' || normalized.includes('PERNAMBUCO') || normalized.includes('RECIFE')) return 'PE';
   if (normalized === 'MG' || normalized.includes('MINAS GERAIS') || normalized.includes('UBERLANDIA') || normalized.includes('UBERABA')) return 'MG';
   if (normalized === 'GO' || normalized.includes('GOIAS') || normalized.includes('GOIANIA') || normalized.includes('FLAMBOYANT') || normalized.includes('PASSEIO DAS AGUAS') || normalized.includes('BURITI SHOPPING') || normalized.includes('PORTAL SHOPPING') || normalized.includes('SHOPPING SUL') || normalized.includes('RIO VERDE') || normalized.includes('ARAGUAIA') || normalized.includes('ANAPOLIS')) return 'GO';
-  if (normalized === 'DF' || normalized.includes('DISTRITO FEDERAL') || normalized.includes('BRASILIA') || normalized.includes('TAGUATINGA') || normalized.includes('CONJUNTO NACIONAL') || normalized.includes('PARK SHOPPING') || normalized.includes('JK SHOPPING') || normalized.includes('PATIO BRASIL') || normalized.includes('TERRACO') || normalized.includes('BOULEVARD') || normalized.includes('IGUATEMI SHOPPING')) return 'DF';
+  if (normalized === 'DF' || normalized.includes('PARTAGE') || normalized.includes('DISTRITO FEDERAL') || normalized.includes('BRASILIA') || normalized.includes('TAGUATINGA') || normalized.includes('CONJUNTO NACIONAL') || normalized.includes('PARK SHOPPING') || normalized.includes('JK SHOPPING') || normalized.includes('PATIO BRASIL') || normalized.includes('TERRACO') || normalized.includes('BOULEVARD') || normalized.includes('IGUATEMI SHOPPING')) return 'DF';
   return '';
 }
 
@@ -13905,6 +13946,9 @@ function pontoPedidoMatchesGeoScope(
   if (geoScope === 'RIO_VERDE_ONLY') {
     return rowState === 'GO' && isRioVerde;
   }
+  if (geoScope === 'GO_SEM_RIO_VERDE') {
+    return rowState === 'GO' && !isRioVerde;
+  }
 
   return !stateCode || rowState === stateCode;
 }
@@ -13922,6 +13966,8 @@ function pontoPedidoProductKey(value: any): string {
     .replace(/\bAPARELHO\b/g, ' ')
     .replace(/([A-Z]\d{2,3})\s*\+/g, '$1 PLUS ')
     .replace(/\bFAN\s+EDITION\b/g, ' FE ')
+    .replace(/\bFE\s*\+/g, ' FEPLUS ')
+    .replace(/\bFE\s+PLUS\b/g, ' FEPLUS ')
     .replace(/\bSEM\s+FIO\b/g, ' WIRELESS ')
 
     // Padroniza gerações Fold e Flip.
@@ -13988,18 +14034,19 @@ function pontoPedidoModelSignature(value: any): PontoPedidoModelSignature {
   const key = pontoPedidoProductKey(value);
   const tokens = key.split(' ').filter(Boolean);
 
-  const model =
-    tokens.find((token) =>
-      /^(?:A\d{2,3}|S\d{2,3}|M\d{2,3}|F\d{2,3}|X\d{3,4}|R\d{3,4}|FOLD\d*|FLIP\d*)$/.test(token)
-    ) || '';
+  const rawModel = tokens.find((token) =>
+    /^(?:A\d{2,3}|S\d{2,3}|M\d{2,3}|F\d{2,3}|X\d{3,4}|R\d{3,4}|FOLD\d+|FLIP\d+|BOOK\d+)$/.test(token)
+  ) || '';
+  const model = rawModel && tokens.includes('TAB') ? `TAB:${rawModel}`
+    : rawModel && tokens.includes('BOOK') ? `BOOK:${rawModel}` : rawModel;
 
   const storage =
     tokens.find((token) => /^\d+(?:GB|TB)$/.test(token)) || '';
 
-  const network =
-    tokens.find((token) => /^(?:4G|5G)$/.test(token)) || '';
+  const network = tokens.includes('WIFI') || tokens.includes('WI') && tokens.includes('FI')
+    ? 'WIFI' : tokens.find((token) => /^(?:4G|5G)$/.test(token)) || '';
 
-  const variantOrder = ['FE', 'ULTRA', 'PLUS', 'EDGE', 'LITE', 'CORE', 'FOLD', 'FLIP'];
+  const variantOrder = ['FEPLUS', 'FE', 'ULTRA', 'PLUS', 'EDGE', 'LITE', 'FOLD', 'FLIP'];
   const variant =
     variantOrder.find((candidate) =>
       tokens.some((token) => token === candidate || token.startsWith(candidate))
@@ -14244,7 +14291,8 @@ function pontoPedidoFindHeaderRow(rows: any[][], wanted: string[]): number {
     const normalizedCells = (row || []).map(pontoPedidoNormalizeHeader);
     const score = wantedNormalized.reduce((sum, target) => {
       const found = normalizedCells.some(
-        (cell) => cell === target || cell.includes(target) || target.includes(cell)
+        (cell) => Boolean(cell) && Boolean(target) &&
+          (cell === target || cell.includes(target) || target.includes(cell))
       );
       return sum + (found ? 1 : 0);
     }, 0);
@@ -14269,7 +14317,8 @@ function pontoPedidoFindColumn(headers: any[], candidates: string[], fallback = 
 
   for (const candidate of normalizedCandidates) {
     const partial = normalizedHeaders.findIndex(
-      (header) => header.includes(candidate) || candidate.includes(header)
+      (header) => Boolean(header) && Boolean(candidate) &&
+        (header.includes(candidate) || candidate.includes(header))
     );
     if (partial >= 0) return partial;
   }
@@ -14281,8 +14330,17 @@ function pontoPedidoSheetRows(workbook: XLSX.WorkBook, sheetName: string): any[]
   const sheet = workbook.Sheets[sheetName];
   if (!sheet) return [];
 
+  // Garante que o índice 10 corresponda à coluna física K
+  const range = XLSX.utils.decode_range(
+    sheet['!ref'] || 'A1'
+  );
+
+  range.s.c = 0;
+  range.s.r = 0;
+
   return XLSX.utils.sheet_to_json(sheet, {
     header: 1,
+    range,
     defval: '',
     blankrows: false,
     raw: false,
@@ -14371,7 +14429,7 @@ async function pontoPedidoLoadWorkbook(forceRefresh = false): Promise<PontoPedid
     cellText: true,
   });
 
-  const planningTabs = workbook.SheetNames.filter(pontoPedidoIsPlanningSheet);
+  const planningTabs = pontoPedidoAvailableTabNames(workbook);
   if (!planningTabs.length) {
     throw new Error('A planilha foi carregada, mas nenhuma aba de Ponto de Pedido foi encontrada.');
   }
@@ -14682,10 +14740,41 @@ async function pontoPedidoLoadSalesMetrics(
 
     // Base anual consolidada: complementa o RAW.
     const annualExists = await annualDb.get(
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'vendas_anuais'"
-    );
+  "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'vendas_anuais'"
+);
 
-    if (annualExists?.name) {
+// Verifica as colunas existentes no banco anual
+const annualColumns = annualExists?.name
+  ? new Set<string>(
+      (
+        await annualDb.all(
+          'PRAGMA table_info("vendas_anuais")'
+        )
+      ).map((column: any) =>
+        String(column.name || '').toLowerCase()
+      )
+    )
+  : new Set<string>();
+
+    // Confirma se a tabela possui vendas detalhadas por produto
+    const annualHasProductDetail = [
+      'data_emissao',
+      'descricao',
+      'quantidade',
+      'loja',
+      'cnpj_empresa',
+      'regiao',
+    ].every((name) => annualColumns.has(name));
+
+    // Evita consultar uma tabela antiga incompatível
+    if (annualExists?.name && !annualHasProductDetail) {
+      console.warn(
+        'Ponto de Pedido: tabela vendas_anuais sem detalhamento de produto; ignorada.'
+      );
+    }
+
+    // Só consulta a base consolidada quando ela possui as colunas necessárias
+    if (annualExists?.name && annualHasProductDetail) {
       const annualRows = await annualDb.all(
         `
         SELECT
@@ -14733,9 +14822,9 @@ async function pontoPedidoLoadSalesMetrics(
       );
     }
 
-    if (!rawExists?.name && !annualExists?.name) {
+    if (!rawExists?.name && !annualHasProductDetail) {
       throw new Error(
-        'Nenhuma tabela anual de vendas foi encontrada.'
+        'Não há vendas anuais detalhadas por produto. Verifique a sincronização RAW.'
       );
     }
   } catch (error) {
@@ -14869,16 +14958,27 @@ async function pontoPedidoLoadStockMetrics(
       description: true,
       quantity: true,
       storeName: true,
+      cnpj: true,
       productCode: true,
       reference: true,
     },
   });
 
   const map = new Map<string, PontoPedidoStockMetric>();
+  // O estoque possui muitas linhas do mesmo SKU por loja/IMEI.
+  // Evita consultar BASE_MESTRE e registrar pendência a cada unidade.
+  const stockMasterCache = new Map<string, any>();
+  const stockReportedIssues = new Set<string>();
 
   for (const row of rows as any[]) {
-    const rowState = pontoPedidoStateFromText(row.storeName);
-    const isRioVerde = pontoPedidoIsRioVerdeText(row.storeName);
+    const rowState = pontoPedidoStateFromSalesRow({
+      cnpj_empresa: row.cnpj,
+      loja: row.storeName,
+    });
+    const isRioVerde = pontoPedidoIsRioVerdeSalesRow({
+      cnpj_empresa: row.cnpj,
+      loja: row.storeName,
+    });
 
     if (!pontoPedidoMatchesGeoScope(rowState, isRioVerde, stateCode, geoScope)) {
           continue;
@@ -14889,16 +14989,16 @@ async function pontoPedidoLoadStockMetrics(
 
     const productCode = String(row.productCode || '').trim();
     const reference = String(row.reference || '').trim();
-    const masterResolution = productCode
-  ? await resolveProductMaster({
-      productCode,
-      reference,
-      description: descricao,
-      source: 'PONTO_PEDIDO_ESTOQUE',
-    })
-  : null;
+    const masterKey = `${productCode}|${reference}|${descricao}`;
+    if (productCode && !stockMasterCache.has(masterKey)) {
+      stockMasterCache.set(masterKey, await resolveProductMaster({
+        productCode, reference, description: descricao, source: 'PONTO_PEDIDO_ESTOQUE',
+      }));
+    }
+    const masterResolution = productCode ? stockMasterCache.get(masterKey) : null;
 
-    if (masterResolution && masterResolution.status !== 'MASTER') {
+    if (masterResolution && masterResolution.status !== 'MASTER' && !stockReportedIssues.has(masterKey)) {
+      stockReportedIssues.add(masterKey);
       await recordProductMasterIssue({
         source: 'PONTO_PEDIDO_ESTOQUE',
         productCode,
@@ -15060,11 +15160,37 @@ function pontoPedidoMetricMatch<T extends {
     reason,
   });
 
+  // Notebooks: exigem geração, variante, RAM, SSD e processador compatíveis.
+  // Sem SKU ou informações suficientes, nunca escolhe um candidato ao acaso.
+  const notebookTarget = parseNotebookIdentity(normalizedColor || normalizedBase);
+  if (!isAccessory && notebookTarget) {
+    const matched = matchNotebook(
+      metrics, normalizedColor || normalizedBase,
+      (item) => (item as any).descricao || item.key,
+      Array.from(targetAliases),
+      (item) => [String(item.productCode || ''), String(item.reference || '')],
+    );
+    return {
+      item: matched.item,
+      method: matched.item ? 'NOTEBOOK_SAFE_MATCH' : matched.ambiguous ? 'NOTEBOOK_AMBIGUOUS' : 'NOTEBOOK_NO_SAFE_MATCH',
+      confidence: matched.item ? 'HIGH' : 'NONE',
+      ambiguous: matched.ambiguous,
+      candidates: matched.candidates.slice(0, 8).map((x) => candidateView(x, 70000, 'Notebook com especificações compatíveis')),
+    };
+  }
+
   // 1) Identificador explícito (Referência/Código/PROCV): prioridade máxima.
   if (targetAliases.size) {
+    const expectedSignature = pontoPedidoModelSignature(normalizedColor || normalizedBase);
     const aliasMatches = metrics.filter((item) => {
       const identities = pontoPedidoMetricIdentityValues(item);
-      return Array.from(targetAliases).some((alias) => identities.has(alias));
+      if (!Array.from(targetAliases).some((alias) => identities.has(alias))) return false;
+      if (isAccessory || !expectedSignature.model) return true;
+      const actual = pontoPedidoModelSignature(item.key);
+      return Boolean(actual.model) && actual.model === expectedSignature.model &&
+        (!expectedSignature.storage || !actual.storage || actual.storage === expectedSignature.storage) &&
+        expectedSignature.variant === actual.variant &&
+        (!expectedSignature.network || !actual.network || expectedSignature.network === actual.network);
     });
 
     const onlyAliasMatch = aliasMatches.length === 1 ? aliasMatches[0] : undefined;
@@ -15146,6 +15272,7 @@ function pontoPedidoMetricMatch<T extends {
 
         const candidateSpecs = pontoPedidoAccessorySpecTokens(itemKey);
         if (!pontoPedidoAccessorySpecsCompatible(targetSpecs, candidateSpecs)) return null;
+        if (targetSpecs.size > 0 && candidateSpecs.size === 0) return null;
 
         // Se existem vários acessórios irmãos (ex.: 15W, 25W e 45W), uma
         // descrição genérica sem a especificação não pode ser atribuída a um deles.
@@ -15219,7 +15346,15 @@ function pontoPedidoMetricMatch<T extends {
   }
 
   // 4) Aparelhos: NUNCA misturar FE / Plus / Ultra / Edge ou memória diferente.
-  const targetSignature = pontoPedidoModelSignature(normalizedBase || normalizedColor);
+  const baseSignature = pontoPedidoModelSignature(normalizedBase || normalizedColor);
+  const coloredSignature = pontoPedidoModelSignature(normalizedColor);
+  const targetSignature: PontoPedidoModelSignature = {
+    ...baseSignature,
+    network: coloredSignature.network || baseSignature.network,
+    storage: coloredSignature.storage || baseSignature.storage,
+    variant: coloredSignature.variant || baseSignature.variant,
+    model: coloredSignature.model || baseSignature.model,
+  };
   const colorTokens = pontoPedidoColorSpecificTokens(normalizedColor, normalizedBase);
 
   if (allowBaseFallback && normalizedBase) {
@@ -15261,6 +15396,7 @@ function pontoPedidoMetricMatch<T extends {
           return null;
         }
 
+        if (targetSignature.network && !signature.network) return null;
         if (
           signature.network !== targetSignature.network &&
           !allowNetworkFallback
@@ -15368,80 +15504,130 @@ function pontoPedidoMetricForModel<T extends {
 
 type PontoPedidoOrderRow = {
   searchKey: string;
+  materialCode: string;
   weekRaw: string;
   quantity: number;
+  invoicedQuantity: number;
   state: string;
+  isRioVerde: boolean;
   sourceText: string;
-}
+};
 
-function pontoPedidoLoadOpenOrders(workbook: XLSX.WorkBook): PontoPedidoOrderRow[] {
+function pontoPedidoLoadOpenOrders(
+  workbook: XLSX.WorkBook
+): PontoPedidoOrderRow[] {
+
   const sheetName = workbook.SheetNames.find(
-    (name) => pontoPedidoNormalizeHeader(name) === 'CONSOLIDADO PEDIDOS'
+    (name) =>
+      pontoPedidoNormalizeHeader(name) ===
+      'CONSOLIDADO PEDIDOS'
   );
 
-  if (!sheetName) return [];
+  if (!sheetName) {
+    throw new Error(
+      'Aba CONSOLIDADO_PEDIDOS não encontrada no Google Sheets.'
+    );
+  }
 
   const rows = pontoPedidoSheetRows(workbook, sheetName);
-  if (!rows.length) return [];
+
+  if (!rows.length) {
+    throw new Error(
+      'A aba CONSOLIDADO_PEDIDOS está vazia.'
+    );
+  }
 
   const headerIndex = pontoPedidoFindHeaderRow(rows, [
-    'SEMANA', 'MODELO', 'PRODUTO', 'QUANTIDADE', 'QTD'
+    'SEMANA',
+    'DESCRICAO',
+    'PEDIDO FATURADO',
+    'EM ABERTO',
+    'UF'
   ]);
+
   const headers = rows[headerIndex] || [];
 
-  // Estrutura informada pelo usuário:
-  // D = SEMANA e L = saldo ainda aberto para chegar.
-  const weekIndex = headers.length > 3
-    ? 3
-    : pontoPedidoFindColumn(headers, ['SEMANA'], 3);
-  const qtyIndex = headers.length > 11
-    ? 11
-    : pontoPedidoFindColumn(
-        headers,
-        ['QTD ABERTO', 'QTD. ABERTO', 'QUANTIDADE ABERTA', 'QUANTIDADE', 'QTD', 'SALDO'],
-        11
-      );
+  if (
+    pontoPedidoNormalizeHeader(headers[10]) !==
+      'PEDIDO FATURADO' ||
+    pontoPedidoNormalizeHeader(headers[11]) !==
+      'EM ABERTO'
+  ) {
+    throw new Error(
+      'Layout de CONSOLIDADO_PEDIDOS incompatível: ' +
+      'esperadas K=PEDIDO FATURADO e L=EM ABERTO.'
+    );
+  }
 
-  const preferredModelIndexes = [
-    pontoPedidoFindColumn(headers, ['MODELO COM COR']),
-    pontoPedidoFindColumn(headers, ['MODELO']),
-    pontoPedidoFindColumn(headers, ['DESCRICAO', 'DESCRIÇÃO']),
-    pontoPedidoFindColumn(headers, ['PRODUTO']),
-    pontoPedidoFindColumn(headers, ['ITEM']),
-    pontoPedidoFindColumn(headers, ['SKU']),
-  ].filter((index, position, values) => index >= 0 && values.indexOf(index) === position);
-
-  return rows
+  const result: PontoPedidoOrderRow[] = rows
     .slice(headerIndex + 1)
     .map((row) => {
-      const quantity = pontoPedidoNumber(row?.[qtyIndex]);
-      const weekRaw = String(row?.[weekIndex] ?? '').trim();
 
-      const preferredText = preferredModelIndexes
-        .map((index) => String(row?.[index] ?? '').trim())
-        .filter(Boolean)
-        .join(' ');
+      const quantity = pontoPedidoNumber(row?.[11]);
 
-      const fallbackText = (row || [])
-        .filter((_, index) => index !== weekIndex && index !== qtyIndex)
-        .map((cell) => String(cell ?? '').trim())
-        .filter(Boolean)
-        .join(' ');
+      const invoicedQuantity =
+        pontoPedidoNumber(row?.[10]);
 
-      const fullText = (row || [])
-        .map((cell) => String(cell ?? '').trim())
-        .filter(Boolean)
-        .join(' ');
+      const weekRaw = String(row?.[3] ?? '').trim();
+
+      const description =
+        String(row?.[8] ?? '').trim();
+
+      const materialCode =
+        pontoPedidoNormalizeIdentity(row?.[7]);
+
+      const destination =
+        String(row?.[12] ?? '').trim();
+
+      const uf =
+        String(row?.[13] ?? '').trim();
+
+      const normalizedDestination =
+        pontoPedidoNormalizeHeader(destination);
 
       return {
         quantity,
+        invoicedQuantity,
         weekRaw,
-        searchKey: pontoPedidoProductKey(preferredText || fallbackText),
-        state: pontoPedidoStateFromText(weekRaw) || pontoPedidoStateFromText(fullText),
-        sourceText: fullText,
+        materialCode,
+
+        searchKey:
+          pontoPedidoProductKey(description),
+
+        state:
+          pontoPedidoStateFromText(uf) ||
+          pontoPedidoStateFromText(destination) ||
+          pontoPedidoStateFromText(weekRaw),
+
+        isRioVerde:
+          normalizedDestination.includes('RIO VERDE'),
+
+        sourceText:
+          `${description} | ${destination} | ${uf}`,
       };
     })
-    .filter((row) => row.quantity > 0 && row.searchKey);
+    .filter(
+      (row) =>
+        (row.quantity > 0 ||
+          row.invoicedQuantity !== 0) &&
+        Boolean(row.searchKey || row.materialCode)
+    );
+
+  console.info(
+    '[PONTO DE PEDIDO] CONSOLIDADO_PEDIDOS',
+    {
+      linhasValidas: result.length,
+      linhasComFaturado: result.filter(
+        (r) => r.invoicedQuantity !== 0
+      ).length,
+      faturadoTotal: result.reduce(
+        (sum, r) => sum + r.invoicedQuantity,
+        0
+      ),
+    }
+  );
+
+  return result;
 }
 
 function pontoPedidoOrdersForModel(
@@ -15453,7 +15639,9 @@ function pontoPedidoOrdersForModel(
   geoScope: PontoPedidoGeoScope = 'STATE'
 ): PontoPedidoOrderRow[] {
   return orders.filter((order) => {
-    const isRioVerde = pontoPedidoIsRioVerdeText(
+    const isRioVerde =
+    order.isRioVerde ||
+    pontoPedidoIsRioVerdeText(
       order.sourceText || order.weekRaw
     );
 
@@ -15461,19 +15649,16 @@ function pontoPedidoOrdersForModel(
       return false;
     }
 
-    if (colorKey && (order.searchKey.includes(colorKey) || colorKey.includes(order.searchKey))) {
+    // Pedido genérico sem cor não pode ser atribuído a todas as cores.
+    if (colorKey && (order.searchKey === colorKey || order.searchKey.startsWith(`${colorKey} `))) {
       return true;
     }
 
-    if (
-      allowBaseFallback &&
-      baseKey &&
-      (order.searchKey.includes(baseKey) || baseKey.includes(order.searchKey))
-    ) {
+    if (allowBaseFallback && baseKey && colorKey === baseKey && order.searchKey === baseKey) {
       return true;
     }
 
-    return false;
+      return false;
   });
 }
 
@@ -15493,6 +15678,9 @@ function pontoPedidoParseApaSheet(workbook: XLSX.WorkBook, sheetName: string) {
   const headers = rows[headerIndex] || [];
   const idxModelo = pontoPedidoFindColumn(headers, ['MODELO']);
   const idxModeloCor = pontoPedidoFindColumn(headers, ['MODELO COM COR']);
+  const idxReferencia = pontoPedidoFindColumn(headers, ['REFERENCIA', 'REFERÊNCIA']);
+  const idxCodigo = pontoPedidoFindColumn(headers, ['CODIGO', 'CÓDIGO']);
+  const idxProcv = pontoPedidoFindColumn(headers, ['PROCV']);
   const idxSamsung = pontoPedidoFindColumn(headers, ['PRECO SAMSUNG', 'PREÇO SAMSUNG']);
   const idxTelecel = pontoPedidoFindColumn(headers, ['PRECO TELECEL', 'PREÇO TELECEL']);
   const idxDesc = pontoPedidoFindColumn(headers, ['DESC', 'DESCONTO']);
@@ -15500,11 +15688,8 @@ function pontoPedidoParseApaSheet(workbook: XLSX.WorkBook, sheetName: string) {
   const idxSellIn = pontoPedidoFindColumn(headers, ['SELL IN', 'SELLIN']);
   const idxAlteracao = pontoPedidoFindColumn(headers, ['ALTERACAO', 'ALTERAÇÃO']);
   const idxStatus = pontoPedidoFindColumn(headers, ['STATUS', 'SITUACAO', 'SITUAÇÃO']);
-  const idxPedidoFaturadoHeader = pontoPedidoFindColumn(headers, ['PEDIDO FATURADO', 'PEDIDO_FATURADO']);
-  // A planilha oficial mantém PEDIDO FATURADO na coluna K. O fallback em K
-  // evita perder o campo caso o cabeçalho venha com alguma variação inesperada.
-  const idxPedidoFaturado = idxPedidoFaturadoHeader >= 0 ? idxPedidoFaturadoHeader : 10;
-
+  // PEDIDO FATURADO - COLUNA K DO GOOGLE SHEETS
+  
   if (idxModelo < 0 && idxModeloCor < 0) {
     throw new Error(`A aba ${sheetName} não possui coluna MODELO/MODELO COM COR reconhecível.`);
   }
@@ -15521,6 +15706,9 @@ function pontoPedidoParseApaSheet(workbook: XLSX.WorkBook, sheetName: string) {
         sourceRow: headerIndex + rowIndex + 2,
         modelo: modelo || modeloComCor,
         modeloComCor: modeloComCor || modelo,
+        referencia: idxReferencia >= 0 ? String(row?.[idxReferencia] ?? '').trim() : '',
+        codigo: idxCodigo >= 0 ? String(row?.[idxCodigo] ?? '').trim() : '',
+        procv: idxProcv >= 0 ? String(row?.[idxProcv] ?? '').trim() : '',
         precoSamsung: pontoPedidoNumber(row?.[idxSamsung]),
         precoTelecel: pontoPedidoNumber(row?.[idxTelecel]),
         desc: pontoPedidoNumber(row?.[idxDesc]),
@@ -15528,13 +15716,16 @@ function pontoPedidoParseApaSheet(workbook: XLSX.WorkBook, sheetName: string) {
         sellIn: pontoPedidoNumber(row?.[idxSellIn]),
         alteracao: idxAlteracao >= 0 ? String(row?.[idxAlteracao] ?? '').trim() : '',
         status: idxStatus >= 0 ? String(row?.[idxStatus] ?? '').trim() : '',
-        pedidoFaturado: pontoPedidoNumber(row?.[idxPedidoFaturado]),
+        pedidoFaturado: 0,
       };
     })
     .filter(Boolean) as Array<{
       sourceRow: number;
       modelo: string;
       modeloComCor: string;
+      referencia: string;
+      codigo: string;
+      procv: string;
       precoSamsung: number;
       precoTelecel: number;
       desc: number;
@@ -15736,9 +15927,88 @@ async function pontoPedidoBuildSheetData(params: {
   ]);
 
   const sheetRows = tabMeta.category === 'ACESSÓRIOS'
-    ? pontoPedidoParseAceSheet(workbook, sheetName)
-    : pontoPedidoParseApaSheet(workbook, sheetName);
-  const openOrders = pontoPedidoLoadOpenOrders(workbook);
+    ? pontoPedidoParseAceSheet(workbook, pontoPedidoPhysicalSheet(sheetName))
+    : pontoPedidoParseApaSheet(workbook, pontoPedidoPhysicalSheet(sheetName));
+    const openOrders = pontoPedidoLoadOpenOrders(workbook);
+
+  // Distribui a coluna K por SKU e região, independentemente da coluna L.
+  // Cada registro faturado pode pertencer a no máximo uma linha desta aba.
+  const modelosDaAba = sheetRows.map((item) => ({
+    linha: item.sourceRow,
+    descricao: pontoPedidoProductKey(item.modeloComCor || item.modelo),
+    codigos: new Set(
+      [item.referencia, item.codigo, item.procv]
+        .map(pontoPedidoNormalizeIdentity)
+        .filter((codigo) => codigo.length >= 4)
+    ),
+  }));
+
+  const faturadoPorLinha = new Map<number, number>();
+  let registrosComFaturado = 0;
+  let registrosSemCorrespondencia = 0;
+
+  for (const pedido of openOrders) {
+    const quantidade = pontoPedidoNumber(pedido.invoicedQuantity);
+
+    if (quantidade === 0) continue;
+
+    if (!pontoPedidoMatchesGeoScope(
+      pedido.state,
+      pedido.isRioVerde,
+      tabMeta.state,
+      tabMeta.geoScope
+    )) continue;
+
+    registrosComFaturado++;
+
+    // Primeiro tenta relacionar pelo código oficial do produto.
+    const porCodigo = pedido.materialCode
+      ? modelosDaAba.filter((item) =>
+          item.codigos.has(pedido.materialCode)
+        )
+      : [];
+
+    // Se não encontrar o código, tenta a descrição normalizada exata.
+    let candidatos = porCodigo.length > 0
+      ? porCodigo
+      : modelosDaAba.filter(
+          (item) =>
+            item.descricao &&
+            item.descricao === pedido.searchKey
+        );
+
+    // Havendo mais de um candidato, tenta desempatar pela descrição.
+    if (candidatos.length > 1) {
+      candidatos = candidatos.filter(
+        (item) => item.descricao === pedido.searchKey
+      );
+    }
+
+    // Nunca atribui o mesmo faturamento a vários modelos.
+    if (candidatos.length !== 1) {
+      registrosSemCorrespondencia++;
+      continue;
+    }
+
+    const linha = candidatos[0]!.linha;
+
+    faturadoPorLinha.set(
+      linha,
+      (faturadoPorLinha.get(linha) || 0) + quantidade
+    );
+  }
+
+  console.info('[PONTO DE PEDIDO] Faturamento consolidado por região', {
+    aba: sheetName,
+    regiao: tabMeta.state,
+    escopo: tabMeta.geoScope,
+    registrosComFaturado,
+    registrosSemCorrespondencia,
+    totalVinculado: Array.from(faturadoPorLinha.values()).reduce(
+      (a, b) => a + b,
+      0
+    ),
+  });
 
   const baseCounts = new Map<string, number>();
   const networkVariants = new Map<string, Set<string>>();
@@ -15904,7 +16174,7 @@ async function pontoPedidoBuildSheetData(params: {
 
     const pedidoFaturado = Math.max(
       0,
-      pontoPedidoNumber((row as any).pedidoFaturado)
+      pontoPedidoNumber(faturadoPorLinha.get(row.sourceRow))
     );
 
     const sugestaoNovoPedido = bloqueiaNovoPedido
@@ -15952,6 +16222,7 @@ async function pontoPedidoBuildSheetData(params: {
 
     return {
       ...row,
+      pedidoFaturado,
       rowKey: `${sheetName}::${row.sourceRow}::${colorKey || baseKey}`,
       category: tabMeta.category,
       state: tabMeta.state,
@@ -16030,8 +16301,7 @@ app.get('/api/ponto-pedido/meta', async (req, res) => {
     const forceRefresh = String(req.query.refresh || '') === '1';
     if (forceRefresh) pontoPedidoStateMetricCache.clear();
     const cache = await pontoPedidoLoadWorkbook(forceRefresh);
-    const tabs = cache.workbook.SheetNames
-      .filter(pontoPedidoIsPlanningSheet)
+    const tabs = pontoPedidoAvailableTabNames(cache.workbook)
       .map(pontoPedidoPlanningTabMeta);
 
     if (!tabs.length) {
@@ -16080,7 +16350,7 @@ app.get('/api/ponto-pedido', async (req, res) => {
     const cache = await pontoPedidoLoadWorkbook(forceRefresh);
     const workbook = cache.workbook;
 
-    const planningTabs = workbook.SheetNames.filter(pontoPedidoIsPlanningSheet);
+    const planningTabs = pontoPedidoAvailableTabNames(workbook);
     const sheetName = requestedSheet && planningTabs.includes(requestedSheet)
       ? requestedSheet
       : planningTabs[0];
@@ -16151,16 +16421,19 @@ app.get('/api/ponto-pedido/auditoria', async (req, res) => {
 
     const cache = await pontoPedidoLoadWorkbook(false);
     const workbook = cache.workbook;
-    const planningTabs = workbook.SheetNames.filter(pontoPedidoIsPlanningSheet);
+    const planningTabs = pontoPedidoAvailableTabNames(workbook);
 
     if (!planningTabs.includes(requestedSheet)) {
-      return res.status(404).json({ ok: false, error: 'Aba de Ponto de Pedido não encontrada.' });
-    }
+      return res.status(404).json({
+        ok: false,
+        error: 'Aba de Ponto de Pedido não encontrada.',
+      });
+}
 
     const tabMeta = pontoPedidoPlanningTabMeta(requestedSheet);
     const sheetRows = tabMeta.category === 'ACESSÓRIOS'
-      ? pontoPedidoParseAceSheet(workbook, requestedSheet)
-      : pontoPedidoParseApaSheet(workbook, requestedSheet);
+      ? pontoPedidoParseAceSheet(workbook, pontoPedidoPhysicalSheet(requestedSheet))
+      : pontoPedidoParseApaSheet(workbook, pontoPedidoPhysicalSheet(requestedSheet));
 
     const queryKey = pontoPedidoProductKey(queryModel);
     const exactRows = sheetRows.filter(
@@ -16370,10 +16643,9 @@ app.get('/api/ponto-pedido/resumo-estados', async (req, res) => {
     const workbook = cache.workbook;
     const today = pontoPedidoBrazilTodayIso();
 
-    const tabs = workbook.SheetNames
-      .filter(pontoPedidoIsPlanningSheet)
+    const tabs = pontoPedidoAvailableTabNames(workbook)
       .map(pontoPedidoPlanningTabMeta)
-      .filter((tab) => pontoPedidoNormalizeHeader(tab.category) === category);
+      .filter((tab) => pontoPedidoNormalizeHeader(tab.category) === category)
 
     const builtRows = await Promise.all(
       tabs.map(async (tab) => {
