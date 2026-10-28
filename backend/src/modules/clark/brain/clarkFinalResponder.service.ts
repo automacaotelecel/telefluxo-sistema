@@ -3,7 +3,7 @@ import {
   ClarkAgentPlan,
   ClarkToolResult,
   ClarkVerificationResult,
-} from '../agent/clarkAgent.types';
+} from '../clarkAgent.types';
 import { ClarkPeriodo } from '../clark.types';
 import { formatBRL } from '../../intent/extractFilters';
 import { gerarRespostaAnaliticaClaudeClark } from '../../ai/claudeClark';

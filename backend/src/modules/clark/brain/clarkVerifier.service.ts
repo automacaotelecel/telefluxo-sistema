@@ -1,4 +1,4 @@
-import { ClarkAgentPlan, ClarkToolResult, ClarkVerificationResult } from '../agent/clarkAgent.types';
+import { ClarkAgentPlan, ClarkToolResult, ClarkVerificationResult } from '../clarkAgent.types';
 import { ClarkQuestionRequirements } from './clarkRequirements.service';
 
 const RANKING_TOOLS = new Set([

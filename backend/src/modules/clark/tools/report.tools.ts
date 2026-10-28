@@ -1,4 +1,4 @@
-import { ClarkToolResult } from '../agent/clarkAgent.types';
+import { ClarkToolResult } from '../clarkAgent.types';
 import { ClarkToolContext } from './clarkTools.types';
 import {
   toolConsultarRelatorioVendas,

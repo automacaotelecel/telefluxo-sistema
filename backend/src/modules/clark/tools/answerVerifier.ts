@@ -2,7 +2,7 @@ import {
   ClarkAgentPlan,
   ClarkToolResult,
   ClarkVerificationResult,
-} from '../agent/clarkAgent.types';
+} from '../clarkAgent.types';
 
 function normalize(value: any) {
   return String(value || '')

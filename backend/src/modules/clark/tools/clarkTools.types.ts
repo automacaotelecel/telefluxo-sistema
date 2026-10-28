@@ -1,4 +1,4 @@
-import { ClarkToolName, ClarkToolResult } from '../agent/clarkAgent.types';
+import { ClarkToolName, ClarkToolResult } from '../clarkAgent.types';
 
 export type ClarkToolContext = {
   userId: string;

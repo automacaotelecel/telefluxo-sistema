@@ -24,7 +24,7 @@ import {
   ClarkToolName,
   ClarkToolResult,
   ClarkVerificationResult,
-} from './agent/clarkAgent.types';
+} from './clarkAgent.types';
 
 import { clarkToolsRegistry } from './tools/clarkTools.registry';
 import { extrairFiltrosClark, normalizarTextoClark } from '../intent/extractFilters';

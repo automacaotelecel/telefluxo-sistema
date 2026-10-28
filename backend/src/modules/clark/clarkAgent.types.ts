@@ -1,4 +1,4 @@
-import { ClarkHistoricoMensagem, ClarkModo } from '../clark.types';
+import { ClarkHistoricoMensagem, ClarkModo } from './clark.types';
 
 export type ClarkToolName =
   | 'resolver_produto'

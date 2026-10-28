@@ -4,7 +4,7 @@ import { open } from 'sqlite';
 import { PrismaClient } from '@prisma/client';
 
 import { ClarkDbContext, ClarkFiltros, ClarkPeriodo } from '../clark.types';
-import { ClarkToolResult } from '../agent/clarkAgent.types';
+import { ClarkToolResult } from '../clarkAgent.types';
 import { ClarkToolContext } from './clarkTools.types';
 import { getAnnualSalesDbPath, getGlobalSalesDbPath } from '../../data/databasePaths';
 import { consultarVendasRawClark } from '../../executors/sales.executor';

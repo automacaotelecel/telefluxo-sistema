@@ -954,6 +954,7 @@ function annualRegionFromStore(loja: string, fallback = ''): string {
     'MANAIRA SHOPPING': 'NORDESTE',
     'IGUATEMI FORTALEZA': 'NORDESTE',
     'CD TAGUATINGA': 'CD',
+    'PARTAGE': 'DF',
   };
 
   return annualNorm(fallback) || regionByStore[normalized] || 'SEM REGIÃO';
@@ -2535,6 +2536,7 @@ const ESTOQUE_DETALHADO_STORE_REGIONS: Record<string, string> = {
   'MANAIRA SHOPPING': 'NORDESTE',
   'IGUATEMI FORTALEZA': 'NORDESTE',
   'CD TAGUATINGA': 'CD',
+  'PARTAGE': 'DF',
 };
 
 function estoqueDetalhadoNormalizeText(value: any): string {
@@ -10695,136 +10697,626 @@ app.get('/api/global-search', async (req, res) => {
     const dashboard = req.body?.dashboard;
 
     if (!userId || !dashboard) {
-      return res.status(400).json({ success: false, error: 'Usuário e dados do relatório são obrigatórios.' });
+      return res.status(400).json({
+        success: false,
+        error: 'Usuário e dados do relatório são obrigatórios.',
+      });
     }
 
-    const user = await prisma.user.findUnique({ where: { id: userId } });
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+    });
+
     if (!user) {
-      return res.status(401).json({ success: false, error: 'Usuário não encontrado.' });
+      return res.status(401).json({
+        success: false,
+        error: 'Usuário não encontrado.',
+      });
     }
 
     const hasNetworkScope = userHasNetworkScope(user);
-    const allowedStores = getAllowedStoreNamesFromUser(user).map(executiveNormalizeStoreName);
+
+    const allowedStores = getAllowedStoreNamesFromUser(user).map(
+      executiveNormalizeStoreName,
+    );
+
     const requestedScope = String(dashboard?.scope?.type || 'store');
+
     const payloadStores = Array.isArray(dashboard?.scope?.stores)
       ? dashboard.scope.stores.map(executiveNormalizeStoreName)
       : [];
 
     if (!hasNetworkScope) {
       if (requestedScope === 'network') {
-        return res.status(403).json({ success: false, error: 'Relatório consolidado não permitido para este perfil.' });
+        return res.status(403).json({
+          success: false,
+          error: 'Relatório consolidado não permitido para este perfil.',
+        });
       }
-      if (payloadStores.some((store: string) => !allowedStores.includes(store))) {
-        return res.status(403).json({ success: false, error: 'O relatório contém loja fora do seu escopo.' });
+
+      if (
+        payloadStores.some(
+          (store: string) => !allowedStores.includes(store),
+        )
+      ) {
+        return res.status(403).json({
+          success: false,
+          error: 'O relatório contém loja fora do seu escopo.',
+        });
       }
     }
 
     const kpis = dashboard?.kpis || {};
-    const stores = Array.isArray(dashboard?.stores) ? dashboard.stores.slice(0, 20) : [];
-    const trend = Array.isArray(dashboard?.trend) ? dashboard.trend.slice(-31) : [];
-    const scopeLabel = dashboard?.scope?.label || (hasNetworkScope ? 'Visão consolidada da rede' : 'Sua unidade');
-    const periodLabel = dashboard?.period?.label || 'Este mês';
-    const reportEndDate = String(dashboard?.period?.endDate || getBrazilTodayIso()).slice(0, 10);
-    const generatedAt = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
-    const maxTrend = Math.max(1, ...trend.map((item: any) => Number(item?.faturamento || 0)));
 
-    // Novo bloco inteligente do relatório:
-    // sempre consulta os 3 meses mais recentes até o final do período do relatório,
-    // respeitando o escopo de segurança do usuário e, quando o relatório é de loja,
-    // restringindo também às lojas efetivamente selecionadas.
+    // CORREÇÃO:
+    // Não limitar a lista às primeiras 20 lojas.
+    // A Home já envia o dashboard correspondente ao escopo selecionado.
+    const stores = Array.isArray(dashboard?.stores)
+      ? dashboard.stores
+      : [];
+
+    const trend = Array.isArray(dashboard?.trend)
+      ? dashboard.trend.slice(-31)
+      : [];
+
+    const scopeLabel =
+      dashboard?.scope?.label ||
+      (hasNetworkScope ? 'Visão consolidada da rede' : 'Sua unidade');
+
+    const periodLabel = dashboard?.period?.label || 'Este mês';
+
+    const reportEndDate = String(
+      dashboard?.period?.endDate || getBrazilTodayIso(),
+    ).slice(0, 10);
+
+    const generatedAt = new Date().toLocaleString('pt-BR', {
+      timeZone: 'America/Sao_Paulo',
+    });
+
+    const maxTrend = Math.max(
+      1,
+      ...trend.map((item: any) => Number(item?.faturamento || 0)),
+    );
+
+    // Mantém a consulta dos três meses mais recentes,
+    // respeitando as lojas selecionadas e as regras do serviço.
     const deviceInsights = await executiveReportLoadDeviceInsights({
       userId,
       stores: payloadStores,
       endDate: reportEndDate,
     });
 
-    const storeRows = stores.map((store: any, index: number) => `
-      <tr>
-        <td>${String(index + 1).padStart(2, '0')}</td>
-        <td class="store">${executiveEscapeHtml(store.loja)}</td>
-        <td>${executiveMoney(store.faturamento)}</td>
-        <td>${executivePct(store.conversaoAcessorios)}</td>
-        <td>${executivePct(store.conversaoPeliculas)}</td>
-        <td>${executivePct(store.seguroPct)}</td>
-      </tr>
-    `).join('');
+    const storeRows = stores
+      .map(
+        (store: any, index: number) => `
+          <tr>
+            <td>${String(index + 1).padStart(2, '0')}</td>
+            <td class="store">${executiveEscapeHtml(store.loja)}</td>
+            <td>${executiveMoney(store.faturamento)}</td>
+            <td>${executivePct(store.conversaoAcessorios)}</td>
+            <td>${executivePct(store.conversaoPeliculas)}</td>
+            <td>${executivePct(store.seguroPct)}</td>
+          </tr>
+        `,
+      )
+      .join('');
 
-    const trendBars = trend.map((item: any) => {
-      const height = Math.max(3, Math.round((Number(item.faturamento || 0) / maxTrend) * 100));
-      return `<div class="bar-wrap"><div class="bar" style="height:${height}%"></div><span>${executiveEscapeHtml(String(item.date || '').slice(8, 10))}</span></div>`;
-    }).join('');
+    const trendBars = trend
+      .map((item: any) => {
+        const height = Math.max(
+          3,
+          Math.round(
+            (Number(item.faturamento || 0) / maxTrend) * 100,
+          ),
+        );
 
-    const monthCards = deviceInsights.months.map((month) => `
-      <div class="month-card">
-        <div class="month-label">${executiveEscapeHtml(month.label)}</div>
-        <strong>${Number(month.quantidade || 0).toLocaleString('pt-BR')} aparelhos</strong>
-        <span>${executiveMoney(month.faturamento)}</span>
-      </div>
-    `).join('');
+        return `
+          <div class="bar-wrap">
+            <div class="bar" style="height:${height}%"></div>
+            <span>
+              ${executiveEscapeHtml(
+                String(item.date || '').slice(8, 10),
+              )}
+            </span>
+          </div>
+        `;
+      })
+      .join('');
 
-    const topProductRows = deviceInsights.topProducts.map((item, index) => `
-      <div class="product-row">
-        <span class="rank">${String(index + 1).padStart(2, '0')}</span>
-        <span class="product-name">${executiveEscapeHtml(item.modelo)}</span>
-        <strong>${Number(item.quantidade || 0).toLocaleString('pt-BR')} un.</strong>
-      </div>
-    `).join('');
+    const monthCards = deviceInsights.months
+      .map(
+        (month) => `
+          <div class="month-card">
+            <div class="month-label">
+              ${executiveEscapeHtml(month.label)}
+            </div>
+            <strong>
+              ${Number(month.quantidade || 0).toLocaleString('pt-BR')}
+              aparelhos
+            </strong>
+            <span>${executiveMoney(month.faturamento)}</span>
+          </div>
+        `,
+      )
+      .join('');
 
-    const growthRows = deviceInsights.growthProducts.map((item) => `
-      <div class="growth-row">
-        <span class="product-name">${executiveEscapeHtml(item.modelo)}</span>
-        <strong>+${Number(item.delta || 0).toLocaleString('pt-BR')} un.</strong>
-        <span>${item.anterior.toLocaleString('pt-BR')} → ${item.atual.toLocaleString('pt-BR')}</span>
-      </div>
-    `).join('');
+    const topProductRows = deviceInsights.topProducts
+      .map(
+        (item, index) => `
+          <div class="product-row">
+            <span class="rank">
+              ${String(index + 1).padStart(2, '0')}
+            </span>
+            <span class="product-name">
+              ${executiveEscapeHtml(item.modelo)}
+            </span>
+            <strong>
+              ${Number(item.quantidade || 0).toLocaleString('pt-BR')} un.
+            </strong>
+          </div>
+        `,
+      )
+      .join('');
+
+    const growthRows = deviceInsights.growthProducts
+      .map(
+        (item) => `
+          <div class="growth-row">
+            <span class="product-name">
+              ${executiveEscapeHtml(item.modelo)}
+            </span>
+            <strong>
+              +${Number(item.delta || 0).toLocaleString('pt-BR')} un.
+            </strong>
+            <span>
+              ${item.anterior.toLocaleString('pt-BR')}
+              →
+              ${item.atual.toLocaleString('pt-BR')}
+            </span>
+          </div>
+        `,
+      )
+      .join('');
 
     const comparison = deviceInsights.comparison;
-    const comparisonText = comparison.growthPct === null
-      ? `Sem base suficiente para comparar ${executiveReportMonthLabel(comparison.previousKey)} com ${executiveReportMonthLabel(comparison.latestKey)}.`
-      : `${executiveReportMonthLabel(comparison.latestKey)} ${comparison.growthPct >= 0 ? 'cresceu' : 'recuou'} ${Math.abs(comparison.growthPct).toFixed(1).replace('.', ',')}% em aparelhos versus ${executiveReportMonthLabel(comparison.previousKey)} (${comparison.previousQty.toLocaleString('pt-BR')} → ${comparison.latestQty.toLocaleString('pt-BR')} un.).`;
+
+    const comparisonText =
+      comparison.growthPct === null
+        ? `Sem base suficiente para comparar ${executiveReportMonthLabel(
+            comparison.previousKey,
+          )} com ${executiveReportMonthLabel(comparison.latestKey)}.`
+        : `${executiveReportMonthLabel(comparison.latestKey)} ${
+            comparison.growthPct >= 0 ? 'cresceu' : 'recuou'
+          } ${Math.abs(comparison.growthPct)
+            .toFixed(1)
+            .replace('.', ',')}% em aparelhos versus ${executiveReportMonthLabel(
+            comparison.previousKey,
+          )} (${comparison.previousQty.toLocaleString(
+            'pt-BR',
+          )} → ${comparison.latestQty.toLocaleString('pt-BR')} un.).`;
 
     const leader = deviceInsights.topProducts[0];
     const growthLeader = deviceInsights.growthProducts[0];
+
     const smartHighlights = [
       comparisonText,
       leader
-        ? `${leader.modelo} foi o aparelho mais vendido no recorte de 3 meses, com ${leader.quantidade.toLocaleString('pt-BR')} unidades.`
+        ? `${leader.modelo} foi o aparelho mais vendido no recorte de 3 meses, com ${leader.quantidade.toLocaleString(
+            'pt-BR',
+          )} unidades.`
         : '',
       growthLeader
-        ? `${growthLeader.modelo} foi o principal avanço entre os dois últimos meses comparáveis: +${growthLeader.delta.toLocaleString('pt-BR')} unidades.`
+        ? `${growthLeader.modelo} foi o principal avanço entre os dois últimos meses comparáveis: +${growthLeader.delta.toLocaleString(
+            'pt-BR',
+          )} unidades.`
         : '',
     ].filter(Boolean);
 
-    const insightBullets = smartHighlights.map((text) => `
-      <div class="insight-bullet"><span></span><p>${executiveEscapeHtml(text)}</p></div>
-    `).join('');
+    const insightBullets = smartHighlights
+      .map(
+        (text) => `
+          <div class="insight-bullet">
+            <span></span>
+            <p>${executiveEscapeHtml(text)}</p>
+          </div>
+        `,
+      )
+      .join('');
 
     const html = `<!doctype html>
     <html lang="pt-BR">
       <head>
         <meta charset="utf-8" />
         <style>
-          *{box-sizing:border-box} body{margin:0;background:#f5f7fb;color:#0f172a;font-family:Arial,Helvetica,sans-serif;font-size:12px}
-          .page{padding:28px 30px 34px}.header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:22px}.brand{font-size:10px;font-weight:800;letter-spacing:.18em;color:#f97316;text-transform:uppercase}.title{font-size:28px;font-weight:900;letter-spacing:-.04em;margin:5px 0 4px}.muted{color:#64748b;font-size:10px}.badge{background:#0f172a;color:white;border-radius:999px;padding:8px 12px;font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.1em}
-          .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px}.kpi{background:white;border:1px solid #e2e8f0;border-radius:16px;padding:14px}.kpi label{display:block;color:#94a3b8;font-size:8px;font-weight:800;letter-spacing:.12em;text-transform:uppercase}.kpi strong{display:block;font-size:18px;margin-top:7px;letter-spacing:-.03em}.section{background:white;border:1px solid #e2e8f0;border-radius:18px;padding:16px;margin-top:12px}.section h2{font-size:14px;margin:0 0 12px}.grid{display:grid;grid-template-columns:1.15fr 1fr;gap:12px}
-          .chart{height:184px;display:flex;align-items:flex-end;gap:4px;border-bottom:1px solid #e2e8f0;padding:10px 3px 0}.bar-wrap{height:100%;flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:4px}.bar{width:100%;max-width:16px;background:#f97316;border-radius:4px 4px 0 0}.bar-wrap span{font-size:6px;color:#94a3b8}
-          .months{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}.month-card{border:1px solid #e2e8f0;background:#f8fafc;border-radius:10px;padding:8px}.month-label{font-size:7px;font-weight:900;letter-spacing:.08em;text-transform:uppercase;color:#64748b}.month-card strong{display:block;margin-top:4px;font-size:10px}.month-card span{display:block;margin-top:2px;font-size:7px;color:#64748b;font-weight:700}
-          .insight-bullets{display:grid;gap:4px;margin-top:8px}.insight-bullet{display:flex;gap:6px;align-items:flex-start}.insight-bullet>span{width:5px;height:5px;border-radius:50%;background:#f97316;margin-top:4px;flex:0 0 auto}.insight-bullet p{margin:0;color:#475569;font-size:7.5px;line-height:1.45;font-weight:700}
-          .mini-title{font-size:7px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:#94a3b8;margin:9px 0 5px}.product-list,.growth-list{display:grid;gap:3px}.product-row,.growth-row{display:grid;align-items:center;gap:5px;border-top:1px solid #f1f5f9;padding-top:4px;font-size:7.5px}.product-row{grid-template-columns:18px 1fr auto}.growth-row{grid-template-columns:1fr auto auto}.rank{display:flex;width:16px;height:16px;align-items:center;justify-content:center;border-radius:5px;background:#fff7ed;color:#ea580c;font-size:6px;font-weight:900}.product-name{font-weight:900;color:#0f172a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.growth-row>span:last-child{color:#64748b;font-weight:700}
-          table{width:100%;border-collapse:collapse}th{font-size:7px;color:#94a3b8;text-transform:uppercase;letter-spacing:.1em;text-align:right;padding:8px;border-bottom:1px solid #e2e8f0}th:nth-child(1),th:nth-child(2){text-align:left}td{padding:9px 8px;border-bottom:1px solid #f1f5f9;text-align:right;font-size:9px;font-weight:700}td:first-child,td:nth-child(2){text-align:left}.store{font-weight:900}.footer{display:flex;justify-content:space-between;margin-top:16px;color:#94a3b8;font-size:7px}.orange-text{color:#f97316}
+          * {
+            box-sizing: border-box;
+          }
+
+          body {
+            margin: 0;
+            background: #f5f7fb;
+            color: #0f172a;
+            font-family: Arial, Helvetica, sans-serif;
+            font-size: 12px;
+          }
+
+          .page {
+            padding: 28px 30px 34px;
+          }
+
+          .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 22px;
+          }
+
+          .brand {
+            font-size: 10px;
+            font-weight: 800;
+            letter-spacing: .18em;
+            color: #f97316;
+            text-transform: uppercase;
+          }
+
+          .title {
+            font-size: 28px;
+            font-weight: 900;
+            letter-spacing: -.04em;
+            margin: 5px 0 4px;
+          }
+
+          .muted {
+            color: #64748b;
+            font-size: 10px;
+          }
+
+          .badge {
+            background: #0f172a;
+            color: white;
+            border-radius: 999px;
+            padding: 8px 12px;
+            font-size: 9px;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: .1em;
+          }
+
+          .kpis {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 10px;
+            margin-bottom: 16px;
+          }
+
+          .kpi {
+            background: white;
+            border: 1px solid #e2e8f0;
+            border-radius: 16px;
+            padding: 14px;
+          }
+
+          .kpi label {
+            display: block;
+            color: #94a3b8;
+            font-size: 8px;
+            font-weight: 800;
+            letter-spacing: .12em;
+            text-transform: uppercase;
+          }
+
+          .kpi strong {
+            display: block;
+            font-size: 18px;
+            margin-top: 7px;
+            letter-spacing: -.03em;
+          }
+
+          .section {
+            background: white;
+            border: 1px solid #e2e8f0;
+            border-radius: 18px;
+            padding: 16px;
+            margin-top: 12px;
+          }
+
+          .section h2 {
+            font-size: 14px;
+            margin: 0 0 12px;
+          }
+
+          .grid {
+            display: grid;
+            grid-template-columns: 1.15fr 1fr;
+            gap: 12px;
+          }
+
+          .chart {
+            height: 184px;
+            display: flex;
+            align-items: flex-end;
+            gap: 4px;
+            border-bottom: 1px solid #e2e8f0;
+            padding: 10px 3px 0;
+          }
+
+          .bar-wrap {
+            height: 100%;
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-end;
+            align-items: center;
+            gap: 4px;
+          }
+
+          .bar {
+            width: 100%;
+            max-width: 16px;
+            background: #f97316;
+            border-radius: 4px 4px 0 0;
+          }
+
+          .bar-wrap span {
+            font-size: 6px;
+            color: #94a3b8;
+          }
+
+          .months {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 6px;
+          }
+
+          .month-card {
+            border: 1px solid #e2e8f0;
+            background: #f8fafc;
+            border-radius: 10px;
+            padding: 8px;
+          }
+
+          .month-label {
+            font-size: 7px;
+            font-weight: 900;
+            letter-spacing: .08em;
+            text-transform: uppercase;
+            color: #64748b;
+          }
+
+          .month-card strong {
+            display: block;
+            margin-top: 4px;
+            font-size: 10px;
+          }
+
+          .month-card span {
+            display: block;
+            margin-top: 2px;
+            font-size: 7px;
+            color: #64748b;
+            font-weight: 700;
+          }
+
+          .insight-bullets {
+            display: grid;
+            gap: 4px;
+            margin-top: 8px;
+          }
+
+          .insight-bullet {
+            display: flex;
+            gap: 6px;
+            align-items: flex-start;
+          }
+
+          .insight-bullet > span {
+            width: 5px;
+            height: 5px;
+            border-radius: 50%;
+            background: #f97316;
+            margin-top: 4px;
+            flex: 0 0 auto;
+          }
+
+          .insight-bullet p {
+            margin: 0;
+            color: #475569;
+            font-size: 7.5px;
+            line-height: 1.45;
+            font-weight: 700;
+          }
+
+          .mini-title {
+            font-size: 7px;
+            font-weight: 900;
+            letter-spacing: .1em;
+            text-transform: uppercase;
+            color: #94a3b8;
+            margin: 9px 0 5px;
+          }
+
+          .product-list,
+          .growth-list {
+            display: grid;
+            gap: 3px;
+          }
+
+          .product-row,
+          .growth-row {
+            display: grid;
+            align-items: center;
+            gap: 5px;
+            border-top: 1px solid #f1f5f9;
+            padding-top: 4px;
+            font-size: 7.5px;
+          }
+
+          .product-row {
+            grid-template-columns: 18px 1fr auto;
+          }
+
+          .growth-row {
+            grid-template-columns: 1fr auto auto;
+          }
+
+          .rank {
+            display: flex;
+            width: 16px;
+            height: 16px;
+            align-items: center;
+            justify-content: center;
+            border-radius: 5px;
+            background: #fff7ed;
+            color: #ea580c;
+            font-size: 6px;
+            font-weight: 900;
+          }
+
+          .product-name {
+            font-weight: 900;
+            color: #0f172a;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+          }
+
+          .growth-row > span:last-child {
+            color: #64748b;
+            font-weight: 700;
+          }
+
+          table {
+            width: 100%;
+            border-collapse: collapse;
+          }
+
+          th {
+            font-size: 7px;
+            color: #94a3b8;
+            text-transform: uppercase;
+            letter-spacing: .1em;
+            text-align: right;
+            padding: 8px;
+            border-bottom: 1px solid #e2e8f0;
+          }
+
+          th:nth-child(1),
+          th:nth-child(2) {
+            text-align: left;
+          }
+
+          td {
+            padding: 9px 8px;
+            border-bottom: 1px solid #f1f5f9;
+            text-align: right;
+            font-size: 9px;
+            font-weight: 700;
+          }
+
+          td:first-child,
+          td:nth-child(2) {
+            text-align: left;
+          }
+
+          .store {
+            font-weight: 900;
+          }
+
+          .footer {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 16px;
+            color: #94a3b8;
+            font-size: 7px;
+          }
+
+          .orange-text {
+            color: #f97316;
+          }
+
+          /* Permite que a tabela continue nas páginas seguintes. */
+          @media print {
+            body {
+              -webkit-print-color-adjust: exact;
+              print-color-adjust: exact;
+            }
+
+            .stores-section {
+              overflow: visible;
+              break-inside: auto;
+              page-break-inside: auto;
+            }
+
+            .stores-section table {
+              break-inside: auto;
+              page-break-inside: auto;
+            }
+
+            .stores-section thead {
+              display: table-header-group;
+            }
+
+            .stores-section thead th {
+              background: #ffffff;
+            }
+
+            .stores-section tbody {
+              break-inside: auto;
+              page-break-inside: auto;
+            }
+
+            .stores-section tr {
+              break-inside: avoid;
+              page-break-inside: avoid;
+            }
+
+            .section h2 {
+              break-after: avoid;
+              page-break-after: avoid;
+            }
+
+            .header,
+            .kpis,
+            .grid,
+            .footer {
+              break-inside: avoid;
+              page-break-inside: avoid;
+            }
+          }
         </style>
       </head>
       <body>
         <div class="page">
           <div class="header">
-            <div><div class="brand">TeleFluxo Intelligence</div><div class="title">Relatório Executivo</div><div class="muted">${executiveEscapeHtml(scopeLabel)} • ${executiveEscapeHtml(periodLabel)}</div></div>
-            <div class="badge">${executiveEscapeHtml(user.name || user.role || 'TeleFluxo')}</div>
+            <div>
+              <div class="brand">TeleFluxo Intelligence</div>
+              <div class="title">Relatório Executivo</div>
+              <div class="muted">
+                ${executiveEscapeHtml(scopeLabel)}
+                •
+                ${executiveEscapeHtml(periodLabel)}
+              </div>
+            </div>
+            <div class="badge">
+              ${executiveEscapeHtml(
+                user.name || user.role || 'TeleFluxo',
+              )}
+            </div>
           </div>
 
           <div class="kpis">
-            <div class="kpi"><label>Faturamento do mês</label><strong>${executiveMoney(kpis.faturamentoMes)}</strong></div>
-            <div class="kpi"><label>Tendência mês</label><strong>${executiveMoney(kpis.tendenciaMes)}</strong></div>
-            <div class="kpi"><label>Tendência ano</label><strong>${executiveMoney(kpis.tendenciaAno)}</strong></div>
+            <div class="kpi">
+              <label>Faturamento do mês</label>
+              <strong>${executiveMoney(kpis.faturamentoMes)}</strong>
+            </div>
+            <div class="kpi">
+              <label>Tendência mês</label>
+              <strong>${executiveMoney(kpis.tendenciaMes)}</strong>
+            </div>
+            <div class="kpi">
+              <label>Tendência ano</label>
+              <strong>${executiveMoney(kpis.tendenciaAno)}</strong>
+            </div>
             <div class="kpi">
               <label>Conversões</label>
               <strong style="font-size:12px;line-height:1.55">
@@ -10836,69 +11328,166 @@ app.get('/api/global-search', async (req, res) => {
           </div>
 
           <div class="grid">
-            <div class="section"><h2>Faturamento diário</h2><div class="chart">${trendBars || '<div class="muted">Sem dados suficientes.</div>'}</div></div>
+            <div class="section">
+              <h2>Faturamento diário</h2>
+              <div class="chart">
+                ${
+                  trendBars ||
+                  '<div class="muted">Sem dados suficientes.</div>'
+                }
+              </div>
+            </div>
+
             <div class="section">
               <h2>Últimos 3 meses • aparelhos</h2>
+
               <div class="months">${monthCards}</div>
-              <div class="insight-bullets">${insightBullets || '<div class="muted">Sem informação comparável suficiente.</div>'}</div>
+
+              <div class="insight-bullets">
+                ${
+                  insightBullets ||
+                  '<div class="muted">Sem informação comparável suficiente.</div>'
+                }
+              </div>
+
               <div class="mini-title">Mais vendidos no período</div>
-              <div class="product-list">${topProductRows || '<div class="muted">Sem aparelhos identificados.</div>'}</div>
+              <div class="product-list">
+                ${
+                  topProductRows ||
+                  '<div class="muted">Sem aparelhos identificados.</div>'
+                }
+              </div>
+
               <div class="mini-title">Produtos em crescimento</div>
-              <div class="growth-list">${growthRows || '<div class="muted">Nenhum crescimento relevante entre os meses comparáveis.</div>'}</div>
+              <div class="growth-list">
+                ${
+                  growthRows ||
+                  '<div class="muted">Nenhum crescimento relevante entre os meses comparáveis.</div>'
+                }
+              </div>
             </div>
           </div>
 
-          <div class="section">
-            <h2>${requestedScope === 'network' ? 'Performance das lojas' : 'Resumo da unidade'}</h2>
+          <div class="section stores-section">
+            <h2>
+              ${
+                requestedScope === 'network'
+                  ? 'Performance das lojas'
+                  : 'Resumo da unidade'
+              }
+            </h2>
+
             <table>
-              <thead><tr><th>#</th><th>Loja</th><th>Faturamento</th><th>Acessórios</th><th>Películas</th><th>Seguro</th></tr></thead>
-              <tbody>${storeRows || '<tr><td colspan="6">Sem dados disponíveis.</td></tr>'}</tbody>
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Loja</th>
+                  <th>Faturamento</th>
+                  <th>Acessórios</th>
+                  <th>Películas</th>
+                  <th>Seguro</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${
+                  storeRows ||
+                  '<tr><td colspan="6">Sem dados disponíveis.</td></tr>'
+                }
+              </tbody>
             </table>
           </div>
 
-          <div class="footer"><span>Gerado pelo <strong class="orange-text">TeleFluxo</strong></span><span>${executiveEscapeHtml(generatedAt)}</span></div>
+          <div class="footer">
+            <span>
+              Gerado pelo
+              <strong class="orange-text">TeleFluxo</strong>
+            </span>
+            <span>${executiveEscapeHtml(generatedAt)}</span>
+          </div>
         </div>
       </body>
     </html>`;
 
     const date = getBrazilTodayIso();
-    const scopeName = requestedScope === 'network'
-      ? 'rede'
-      : executiveNormalizeStoreName(payloadStores[0] || user.name || 'loja')
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, '-');
+
+    const scopeName =
+      requestedScope === 'network'
+        ? 'rede'
+        : executiveNormalizeStoreName(
+            payloadStores[0] || user.name || 'loja',
+          )
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-');
 
     try {
       const { chromium } = await import('playwright');
-      browser = await chromium.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
-      const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+
+      browser = await chromium.launch({
+        headless: true,
+        args: ['--no-sandbox', '--disable-setuid-sandbox'],
+      });
+
+      const page = await browser.newPage({
+        viewport: { width: 1440, height: 1000 },
+      });
+
       await page.setContent(html, { waitUntil: 'load' });
+
       const pdf = await page.pdf({
         format: 'A4',
         landscape: true,
         printBackground: true,
-        margin: { top: '10mm', right: '10mm', bottom: '10mm', left: '10mm' },
+        margin: {
+          top: '10mm',
+          right: '10mm',
+          bottom: '10mm',
+          left: '10mm',
+        },
       });
 
       const fileName = `telefluxo-relatorio-${scopeName}-${date}.pdf`;
+
       res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="${fileName}"`,
+      );
       res.setHeader('Cache-Control', 'no-store');
+
       return res.send(pdf);
     } catch (pdfError) {
-      console.warn('⚠️ Chromium indisponível para PDF. Entregando relatório HTML imprimível:', pdfError);
+      console.warn(
+        '⚠️ Chromium indisponível para PDF. Entregando relatório HTML imprimível:',
+        pdfError,
+      );
+
       const fileName = `telefluxo-relatorio-${scopeName}-${date}.html`;
+
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="${fileName}"`,
+      );
       res.setHeader('X-Telefluxo-Report-Fallback', 'html');
       res.setHeader('Cache-Control', 'no-store');
+
       return res.send(html);
     }
   } catch (error: any) {
     console.error('❌ Erro /api/executive-report/pdf:', error);
-    return res.status(500).json({ success: false, error: error?.message || 'Erro ao gerar relatório executivo.' });
+
+    return res.status(500).json({
+      success: false,
+      error: error?.message || 'Erro ao gerar relatório executivo.',
+    });
   } finally {
-    try { if (browser) await browser.close(); } catch {}
+    try {
+      if (browser) {
+        await browser.close();
+      }
+    } catch {
+      // Não sobrescrever a resposta caso o fechamento falhe.
+    }
   }
 });
 

@@ -12,7 +12,7 @@ import {
   consultarVendasMensaisClark,
 } from '../executors/sales.executor';
 
-import { calcularCrescimentoMensalClark } from './growth';
+import { calcularCrescimentoMensalClark, prepararComparacaoMensalClark } from './growth';
 
 export async function consultarRelatorioAnaliticoVendasClark(
   ctx: ClarkDbContext,
@@ -20,6 +20,9 @@ export async function consultarRelatorioAnaliticoVendasClark(
   scope: ClarkUserScope,
   filtros: ClarkFiltros
 ) {
+  // Mês parcial é comparado com os mesmos dias do mês anterior (MTD vs MTD).
+  const comparacao = prepararComparacaoMensalClark(periodo);
+
   const [resumo, lojas, categorias, mensal] = await Promise.all([
     consultarResumoVendasPeriodoClark(ctx, periodo, scope, filtros),
     consultarRankingLojasVendasClark(ctx, periodo, scope, {
@@ -30,10 +33,10 @@ export async function consultarRelatorioAnaliticoVendasClark(
       ...filtros,
       limite: 999,
     }),
-    consultarVendasMensaisClark(ctx, periodo, scope, filtros),
+    consultarVendasMensaisClark(ctx, periodo, scope, filtros, comparacao.diaCorte ?? undefined),
   ]);
 
-  const crescimentoMensal = calcularCrescimentoMensalClark(mensal);
+  const crescimentoMensal = calcularCrescimentoMensalClark(mensal, comparacao);
 
   return {
     modulo: 'vendas',

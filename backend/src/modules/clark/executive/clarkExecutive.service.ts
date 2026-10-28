@@ -1,6 +1,6 @@
 import { GoogleGenAI } from '@google/genai';
 import { gerarTextoClaudeClark } from '../../ai/claudeClark';
-import { ClarkAgentPlan, ClarkToolResult, ClarkVerificationResult } from '../agent/clarkAgent.types';
+import { ClarkAgentPlan, ClarkToolResult, ClarkVerificationResult } from '../clarkAgent.types';
 import { ClarkPeriodo } from '../clark.types';
 import { ClarkExecutiveReport } from './clarkExecutive.types';
 

@@ -733,6 +733,7 @@ export async function consultarVendasMensaisClark(
   periodo: ClarkPeriodo,
   scope: ClarkUserScope,
   filtros: ClarkFiltros,
+  diaCorte?: number,
 ) {
   const consulta = await consultarVendasRawClark(ctx, periodo, scope, filtros);
   const rows = consulta.rows;
@@ -752,6 +753,8 @@ export async function consultarVendasMensaisClark(
         total_vendas: 0,
         total_pecas: 0,
         vendas: 0,
+        total_vendas_ate_dia: 0,
+        total_pecas_ate_dia: 0,
         lojas: new Map<string, any>(),
       });
     }
@@ -761,6 +764,12 @@ export async function consultarVendasMensaisClark(
     atual.total_vendas += safeNumberClark(row.total_liquido);
     atual.total_pecas += safeNumberClark(row.quantidade);
     atual.vendas += 1;
+
+    // Acumulado até o dia de corte, para comparar períodos equivalentes (MTD vs MTD).
+    if (diaCorte && Number(data.slice(8, 10)) <= diaCorte) {
+      atual.total_vendas_ate_dia += safeNumberClark(row.total_liquido);
+      atual.total_pecas_ate_dia += safeNumberClark(row.quantidade);
+    }
 
     const loja = resolverNomeLojaClark(row);
 
@@ -796,6 +805,12 @@ export async function consultarVendasMensaisClark(
         total_vendas_formatado: formatBRL(item.total_vendas),
         total_pecas: item.total_pecas,
         vendas: item.vendas,
+        ...(diaCorte
+          ? {
+              total_vendas_ate_dia: item.total_vendas_ate_dia,
+              total_pecas_ate_dia: item.total_pecas_ate_dia,
+            }
+          : {}),
         ticket_medio: item.total_pecas > 0 ? item.total_vendas / item.total_pecas : 0,
         ticket_medio_formatado: formatBRL(
           item.total_pecas > 0 ? item.total_vendas / item.total_pecas : 0,

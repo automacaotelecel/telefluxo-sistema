@@ -1,5 +1,5 @@
 import { ClarkFiltros, ClarkHistoricoMensagem, ClarkPeriodo, ClarkResposta } from '../clark.types';
-import { ClarkAgentPlan, ClarkToolResult, ClarkVerificationResult } from '../agent/clarkAgent.types';
+import { ClarkAgentPlan, ClarkToolResult, ClarkVerificationResult } from '../clarkAgent.types';
 import { ClarkUserScope } from '../clark.types';
 import { ClarkQuestionRequirements } from './clarkRequirements.service';
 

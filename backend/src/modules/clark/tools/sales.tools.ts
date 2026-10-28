@@ -3,7 +3,7 @@ import sqlite3 from 'sqlite3';
 import { open } from 'sqlite';
 
 import { ClarkDbContext, ClarkFiltros, ClarkPeriodo } from '../clark.types';
-import { ClarkToolResult } from '../agent/clarkAgent.types';
+import { ClarkToolResult } from '../clarkAgent.types';
 import { ClarkToolContext } from './clarkTools.types';
 
 import {
@@ -30,7 +30,7 @@ import {
 } from '../../executors/insurance.executor';
 
 import { consultarRelatorioAnaliticoVendasClark } from '../../analytics/salesAnalytics';
-import { calcularCrescimentoMensalClark } from '../../analytics/growth';
+import { calcularCrescimentoMensalClark, prepararComparacaoMensalClark } from '../../analytics/growth';
 import { extractColor, extractStorage, getBaseModelFamily, normalizeProductText } from '../../productDictionary/productDictionary.utils';
 
 async function abrirDbSeExistir(filename: string) {
@@ -156,13 +156,23 @@ export async function toolConsultarVendasPorCategoria(args: Record<string, any>,
 
 export async function toolConsultarCrescimentoMensal(args: Record<string, any>, ctx: ClarkToolContext) {
   return executarComContexto('consultar_crescimento_mensal', args, ctx, async (dbCtx, periodo, scope, filtros) => {
-    const mensal = await consultarVendasMensaisClark(dbCtx, periodo, scope, filtros);
+    // Compara períodos equivalentes (MTD vs MTD) e inclui o mês anterior quando o período cobre só um mês.
+    const comparacao = prepararComparacaoMensalClark(periodo);
+    const mensal = await consultarVendasMensaisClark(
+      dbCtx,
+      comparacao.periodoConsulta,
+      scope,
+      filtros,
+      comparacao.diaCorte ?? undefined,
+    );
     return {
       modulo: 'vendas',
       tipo: 'crescimento_mensal',
       periodo,
+      periodo_consultado: comparacao.periodoConsulta,
+      comparacao_parcial: comparacao.diaCorte ? { mes: comparacao.mesParcial, dias: comparacao.diaCorte } : null,
       filtro_loja: filtros.lojaCanonica || null,
-      meses: calcularCrescimentoMensalClark(mensal),
+      meses: calcularCrescimentoMensalClark(mensal, comparacao),
     };
   });
 }

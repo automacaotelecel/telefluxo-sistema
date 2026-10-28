@@ -1,10 +1,16 @@
 import { GoogleGenAI } from '@google/genai';
-import { ClarkAgentPlan, ClarkToolCall, ClarkToolName } from '../agent/clarkAgent.types';
+import { ClarkAgentPlan, ClarkToolCall, ClarkToolName } from '../clarkAgent.types';
 import { ClarkFiltros, ClarkPeriodo } from '../clark.types';
-import { normalizarTextoClark } from '../../intent/extractFilters';
+import { extrairFiltrosClark, normalizarTextoClark } from '../../intent/extractFilters';
 import { CLARK_SCHEMA_CONTEXT } from './clarkSchemaContext';
 import { ClarkBrainContext } from './clarkBrain.types';
 import { gerarTextoClaudeClark } from '../../ai/claudeClark';
+import {
+  ClarkInterpretacao,
+  ClarkInterpretadorStatus,
+  interpretadorAtivoClark,
+  interpretarPerguntaComStatusClark,
+} from './clarkInterpreter.service';
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
@@ -715,13 +721,152 @@ Retorne SOMENTE JSON válido neste formato:
 }`;
 }
 
-export async function planejarClark(ctx: ClarkBrainContext): Promise<{ plan: ClarkAgentPlan; usedGemini: boolean }> {
+// Tasks locais (regex) que agora são decididas pelo interpretador (período/intenção livres).
+// Produto, estoque, navegação, conversa, modo diretoria, sales_report e sql_analytics NÃO entram aqui
+// e seguem o caminho antigo (inclusive o planner LLM com normalizarPlano, que permanece intocado).
+const TASKS_VIA_INTERPRETADOR = new Set<string>([
+  'sales_summary', 'sales_by_store', 'sales_by_seller', 'sales_by_category',
+  'sales_store_ranking', 'sales_seller_ranking', 'sales_category_ranking',
+  'sales_growth', 'insurance_by_seller', 'insurance_by_store',
+  'insurance_seller_ranking', 'insurance_store_ranking', 'help',
+]);
+
+function taskTypeDaInterpretacao(interp: ClarkInterpretacao): ClarkAgentPlan['taskType'] {
+  const first = interp.tools[0]!.tool;
+  if (interp.intencao === 'conversa' || first === 'responder_conversa') return 'conversation';
+  if (interp.intencao === 'ajuda' || first === 'responder_ajuda') return 'help';
+  // Comparação entre 2 períodos: 'sales_report' não é resposta determinística, então o LLM redige com os dois resultados.
+  if (interp.intencao === 'comparativo' || interp.periodos.length > 1) return 'sales_report';
+  switch (first) {
+    case 'consultar_vendas_por_loja': return 'sales_store_ranking';
+    case 'consultar_vendas_por_vendedor': return 'sales_seller_ranking';
+    case 'consultar_vendas_por_categoria': return 'sales_category_ranking';
+    case 'consultar_crescimento_mensal': return 'sales_growth';
+    case 'consultar_relatorio_vendas': return 'sales_report';
+    case 'consultar_seguros_por_vendedor': return 'insurance_seller_ranking';
+    case 'consultar_seguros_por_loja': return 'insurance_store_ranking';
+    default: return 'sales_summary';
+  }
+}
+
+function planoDeInterpretacaoClark(ctx: ClarkBrainContext, interp: ClarkInterpretacao): { plan: ClarkAgentPlan; periodo: ClarkPeriodo } {
+  const principal = interp.periodos[0]!.periodo;
+  const taskType = taskTypeDaInterpretacao(interp);
+
+  // Loja e categoria só valem se baterem com o normalizador do fluxo atual.
+  const lojaCanonica = interp.filtros.loja ? extrairFiltrosClark(interp.filtros.loja).lojaCanonica : undefined;
+  const categoriaCanonica = interp.filtros.categoria ? extrairFiltrosClark(interp.filtros.categoria).categoriaCanonica : undefined;
+  // Loja citada pelo usuário mas sem correspondência oficial: o filtro NÃO é aplicado e o usuário precisa ser avisado.
+  const lojaCitada = interp.filtros.lojaCitada || interp.filtros.loja;
+  const lojaNaoReconhecida = Boolean(lojaCitada && !lojaCanonica);
+  const avisosFiltro: string[] = lojaNaoReconhecida
+    ? [`⚠️ Não reconheci a loja "${lojaCitada}"; o filtro de loja não foi aplicado. Os números abaixo são de todas as lojas.`]
+    : [];
+  if (lojaNaoReconhecida) {
+    console.warn(`[clark][interpreter] loja não reconhecida: "${lojaCitada}" (filtro de loja não aplicado)`);
+  }
+
+  // Ordenação estável por período: o período principal vem primeiro (o painel executivo usa o 1º resultado).
+  const ferramentasOrdenadas = interp.tools
+    .map((t, i) => ({ t, i }))
+    .sort((a, b) => Number(a.t.args.periodo) - Number(b.t.args.periodo) || a.i - b.i)
+    .map((x) => x.t);
+
+  const toolCalls: ClarkToolCall[] = ferramentasOrdenadas.map((t) => {
+    const { periodo: idx, ...resto } = t.args;
+    const p = (interp.periodos[Number(idx)] ?? interp.periodos[0]!).periodo;
+    return {
+      tool: t.tool,
+      reason: t.reason,
+      args: {
+        ...resto,
+        originalQuestion: ctx.perguntaOriginal,
+        startDate: p.inicio,
+        endDate: p.fim,
+        label: p.descricao,
+        ...(lojaCanonica ? { store: lojaCanonica } : {}),
+        ...(categoriaCanonica ? { category: categoriaCanonica } : {}),
+        ...(interp.filtros.limite && !resto.limit ? { limit: interp.filtros.limite } : {}),
+      },
+    };
+  });
+
+  return {
+    periodo: principal,
+    plan: {
+      understoodQuestion: interp.resumo || ctx.perguntaOriginal,
+      taskType,
+      mode: taskType === 'conversation' || taskType === 'help' ? 'simples' : 'analitico',
+      confidence: interp.confianca,
+      entities: {
+        period: { inicio: principal.inicio, fim: principal.fim, descricao: principal.descricao },
+        store: lojaCanonica ?? null,
+        // Texto como o LLM/usuário escreveu, só quando a loja foi reconhecida.
+        storeOriginal: lojaCanonica ? interp.filtros.loja ?? null : null,
+        category: categoriaCanonica ?? null,
+        limit: interp.filtros.limite,
+        // Avisos exibidos pelo Brain no início da resposta (respostas determinísticas ignoram validationRules).
+        avisosFiltro,
+        ...(interp.periodos[1] ? { comparisonPeriod: interp.periodos[1].periodo } : {}),
+      } as any,
+      toolCalls,
+      validationRules: [
+        'Usar apenas os números retornados pelas ferramentas.',
+        'Informar os períodos comparados e a base de comparação.',
+        ...(lojaNaoReconhecida ? [`A loja "${lojaCitada}" não foi reconhecida; o filtro de loja NÃO foi aplicado e os números são de todas as lojas. O sistema já exibe esse aviso no início da resposta; não o repita.`] : []),
+      ],
+      answerStyle: { shouldExplainUncertainty: true, shouldIncludeTables: true, shouldIncludeInsights: true, shouldIncludeSuggestions: true },
+    },
+  };
+}
+
+type ClarkPlanejamento = {
+  plan: ClarkAgentPlan;
+  usedGemini: boolean;
+  periodoEfetivo?: ClarkPeriodo;
+  origem?: 'interpretador' | 'regra';
+};
+
+export async function planejarClark(ctx: ClarkBrainContext): Promise<ClarkPlanejamento & { interpretadorStatus: ClarkInterpretadorStatus }> {
+  // 'desligado' | 'nao_usado' por padrão; o interpretador atualiza para 'ok' ou 'falhou:<motivo>' quando é consultado.
+  const ref: { status: ClarkInterpretadorStatus } = { status: interpretadorAtivoClark() ? 'nao_usado' : 'desligado' };
+  const resultado = await planejarClarkInterno(ctx, ref);
+  return { ...resultado, interpretadorStatus: ref.status };
+}
+
+async function planejarClarkInterno(ctx: ClarkBrainContext, ref: { status: ClarkInterpretadorStatus }): Promise<ClarkPlanejamento> {
   const local = planejarLocalClark(ctx);
 
   // Consulta de produto e ranking explícito são determinísticos.
   // Não deixamos a Gemini reaproveitar histórico e trocar por ajuda/ranking errado.
   if (deveForcarBuscaProduto(ctx) || perguntaAtualPedeRankingEstoque(ctx.perguntaOriginal)) {
-    return { plan: local, usedGemini: false };
+    return { plan: local, usedGemini: false, origem: 'regra' };
+  }
+
+  // Vendas/seguros/ajuda: o interpretador decide período, intenção e ferramentas.
+  // Tudo ou nada: se vier null, usa o plano local de regex inteiro (sem misturar e sem o planner LLM antigo).
+  //
+  // A decisão de rotear é tomada pela pergunta ORIGINAL (sem histórico): em follow-ups, o texto das respostas
+  // anteriores contamina a regex ("e no Park?" virava ranking de estoque). Se há produto em contexto
+  // (requirements.products, inclusive vindo da memória), o caminho antigo de produto/estoque é preservado.
+  if (interpretadorAtivoClark() && ctx.requirements.products.length === 0) {
+    const localOriginal = planejarLocalClark({ ...ctx, perguntaExpandida: ctx.perguntaOriginal });
+    // "ranking de lojas" casa com estoque só pela palavra "lojas": sem sinal forte de estoque, é ambíguo.
+    const rankingEstoqueAmbiguo = localOriginal.taskType === 'stock_ranking';
+
+    if (TASKS_VIA_INTERPRETADOR.has(localOriginal.taskType) || rankingEstoqueAmbiguo) {
+      const { interpretacao: interp, status } = await interpretarPerguntaComStatusClark(ctx);
+      ref.status = status;
+      if (interp) {
+        const { plan, periodo } = planoDeInterpretacaoClark(ctx, interp);
+        // Ambíguo que o interpretador não mapeou para vendas/seguros: mantém o comportamento antigo (estoque).
+        if (rankingEstoqueAmbiguo && plan.taskType === 'help') {
+          return { plan: local, usedGemini: false, origem: 'regra' };
+        }
+        return { plan, usedGemini: true, periodoEfetivo: periodo, origem: 'interpretador' };
+      }
+      return { plan: local, usedGemini: false, origem: 'regra' };
+    }
   }
 
   // Intenções já reconhecidas com regra de negócio determinística não devem ser

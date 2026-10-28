@@ -15,7 +15,7 @@ import { planejarClark, repararPlanoClark } from './clarkPlanner.service';
 import { executarFerramentasClark } from './clarkToolExecutor.service';
 import { validarResultadoClark } from './clarkVerifier.service';
 import { responderFinalClark } from './clarkFinalResponder.service';
-import { ClarkAgentPlan } from '../agent/clarkAgent.types';
+import { ClarkAgentPlan } from '../clarkAgent.types';
 import { extrairRequisitosClark } from './clarkRequirements.service';
 import { selecionarEspecialistaClark, executarEspecialistaClark } from '../agents/clarkOrchestrator.service';
 import { criarPainelExecutivoClark, enriquecerPainelExecutivoClark } from '../executive/clarkExecutive.service';
@@ -64,6 +64,34 @@ function sanitizeFinalText(text: string) {
     return 'A consulta retornou dados técnicos internos, mas eles foram bloqueados para evitar uma resposta inadequada. Refaça a pergunta de forma mais específica ou solicite uma consulta de estoque, vendas ou relatório.';
   }
   return resposta;
+}
+
+/**
+ * Filtros da resposta. No ramo do interpretador, loja/categoria vêm do plano (nada da regex), para não misturar fluxos.
+ * lojaOriginal preserva o texto usado pelo LLM, mas só quando a loja foi reconhecida.
+ */
+function filtrosDoInterpretador(filtros: ClarkFiltros, plan: ClarkAgentPlan, origem?: 'interpretador' | 'regra'): ClarkFiltros {
+  if (origem !== 'interpretador') return filtros;
+
+  const entities: any = plan.entities || {};
+  const lojaCanonica: string | undefined = entities.store || undefined;
+  const lojaOriginal: string | undefined = lojaCanonica ? entities.storeOriginal || lojaCanonica : undefined;
+  const categoriaCanonica: string | undefined = entities.category || undefined;
+
+  return {
+    ...filtros,
+    lojaCanonica,
+    lojaOriginal,
+    cnpjLoja: lojaCanonica ? extrairFiltrosClark(lojaCanonica).cnpjLoja : undefined,
+    categoriaCanonica,
+    categoriaOriginal: categoriaCanonica,
+  };
+}
+
+/** Avisos de filtro não aplicado (ex.: loja não reconhecida) vão sempre no início, mesmo em respostas determinísticas. */
+function comAvisosDeFiltro(texto: string, plan: ClarkAgentPlan): string {
+  const avisos: string[] = Array.isArray((plan.entities as any)?.avisosFiltro) ? (plan.entities as any).avisosFiltro : [];
+  return avisos.length ? `${avisos.join('\n')}\n\n${texto}` : texto;
 }
 
 export async function processarComClarkBrain(input: ClarkPerguntaInput): Promise<ClarkResposta> {
@@ -145,9 +173,14 @@ export async function processarComClarkBrain(input: ClarkPerguntaInput): Promise
     }
   }
 
-  const { plan: planned, usedGemini: usedGeminiPlanner } = await planejarClark(context);
+  const { plan: planned, usedGemini: usedGeminiPlanner, periodoEfetivo, origem, interpretadorStatus } = await planejarClark(context);
 
-  let execution = await executarFerramentasClark(planned, context);
+  // Tudo ou nada: se o interpretador decidiu, o período e a loja/categoria dele valem em todo o restante do fluxo.
+  const periodoFinal: ClarkPeriodo = periodoEfetivo ?? periodo;
+  const contextoExec: ClarkBrainContext = periodoEfetivo ? { ...context, periodo: periodoEfetivo } : context;
+  const filtrosFinais: ClarkFiltros = filtrosDoInterpretador(filtros, planned, origem);
+
+  let execution = await executarFerramentasClark(planned, contextoExec);
   let plan = execution.plan;
   let results = execution.results;
   let verifier = validarResultadoClark(plan, results, requirements);
@@ -156,10 +189,11 @@ export async function processarComClarkBrain(input: ClarkPerguntaInput): Promise
   // A Clark nunca finaliza uma resposta parcial quando consegue reconstruir um
   // plano seguro. Fazemos uma única tentativa de reparo determinístico para não
   // criar loops infinitos.
-  if (!verifier.ok && ['needs_retry', 'wrong_intent'].includes(verifier.verdict)) {
+  // O reparo reconstrói o plano por regex; no ramo do interpretador isso misturaria os dois fluxos.
+  if (origem !== 'interpretador' && !verifier.ok && ['needs_retry', 'wrong_intent'].includes(verifier.verdict)) {
     const repairPlan = repararPlanoClark(context, plan);
     if (repairPlan) {
-      execution = await executarFerramentasClark(repairPlan, context);
+      execution = await executarFerramentasClark(repairPlan, contextoExec);
       plan = execution.plan;
       results = execution.results;
       verifier = validarResultadoClark(plan, results, requirements);
@@ -167,20 +201,20 @@ export async function processarComClarkBrain(input: ClarkPerguntaInput): Promise
     }
   }
 
-  const { text, usedGemini: usedGeminiResponder } = await responderFinalClark({ pergunta: perguntaOriginal, plan, results, verifier, periodo });
+  const { text, usedGemini: usedGeminiResponder } = await responderFinalClark({ pergunta: perguntaOriginal, plan, results, verifier, periodo: periodoFinal });
 
-  const executiveBase = criarPainelExecutivoClark({ plan, results, verifier, periodo });
+  const executiveBase = criarPainelExecutivoClark({ plan, results, verifier, periodo: periodoFinal });
   const executiveEnriched = executiveBase
     ? await enriquecerPainelExecutivoClark(executiveBase)
     : null;
 
   const respostaFinal: ClarkResposta = {
     ok: verifier.ok,
-    clark: sanitizeFinalText(text),
+    clark: comAvisosDeFiltro(sanitizeFinalText(text), plan),
     intencao: intentFromPlan(plan),
     modo: plan.mode || 'analitico',
-    periodo,
-    filtros,
+    periodo: periodoFinal,
+    filtros: filtrosFinais,
     dados: {
       plan,
       toolResults: results,
@@ -188,6 +222,9 @@ export async function processarComClarkBrain(input: ClarkPerguntaInput): Promise
       verifier,
       brain: {
         version: 'v10-requirements-agent',
+        origemPlano: origem ?? 'regra',
+        interpretadorStatus,                     // 'desligado' | 'nao_usado' | 'ok' | 'falhou:<motivo>'
+        periodoEfetivo: periodoEfetivo ?? null,
         usedGeminiPlanner,
         usedGeminiResponder,
         memoryBefore: memoriaExecutiva,

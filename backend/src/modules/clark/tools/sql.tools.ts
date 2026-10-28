@@ -3,7 +3,7 @@ import path from 'path';
 import sqlite3 from 'sqlite3';
 import { open } from 'sqlite';
 
-import { ClarkToolResult } from '../agent/clarkAgent.types';
+import { ClarkToolResult } from '../clarkAgent.types';
 import { ClarkToolContext } from './clarkTools.types';
 import { getAnnualSalesDbPath, getGlobalSalesDbPath } from '../../data/databasePaths';
 
@@ -68,11 +68,35 @@ function ensureSqlScope(ctx: ClarkToolContext) {
   }
 }
 
+/**
+ * Medição de uso: este tool só é chamado quando o planner LLM antigo escolhe `executar_sql_analitico`
+ * (o plano local por regex nunca o emite). Um log por chamada, para medir se SQL livre é usado de fato.
+ */
+function logarUsoSqlClark(params: {
+  ctx: ClarkToolContext;
+  args: Record<string, any>;
+  resultado: 'executado' | 'erro';
+  linhas?: number;
+  erro?: string;
+  sql?: string;
+  inicio: number;
+}) {
+  const pergunta = String(params.args.originalQuestion || (params.ctx as any)?.pergunta || '').replace(/\s+/g, ' ').slice(0, 160);
+  const sql = String(params.sql || params.args.sql || params.args.query || '').replace(/\s+/g, ' ').slice(0, 300);
+  console.log(
+    `[clark][sql-medicao] escolhido_pelo_planner_llm=sim resultado=${params.resultado}` +
+      `${params.linhas !== undefined ? ` linhas=${params.linhas}` : ''}` +
+      `${params.erro ? ` erro="${params.erro.slice(0, 120)}"` : ''}` +
+      ` ms=${Date.now() - params.inicio} pergunta="${pergunta}" sql="${sql}"`,
+  );
+}
+
 export async function toolExecutarSqlAnalitico(
   args: Record<string, any>,
   ctx: ClarkToolContext
 ): Promise<ClarkToolResult> {
   let db: any = null;
+  const inicio = Date.now();
 
   try {
     ensureSqlScope(ctx);
@@ -85,6 +109,7 @@ export async function toolExecutarSqlAnalitico(
     const sql = addLimit(assertSafeSelect(String(args.sql || args.query || '')), Number(args.limit || 200));
     db = await open({ filename: dbPath, driver: sqlite3.Database });
     const rows = await db.all(sql);
+    logarUsoSqlClark({ ctx, args, resultado: 'executado', linhas: Array.isArray(rows) ? rows.length : 0, sql, inicio });
 
     return {
       tool: 'executar_sql_analitico',
@@ -98,6 +123,7 @@ export async function toolExecutarSqlAnalitico(
       },
     };
   } catch (error: any) {
+    logarUsoSqlClark({ ctx, args, resultado: 'erro', erro: error?.message || 'erro', inicio });
     return {
       tool: 'executar_sql_analitico',
       ok: false,

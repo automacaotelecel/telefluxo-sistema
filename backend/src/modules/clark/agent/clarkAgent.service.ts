@@ -7,7 +7,7 @@ import {
   ClarkAgentTrace,
   ClarkToolResult,
   ClarkToolName,
-} from './clarkAgent.types';
+} from '../clarkAgent.types';
 
 import {
   montarPromptPlanejamentoClark,

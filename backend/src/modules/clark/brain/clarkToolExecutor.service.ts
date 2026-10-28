@@ -1,5 +1,5 @@
 import { clarkToolsRegistry } from '../tools/clarkTools.registry';
-import { ClarkAgentPlan, ClarkToolName, ClarkToolResult } from '../agent/clarkAgent.types';
+import { ClarkAgentPlan, ClarkToolName, ClarkToolResult } from '../clarkAgent.types';
 import { ClarkBrainContext } from './clarkBrain.types';
 
 const INTERNAL_ONLY_TOOLS = new Set<ClarkToolName>(['resolver_produto']);
