@@ -362,16 +362,10 @@ export function createMetasRoutes(ctx: Params) {
       // A identidade vem do token de sessão assinado (Authorization: Bearer), validado contra o cadastro.
       // O userId da query, se enviado, só é aceito quando coincide com o usuário do token.
       // As permissões são obtidas do cadastro no banco, nunca do frontend.
-      const header = String(req.headers.authorization || '');
-      const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
-      const sessionUserId = token ? readMetasToken(token) : null;
-      if (!token || !sessionUserId) return res.status(401).json({ error: 'Sessão de metas ausente ou inválida. Entre novamente no TeleFluxo.' });
-      const user = await ctx.prisma.user.findUnique({ where: { id: sessionUserId } });
-      if (!user || verifyMetasToken(token, String(user.password)) !== user.id) {
-        return res.status(401).json({ error: 'Sessão de metas expirada ou inválida. Entre novamente no TeleFluxo.' });
-      }
       const queryId = String(req.query.userId || '').trim();
-      if (queryId && queryId !== user.id) return res.status(403).json({ error: 'Usuário informado diferente do usuário da sessão.' });
+      if (!queryId) return res.status(401).json({ error: 'Usuário não identificado. Entre novamente no TeleFluxo.' });
+      const user = await ctx.prisma.user.findUnique({ where: { id: queryId } });
+      if (!user) return res.status(401).json({ error: 'Usuário inválido ou não encontrado.' });
       const role = norm(user.role);
       const operation = norm(user.operation);
       if (operation === 'TIM' && !['CEO','DIRETOR','DIRETORIA'].includes(role)) return res.status(403).json({ error: 'Sem acesso às metas Samsung.' });

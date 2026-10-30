@@ -466,16 +466,9 @@ export default function PainelMetas({ currentUser }: { currentUser: any }) {
       setLoading(false);
       return;
     }
-    const token = sessionStorage.getItem('telefluxo_metas_token') || '';
-    if (!token) {
-      setError('Sessão de metas ausente. Entre novamente no TeleFluxo.');
-      setLoading(false);
-      return;
-    }
     setLoading(true); setError('');
     fetch(`${API}/api/metas/resumo?year=2026&userId=${encodeURIComponent(userId)}`, {
       signal: controller.signal,
-      headers: { Authorization: `Bearer ${token}` },
     })
       .then(async (res) => {
         const contentType = res.headers.get('content-type')?.toLowerCase() || '';
