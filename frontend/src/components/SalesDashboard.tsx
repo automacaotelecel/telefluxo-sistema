@@ -1,12 +1,15 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react';
-import { 
+import {
   XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, AreaChart, Area, BarChart, Bar, Cell, LabelList
 } from 'recharts';
-import { 
-  DollarSign, TrendingUp, Trophy, LayoutGrid, Users, Calendar, Store, 
+import {
+  DollarSign, TrendingUp, Trophy, LayoutGrid, Users, Calendar, Store,
   AlertCircle, ChevronDown, ChevronUp, CheckSquare, Square, Filter, Footprints, MousePointerClick, ArrowRightLeft, Layers,
   Package, X, Search, Download, Target, Smartphone, Watch, MonitorSmartphone, Headphones
 } from 'lucide-react';
+
+// Cor do Top 3 do ranking de lojas (laranja predominante do site).
+const TOP3_COLOR = '#F97316';
 
 const STORE_MAP: Record<string, string> = {
     "12309173001309": "ARAGUAIA SHOPPING",
@@ -154,13 +157,19 @@ export default function SalesDashboard() {
   const [flowRawData, setFlowRawData] = useState<any[]>([]);
   const [insuranceSnapshot, setInsuranceSnapshot] = useState<InsuranceSnapshot | null>(null);
   const [insuranceError, setInsuranceError] = useState('');
-  const [kpiData, setKpiData] = useState<any[]>([]); 
-  
-  const [summary, setSummary] = useState<any>({ total_vendas: 0, total_pecas: 0, ticket_medio: 0 });
-  const [chartData, setChartData] = useState<any[]>([]); 
+  const [kpiData, setKpiData] = useState<any[]>([]);
+
+  const [summary, setSummary] = useState<any>({
+    total_vendas: 0,
+    total_pecas: 0,
+    ticket_medio: 0,
+    ticket_aparelho: 0,
+    qtd_aparelhos: 0,
+  });
+  const [chartData, setChartData] = useState<any[]>([]);
   const [ranking, setRanking] = useState<any[]>([]);
-  const [productRanking, setProductRanking] = useState<any[]>([]); 
-  
+  const [productRanking, setProductRanking] = useState<any[]>([]);
+
   const [isProductModalOpen, setIsProductModalOpen] = useState(false);
   const [expandedProduct, setExpandedProduct] = useState<string | null>(null);
   const [searchProduct, setSearchProduct] = useState("");
@@ -169,7 +178,7 @@ export default function SalesDashboard() {
 
   const [errorMsg, setErrorMsg] = useState<string>('');
   const [loading, setLoading] = useState(false);
-  
+
   const today = new Date();
   const firstDay = new Date(today.getFullYear(), today.getMonth(), 1);
   const currentMonthStart = toLocalIsoDate(firstDay);
@@ -186,16 +195,26 @@ export default function SalesDashboard() {
 
   const [categoryFilter, setCategoryFilter] = useState('TODAS');
 
+  // Pesquisa por aparelho/produto (ex.: "s26"). Filtra pela descrição da venda.
+  const [deviceSearch, setDeviceSearch] = useState('');
+
   const [activeTab, setActiveTab] = useState('visao_geral');
 
-  const API_URL = window.location.hostname === 'localhost' 
-    ? 'http://localhost:3000' 
+  const API_URL = window.location.hostname === 'localhost'
+    ? 'http://localhost:3000'
     : 'https://telefluxo-aplicacao.onrender.com';
-  
+
   const formatMoney = (val: number) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val || 0);
   const formatPercent = (val: number) => `${((Number(val) || 0) * 100).toFixed(1)}%`;
   const formatInsurancePercent = (val: number | null) =>
       val === null ? '—' : formatPercent(val);
+
+  // Termos da pesquisa: sem acento, sem diferença de maiúscula/minúscula.
+  // "galaxy s26" exige que as duas palavras existam na descrição.
+  const deviceSearchTerms = useMemo(
+      () => normalizeText(deviceSearch).split(' ').filter(Boolean),
+      [deviceSearch]
+  );
 
   useEffect(() => {
     function handleClickOutside(event: any) {
@@ -218,14 +237,14 @@ export default function SalesDashboard() {
             const parsed = JSON.parse(rawUser);
             userId = parsed.id || parsed.userId || parsed._id || '';
         }
-    } catch (e) { 
-        console.error(e); 
+    } catch (e) {
+        console.error(e);
     }
 
-    if (!userId) { 
-        setErrorMsg("Usuário não identificado."); 
-        setLoading(false); 
-        return; 
+    if (!userId) {
+        setErrorMsg("Usuário não identificado.");
+        setLoading(false);
+        return;
     }
 
     try {
@@ -255,8 +274,8 @@ export default function SalesDashboard() {
             } else {
                 setFlowRawData([]);
             }
-        } catch (e) { 
-            console.warn("Erro fluxo", e); 
+        } catch (e) {
+            console.warn("Erro fluxo", e);
             setFlowRawData([]);
         }
 
@@ -302,13 +321,13 @@ export default function SalesDashboard() {
                         : []
                 );
             }
-        } catch (e) { 
-            console.warn("Erro KPI", e); 
+        } catch (e) {
+            console.warn("Erro KPI", e);
             setKpiData([]);
         }
 
-        setErrorMsg(''); 
-    } catch (err: any) { 
+        setErrorMsg('');
+    } catch (err: any) {
         console.error(err);
         setErrorMsg("Erro ao carregar dados. Verifique sua conexão.");
     } finally {
@@ -316,19 +335,19 @@ export default function SalesDashboard() {
     }
   };
 
-  useEffect(() => { 
-    loadAllData(); 
-  }, []); 
+  useEffect(() => {
+    loadAllData();
+  }, []);
 
   const { diasPassados, diasNoMes } = useMemo(() => {
       const start = new Date(startDate);
       const end = new Date(endDate);
       start.setMinutes(start.getMinutes() + start.getTimezoneOffset());
       end.setMinutes(end.getMinutes() + end.getTimezoneOffset());
-      
+
       const passados = Math.max(1, Math.ceil((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1);
       const noMes = new Date(end.getFullYear(), end.getMonth() + 1, 0).getDate();
-      
+
       return { diasPassados: passados, diasNoMes: noMes };
   }, [startDate, endDate]);
 
@@ -382,15 +401,21 @@ export default function SalesDashboard() {
               if (cat !== categoryFilter) return false;
           }
 
+          // Pesquisa por aparelho: todas as palavras digitadas precisam estar na descrição.
+          if (deviceSearchTerms.length > 0) {
+              const desc = normalizeText(sale.descricao || sale.produto || '');
+              if (!deviceSearchTerms.every(term => desc.includes(term))) return false;
+          }
+
           return true;
       });
-  }, [rawData, startDate, endDate, selectedStores, categoryFilter]);
+  }, [rawData, startDate, endDate, selectedStores, categoryFilter, deviceSearchTerms]);
 
   // Base exclusiva para as conversões da aba LOJAS.
   // Importante: ela respeita período e lojas selecionadas, mas ignora o filtro
-  // de categoria. A conversão precisa enxergar ao mesmo tempo aparelhos,
-  // acessórios e películas para que o cálculo não seja distorcido quando o
-  // usuário seleciona uma categoria no topo da tela.
+  // de categoria e a pesquisa de aparelho. A conversão precisa enxergar ao mesmo
+  // tempo aparelhos, acessórios e películas para que o cálculo não seja distorcido
+  // quando o usuário filtra algo no topo da tela.
   const storeConversionSales = useMemo(() => {
       return rawData.filter((sale: any) => {
           const dataVenda = String(sale.data_emissao || '');
@@ -491,8 +516,8 @@ export default function SalesDashboard() {
   const groupedFlowData = useMemo(() => {
       const filtered = flowRawData.filter(item => {
           const dataItem = item.data || "";
-          let dataISO = dataItem.substring(0, 10); 
-          
+          let dataISO = dataItem.substring(0, 10);
+
           if (dataISO < startDate || dataISO > endDate) return false;
 
           if (selectedStores.length > 0) {
@@ -516,7 +541,7 @@ export default function SalesDashboard() {
       return Object.values(groups).map((g: any) => ({
           ...g,
           conversao: g.entradas > 0 ? g.qtd / g.entradas : 0
-      })).sort((a: any, b: any) => b.conversao - a.conversao); 
+      })).sort((a: any, b: any) => b.conversao - a.conversao);
 
   }, [flowRawData, startDate, endDate, selectedStores]);
 
@@ -537,7 +562,20 @@ export default function SalesDashboard() {
       const total = filteredData.reduce((acc, curr) => acc + Number(curr.total_liquido || 0), 0);
       const pecas = filteredData.reduce((acc, curr) => acc + Number(curr.quantidade || 1), 0);
       const ticket = pecas > 0 ? total / pecas : 0;
-      setSummary({ total_vendas: total, total_pecas: pecas, ticket_medio: ticket });
+
+      // Ticket médio somente dos aparelhos (mesma regra de peças do ticket geral).
+      const vendasAparelhos = filteredData.filter(isDeviceSale);
+      const totalAparelhos = vendasAparelhos.reduce((acc, curr) => acc + Number(curr.total_liquido || 0), 0);
+      const pecasAparelhos = vendasAparelhos.reduce((acc, curr) => acc + Number(curr.quantidade || 1), 0);
+      const ticketAparelho = pecasAparelhos > 0 ? totalAparelhos / pecasAparelhos : 0;
+
+      setSummary({
+          total_vendas: total,
+          total_pecas: pecas,
+          ticket_medio: ticket,
+          ticket_aparelho: ticketAparelho,
+          qtd_aparelhos: pecasAparelhos,
+      });
 
       const mapChart = new Map();
       filteredData.forEach(sale => {
@@ -617,7 +655,7 @@ console.log("EXEMPLO RANKING KPI DIRETO:", finalRanking[0]);
 console.log("TOTAL KPI USADO NO RANKING:", finalRanking.length);
 
 setRanking(finalRanking);
-        
+
       const mapProd = new Map();
       filteredData.forEach(sale => {
           const desc = sale.descricao || sale.produto || "N/D";
@@ -627,7 +665,7 @@ setRanking(finalRanking);
           if (!mapProd.has(desc)) {
               mapProd.set(desc, { desc, qtd: 0, total: 0, lojas: new Map() });
           }
-          
+
           const p = mapProd.get(desc);
           p.qtd += Number(sale.quantidade || 0);
           p.total += Number(sale.total_liquido || 0);
@@ -641,12 +679,12 @@ setRanking(finalRanking);
       });
 
       const sortedProd = Array.from(mapProd.values()).map((p: any) => {
-          return { 
-              ...p, 
+          return {
+              ...p,
               lojasBreakdown: Array.from(p.lojas.values()).sort((a: any, b: any) => b.qtd - a.qtd)
           };
       }).sort((a:any, b:any) => b.qtd - a.qtd);
-      
+
       setProductRanking(sortedProd);
 
   }, [filteredData, kpiData, selectedStores, diasPassados, diasNoMes]);
@@ -829,7 +867,7 @@ setRanking(finalRanking);
               p.qtd += Number(sale.quantidade || 0);
               p.total += Number(sale.total_liquido || 0);
           });
-      
+
       return Array.from(productsMap.values())
           .sort((a: any, b: any) => b.qtd - a.qtd)
           .slice(0, 5);
@@ -858,13 +896,13 @@ setRanking(finalRanking);
 
       const bom = "\uFEFF";
       const blob = new Blob([bom + csvContent], { type: "text/csv;charset=utf-8;" });
-      
+
       const link = document.createElement("a");
       const url = URL.createObjectURL(blob);
       link.setAttribute("href", url);
       link.setAttribute("download", `Analise_Produtos_${new Date().toISOString().split('T')[0]}.csv`);
       link.style.visibility = 'hidden';
-      
+
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -872,7 +910,7 @@ setRanking(finalRanking);
 
   return (
     <div className="h-full overflow-y-auto p-4 md:p-6 bg-[#F0F2F5] font-sans text-slate-800">
-      
+
       {errorMsg && (
         <div className="mb-4 bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative flex items-center gap-2">
             <AlertCircle size={20} />
@@ -891,12 +929,12 @@ setRanking(finalRanking);
         </div>
 
         <div className="flex flex-wrap gap-3 items-center w-full xl:w-auto">
-            
+
             <div className="flex items-center bg-white border border-slate-200 px-3 py-2 rounded-lg gap-2 shadow-sm">
                 <Layers size={14} className="text-blue-600"/>
-                <select 
-                    value={categoryFilter} 
-                    onChange={e => setCategoryFilter(e.target.value)} 
+                <select
+                    value={categoryFilter}
+                    onChange={e => setCategoryFilter(e.target.value)}
                     className="bg-transparent text-xs font-bold text-slate-600 uppercase outline-none cursor-pointer w-full md:w-auto"
                 >
                     <option value="TODAS">Todas as Categorias</option>
@@ -904,16 +942,38 @@ setRanking(finalRanking);
                 </select>
             </div>
 
+            <div className="flex items-center bg-white border border-slate-200 px-3 py-2 rounded-lg gap-2 shadow-sm focus-within:border-orange-400 transition-colors">
+                <Search size={14} className="text-blue-600"/>
+                <input
+                    type="text"
+                    value={deviceSearch}
+                    onChange={e => setDeviceSearch(e.target.value)}
+                    placeholder="Buscar aparelho (ex: S26)"
+                    title="Filtra as vendas pela descrição do produto. Ex.: S26, GALAXY S26 ULTRA, A56"
+                    className="bg-transparent text-xs font-bold text-slate-600 uppercase outline-none w-44 placeholder:normal-case placeholder:font-semibold placeholder:text-slate-400"
+                />
+                {deviceSearch && (
+                    <button
+                        type="button"
+                        onClick={() => setDeviceSearch('')}
+                        title="Limpar busca"
+                        className="text-slate-400 hover:text-slate-700 transition-colors"
+                    >
+                        <X size={14} />
+                    </button>
+                )}
+            </div>
+
             <div className="relative" ref={storeMenuRef}>
-                <button 
+                <button
                     onClick={() => setIsStoreMenuOpen(!isStoreMenuOpen)}
                     className="flex items-center gap-2 bg-white border border-slate-200 px-4 py-2 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-50 transition-colors min-w-[200px] justify-between shadow-sm"
                 >
                     <div className="flex items-center gap-2">
                         <Store size={14} className="text-blue-600"/>
                         <span className="truncate max-w-[140px] uppercase">
-                            {selectedStores.length === 0 ? "Todas as Lojas" : 
-                             selectedStores.length === 1 ? selectedStores[0] : 
+                            {selectedStores.length === 0 ? "Todas as Lojas" :
+                             selectedStores.length === 1 ? selectedStores[0] :
                              `${selectedStores.length} Lojas`}
                         </span>
                     </div>
@@ -976,8 +1036,8 @@ setRanking(finalRanking);
                  <Footprints size={14}/> Fluxo / Bestflow (Beta)
               </button>
           </div>
-          
-          <button 
+
+          <button
               onClick={() => setIsProductModalOpen(true)}
               className="px-4 py-2 rounded-lg text-xs font-bold uppercase transition-all flex items-center gap-2 bg-emerald-500 text-white hover:bg-emerald-600 shadow-md"
           >
@@ -985,6 +1045,12 @@ setRanking(finalRanking);
               Análise de Produtos
           </button>
       </div>
+
+      {deviceSearchTerms.length > 0 && activeTab !== 'visao_geral' && (
+        <div role="status" className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-bold text-amber-800">
+            A busca por aparelho "{deviceSearch.trim()}" não se aplica a esta aba: os dados daqui vêm de bases já consolidadas (vendedores, conversões ou fluxo). O filtro vale para a Visão Mensal e para a Análise de Produtos.
+        </div>
+      )}
 
       {activeTab === 'visao_geral' && (
         <>
@@ -1005,6 +1071,9 @@ setRanking(finalRanking);
                 <div className="bg-white p-5 rounded-xl shadow-sm border-l-4 border-green-500">
                     <div className="flex justify-between items-start mb-2"><span className="text-[10px] font-black text-slate-400 uppercase">Ticket Médio</span><Trophy size={16} className="text-green-500"/></div>
                     <div className="text-2xl font-black text-slate-800 tracking-tight">{formatMoney(summary.ticket_medio)}</div>
+                    <div className="text-[9px] text-green-600 font-bold mt-1 uppercase">
+                        Somente aparelho: {summary.qtd_aparelhos > 0 ? formatMoney(summary.ticket_aparelho) : '—'}
+                    </div>
                 </div>
             </div>
 
@@ -1045,11 +1114,11 @@ setRanking(finalRanking);
                             <BarChart layout="vertical" data={storeRanking} margin={{ top: 5, right: 80, left: 10, bottom: 5 }} barSize={15}>
                                 <CartesianGrid strokeDasharray="3 3" horizontal={true} vertical={false} stroke="#f1f5f9"/>
                                 <XAxis type="number" hide />
-                                <YAxis dataKey="nome" type="category" width={210} tick={{fontSize: 8, fontWeight: 800, fill: '#475569'}} interval={0} />                                     
+                                <YAxis dataKey="nome" type="category" width={210} tick={{fontSize: 8, fontWeight: 800, fill: '#475569'}} interval={0} />
                                 <Tooltip cursor={{fill: '#f1f5f9'}} contentStyle={{backgroundColor: '#1e293b', borderRadius: '8px', border: 'none', color: '#fff', fontSize: '12px'}} formatter={(val: number) => [formatMoney(val), 'Faturamento']} />
                                 <Bar dataKey="total" radius={[0, 4, 4, 0]} onClick={handleStoreClick} style={{ cursor: 'pointer' }}>
                                     {storeRanking.map((entry, index) => (
-                                        <Cell key={`cell-${index}`} fill={selectedStores.includes(entry.nome) ? '#25D366' : (index < 3 ? '#1428A0' : '#94a3b8')} />
+                                        <Cell key={`cell-${index}`} fill={selectedStores.includes(entry.nome) ? '#25D366' : (index < 3 ? TOP3_COLOR : '#94a3b8')} />
                                      ))}
                                     <LabelList dataKey="total" position="right" formatter={(val: number) => formatMoneyShort(val)} style={{ fontSize: '9px', fontWeight: 'bold', fill: '#475569' }} />
                                 </Bar>
@@ -1118,7 +1187,7 @@ setRanking(finalRanking);
 
                             return (
                                 <React.Fragment key={rowKey}>
-                                    <tr 
+                                    <tr
                                         onClick={() => setExpandedSeller(isExpanded ? null : rowKey)}
                                         className={`border-b border-slate-50 transition-colors cursor-pointer ${isExpanded ? 'bg-blue-50/50' : 'hover:bg-slate-50'}`}
                                     >
@@ -1142,7 +1211,7 @@ setRanking(finalRanking);
                                         <td className="p-3 text-right text-emerald-600 whitespace-nowrap">{formatMoney(v.seguros)}</td>
                                         <td className="p-3 text-right font-black text-emerald-600 whitespace-nowrap">{formatPercent(v.pct_seguro)}</td>
                                     </tr>
-                                    
+
                                     {isExpanded && (
                                         <tr className="bg-slate-50 border-b border-slate-200 shadow-inner">
                                             <td colSpan={11} className="p-4 md:p-6">
@@ -1150,7 +1219,7 @@ setRanking(finalRanking);
                                                     <Target size={16} className="text-[#1428A0]"/>
                                                     <h4 className="text-xs font-black uppercase tracking-wider text-slate-700">Análise de Performance - {v.nome}</h4>
                                                 </div>
-                                                
+
                                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                                     <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
                                                         <h5 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">Composição de Vendas (R$)</h5>
@@ -1342,7 +1411,7 @@ setRanking(finalRanking);
                 <div className="p-5 border-b border-slate-100 flex justify-between items-center">
                     <h3 className="font-bold text-slate-700 uppercase flex items-center gap-2"><Footprints size={18} className="text-indigo-600"/> Detalhamento Consolidado por Loja</h3>
                 </div>
-                
+
                 <div className="overflow-x-auto">
                     <table className="w-full text-left border-collapse">
                         <thead>
@@ -1392,7 +1461,7 @@ setRanking(finalRanking);
       {isProductModalOpen && (
           <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex justify-center items-center p-4">
               <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[85vh] flex flex-col overflow-hidden animate-in fade-in zoom-in duration-200">
-                  
+
                   <div className="p-5 border-b border-slate-100 flex flex-col sm:flex-row justify-between items-start sm:items-center bg-slate-50 gap-4">
                       <div className="flex items-center gap-3">
                           <div className="p-2 bg-emerald-100 text-emerald-600 rounded-lg">
@@ -1405,9 +1474,9 @@ setRanking(finalRanking);
                               </p>
                           </div>
                       </div>
-                      
+
                       <div className="flex items-center gap-3 w-full sm:w-auto">
-                          <button 
+                          <button
                               onClick={exportToCSV}
                               title="Baixar relatório em Excel/CSV"
                               className="flex items-center gap-2 px-3 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-lg transition-colors text-xs font-bold uppercase"
@@ -1418,19 +1487,19 @@ setRanking(finalRanking);
 
                           <div className="relative flex-1 sm:w-56">
                               <Search size={14} className="absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400" />
-                              <input 
-                                  type="text" 
-                                  placeholder="Buscar produto..." 
+                              <input
+                                  type="text"
+                                  placeholder="Buscar produto..."
                                   value={searchProduct}
                                   onChange={(e) => setSearchProduct(e.target.value)}
                                   className="w-full pl-9 pr-3 py-2 text-xs border border-slate-200 rounded-lg outline-none focus:border-emerald-500 transition-colors"
                               />
                           </div>
-                          <button 
+                          <button
                               onClick={() => {
                                   setIsProductModalOpen(false);
-                                  setSearchProduct(""); 
-                                  setExpandedProduct(null); 
+                                  setSearchProduct("");
+                                  setExpandedProduct(null);
                               }}
                               className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-200 rounded-lg transition-colors"
                           >
@@ -1452,8 +1521,8 @@ setRanking(finalRanking);
                           <tbody className="text-xs font-bold text-slate-700 divide-y divide-slate-100">
                               {filteredProductsForModal.map((prod, index) => (
                                   <React.Fragment key={index}>
-                                      <tr 
-                                          onClick={() => toggleProductExpand(prod.desc)} 
+                                      <tr
+                                          onClick={() => toggleProductExpand(prod.desc)}
                                           className={`cursor-pointer transition-colors ${expandedProduct === prod.desc ? 'bg-emerald-50/50' : 'hover:bg-slate-50'}`}
                                       >
                                           <td className="p-4 text-center">
@@ -1470,7 +1539,7 @@ setRanking(finalRanking);
                                           <td className="p-4 text-center font-black text-emerald-600 text-sm">{prod.qtd}</td>
                                           <td className="p-4 text-right font-black text-[#1428A0] text-sm">{formatMoney(prod.total)}</td>
                                       </tr>
-                                      
+
                                       {expandedProduct === prod.desc && (
                                           <tr className="bg-slate-50 border-b border-slate-200 shadow-inner">
                                               <td colSpan={4} className="p-6">

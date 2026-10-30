@@ -5,6 +5,7 @@ import * as XLSX from 'xlsx';
 import sqlite3 from 'sqlite3';
 import { open } from 'sqlite';
 import fs from 'fs';
+import { readMetasToken, verifyMetasToken } from './metas.session';
 
 type Params = {
   prisma: PrismaClient;
@@ -246,13 +247,16 @@ async function collectSales(year: number, allowedCnpjs: string[], ctx: Params, n
   const result: Sale[] = [];
   const notes: string[] = [];
   const sources: Record<number, string> = {};
-  if (!allowedCnpjs.length) return { result, notes, sources };
+  // available = alguma tabela de vendas foi encontrada nas fontes. NÃO prova completude dos dados.
+  let available = false;
+  if (!allowedCnpjs.length) return { result, notes, sources, available };
   const placeholders = allowedCnpjs.map(() => '?').join(',');
   const monthly = new Map<number, Sale[]>();
   if (fs.existsSync(ctx.globalDbPath)) {
     const db = await open({ filename: ctx.globalDbPath, driver: sqlite3.Database, mode: sqlite3.OPEN_READONLY });
     try {
       if (await tableExists(db, 'vendas')) {
+        available = true;
         const rs = await db.all(`SELECT CAST(substr(data_emissao,6,2) AS INTEGER) month, cnpj_empresa, familia categoria, descricao, SUM(COALESCE(total_liquido,0)) valor FROM vendas WHERE data_emissao >= ? AND data_emissao < ? AND REPLACE(REPLACE(cnpj_empresa,'.',''),'/','') IS NOT NULL AND cnpj_empresa IN (${placeholders}) GROUP BY 1,2,3,4`, [`${year}-01-01`, `${year+1}-01-01`, ...allowedCnpjs]);
         for (const r of rs) { const sale = rowToSale(r, ctx); if (sale) monthly.set(sale.month, [...(monthly.get(sale.month) || []), sale]); }
       }
@@ -264,6 +268,7 @@ async function collectSales(year: number, allowedCnpjs: string[], ctx: Params, n
     try {
       const hasRaw = await tableExists(db, 'vendas_anuais_raw');
       if (hasRaw) {
+        available = true;
         const cs = await columns(db, 'vendas_anuais_raw');
         const amount = cs.has('total_real') ? 'COALESCE(total_real, total_liquido, 0)' : 'COALESCE(total_liquido,0)';
         const cat = cs.has('categoria_real') ? "COALESCE(NULLIF(categoria_real,''),categoria,'')" : "COALESCE(categoria,'')";
@@ -271,6 +276,7 @@ async function collectSales(year: number, allowedCnpjs: string[], ctx: Params, n
         const rs = await db.all(`SELECT mes month, cnpj_empresa, ${cat} categoria, descricao, SUM(${amount}) valor FROM vendas_anuais_raw WHERE ano = ? AND cnpj_empresa IN (${placeholders}) ${canceled} GROUP BY 1,2,3,4`, [year, ...allowedCnpjs]);
         for (const r of rs) { const sale = rowToSale(r, ctx); if (sale) yearly.set(sale.month, [...(yearly.get(sale.month) || []), sale]); }
       } else if (await tableExists(db, 'vendas_anuais')) {
+        available = true;
         const rs = await db.all(`SELECT CAST(substr(data_emissao,6,2) AS INTEGER) month, cnpj_empresa, familia categoria, descricao, SUM(COALESCE(total_liquido,0)) valor FROM vendas_anuais WHERE data_emissao >= ? AND data_emissao < ? AND cnpj_empresa IN (${placeholders}) GROUP BY 1,2,3,4`, [`${year}-01-01`, `${year+1}-01-01`, ...allowedCnpjs]);
         for (const r of rs) { const sale = rowToSale(r, ctx); if (sale) yearly.set(sale.month, [...(yearly.get(sale.month) || []), sale]); }
       }
@@ -300,6 +306,8 @@ async function collectSales(year: number, allowedCnpjs: string[], ctx: Params, n
     } finally { await db.close(); }
   }
   const currentYear = now.getFullYear(); const currentMonth = now.getMonth()+1;
+  const divergentMonths: string[] = [];
+  let divergentCount = 0;
   for (let month=1;month<=12;month++) {
     const live = monthly.get(month) || [];
     const annual = yearly.get(month) || [];
@@ -307,25 +315,63 @@ async function collectSales(year: number, allowedCnpjs: string[], ctx: Params, n
     const picked = preferLive ? (live.length ? live : annual) : (annual.length ? annual : live);
     sources[month] = picked === live && live.length ? 'mensal' : picked.length ? 'anual' : 'sem registros';
     result.push(...picked);
+    // A regra escolhe UMA fonte por mês para todas as lojas/categorias. Combinações presentes só na fonte
+    // descartada não são somadas; aqui apenas sinalizamos (sem alterar a regra de seleção).
+    const other = picked === live ? annual : live;
+    if (picked.length && other.length) {
+      const have = new Set(picked.map(s => `${s.cnpj}|${s.group}`));
+      const onlyOther = new Set(other.map(s => `${s.cnpj}|${s.group}`).filter(k => !have.has(k)));
+      if (onlyOther.size) { divergentMonths.push(String(month)); divergentCount += onlyOther.size; }
+    }
   }
+  if (divergentCount) notes.push(`Mês(es) ${divergentMonths.join(', ')}: ${divergentCount} combinação(ões) loja/categoria existem somente na fonte de vendas não escolhida (mensal ou anual) e não foram somadas, pois a regra usa uma única fonte por mês. Esses valores podem estar fora do realizado.`);
   if (!result.length) notes.push('Nenhuma venda classificada encontrada nas fontes disponíveis para as lojas autorizadas.');
   const missing = Object.entries(sources).filter(([month,source]) => source === 'sem registros' && (year < currentYear || (year === currentYear && Number(month) <= currentMonth)));
-  if (missing.length) notes.push(`Sem registros de venda em ${missing.map(([m]) => m).join(', ')}. Verifique a cobertura das sincronizações.`);
-  return { result, notes, sources };
+  if (missing.length) notes.push(`Meses sem linhas de venda nas fontes consultadas: ${missing.map(([m]) => m).join(', ')}. Pode ser ausência real de vendas ou de carga de dados; o painel não usa esse fato como prova de completude nem de incompletude.`);
+  return { result, notes, sources, available };
+}
+
+// Data atual no calendário de America/Sao_Paulo (independe do fuso do servidor).
+function todayInSaoPaulo() {
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date());
+  const pick = (type: string) => Number(parts.find(p => p.type === type)?.value);
+  const year = pick('year'); const month = pick('month'); const day = pick('day');
+  if (![year, month, day].every(Number.isFinite)) throw new Error('Não foi possível determinar a data em America/Sao_Paulo.');
+  return { year, month, day, iso: `${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}` };
+}
+
+// METAS_TRIMESTRES_FECHADOS = confirmação MANUAL de conferência dos dados (formato AAAA-Qn, ex.: 2026-Q1,2026-Q2).
+// Não é prova automática de sincronização ou completude; vale para todas as lojas/CNPJs e categorias do painel.
+function parseClosedQuarters(raw: string | undefined, year: number) {
+  const listed = new Set<number>();
+  const invalid: string[] = [];
+  for (const part of String(raw || '').split(/[,;\s]+/)) {
+    const token = part.trim();
+    if (!token) continue;
+    const match = /^(\d{4})-Q([1-4])$/i.exec(token);
+    if (!match) { invalid.push(token); continue; }
+    if (Number(match[1]) === year) listed.add(Number(match[2]));
+  }
+  return { listed, invalid };
 }
 
 export function createMetasRoutes(ctx: Params) {
   const router = Router();
   router.get('/resumo', async (req, res) => {
     try {
-      // Mesmo padrão de identificação das rotas atuais do TeleFluxo.
+      // A identidade vem do token de sessão assinado (Authorization: Bearer), validado contra o cadastro.
+      // O userId da query, se enviado, só é aceito quando coincide com o usuário do token.
       // As permissões são obtidas do cadastro no banco, nunca do frontend.
-      const id = String(req.query.userId || '').trim();
-      if (!id || id === 'undefined' || id === 'null' || id.length > 128) {
-        return res.status(401).json({ error: 'Usuário não identificado. Entre novamente no TeleFluxo.' });
+      const header = String(req.headers.authorization || '');
+      const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+      const sessionUserId = token ? readMetasToken(token) : null;
+      if (!token || !sessionUserId) return res.status(401).json({ error: 'Sessão de metas ausente ou inválida. Entre novamente no TeleFluxo.' });
+      const user = await ctx.prisma.user.findUnique({ where: { id: sessionUserId } });
+      if (!user || verifyMetasToken(token, String(user.password)) !== user.id) {
+        return res.status(401).json({ error: 'Sessão de metas expirada ou inválida. Entre novamente no TeleFluxo.' });
       }
-      const user = await ctx.prisma.user.findUnique({ where: { id } });
-      if (!user) return res.status(403).json({ error: 'Usuário não autorizado.' });
+      const queryId = String(req.query.userId || '').trim();
+      if (queryId && queryId !== user.id) return res.status(403).json({ error: 'Usuário informado diferente do usuário da sessão.' });
       const role = norm(user.role);
       const operation = norm(user.operation);
       if (operation === 'TIM' && !['CEO','DIRETOR','DIRETORIA'].includes(role)) return res.status(403).json({ error: 'Sem acesso às metas Samsung.' });
@@ -336,7 +382,9 @@ export function createMetasRoutes(ctx: Params) {
       const sheet = await readGoals(ctx);
       const year = Number(req.query.year || 2026);
       if (!Number.isInteger(year) || year !== 2026) return res.status(400).json({ error: 'O Sheets enviado possui somente metas do ano de 2026.' });
-      const today = new Date(new Date().toLocaleString('en-US',{timeZone:'America/Sao_Paulo'}));
+      const nowBR = todayInSaoPaulo();
+      const today = new Date(nowBR.year, nowBR.month - 1, nowBR.day);
+      const todayBR = nowBR.iso;
       const subset = sheet.goals.filter(g => cnpjs.includes(g.cnpj));
       const sales = await collectSales(year, [...new Set(subset.map(g=>g.cnpj))], ctx, today);
       const sold = new Map<string,number>();
@@ -348,29 +396,67 @@ export function createMetasRoutes(ctx: Params) {
       type Month = typeof months[number];
       const storeGroups = new Map<string,Month[]>();
       for (const m of months) { const key = `${m.cnpj}|${m.group}`; storeGroups.set(key,[...(storeGroups.get(key)||[]),m]); }
+      // Fechamento confirmado manualmente: global (todas as lojas/categorias), só para trimestre já encerrado
+      // no calendário de São Paulo e com saldo de origem confirmado.
+      const closure = parseClosedQuarters(process.env.METAS_TRIMESTRES_FECHADOS, year);
+      const closureNotes: string[] = [];
+      if (closure.invalid.length) closureNotes.push(`METAS_TRIMESTRES_FECHADOS: entradas ignoradas por formato inválido (${closure.invalid.join(', ')}). Use AAAA-Qn, por exemplo 2026-Q1.`);
+      const quarterFinished = (q: number) => year < nowBR.year || (year === nowBR.year && q*3 < nowBR.month);
+      const quarterStarted = (q: number) => year < nowBR.year || (year === nowBR.year && q*3-2 <= nowBR.month);
+      const quarterClosed: Record<number, boolean> = {};
+      let originConfirmed = true;
+      for (let q=1;q<=4;q++) {
+        const listed = closure.listed.has(q);
+        const finished = quarterFinished(q);
+        const ok = listed && finished && originConfirmed && sales.available;
+        if (listed && !finished) closureNotes.push(`Trimestre ${q} de ${year} está listado em METAS_TRIMESTRES_FECHADOS, mas ainda não encerrou no calendário de São Paulo; a confirmação foi ignorada.`);
+        else if (listed && finished && !originConfirmed) closureNotes.push(`Trimestre ${q} de ${year} está listado, mas o saldo de origem (trimestre anterior) não está confirmado; o fechamento não foi aplicado.`);
+        else if (listed && finished && !sales.available) closureNotes.push(`Trimestre ${q} de ${year} está listado, mas nenhuma fonte de vendas foi encontrada; o fechamento não foi aplicado.`);
+        quarterClosed[q] = ok;
+        if (!ok) originConfirmed = false;
+      }
+
       const quarters: any[] = [];
       for (const [,entries] of storeGroups) {
         const initial = entries[0]!;
+        // carry = saldo recebido CONFIRMADO e aplicado à meta (assinado: + pendência, − crédito).
         let carry = 0;
-        let carryKnown = true;
+        let chainConfirmed = true;
+        // prevBalance = saldo (provisório ou confirmado) do trimestre anterior; null = não calculável.
+        let prevBalance: number | null = 0;
         for (let q=1;q<=4;q++) {
           const items = entries.filter(x=>x.quarter===q);
           const base = items.reduce((s,v)=>s+v.value,0);
           const actual = items.reduce((s,v)=>s+v.actual,0);
-          const adjusted = base + carry;
-          const finished = year < today.getFullYear() || (year === today.getFullYear() && q*3 < today.getMonth()+1);
-          const hasCoverage = [q*3-2,q*3-1,q*3].every(month => sales.sources[month] !== 'sem registros');
-          const closed = finished && hasCoverage && carryKnown;
-          const pending = closed ? Math.max(0,adjusted-actual) : 0;
-          const exceeded = closed ? Math.max(0,actual-adjusted) : 0;
-          quarters.push({ year,quarter:q,region:initial.region,uf:initial.uf,store:initial.store,cnpj:initial.cnpj,group:initial.group,base,actual,carryIn:carry,adjusted,pending,exceeded,closed,hasCoverage,closureStatus:finished && !hasCoverage ? 'dados_incompletos' : closed ? 'fechado' : 'aberto',dueDate:`${year}-${String(q*3).padStart(2,'0')}-${q===1||q===4?'31':'30'}` });
-          // Se faltar qualquer trimestre de origem, não inferimos saldos posteriores.
-          if (finished && !hasCoverage) carryKnown = false;
-          // Regra C: saldo não atingido aumenta a próxima meta; excedente é separado.
-          carry = closed ? pending : 0;
+          const finished = quarterFinished(q);
+          const started = quarterStarted(q);
+          const carryStatus = q === 1 ? 'inicial' : chainConfirmed ? 'confirmado' : 'aguardando';
+          // Saldo recebido aguardando confirmação: provisório, NÃO entra na meta ajustada.
+          const carryAwaiting: number | null = carryStatus === 'aguardando' && started ? prevBalance : null;
+          const adjustedRaw = base + carry;
+          const adjusted = Math.max(0, adjustedRaw);
+          const unusedCredit = Math.max(0, -adjustedRaw);
+          const dataStatus = !started ? 'nao_iniciado' : sales.available ? 'disponivel' : 'indisponivel';
+          const closed = quarterClosed[q] === true;
+          const carryForBalance: number | null = carryStatus === 'aguardando' ? carryAwaiting : carry;
+          // Saldo assinado sobre a meta bruta: o crédito que excede a meta seguinte é preservado.
+          const balance: number | null = dataStatus === 'disponivel' && carryForBalance !== null ? base + carryForBalance - actual : null;
+          const balanceStatus = balance === null ? 'indisponivel' : closed ? 'confirmado' : 'provisorio';
+          const resultStatus = dataStatus === 'indisponivel' ? 'dados_indisponiveis'
+            : dataStatus === 'nao_iniciado' ? 'nao_iniciado'
+            : adjusted === 0 ? 'meta_zero'
+            : actual >= adjusted ? 'atingida'
+            : finished ? 'nao_atingida' : 'em_andamento';
+          const pending = closed && balance !== null ? Math.max(0, balance) : 0;
+          const exceeded = closed && balance !== null ? Math.max(0, -balance) : 0;
+          // hasCoverage = fonte de vendas existe (não é prova de completude).
+          quarters.push({ year,quarter:q,region:initial.region,uf:initial.uf,store:initial.store,cnpj:initial.cnpj,group:initial.group,base,actual,carryIn:carry,carryStatus,carryAwaiting,adjustedRaw,adjusted,unusedCredit,balance,balanceStatus,dataStatus,resultStatus,pending,exceeded,closed,hasCoverage:sales.available,closureStatus:finished && !sales.available ? 'dados_incompletos' : closed ? 'fechado' : 'aberto',dueDate:`${year}-${String(q*3).padStart(2,'0')}-${q===1||q===4?'31':'30'}` });
+          prevBalance = balance;
+          // Só fechamento confirmado transporta saldo. O saldo do Q4 fica registrado (encerramento do ano), sem transporte para outro ano.
+          if (closed && balance !== null) carry = balance; else { carry = 0; chainConfirmed = false; }
         }
       }
-      if (quarters.some(q => q.closureStatus === 'dados_incompletos')) sales.notes.push('Há trimestres encerrados sem cobertura completa das vendas. O saldo desses trimestres não foi transportado para evitar metas incorretas.');
+      if (quarters.some(q => q.closureStatus === 'dados_incompletos')) sales.notes.push('Há trimestres encerrados sem fonte de vendas disponível. O saldo desses trimestres não foi transportado.');
       const quartersFiltered = quarters.sort((a,b)=> a.quarter-b.quarter || a.store.localeCompare(b.store));
       const summary = (items: any[], label: string) => ({
         label,
@@ -382,7 +468,7 @@ export function createMetasRoutes(ctx: Params) {
         exceeded: items.reduce((v,i)=>v+i.exceeded,0),
         reachedPercent: items.reduce((v,i)=>v+i.adjusted,0)>0?100*items.reduce((v,i)=>v+i.actual,0)/items.reduce((v,i)=>v+i.adjusted,0):0,
       });
-      const currentQ = year === today.getFullYear() ? Math.ceil((today.getMonth()+1)/3) : year < today.getFullYear() ? 4 : 1;
+      const currentQ = year === nowBR.year ? Math.ceil(nowBR.month/3) : year < nowBR.year ? 4 : 1;
       const currentItems = quartersFiltered.filter(q=>q.quarter===currentQ);
       const byStore = [...new Set(currentItems.map(q=>q.cnpj))].map(cnpj=>{
         const items=currentItems.filter(q=>q.cnpj===cnpj);
@@ -390,7 +476,21 @@ export function createMetasRoutes(ctx: Params) {
       }).sort((a,b)=>b.reachedPercent-a.reachedPercent);
       const byRegion = [...new Set(currentItems.map(q=>q.region))].map(region=>({ region, ...summary(currentItems.filter(q=>q.region===region),region) }));
       const byGroup = ['APARELHOS','ACESSORIOS','SEGUROS'].map(group=>({ group,...summary(currentItems.filter(q=>q.group===group),group) }));
-      return res.json({ success:true,scope:network?'network':'stores',year,currentQuarter:currentQ,generatedAt:new Date().toISOString(),sheetUpdatedAt:new Date(sheet.at).toISOString(),sheetStale:sheet.stale,sourceByMonth:sales.sources,notes:[...(network ? sheet.warnings : []),...sales.notes],months,quarters:quartersFiltered,byStore,byRegion,byGroup,current:summary(currentItems,'Trimestre atual'),access:{ canCompareStores:network || cnpjs.length>1,stores:byStore.length } });
+      return res.json({
+        success:true,scope:network?'network':'stores',year,currentQuarter:currentQ,todayBR,
+        generatedAt:new Date().toISOString(),sheetUpdatedAt:new Date(sheet.at).toISOString(),sheetStale:sheet.stale,
+        sourceByMonth:sales.sources,
+        closure:{
+          criterion:'confirmacao_manual',
+          label:'Fechamento confirmado manualmente',
+          configured:Boolean(process.env.METAS_TRIMESTRES_FECHADOS?.trim()),
+          listedQuarters:[...closure.listed].sort(),
+          confirmedQuarters:[1,2,3,4].filter(q=>quarterClosed[q]===true),
+        },
+        notes:[...(network ? sheet.warnings : []),...closureNotes,...sales.notes],
+        months,quarters:quartersFiltered,byStore,byRegion,byGroup,current:summary(currentItems,'Trimestre atual'),
+        access:{ canCompareStores:network || cnpjs.length>1,stores:byStore.length },
+      });
     } catch (err: any) {
       console.error('[Metas] Falha ao gerar resumo:', err?.message);
       return res.status(503).json({ success:false, error:'Não foi possível carregar metas ou vendas. Verifique o acesso do Google Sheets e as fontes de dados.' });
