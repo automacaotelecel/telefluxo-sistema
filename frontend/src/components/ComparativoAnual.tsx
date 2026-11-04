@@ -25,6 +25,7 @@ import {
   ChevronDown,
   Filter,
   Layers,
+  MapPin,
   Minus,
   Package,
   PieChart,
@@ -32,6 +33,7 @@ import {
   ShieldCheck,
   Square,
   Store,
+  Table2,
   TrendingUp,
 } from 'lucide-react';
 
@@ -64,12 +66,31 @@ const STORE_MAP: Record<string, string> = {
   "12309173001066": "CD TAGUATINGA",
 };
 
+const STORE_ALIAS_MAP: Record<string, string> = {
+  'CNB SHOPPING': 'CONJUNTO NACIONAL',
+  'CONJUNTO NACIONAL SHOPPING': 'CONJUNTO NACIONAL',
+  'SD CONJUNTO NACIONAL': 'CONJUNTO NACIONAL',
+  'CNB QUIOSQUE': 'CONJUNTO NACIONAL QUIOSQUE',
+  'CONJUNTO NACIONAL QQ': 'CONJUNTO NACIONAL QUIOSQUE',
+  'UBERLANDIA SHOPPING': 'UBERLÂNDIA SHOPPING',
+  'TERRACO SHOPPING': 'TERRAÇO SHOPPING',
+  'PASSEIO DAS ÁGUAS': 'PASSEIO DAS AGUAS',
+  'PASSEIO DAS AGUAS SHOPPING': 'PASSEIO DAS AGUAS',
+  'GOIÂNIA SHOPPING': 'GOIANIA SHOPPING',
+  'BRASÍLIA SHOPPING': 'BRASILIA SHOPPING',
+  'PÁTIO BRASIL': 'PATIO BRASIL',
+  'PARK ANÁPOLIS': 'PARK ANAPOLIS',
+  'MANAÍRA SHOPPING': 'MANAIRA SHOPPING',
+};
+
 const STORE_REGION_MAP: Record<string, string> = {
   'ARAGUAIA SHOPPING': 'GOIÁS',
   'BOULEVARD SHOPPING': 'DF',
   'BRASILIA SHOPPING': 'DF',
   'CONJUNTO NACIONAL': 'DF',
   'CONJUNTO NACIONAL QUIOSQUE': 'DF',
+  'CNB SHOPPING': 'DF',
+  'CNB QUIOSQUE': 'DF',
   'GOIANIA SHOPPING': 'GOIÁS',
   'IGUATEMI SHOPPING': 'DF',
   'JK SHOPPING': 'DF',
@@ -79,6 +100,7 @@ const STORE_REGION_MAP: Record<string, string> = {
   'TERRAÇO SHOPPING': 'DF',
   'TAGUATINGA SHOPPING QQ': 'DF',
   'UBERLÂNDIA SHOPPING': 'MINAS GERAIS',
+  'UBERLANDIA SHOPPING': 'MINAS GERAIS',
   'UBERABA SHOPPING': 'MINAS GERAIS',
   'FLAMBOYANT SHOPPING': 'GOIÁS',
   'BURITI SHOPPING': 'GOIÁS',
@@ -100,9 +122,6 @@ const MONTH_FULL: Record<number, string> = {
   7: 'Julho', 8: 'Agosto', 9: 'Setembro', 10: 'Outubro', 11: 'Novembro', 12: 'Dezembro',
 };
 
-/* ============================== Paleta ==============================
-   Base: laranja da empresa + grafite/slate (neutro profissional).
-   Ano anterior = grafite | Ano atual = laranja | Tendência = laranja claro */
 const THEME = {
   orange: '#F97316',
   orangeDark: '#C2410C',
@@ -117,7 +136,6 @@ const CHART_COLORS = {
   yearBProjection: THEME.orangeSoft,
 };
 
-// Regiões: tons de laranja alternados com grafite, para manter a identidade visual.
 const PIE_COLORS = ['#F97316', '#334155', '#FB923C', '#64748B', '#FDBA74', '#94A3B8', '#C2410C', '#CBD5E1'];
 
 type AnyRow = Record<string, any>;
@@ -139,7 +157,6 @@ const pick = (obj: AnyRow, keys: string[], fallback: any = undefined) => {
   return fallback;
 };
 
-// Cálculo de vendas anuais
 const toNumberSafe = (v: any) => {
   if (v === null || v === undefined) return 0;
 
@@ -152,18 +169,15 @@ const toNumberSafe = (v: any) => {
     .replace(/\s/g, '')
     .replace(/[R$\u00A0]/g, '');
 
-  // Formato brasileiro: 1.234,56 ou 10,50
   if (s.includes(',')) {
     s = s.replace(/\./g, '');
     s = s.replace(',', '.');
   } else {
-    // Se houver mais de um ponto, tratamos como separador de milhar.
     if ((s.match(/\./g) || []).length > 1) {
       s = s.replace(/\./g, '');
     }
   }
 
-  // Mantém somente números, ponto decimal e sinal negativo.
   s = s.replace(/[^0-9.-]/g, '');
 
   const n = parseFloat(s);
@@ -172,8 +186,22 @@ const toNumberSafe = (v: any) => {
 
 const getStoreName = (raw: string) => {
   if (!raw) return 'N/D';
-  const clean = raw.replace(/\D/g, '');
-  return STORE_MAP[clean] || STORE_MAP[raw] || raw;
+  const cleanDigits = raw.replace(/\D/g, '');
+  if (cleanDigits && STORE_MAP[cleanDigits]) return STORE_MAP[cleanDigits];
+  const upper = String(raw).trim().toUpperCase();
+  return STORE_MAP[upper] || STORE_ALIAS_MAP[upper] || upper;
+};
+
+const getStoreRegion = (storeName: string, rawRegion?: string) => {
+  const cleanRegion = String(rawRegion || '').trim().toUpperCase();
+  if (cleanRegion && cleanRegion !== 'N/D' && cleanRegion !== 'NAN' && cleanRegion !== 'UNDEFINED' && cleanRegion !== 'SEM REGIÃO') {
+    if (cleanRegion === 'GO') return 'GOIÁS';
+    if (cleanRegion === 'MG') return 'MINAS GERAIS';
+    if (['PE', 'PB', 'CE', 'BA', 'RN', 'AL'].includes(cleanRegion)) return 'NORDESTE';
+    return cleanRegion;
+  }
+  const upperStore = getStoreName(storeName);
+  return STORE_REGION_MAP[upperStore] || 'OUTRAS';
 };
 
 const getDateValue = (sale: AnyRow) =>
@@ -196,9 +224,8 @@ const getCategory = (sale: AnyRow) =>
 
 const getRegion = (sale: AnyRow) => {
   const rawRegion = String(pick(sale, ['regiao', 'REGIAO'], '')).trim().toUpperCase();
-  if (rawRegion && rawRegion !== 'N/D' && rawRegion !== 'NAN' && rawRegion !== 'UNDEFINED') return rawRegion;
   const store = getStoreName(getStoreRaw(sale)).toUpperCase();
-  return STORE_REGION_MAP[store] || 'SEM REGIÃO';
+  return getStoreRegion(store, rawRegion);
 };
 
 const getDescription = (sale: AnyRow) =>
@@ -206,6 +233,19 @@ const getDescription = (sale: AnyRow) =>
 
 const getQuantity = (sale: AnyRow) =>
   toNumberSafe(pick(sale, ['quantidade', 'QUANTIDADE', 'qtd', 'QTD'], 0));
+
+const isInsuranceRow = (sale: AnyRow) => {
+  const tipo = String(pick(sale, ['tipo_registro', 'TIPO_REGISTRO'], '')).trim().toUpperCase();
+  if (tipo === 'SEGURO') return true;
+  const text = `${getCategory(sale)} ${getDescription(sale)}`;
+  return /SEGURO|PROTECAO|PROTEÇÃO|GARANTIA|SAMSUNG CARE|CARE\+/.test(text);
+};
+
+const calcVariationPct = (valA: number, valB: number): number | null => {
+  if (valA <= 0 && valB <= 0) return null;
+  if (valA <= 0 && valB > 0) return 100;
+  return ((valB - valA) / valA) * 100;
+};
 
 const extractYearMonth = (raw: any): { year: string; month: string } | null => {
   if (raw === null || raw === undefined || raw === '') return null;
@@ -338,7 +378,6 @@ const SmallMetricCard = ({
   </div>
 );
 
-// Item da legenda personalizada do gráfico
 const LegendItem = ({ color, label }: { color: string; label: string }) => (
   <span className="flex items-center gap-2 text-xs font-bold text-slate-600">
     <span className="w-3 h-3 rounded-[3px] shrink-0" style={{ backgroundColor: color }} />
@@ -350,6 +389,7 @@ export default function ComparativoAnual() {
   const [annualRawData, setAnnualRawData] = useState<any[]>([]);
   const [monthlyRawData, setMonthlyRawData] = useState<any[]>([]);
   const [annualStoreCompareRows, setAnnualStoreCompareRows] = useState<any[]>([]);
+  const [monthlyInsuranceFallback, setMonthlyInsuranceFallback] = useState<any[]>([]);
   const [errorMsg, setErrorMsg] = useState<string>('');
   const [loading, setLoading] = useState(false);
 
@@ -363,8 +403,13 @@ export default function ComparativoAnual() {
   const [endDate, setEndDate] = useState('');
   const [yearA, setYearA] = useState<string>('');
   const [yearB, setYearB] = useState<string>('');
-  const [activeTab, setActiveTab] = useState<'geral' | 'produtos'>('geral');
+  const [activeTab, setActiveTab] = useState<'geral' | 'lojas' | 'produtos'>('geral');
   const [searchProduct, setSearchProduct] = useState('');
+
+  // Estados da aba "Visão por Loja"
+  const [storeViewMode, setStoreViewMode] = useState<'comparativo' | 'mes_a_mes'>('comparativo');
+  const [selectedRegionFilter, setSelectedRegionFilter] = useState<string>('TODAS');
+  const [searchStoreQuery, setSearchStoreQuery] = useState<string>('');
 
   const API_URL = useMemo(() => {
     const envUrl = String(
@@ -413,9 +458,10 @@ export default function ComparativoAnual() {
     try {
       const userId = getUserId();
 
-      const [resAnnual, resMonthly] = await Promise.all([
+      const [resAnnual, resMonthly, resSegurosMensal] = await Promise.all([
         fetch(`${API_URL}/sales_anuais?userId=${userId}`),
         fetch(`${API_URL}/sales?userId=${userId}`),
+        fetch(`${API_URL}/seguros_analytics?userId=${userId}`).catch(() => null),
       ]);
 
       if (!resAnnual.ok) throw new Error('Rota de histórico anual não encontrada no servidor.');
@@ -423,6 +469,12 @@ export default function ComparativoAnual() {
 
       const dataAnnual = await resAnnual.json();
       const dataMonthly = await resMonthly.json();
+
+      if (resSegurosMensal && resSegurosMensal.ok) {
+        const dataSeg = await resSegurosMensal.json();
+        const rankingSeg = Array.isArray(dataSeg?.rankingLojas) ? dataSeg.rankingLojas : [];
+        setMonthlyInsuranceFallback(rankingSeg);
+      }
 
       const annualList =
         (dataAnnual && Array.isArray(dataAnnual.sales) && dataAnnual.sales) ||
@@ -531,7 +583,7 @@ export default function ComparativoAnual() {
     setEndDate('');
   };
 
-  const filteredRawData = useMemo(() => {
+  const baseFilteredRawData = useMemo(() => {
     return mergedRawData.filter((sale) => {
       const ym = extractYearMonth(getDateValue(sale));
       if (!ym) return false;
@@ -546,17 +598,26 @@ export default function ComparativoAnual() {
         return false;
       }
 
-      if (monthFilter !== '0' && ym.month !== String(monthFilter).padStart(2, '0')) {
-        return false;
-      }
-
       if ((startDate || endDate) && !isWithinDateRange(getDateValue(sale), startDate, endDate)) {
         return false;
       }
 
       return true;
     });
-  }, [mergedRawData, selectedStores, categoryFilter, monthFilter, startDate, endDate]);
+  }, [mergedRawData, selectedStores, categoryFilter, startDate, endDate]);
+
+  const filteredRawData = useMemo(() => {
+    return baseFilteredRawData.filter((sale) => {
+      const ym = extractYearMonth(getDateValue(sale));
+      if (!ym) return false;
+
+      if (monthFilter !== '0' && ym.month !== String(monthFilter).padStart(2, '0')) {
+        return false;
+      }
+
+      return true;
+    });
+  }, [baseFilteredRawData, monthFilter]);
 
   const filteredAnnualStoreCompare = useMemo(() => {
     return annualStoreCompareRows.filter((row) => {
@@ -598,6 +659,7 @@ export default function ComparativoAnual() {
     for (const sale of filteredRawData) {
       const ym = extractYearMonth(getDateValue(sale));
       if (!ym || !years.includes(ym.year)) continue;
+      if (isInsuranceRow(sale)) continue;
 
       const total = getTotal(sale);
       if (!total) continue;
@@ -621,7 +683,6 @@ export default function ComparativoAnual() {
         [yearA]: totalYearA,
         [`${yearB}_real`]: totalYearB,
         [`${yearB}_proj`]: 0,
-        // Campos auxiliares só para os rótulos: evita sobreposição no mês com tendência.
         [`${yearB}_realLabel`]: totalYearB,
         [`${yearB}_projLabel`]: 0,
       };
@@ -727,13 +788,32 @@ export default function ComparativoAnual() {
       for (const row of filteredRawData) {
         const ym = extractYearMonth(getDateValue(row));
         if (!ym || (ym.year !== yearA && ym.year !== yearB)) continue;
-
-        const text = `${getCategory(row)} ${getDescription(row)}`;
-        const looksLikeInsurance = /SEGURO|PROTECAO|PROTEÇÃO|GARANTIA/.test(text);
-        if (!looksLikeInsurance) continue;
+        if (!isInsuranceRow(row)) continue;
 
         byYear[ym.year].total += getTotal(row);
         byYear[ym.year].qtd += getQuantity(row) || 1;
+      }
+
+      // Fallback para seguros_analytics do mês atual caso a rota anual ainda não tenha sido reiniciada no servidor
+      const now = new Date();
+      const curYear = String(now.getFullYear());
+      const curMonth = String(now.getMonth() + 1);
+      if (
+        byYear[curYear] &&
+        byYear[curYear].total === 0 &&
+        (monthFilter === '0' || monthFilter === curMonth)
+      ) {
+        for (const sRow of monthlyInsuranceFallback) {
+          const storeName = getStoreName(String(sRow.loja || ''));
+          if (
+            selectedStores.length > 0 &&
+            !selectedStores.map((s) => s.toUpperCase()).includes(storeName.toUpperCase())
+          ) {
+            continue;
+          }
+          byYear[curYear].total += toNumberSafe(sRow.valorSeguro || sRow.seguros || 0);
+          byYear[curYear].qtd += toNumberSafe(sRow.qtdSeguros || 0);
+        }
       }
     }
 
@@ -741,7 +821,220 @@ export default function ComparativoAnual() {
       yearA: byYear[yearA] || { total: 0, qtd: 0 },
       yearB: byYear[yearB] || { total: 0, qtd: 0 },
     };
-  }, [filteredAnnualStoreCompare, filteredRawData, yearA, yearB]);
+  }, [filteredAnnualStoreCompare, filteredRawData, monthlyInsuranceFallback, selectedStores, monthFilter, yearA, yearB]);
+
+  /* ============================================================================
+     CÁLCULO DA ABA: "VISÃO POR LOJA" (FATURAMENTO, SEGURO E MÊS A MÊS)
+     ============================================================================ */
+  const storeVisionData = useMemo(() => {
+    const monthKeys = Array.from({ length: 12 }, (_, i) => String(i + 1).padStart(2, '0'));
+
+    type StoreEntry = {
+      loja: string;
+      regiao: string;
+      fatA: number;
+      fatB: number;
+      segA: number;
+      segB: number;
+      monthsA: Record<string, number>;
+      monthsB: Record<string, number>;
+    };
+
+    const storeMap = new Map<string, StoreEntry>();
+
+    const ensureStore = (storeName: string, rawRegion?: string) => {
+      const cleanName = getStoreName(storeName);
+      if (!storeMap.has(cleanName)) {
+        const mA: Record<string, number> = {};
+        const mB: Record<string, number> = {};
+        monthKeys.forEach((m) => {
+          mA[m] = 0;
+          mB[m] = 0;
+        });
+        storeMap.set(cleanName, {
+          loja: cleanName,
+          regiao: getStoreRegion(cleanName, rawRegion),
+          fatA: 0,
+          fatB: 0,
+          segA: 0,
+          segB: 0,
+          monthsA: mA,
+          monthsB: mB,
+        });
+      }
+      return storeMap.get(cleanName)!;
+    };
+
+    // 1. Alimenta os meses (Jan-Dez) e o Faturamento/Seguro a partir das vendas brutas
+    for (const sale of baseFilteredRawData) {
+      const ym = extractYearMonth(getDateValue(sale));
+      if (!ym || (ym.year !== yearA && ym.year !== yearB)) continue;
+
+      const storeName = getStoreName(getStoreRaw(sale));
+      if (!storeName || storeName === 'N/D') continue;
+
+      const total = getTotal(sale);
+      const isSeg = isInsuranceRow(sale);
+      const entry = ensureStore(storeName, pick(sale, ['regiao', 'REGIAO'], ''));
+
+      if (!isSeg) {
+        if (ym.year === yearA) {
+          entry.monthsA[ym.month] = (entry.monthsA[ym.month] || 0) + total;
+        } else if (ym.year === yearB) {
+          entry.monthsB[ym.month] = (entry.monthsB[ym.month] || 0) + total;
+        }
+      }
+
+      const matchesSelectedMonth = monthFilter === '0' || ym.month === String(monthFilter).padStart(2, '0');
+      if (matchesSelectedMonth) {
+        if (ym.year === yearA) {
+          if (isSeg) entry.segA += total;
+          else entry.fatA += total;
+        } else if (ym.year === yearB) {
+          if (isSeg) entry.segB += total;
+          else entry.fatB += total;
+        }
+      }
+    }
+
+    // 2. Alimenta Seguro (e Faturamento se necessário) vindo da rota `/anuais/lojas_compare`
+    const apiInsuranceByStore = new Map<string, { segA: number; segB: number }>();
+    for (const row of filteredAnnualStoreCompare) {
+      const year = String(row.ano || row.ANO || '');
+      if (year !== yearA && year !== yearB) continue;
+
+      const storeName = getStoreName(String(row.loja || row.LOJA || row.cnpj_empresa || row.CNPJ_EMPRESA || ''));
+      if (!storeName || storeName === 'N/D') continue;
+
+      const segVal = toNumberSafe(row.seguro_total || row.SEGURO_TOTAL || 0);
+      if (!apiInsuranceByStore.has(storeName)) {
+        apiInsuranceByStore.set(storeName, { segA: 0, segB: 0 });
+      }
+      const item = apiInsuranceByStore.get(storeName)!;
+      if (year === yearA) item.segA += segVal;
+      if (year === yearB) item.segB += segVal;
+    }
+
+    apiInsuranceByStore.forEach((segVals, storeName) => {
+      if (segVals.segA > 0 || segVals.segB > 0) {
+        const entry = ensureStore(storeName);
+        entry.segA = segVals.segA;
+        entry.segB = segVals.segB;
+      }
+    });
+
+    // 3. Fallback adicional: se ainda não houver seguro no ano atual, usa o ranking de `seguros_analytics`
+    const now = new Date();
+    const curYear = String(now.getFullYear());
+    const curMonth = String(now.getMonth() + 1);
+    if (
+      yearB === curYear &&
+      (monthFilter === '0' || monthFilter === curMonth) &&
+      apiInsuranceByStore.size === 0
+    ) {
+      for (const sRow of monthlyInsuranceFallback) {
+        const storeName = getStoreName(String(sRow.loja || ''));
+        if (!storeName || storeName === 'N/D') continue;
+        if (
+          selectedStores.length > 0 &&
+          !selectedStores.map((s) => s.toUpperCase()).includes(storeName.toUpperCase())
+        ) {
+          continue;
+        }
+        const val = toNumberSafe(sRow.valorSeguro || sRow.seguros || 0);
+        if (val > 0) {
+          const entry = ensureStore(storeName);
+          if (entry.segB === 0) entry.segB = val;
+        }
+      }
+    }
+
+    const allStores = Array.from(storeMap.values())
+      .filter((s) => s.fatA > 0 || s.fatB > 0 || s.segA > 0 || s.segB > 0)
+      .map((s) => ({
+        ...s,
+        fatPct: calcVariationPct(s.fatA, s.fatB),
+        segPct: calcVariationPct(s.segA, s.segB),
+      }))
+      .sort((a, b) => a.loja.localeCompare(b.loja));
+
+    const regionMap = new Map<
+      string,
+      { regiao: string; fatA: number; fatB: number; segA: number; segB: number; count: number }
+    >();
+
+    for (const s of allStores) {
+      if (!regionMap.has(s.regiao)) {
+        regionMap.set(s.regiao, { regiao: s.regiao, fatA: 0, fatB: 0, segA: 0, segB: 0, count: 0 });
+      }
+      const r = regionMap.get(s.regiao)!;
+      r.fatA += s.fatA;
+      r.fatB += s.fatB;
+      r.segA += s.segA;
+      r.segB += s.segB;
+      r.count += 1;
+    }
+
+    const regions = Array.from(regionMap.values())
+      .map((r) => ({
+        ...r,
+        fatPct: calcVariationPct(r.fatA, r.fatB),
+        segPct: calcVariationPct(r.segA, r.segB),
+      }))
+      .sort((a, b) => b.fatB - a.fatB);
+
+    const visibleStores = allStores.filter((s) => {
+      if (selectedRegionFilter !== 'TODAS' && s.regiao !== selectedRegionFilter) return false;
+      if (searchStoreQuery.trim() !== '') {
+        const term = searchStoreQuery.trim().toLowerCase();
+        if (!s.loja.toLowerCase().includes(term) && !s.regiao.toLowerCase().includes(term)) return false;
+      }
+      return true;
+    });
+
+    const totals = visibleStores.reduce(
+      (acc, s) => {
+        acc.fatA += s.fatA;
+        acc.fatB += s.fatB;
+        acc.segA += s.segA;
+        acc.segB += s.segB;
+        monthKeys.forEach((m) => {
+          acc.monthsA[m] = (acc.monthsA[m] || 0) + (s.monthsA[m] || 0);
+          acc.monthsB[m] = (acc.monthsB[m] || 0) + (s.monthsB[m] || 0);
+        });
+        return acc;
+      },
+      {
+        fatA: 0,
+        fatB: 0,
+        segA: 0,
+        segB: 0,
+        monthsA: {} as Record<string, number>,
+        monthsB: {} as Record<string, number>,
+      }
+    );
+
+    return {
+      allStores,
+      visibleStores,
+      regions,
+      totals: {
+        ...totals,
+        fatPct: calcVariationPct(totals.fatA, totals.fatB),
+        segPct: calcVariationPct(totals.segA, totals.segB),
+      },
+    };
+  }, [
+    baseFilteredRawData,
+    filteredAnnualStoreCompare,
+    monthlyInsuranceFallback,
+    selectedStores,
+    yearA,
+    yearB,
+    monthFilter,
+    selectedRegionFilter,
+    searchStoreQuery,
+  ]);
 
   const categoryMiniData = useMemo(() => {
     const map = new Map<string, number>();
@@ -749,6 +1042,7 @@ export default function ComparativoAnual() {
     for (const row of filteredRawData) {
       const ym = extractYearMonth(getDateValue(row));
       if (!ym || ym.year !== yearB) continue;
+      if (isInsuranceRow(row)) continue;
       const category = getCategory(row) || 'OUTROS';
       map.set(category, (map.get(category) || 0) + getTotal(row));
     }
@@ -765,6 +1059,7 @@ export default function ComparativoAnual() {
     for (const row of filteredRawData) {
       const ym = extractYearMonth(getDateValue(row));
       if (!ym || ym.year !== yearB) continue;
+      if (isInsuranceRow(row)) continue;
       const region = getRegion(row) || 'SEM REGIÃO';
       map.set(region, (map.get(region) || 0) + getTotal(row));
     }
@@ -773,7 +1068,6 @@ export default function ComparativoAnual() {
       .map(([name, value]) => ({ name, value }))
       .sort((a, b) => b.value - a.value);
 
-    // Mostra as 6 maiores regiões e agrupa o restante em "OUTRAS".
     if (sorted.length <= 7) return sorted;
     const top = sorted.slice(0, 6);
     const rest = sorted.slice(6).reduce((sum, r) => sum + r.value, 0);
@@ -845,12 +1139,14 @@ export default function ComparativoAnual() {
 
   const noData = computed.totalA + computed.totalB + segurosComputed.yearB.total <= 0;
 
-  // Nomes usados no tooltip do gráfico
   const chartLegendNameMap: Record<string, string> = useMemo(() => ({
     [yearA]: `${yearA}`,
     [`${yearB}_real`]: `${yearB}`,
     [`${yearB}_proj`]: `${yearB} Tendência`,
   }), [yearA, yearB]);
+
+  const periodHeaderA = monthFilter !== '0' ? `${String(monthFilter).padStart(2, '0')}/${yearA}` : `${yearA}`;
+  const periodHeaderB = monthFilter !== '0' ? `${String(monthFilter).padStart(2, '0')}/${yearB}` : `${yearB}`;
 
   return (
     <div className="h-full overflow-y-auto p-4 md:p-6 bg-slate-50 font-sans text-slate-800">
@@ -871,7 +1167,7 @@ export default function ComparativoAnual() {
             </h1>
           </div>
           <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-10">
-            Histórico completo • Comparativo entre anos • Produtos
+            Histórico completo • Comparativo entre anos • Lojas & Produtos
           </p>
         </div>
 
@@ -985,17 +1281,36 @@ export default function ComparativoAnual() {
       </div>
 
       {/* Abas */}
-      <div className="flex gap-2 mb-6">
+      <div className="flex flex-wrap gap-2 mb-6">
         <button
           onClick={() => setActiveTab('geral')}
-          className={`px-5 py-2.5 rounded-lg text-xs font-bold uppercase transition-all flex items-center gap-2 ${activeTab === 'geral' ? 'bg-orange-500 text-white shadow-md' : 'bg-white text-slate-500 hover:bg-slate-50 border border-slate-200'}`}
+          className={`px-5 py-2.5 rounded-lg text-xs font-bold uppercase transition-all flex items-center gap-2 ${
+            activeTab === 'geral'
+              ? 'bg-orange-500 text-white shadow-md'
+              : 'bg-white text-slate-500 hover:bg-slate-50 border border-slate-200'
+          }`}
         >
           <Activity size={16} /> Visão Geral
         </button>
 
         <button
+          onClick={() => setActiveTab('lojas')}
+          className={`px-5 py-2.5 rounded-lg text-xs font-bold uppercase transition-all flex items-center gap-2 ${
+            activeTab === 'lojas'
+              ? 'bg-orange-500 text-white shadow-md'
+              : 'bg-white text-slate-500 hover:bg-slate-50 border border-slate-200'
+          }`}
+        >
+          <Store size={16} /> Visão por Loja
+        </button>
+
+        <button
           onClick={() => setActiveTab('produtos')}
-          className={`px-5 py-2.5 rounded-lg text-xs font-bold uppercase transition-all flex items-center gap-2 ${activeTab === 'produtos' ? 'bg-orange-500 text-white shadow-md' : 'bg-white text-slate-500 hover:bg-slate-50 border border-slate-200'}`}
+          className={`px-5 py-2.5 rounded-lg text-xs font-bold uppercase transition-all flex items-center gap-2 ${
+            activeTab === 'produtos'
+              ? 'bg-orange-500 text-white shadow-md'
+              : 'bg-white text-slate-500 hover:bg-slate-50 border border-slate-200'
+          }`}
         >
           <Package size={16} /> Comparativo de Produtos
         </button>
@@ -1008,6 +1323,9 @@ export default function ComparativoAnual() {
         </div>
       )}
 
+      {/* ==========================================================================
+          ABA 1: VISÃO GERAL
+         ========================================================================== */}
       {activeTab === 'geral' && (
         <>
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 mb-6">
@@ -1042,10 +1360,9 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
               icon={<ShieldCheck size={16} />}
               value={formatMoney(segurosComputed.yearB.total)}
               valueClass="text-slate-900"
-              subtitle={`Qtd. seguros: ${Math.round(segurosComputed.yearB.qtd).toLocaleString('pt-BR')}`}
+              subtitle={`Qtd. seguros (${yearB}): ${Math.round(segurosComputed.yearB.qtd).toLocaleString('pt-BR')}\nSeguros ${yearA}: ${formatMoney(segurosComputed.yearA.total)}`}
             />
 
-            {/* Categorias: barras horizontais em laranja */}
             <SmallMetricCard
               title="Categorias"
               icon={<BarChart3 size={16} />}
@@ -1075,7 +1392,6 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
               )}
             </SmallMetricCard>
 
-            {/* Regiões */}
             <SmallMetricCard
               title="Regiões"
               icon={<PieChart size={16} />}
@@ -1126,7 +1442,6 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
             </SmallMetricCard>
           </div>
 
-          {/* Gráfico mensal: 2025 (grafite) -> 2026 (laranja) -> 2026 tendência (laranja claro) */}
           <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm mb-6">
             <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
               <div className="flex items-center gap-2">
@@ -1134,7 +1449,6 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
                 <h3 className="font-black text-slate-700 uppercase text-xs">Vendas por Mês ({yearA} x {yearB})</h3>
               </div>
 
-              {/* Legenda própria: ordem fixa (ano anterior, ano atual, tendência) */}
               <div className="flex flex-wrap items-center gap-5">
                 <LegendItem color={CHART_COLORS.yearA} label={`${yearA}`} />
                 <LegendItem color={CHART_COLORS.yearBReal} label={`${yearB}`} />
@@ -1166,7 +1480,6 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
                     formatter={(val: any, name: any) => [formatMoney(Number(val) || 0), chartLegendNameMap[name] || name]}
                   />
 
-                  {/* 1ª barra: ano anterior (stackId próprio garante a posição à esquerda) */}
                   <Bar
                     dataKey={yearA}
                     name={chartLegendNameMap[yearA]}
@@ -1184,7 +1497,6 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
                     />
                   </Bar>
 
-                  {/* 2ª barra: ano atual (real + tendência empilhados) */}
                   <Bar
                     dataKey={`${yearB}_real`}
                     name={chartLegendNameMap[`${yearB}_real`]}
@@ -1225,6 +1537,492 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
         </>
       )}
 
+      {/* ==========================================================================
+          ABA 2: VISÃO POR LOJA (FATURAMENTO GERAL + SEGURO GERAL + MÊS A MÊS)
+         ========================================================================== */}
+      {activeTab === 'lojas' && (
+        <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+          {/* Barra Rápida de Seleção de Mês */}
+          <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4">
+            <div>
+              <span className="text-[10px] font-black text-orange-600 uppercase tracking-widest block">
+                Filtro Rápido de Competência ({yearA} x {yearB})
+              </span>
+              <h3 className="text-sm font-black text-slate-800 uppercase mt-0.5">
+                {monthFilter === '0'
+                  ? `Acumulado Anual (${yearA} vs ${yearB})`
+                  : `Comparativo Mensal • ${MONTH_FULL[Number(monthFilter)]} (${periodHeaderA} vs ${periodHeaderB})`}
+              </h3>
+            </div>
+
+            <div className="flex flex-wrap gap-1.5">
+              <button
+                onClick={() => setMonthFilter('0')}
+                className={`px-3 py-1.5 rounded-lg text-[11px] font-black uppercase transition-all ${
+                  monthFilter === '0'
+                    ? 'bg-slate-900 text-white shadow-sm'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                }`}
+              >
+                Ano Todo
+              </button>
+              {MONTH_LABELS.map((label, idx) => {
+                const mKey = String(idx + 1);
+                const isSelected = monthFilter === mKey;
+                return (
+                  <button
+                    key={mKey}
+                    onClick={() => setMonthFilter(mKey)}
+                    className={`px-2.5 py-1.5 rounded-lg text-[11px] font-black uppercase transition-all ${
+                      isSelected
+                        ? 'bg-orange-500 text-white shadow-sm'
+                        : 'bg-slate-100 text-slate-600 hover:bg-orange-50 hover:text-orange-600'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Minicards com Totais por Região */}
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 flex items-center gap-1.5">
+                <MapPin size={13} className="text-orange-500" /> Totais por Região (Clique para filtrar a tabela)
+              </span>
+              {selectedRegionFilter !== 'TODAS' && (
+                <button
+                  onClick={() => setSelectedRegionFilter('TODAS')}
+                  className="text-[10px] font-black uppercase text-orange-600 hover:underline"
+                >
+                  Mostrar Todas as Regiões
+                </button>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5 gap-3">
+              <div
+                onClick={() => setSelectedRegionFilter('TODAS')}
+                className={`cursor-pointer p-4 rounded-2xl border transition-all ${
+                  selectedRegionFilter === 'TODAS'
+                    ? 'bg-slate-900 text-white border-slate-900 shadow-md'
+                    : 'bg-white text-slate-800 border-slate-200 hover:border-orange-300 shadow-sm'
+                }`}
+              >
+                <div className="flex justify-between items-start">
+                  <span className={`text-[10px] font-black uppercase tracking-widest ${selectedRegionFilter === 'TODAS' ? 'text-orange-400' : 'text-slate-400'}`}>
+                    REDE TOTAL ({storeVisionData.allStores.length} Lojas)
+                  </span>
+                  {storeVisionData.totals.fatPct !== null && (
+                    <span
+                      className={`px-2 py-0.5 rounded-full text-[10px] font-black ${
+                        storeVisionData.totals.fatPct >= 0
+                          ? 'bg-emerald-500/20 text-emerald-400'
+                          : 'bg-rose-500/20 text-rose-400'
+                      }`}
+                    >
+                      {storeVisionData.totals.fatPct >= 0 ? '+' : ''}
+                      {Math.round(storeVisionData.totals.fatPct)}%
+                    </span>
+                  )}
+                </div>
+                <p className="text-lg font-black mt-2 truncate">{formatMoney(storeVisionData.totals.fatB)}</p>
+                <p className={`text-[10px] font-bold mt-1 ${selectedRegionFilter === 'TODAS' ? 'text-slate-300' : 'text-slate-400'}`}>
+                  {periodHeaderA}: {formatMoney(storeVisionData.totals.fatA)}
+                </p>
+                <div className={`mt-2.5 pt-2 border-t flex justify-between text-[10px] font-bold ${selectedRegionFilter === 'TODAS' ? 'border-slate-800 text-slate-300' : 'border-slate-100 text-slate-500'}`}>
+                  <span>Seguro {yearB}:</span>
+                  <span className="font-black">{formatMoneyShort(storeVisionData.totals.segB)}</span>
+                </div>
+              </div>
+
+              {storeVisionData.regions.map((reg) => {
+                const isSelected = selectedRegionFilter === reg.regiao;
+                const isPositive = (reg.fatPct ?? 0) >= 0;
+                return (
+                  <div
+                    key={reg.regiao}
+                    onClick={() => setSelectedRegionFilter(isSelected ? 'TODAS' : reg.regiao)}
+                    className={`cursor-pointer p-4 rounded-2xl border transition-all ${
+                      isSelected
+                        ? 'bg-orange-50/90 border-orange-500 ring-2 ring-orange-500/20 shadow-md'
+                        : 'bg-white border-slate-200 hover:border-orange-300 shadow-sm'
+                    }`}
+                  >
+                    <div className="flex justify-between items-start gap-2">
+                      <span className="text-[10px] font-black uppercase tracking-widest text-slate-500 truncate">
+                        {reg.regiao} ({reg.count})
+                      </span>
+                      {reg.fatPct !== null && (
+                        <span
+                          className={`px-2 py-0.5 rounded-full text-[10px] font-black shrink-0 ${
+                            isPositive ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'
+                          }`}
+                        >
+                          {isPositive ? '+' : ''}
+                          {Math.round(reg.fatPct)}%
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-lg font-black text-slate-900 mt-2 truncate">{formatMoney(reg.fatB)}</p>
+                    <p className="text-[10px] font-bold text-slate-400 mt-1 truncate">
+                      {periodHeaderA}: {formatMoney(reg.fatA)}
+                    </p>
+                    <div className="mt-2.5 pt-2 border-t border-slate-100 flex justify-between text-[10px] font-bold text-slate-500">
+                      <span>Seguro {yearB}:</span>
+                      <span className="font-black text-slate-700">{formatMoneyShort(reg.segB)}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Container da Tabela */}
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden flex flex-col">
+            <div className="p-4 border-b border-slate-200 flex flex-col md:flex-row justify-between items-start md:items-center bg-slate-50/70 gap-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  onClick={() => setStoreViewMode('comparativo')}
+                  className={`px-4 py-2 rounded-lg text-xs font-black uppercase transition-all flex items-center gap-2 ${
+                    storeViewMode === 'comparativo'
+                      ? 'bg-slate-900 text-white shadow-sm'
+                      : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100'
+                  }`}
+                >
+                  <Store size={14} /> Faturamento & Seguro ({periodHeaderA} x {periodHeaderB})
+                </button>
+                <button
+                  onClick={() => setStoreViewMode('mes_a_mes')}
+                  className={`px-4 py-2 rounded-lg text-xs font-black uppercase transition-all flex items-center gap-2 ${
+                    storeViewMode === 'mes_a_mes'
+                      ? 'bg-slate-900 text-white shadow-sm'
+                      : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100'
+                  }`}
+                >
+                  <Table2 size={14} /> Relatório Anual Mês a Mês (Jan - Dez)
+                </button>
+              </div>
+
+              <div className="relative w-full md:w-72">
+                <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  placeholder="Buscar loja ou região..."
+                  value={searchStoreQuery}
+                  onChange={(e) => setSearchStoreQuery(e.target.value)}
+                  className="w-full pl-9 pr-3 py-2 text-xs font-bold text-slate-700 bg-white border border-slate-200 rounded-lg outline-none focus:border-orange-400 transition-colors uppercase shadow-sm"
+                />
+              </div>
+            </div>
+
+            {/* MODO 1: FATURAMENTO GERAL + SEGURO GERAL */}
+            {storeViewMode === 'comparativo' && (
+              <div className="overflow-x-auto max-h-[680px]">
+                <table className="w-full text-left border-collapse min-w-[950px]">
+                  <thead className="sticky top-0 z-20 shadow-sm">
+                    <tr className="border-b border-slate-200 text-[11px] font-black uppercase tracking-wider">
+                      <th className="p-3 bg-slate-100 text-slate-700 border-r border-slate-200">
+                        Unidade / Filial
+                      </th>
+                      <th
+                        colSpan={3}
+                        className="p-3 text-center bg-emerald-50/90 text-emerald-950 border-r border-slate-200"
+                      >
+                        Faturamento Geral
+                      </th>
+                      <th
+                        colSpan={3}
+                        className="p-3 text-center bg-teal-50/80 text-teal-950"
+                      >
+                        Seguro Geral
+                      </th>
+                    </tr>
+
+                    <tr className="border-b border-slate-200 bg-slate-100/95 text-[10px] font-black uppercase text-slate-600">
+                      <th className="py-2.5 px-4 border-r border-slate-200">Loja</th>
+                      <th className="py-2.5 px-3 text-right bg-sky-50/60">{periodHeaderA}</th>
+                      <th className="py-2.5 px-3 text-right bg-sky-50/60 border-l border-slate-200/70">{periodHeaderB}</th>
+                      <th className="py-2.5 px-3 text-center bg-amber-300/90 text-slate-900 border-x border-slate-200">
+                        % Ating. <span className="block text-[9px] font-extrabold">{yearA} x {yearB}</span>
+                      </th>
+                      <th className="py-2.5 px-3 text-right bg-sky-50/60">{periodHeaderA}</th>
+                      <th className="py-2.5 px-3 text-right bg-sky-50/60 border-l border-slate-200/70">{periodHeaderB}</th>
+                      <th className="py-2.5 px-3 text-center bg-amber-300/90 text-slate-900 border-l border-slate-200">
+                        % Ating. <span className="block text-[9px] font-extrabold">{yearA} x {yearB}</span>
+                      </th>
+                    </tr>
+                  </thead>
+
+                  <tbody className="divide-y divide-slate-100 text-xs font-bold text-slate-700">
+                    {storeVisionData.visibleStores.map((item) => {
+                      const fatPctVal = item.fatPct;
+                      const segPctVal = item.segPct;
+
+                      return (
+                        <tr key={item.loja} className="hover:bg-orange-50/40 transition-colors">
+                          <td className="py-2.5 px-4 border-r border-slate-100 font-black text-slate-800 uppercase whitespace-nowrap">
+                            <div className="flex items-center justify-between gap-2">
+                              <span>{item.loja}</span>
+                              <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">
+                                {item.regiao}
+                              </span>
+                            </div>
+                          </td>
+
+                          <td className="py-2.5 px-3 text-right font-mono text-slate-600 whitespace-nowrap">
+                            {item.fatA > 0 ? formatMoney(item.fatA) : 'R$ -'}
+                          </td>
+
+                          <td className="py-2.5 px-3 text-right font-mono font-black text-slate-900 border-l border-slate-100 whitespace-nowrap">
+                            {item.fatB > 0 ? formatMoney(item.fatB) : 'R$ -'}
+                          </td>
+
+                          <td className="py-2.5 px-3 text-center border-x border-slate-100 bg-amber-50/30 whitespace-nowrap">
+                            {fatPctVal === null ? (
+                              <span className="text-slate-400">—</span>
+                            ) : (
+                              <span
+                                className={`inline-block px-2 py-0.5 rounded font-black text-[11px] ${
+                                  fatPctVal < 0
+                                    ? 'text-red-600 bg-red-50'
+                                    : fatPctVal >= 50
+                                      ? 'text-emerald-700 bg-emerald-50'
+                                      : 'text-slate-900'
+                                }`}
+                              >
+                                {Math.round(fatPctVal)}%
+                              </span>
+                            )}
+                          </td>
+
+                          <td className="py-2.5 px-3 text-right font-mono text-slate-600 whitespace-nowrap">
+                            {item.segA > 0 ? formatMoney(item.segA) : 'R$ -'}
+                          </td>
+
+                          <td className="py-2.5 px-3 text-right font-mono font-black text-slate-900 border-l border-slate-100 whitespace-nowrap">
+                            {item.segB > 0 ? formatMoney(item.segB) : 'R$ -'}
+                          </td>
+
+                          <td className="py-2.5 px-3 text-center border-l border-slate-100 bg-amber-50/30 whitespace-nowrap">
+                            {segPctVal === null ? (
+                              <span className="text-slate-400">—</span>
+                            ) : (
+                              <span
+                                className={`inline-block px-2 py-0.5 rounded font-black text-[11px] ${
+                                  segPctVal < 0
+                                    ? 'text-red-600 bg-red-50'
+                                    : segPctVal >= 50
+                                      ? 'text-emerald-700 bg-emerald-50'
+                                      : 'text-slate-900'
+                                }`}
+                              >
+                                {Math.round(segPctVal)}%
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+
+                    {storeVisionData.visibleStores.length === 0 && (
+                      <tr>
+                        <td colSpan={7} className="p-10 text-center text-slate-400 font-bold">
+                          Nenhuma loja encontrada para os filtros selecionados.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+
+                  {storeVisionData.visibleStores.length > 0 && (
+                    <tfoot className="sticky bottom-0 z-20 bg-sky-100/95 border-t-2 border-slate-300 text-xs font-black text-slate-900 shadow-inner">
+                      <tr>
+                        <td className="py-3 px-4 uppercase border-r border-slate-300">TOTAL</td>
+                        <td className="py-3 px-3 text-right font-mono whitespace-nowrap">
+                          {formatMoney(storeVisionData.totals.fatA)}
+                        </td>
+                        <td className="py-3 px-3 text-right font-mono border-l border-slate-300 whitespace-nowrap">
+                          {formatMoney(storeVisionData.totals.fatB)}
+                        </td>
+                        <td className="py-3 px-3 text-center border-x border-slate-300 bg-amber-200/80 whitespace-nowrap">
+                          {storeVisionData.totals.fatPct !== null
+                            ? `${Math.round(storeVisionData.totals.fatPct)}%`
+                            : '—'}
+                        </td>
+                        <td className="py-3 px-3 text-right font-mono whitespace-nowrap">
+                          {formatMoney(storeVisionData.totals.segA)}
+                        </td>
+                        <td className="py-3 px-3 text-right font-mono border-l border-slate-300 whitespace-nowrap">
+                          {formatMoney(storeVisionData.totals.segB)}
+                        </td>
+                        <td className="py-3 px-3 text-center border-l border-slate-300 bg-amber-200/80 whitespace-nowrap">
+                          {storeVisionData.totals.segPct !== null
+                            ? `${Math.round(storeVisionData.totals.segPct)}%`
+                            : '—'}
+                        </td>
+                      </tr>
+                    </tfoot>
+                  )}
+                </table>
+              </div>
+            )}
+
+            {/* MODO 2: MATRIZ ANUAL MÊS A MÊS (JAN A DEZ) */}
+            {storeViewMode === 'mes_a_mes' && (
+              <div className="overflow-x-auto max-h-[680px]">
+                <table className="w-full text-left border-collapse min-w-[1800px]">
+                  <thead className="sticky top-0 z-20 bg-slate-100 border-b border-slate-200 shadow-sm">
+                    <tr className="text-[10px] font-black uppercase text-slate-600">
+                      <th className="sticky left-0 z-30 bg-slate-100 py-3 px-4 border-r border-slate-200 min-w-[210px]">
+                        Loja / Mês ({yearA} vs {yearB})
+                      </th>
+                      {MONTH_LABELS.map((mLabel, idx) => (
+                        <th
+                          key={mLabel}
+                          onClick={() => setMonthFilter(String(idx + 1))}
+                          title="Clique para filtrar este mês"
+                          className="cursor-pointer py-2.5 px-3 text-center border-r border-slate-200 hover:bg-orange-50 transition-colors"
+                        >
+                          <span className="text-slate-800 block text-[11px]">{mLabel}</span>
+                          <span className="text-[9px] text-slate-400 font-bold">
+                            {yearA} → {yearB}
+                          </span>
+                        </th>
+                      ))}
+                      <th className="py-2.5 px-4 text-center bg-orange-50 text-orange-900">
+                        Acumulado Anual
+                      </th>
+                    </tr>
+                  </thead>
+
+                  <tbody className="divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
+                    {storeVisionData.visibleStores.map((store) => {
+                      const totalYearA = Object.values(store.monthsA).reduce((a, b) => a + b, 0);
+                      const totalYearB = Object.values(store.monthsB).reduce((a, b) => a + b, 0);
+                      const totalDiffPct = calcVariationPct(totalYearA, totalYearB);
+
+                      return (
+                        <tr key={store.loja} className="hover:bg-orange-50/30 transition-colors group">
+                          <td className="sticky left-0 z-10 bg-white group-hover:bg-orange-50/60 py-3 px-4 border-r border-slate-200 font-black text-slate-900 uppercase whitespace-nowrap">
+                            <div>{store.loja}</div>
+                            <span className="text-[9px] text-slate-400 font-bold">{store.regiao}</span>
+                          </td>
+
+                          {MONTH_LABELS.map((_, idx) => {
+                            const mKey = String(idx + 1).padStart(2, '0');
+                            const valA = store.monthsA[mKey] || 0;
+                            const valB = store.monthsB[mKey] || 0;
+                            const diff = calcVariationPct(valA, valB);
+
+                            return (
+                              <td key={mKey} className="p-2.5 text-right border-r border-slate-100 whitespace-nowrap">
+                                <div className="font-mono font-black text-slate-900">
+                                  {valB > 0 ? formatMoneyShort(valB) : '—'}
+                                </div>
+                                <div className="font-mono text-[9px] text-slate-400">
+                                  {yearA}: {valA > 0 ? formatMoneyShort(valA) : '—'}
+                                </div>
+                                {diff !== null && (
+                                  <div
+                                    className={`mt-0.5 inline-block px-1.5 py-0.2 rounded text-[9px] font-black ${
+                                      diff >= 0
+                                        ? 'bg-emerald-50 text-emerald-700'
+                                        : 'bg-rose-50 text-rose-600'
+                                    }`}
+                                  >
+                                    {diff >= 0 ? '+' : ''}
+                                    {Math.round(diff)}%
+                                  </div>
+                                )}
+                              </td>
+                            );
+                          })}
+
+                          <td className="p-2.5 text-right bg-orange-50/30 whitespace-nowrap">
+                            <div className="font-mono font-black text-orange-700">
+                              {formatMoney(totalYearB)}
+                            </div>
+                            <div className="font-mono text-[9px] text-slate-500">
+                              {yearA}: {formatMoney(totalYearA)}
+                            </div>
+                            {totalDiffPct !== null && (
+                              <div
+                                className={`mt-0.5 inline-block px-1.5 py-0.5 rounded text-[9px] font-black ${
+                                  totalDiffPct >= 0
+                                    ? 'bg-emerald-100 text-emerald-800'
+                                    : 'bg-rose-100 text-rose-700'
+                                }`}
+                              >
+                                {totalDiffPct >= 0 ? '+' : ''}
+                                {Math.round(totalDiffPct)}%
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+
+                  {storeVisionData.visibleStores.length > 0 && (
+                    <tfoot className="sticky bottom-0 z-20 bg-slate-900 text-white text-[11px] font-black">
+                      <tr>
+                        <td className="sticky left-0 z-30 bg-slate-900 py-3 px-4 border-r border-slate-700 uppercase">
+                          TOTAL REDE
+                        </td>
+                        {MONTH_LABELS.map((_, idx) => {
+                          const mKey = String(idx + 1).padStart(2, '0');
+                          const mTotalA = storeVisionData.totals.monthsA[mKey] || 0;
+                          const mTotalB = storeVisionData.totals.monthsB[mKey] || 0;
+                          const mDiff = calcVariationPct(mTotalA, mTotalB);
+
+                          return (
+                            <td key={mKey} className="p-2.5 text-right border-r border-slate-800 whitespace-nowrap">
+                              <div className="font-mono text-orange-400">
+                                {mTotalB > 0 ? formatMoneyShort(mTotalB) : '—'}
+                              </div>
+                              <div className="font-mono text-[9px] text-slate-400">
+                                {mTotalA > 0 ? formatMoneyShort(mTotalA) : '—'}
+                              </div>
+                              {mDiff !== null && (
+                                <span
+                                  className={`text-[9px] ${
+                                    mDiff >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                                  }`}
+                                >
+                                  {mDiff >= 0 ? '+' : ''}
+                                  {Math.round(mDiff)}%
+                                </span>
+                              )}
+                            </td>
+                          );
+                        })}
+                        <td className="p-2.5 text-right bg-slate-950 whitespace-nowrap">
+                          <div className="font-mono text-orange-400">
+                            {formatMoneyShort(
+                              Object.values(storeVisionData.totals.monthsB).reduce((a, b) => a + b, 0)
+                            )}
+                          </div>
+                          <div className="font-mono text-[9px] text-slate-400">
+                            {formatMoneyShort(
+                              Object.values(storeVisionData.totals.monthsA).reduce((a, b) => a + b, 0)
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    </tfoot>
+                  )}
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ==========================================================================
+          ABA 3: COMPARATIVO DE PRODUTOS
+         ========================================================================== */}
       {activeTab === 'produtos' && (
         <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">

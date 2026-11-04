@@ -985,67 +985,101 @@ async function buildAnnualStoreCompareRows(params: {
   yearB: number;
   month: number;
 }): Promise<AnnualStoreCompareRow[]> {
-  if (!fs.existsSync(ANUAL_DB_PATH)) return [];
-
   const securityFilter = await getSalesFilter(params.userId, 'vendas');
+  const kpiSecurityFilter = await getSalesFilter(params.userId, 'kpi');
   const yearFilter = ` AND ano IN (${Number(params.yearA)}, ${Number(params.yearB)}) `;
   const monthFilter = params.month >= 1 && params.month <= 12 ? ` AND mes = ${Number(params.month)} ` : '';
 
-  const db = await open({ filename: ANUAL_DB_PATH, driver: sqlite3.Database });
+  const map = new Map<string, AnnualStoreCompareRow>();
 
-  try {
-    const hasRaw = await annualTableExists(db, 'vendas_anuais_raw');
-    const hasAnnual = await annualTableExists(db, 'vendas_anuais');
-    const hasInsurance = await annualTableExists(db, 'seguros_anuais');
+  const getKey = (row: any) => {
+    const ano = Number(row.ano || 0);
+    const mes = Number(row.mes || 0);
+    const loja = annualStoreNameFromRow(row);
+    const cnpj = String(row.cnpj_empresa || '').replace(/\D/g, '') || getCnpjByName(loja) || '';
+    return `${ano}|${mes}|${cnpj || annualNorm(loja)}`;
+  };
 
-    let salesRows: any[] = [];
+  const ensure = (row: any): AnnualStoreCompareRow => {
+    const key = getKey(row);
 
-    if (hasRaw) {
-      salesRows = await db.all(`
-        SELECT
-          ano,
-          mes,
-          COALESCE(NULLIF(loja, ''), cnpj_empresa, 'LOJA NÃO INFORMADA') AS loja,
-          COALESCE(cnpj_empresa, '') AS cnpj_empresa,
-          COALESCE(NULLIF(regiao, ''), '') AS regiao,
-          SUM(COALESCE(total_real, total_liquido, 0)) AS venda_total,
-          SUM(COALESCE(qtd_real, quantidade, 0)) AS venda_qtd
-        FROM vendas_anuais_raw
-        WHERE ${securityFilter}
-          ${yearFilter}
-          ${monthFilter}
-          AND ano > 0
-          AND mes BETWEEN 1 AND 12
-          AND (
-            cancelado IS NULL OR
-            UPPER(TRIM(CAST(cancelado AS TEXT))) NOT IN ('S', 'SIM', 'TRUE', '1', 'CANCELADO', 'CANCELADA')
-          )
-        GROUP BY ano, mes, COALESCE(NULLIF(loja, ''), cnpj_empresa, 'LOJA NÃO INFORMADA'), COALESCE(cnpj_empresa, ''), COALESCE(NULLIF(regiao, ''), '')
-      `);
-    } else if (hasAnnual) {
-      salesRows = await db.all(`
-        SELECT
-          CAST(substr(data_emissao, 1, 4) AS INTEGER) AS ano,
-          CAST(substr(data_emissao, 6, 2) AS INTEGER) AS mes,
-          COALESCE(NULLIF(loja, ''), cnpj_empresa, 'LOJA NÃO INFORMADA') AS loja,
-          COALESCE(cnpj_empresa, '') AS cnpj_empresa,
-          COALESCE(NULLIF(regiao, ''), '') AS regiao,
-          SUM(COALESCE(total_liquido, 0)) AS venda_total,
-          SUM(COALESCE(quantidade, 0)) AS venda_qtd
-        FROM vendas_anuais
-        WHERE ${securityFilter}
-          AND CAST(substr(data_emissao, 1, 4) AS INTEGER) IN (${Number(params.yearA)}, ${Number(params.yearB)})
-          ${params.month >= 1 && params.month <= 12 ? ` AND CAST(substr(data_emissao, 6, 2) AS INTEGER) = ${Number(params.month)} ` : ''}
-        GROUP BY CAST(substr(data_emissao, 1, 4) AS INTEGER), CAST(substr(data_emissao, 6, 2) AS INTEGER), COALESCE(NULLIF(loja, ''), cnpj_empresa, 'LOJA NÃO INFORMADA'), COALESCE(cnpj_empresa, ''), COALESCE(NULLIF(regiao, ''), '')
-      `);
+    if (!map.has(key)) {
+      const loja = annualStoreNameFromRow(row);
+      const cnpj = String(row.cnpj_empresa || '').replace(/\D/g, '') || getCnpjByName(loja) || '';
+
+      map.set(key, {
+        ano: Number(row.ano || 0),
+        mes: Number(row.mes || 0),
+        loja,
+        cnpj_empresa: cnpj,
+        regiao: annualRegionFromStore(loja, row.regiao),
+        venda_total: 0,
+        venda_qtd: 0,
+        seguro_total: 0,
+        seguro_qtd: 0,
+      });
     }
 
-    let insuranceRows: any[] = [];
+    return map.get(key)!;
+  };
 
+  const monthsWithAnnualInsurance = new Set<string>();
+
+  if (fs.existsSync(ANUAL_DB_PATH)) {
+    const db = await open({ filename: ANUAL_DB_PATH, driver: sqlite3.Database });
+
+    try {
+      const hasRaw = await annualTableExists(db, 'vendas_anuais_raw');
+      const hasAnnual = await annualTableExists(db, 'vendas_anuais');
+      const hasInsurance = await annualTableExists(db, 'seguros_anuais');
+      const hasAggLojas = await annualTableExists(db, 'agg_lojas_mensal');
+
+      let salesRows: any[] = [];
+
+      if (hasRaw) {
+        salesRows = await db.all(`
+          SELECT
+            ano,
+            mes,
+            COALESCE(NULLIF(loja, ''), cnpj_empresa, 'LOJA NÃO INFORMADA') AS loja,
+            COALESCE(cnpj_empresa, '') AS cnpj_empresa,
+            COALESCE(NULLIF(regiao, ''), '') AS regiao,
+            SUM(COALESCE(total_real, total_liquido, 0)) AS venda_total,
+            SUM(COALESCE(qtd_real, quantidade, 0)) AS venda_qtd
+          FROM vendas_anuais_raw
+          WHERE ${securityFilter}
+            ${yearFilter}
+            ${monthFilter}
+            AND ano > 0
+            AND mes BETWEEN 1 AND 12
+            AND (
+              cancelado IS NULL OR
+              UPPER(TRIM(CAST(cancelado AS TEXT))) NOT IN ('S', 'SIM', 'TRUE', '1', 'CANCELADO', 'CANCELADA')
+            )
+          GROUP BY ano, mes, COALESCE(NULLIF(loja, ''), cnpj_empresa, 'LOJA NÃO INFORMADA'), COALESCE(cnpj_empresa, ''), COALESCE(NULLIF(regiao, ''), '')
+        `);
+      } else if (hasAnnual) {
+        salesRows = await db.all(`
+          SELECT
+            CAST(substr(data_emissao, 1, 4) AS INTEGER) AS ano,
+            CAST(substr(data_emissao, 6, 2) AS INTEGER) AS mes,
+            COALESCE(NULLIF(loja, ''), cnpj_empresa, 'LOJA NÃO INFORMADA') AS loja,
+            COALESCE(cnpj_empresa, '') AS cnpj_empresa,
+            COALESCE(NULLIF(regiao, ''), '') AS regiao,
+            SUM(COALESCE(total_liquido, 0)) AS venda_total,
+            SUM(COALESCE(quantidade, 0)) AS venda_qtd
+          FROM vendas_anuais
+          WHERE ${securityFilter}
+            AND CAST(substr(data_emissao, 1, 4) AS INTEGER) IN (${Number(params.yearA)}, ${Number(params.yearB)})
+            ${params.month >= 1 && params.month <= 12 ? ` AND CAST(substr(data_emissao, 6, 2) AS INTEGER) = ${Number(params.month)} ` : ''}
+          GROUP BY CAST(substr(data_emissao, 1, 4) AS INTEGER), CAST(substr(data_emissao, 6, 2) AS INTEGER), COALESCE(NULLIF(loja, ''), cnpj_empresa, 'LOJA NÃO INFORMADA'), COALESCE(cnpj_empresa, ''), COALESCE(NULLIF(regiao, ''), '')
+        `);
+      }
+
+      let insuranceRows: any[] = [];
+
+      // 1) Tenta tabela seguros_anuais
       if (hasInsurance) {
-        // A base de seguros teve mais de um layout ao longo do tempo:
-        // algumas versões usam `premio`, outras usam `premio_real`.
-        // Detectamos a coluna existente para a rota anual não quebrar nem zerar.
         const insuranceColumnsInfo = await db.all(`PRAGMA table_info(seguros_anuais)`);
         const insuranceColumns = new Set(
           (insuranceColumnsInfo || []).map((item: any) => String(item?.name || '').toLowerCase())
@@ -1096,85 +1130,166 @@ async function buildAnnualStoreCompareRows(params: {
         }
       }
 
-    const insuranceHasValue = (insuranceRows || []).some((row: any) => annualNumber(row.seguro_total) !== 0 || annualNumber(row.seguro_qtd) !== 0);
+      // 2) Se seguros_anuais estiver vazio, tenta agg_lojas_mensal
+      let insuranceHasValue = (insuranceRows || []).some(
+        (row: any) => annualNumber(row.seguro_total) !== 0 || annualNumber(row.seguro_qtd) !== 0
+      );
 
-    if (!insuranceHasValue && hasRaw) {
-      insuranceRows = await db.all(`
-        SELECT
-          ano,
-          mes,
-          COALESCE(NULLIF(loja, ''), cnpj_empresa, 'LOJA NÃO INFORMADA') AS loja,
-          COALESCE(cnpj_empresa, '') AS cnpj_empresa,
-          COALESCE(NULLIF(regiao, ''), '') AS regiao,
-          SUM(COALESCE(total_real, total_liquido, 0)) AS seguro_total,
-          SUM(COALESCE(qtd_real, quantidade, 0)) AS seguro_qtd
-        FROM vendas_anuais_raw
-        WHERE ${securityFilter}
-          ${yearFilter}
-          ${monthFilter}
-          AND ano > 0
-          AND mes BETWEEN 1 AND 12
-          AND (
-            UPPER(COALESCE(categoria_real, categoria, descricao, '')) LIKE '%SEGURO%'
-            OR UPPER(COALESCE(descricao, '')) LIKE '%SEGURO%'
-            OR UPPER(COALESCE(descricao, '')) LIKE '%PROTECAO%'
-            OR UPPER(COALESCE(descricao, '')) LIKE '%PROTEÇÃO%'
-            OR UPPER(COALESCE(descricao, '')) LIKE '%GARANTIA%'
-          )
-        GROUP BY ano, mes, COALESCE(NULLIF(loja, ''), cnpj_empresa, 'LOJA NÃO INFORMADA'), COALESCE(cnpj_empresa, ''), COALESCE(NULLIF(regiao, ''), '')
-      `);
-    }
-
-    const map = new Map<string, AnnualStoreCompareRow>();
-
-    const getKey = (row: any) => {
-      const ano = Number(row.ano || 0);
-      const mes = Number(row.mes || 0);
-      const loja = annualStoreNameFromRow(row);
-      const cnpj = String(row.cnpj_empresa || '').replace(/\D/g, '');
-      return `${ano}|${mes}|${cnpj || annualNorm(loja)}`;
-    };
-
-    const ensure = (row: any): AnnualStoreCompareRow => {
-      const key = getKey(row);
-
-      if (!map.has(key)) {
-        const loja = annualStoreNameFromRow(row);
-
-        map.set(key, {
-          ano: Number(row.ano || 0),
-          mes: Number(row.mes || 0),
-          loja,
-          cnpj_empresa: String(row.cnpj_empresa || '').replace(/\D/g, ''),
-          regiao: annualRegionFromStore(loja, row.regiao),
-          venda_total: 0,
-          venda_qtd: 0,
-          seguro_total: 0,
-          seguro_qtd: 0,
-        });
+      if (!insuranceHasValue && hasAggLojas) {
+        insuranceRows = await db.all(`
+          SELECT
+            ano,
+            mes,
+            COALESCE(NULLIF(loja, ''), cnpj_empresa, 'LOJA NÃO INFORMADA') AS loja,
+            COALESCE(cnpj_empresa, '') AS cnpj_empresa,
+            COALESCE(NULLIF(regiao, ''), '') AS regiao,
+            SUM(COALESCE(seguros_total, 0)) AS seguro_total,
+            SUM(COALESCE(seguros_qtd, 0)) AS seguro_qtd
+          FROM agg_lojas_mensal
+          WHERE ${securityFilter}
+            ${yearFilter}
+            ${monthFilter}
+            AND ano > 0
+            AND mes BETWEEN 1 AND 12
+          GROUP BY ano, mes, COALESCE(NULLIF(loja, ''), cnpj_empresa, 'LOJA NÃO INFORMADA'), COALESCE(cnpj_empresa, ''), COALESCE(NULLIF(regiao, ''), '')
+        `);
+        insuranceHasValue = (insuranceRows || []).some(
+          (row: any) => annualNumber(row.seguro_total) !== 0 || annualNumber(row.seguro_qtd) !== 0
+        );
       }
 
-      return map.get(key)!;
-    };
+      // 3) Se ainda estiver vazio, busca em vendas_anuais_raw
+      if (!insuranceHasValue && hasRaw) {
+        insuranceRows = await db.all(`
+          SELECT
+            ano,
+            mes,
+            COALESCE(NULLIF(loja, ''), cnpj_empresa, 'LOJA NÃO INFORMADA') AS loja,
+            COALESCE(cnpj_empresa, '') AS cnpj_empresa,
+            COALESCE(NULLIF(regiao, ''), '') AS regiao,
+            SUM(COALESCE(total_real, total_liquido, 0)) AS seguro_total,
+            SUM(COALESCE(qtd_real, quantidade, 0)) AS seguro_qtd
+          FROM vendas_anuais_raw
+          WHERE ${securityFilter}
+            ${yearFilter}
+            ${monthFilter}
+            AND ano > 0
+            AND mes BETWEEN 1 AND 12
+            AND (
+              UPPER(COALESCE(categoria_real, categoria, descricao, '')) LIKE '%SEGURO%'
+              OR UPPER(COALESCE(descricao, '')) LIKE '%SEGURO%'
+              OR UPPER(COALESCE(descricao, '')) LIKE '%PROTECAO%'
+              OR UPPER(COALESCE(descricao, '')) LIKE '%PROTEÇÃO%'
+              OR UPPER(COALESCE(descricao, '')) LIKE '%GARANTIA%'
+            )
+          GROUP BY ano, mes, COALESCE(NULLIF(loja, ''), cnpj_empresa, 'LOJA NÃO INFORMADA'), COALESCE(cnpj_empresa, ''), COALESCE(NULLIF(regiao, ''), '')
+        `);
+        insuranceHasValue = (insuranceRows || []).some(
+          (row: any) => annualNumber(row.seguro_total) !== 0 || annualNumber(row.seguro_qtd) !== 0
+        );
+      }
 
-    for (const row of salesRows || []) {
-      const item = ensure(row);
-      item.venda_total += annualNumber(row.venda_total);
-      item.venda_qtd += annualNumber(row.venda_qtd);
+      // 4) Fallback na tabela vendas_anuais caso seja a única populada
+      if (!insuranceHasValue && hasAnnual) {
+        insuranceRows = await db.all(`
+          SELECT
+            CAST(substr(data_emissao, 1, 4) AS INTEGER) AS ano,
+            CAST(substr(data_emissao, 6, 2) AS INTEGER) AS mes,
+            COALESCE(NULLIF(loja, ''), cnpj_empresa, 'LOJA NÃO INFORMADA') AS loja,
+            COALESCE(cnpj_empresa, '') AS cnpj_empresa,
+            COALESCE(NULLIF(regiao, ''), '') AS regiao,
+            SUM(COALESCE(total_liquido, 0)) AS seguro_total,
+            SUM(COALESCE(quantidade, 0)) AS seguro_qtd
+          FROM vendas_anuais
+          WHERE ${securityFilter}
+            AND CAST(substr(data_emissao, 1, 4) AS INTEGER) IN (${Number(params.yearA)}, ${Number(params.yearB)})
+            ${params.month >= 1 && params.month <= 12 ? ` AND CAST(substr(data_emissao, 6, 2) AS INTEGER) = ${Number(params.month)} ` : ''}
+            AND (
+              UPPER(COALESCE(familia, '')) LIKE '%SEGURO%'
+              OR UPPER(COALESCE(descricao, '')) LIKE '%SEGURO%'
+              OR UPPER(COALESCE(descricao, '')) LIKE '%PROTECAO%'
+              OR UPPER(COALESCE(descricao, '')) LIKE '%PROTEÇÃO%'
+              OR UPPER(COALESCE(descricao, '')) LIKE '%GARANTIA%'
+            )
+          GROUP BY CAST(substr(data_emissao, 1, 4) AS INTEGER), CAST(substr(data_emissao, 6, 2) AS INTEGER), COALESCE(NULLIF(loja, ''), cnpj_empresa, 'LOJA NÃO INFORMADA'), COALESCE(cnpj_empresa, ''), COALESCE(NULLIF(regiao, ''), '')
+        `);
+      }
+
+      for (const row of salesRows || []) {
+        const item = ensure(row);
+        item.venda_total += annualNumber(row.venda_total);
+        item.venda_qtd += annualNumber(row.venda_qtd);
+      }
+
+      for (const row of insuranceRows || []) {
+        const segVal = annualNumber(row.seguro_total);
+        const segQtd = annualNumber(row.seguro_qtd);
+        if (segVal > 0 || segQtd > 0) {
+          monthsWithAnnualInsurance.add(`${Number(row.ano)}-${Number(row.mes)}`);
+        }
+        const item = ensure(row);
+        item.seguro_total += segVal;
+        item.seguro_qtd += segQtd;
+      }
+    } finally {
+      await db.close().catch(() => undefined);
     }
-
-    for (const row of insuranceRows || []) {
-      const item = ensure(row);
-      item.seguro_total += annualNumber(row.seguro_total);
-      item.seguro_qtd += annualNumber(row.seguro_qtd);
-    }
-
-    return Array.from(map.values())
-      .filter((row) => row.ano && row.mes)
-      .sort((a, b) => a.loja.localeCompare(b.loja) || a.ano - b.ano || a.mes - b.mes);
-  } finally {
-    await db.close().catch(() => undefined);
   }
+
+  // 5) Complementa o mês vigente com os seguros da tabela `vendedores` do GLOBAL_DB_PATH (mesma fonte da Home)
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth() + 1;
+
+  const shouldIncludeCurrentMonth =
+    (Number(params.yearA) === currentYear || Number(params.yearB) === currentYear) &&
+    (params.month === 0 || Number(params.month) === currentMonth) &&
+    !monthsWithAnnualInsurance.has(`${currentYear}-${currentMonth}`);
+
+  if (shouldIncludeCurrentMonth && fs.existsSync(GLOBAL_DB_PATH)) {
+    const globalDb = await open({ filename: GLOBAL_DB_PATH, driver: sqlite3.Database });
+    try {
+      const hasVendedores = await annualTableExists(globalDb, 'vendedores');
+      if (hasVendedores) {
+        await ensureVendedoresInsuranceColumns(globalDb);
+        const kpiRows = await globalDb.all(`
+          SELECT
+            loja,
+            COALESCE(cnpj_empresa, '') AS cnpj_empresa,
+            COALESCE(regiao, '') AS regiao,
+            SUM(COALESCE(seguros, 0)) AS seguro_total,
+            SUM(COALESCE(qtd_seguros, 0)) AS seguro_qtd
+          FROM vendedores
+          WHERE ${kpiSecurityFilter}
+          GROUP BY loja, COALESCE(cnpj_empresa, ''), COALESCE(regiao, '')
+        `);
+
+        for (const r of kpiRows || []) {
+          const segVal = annualNumber(r.seguro_total);
+          const segQtd = annualNumber(r.seguro_qtd);
+          if (segVal <= 0 && segQtd <= 0) continue;
+
+          const item = ensure({
+            ano: currentYear,
+            mes: currentMonth,
+            loja: r.loja,
+            cnpj_empresa: r.cnpj_empresa,
+            regiao: r.regiao,
+          });
+          item.seguro_total += segVal;
+          item.seguro_qtd += segQtd;
+        }
+      }
+    } catch (err) {
+      console.warn('⚠️ Aviso ao complementar seguro do mês atual em buildAnnualStoreCompareRows:', err);
+    } finally {
+      await globalDb.close().catch(() => undefined);
+    }
+  }
+
+  return Array.from(map.values())
+    .filter((row) => row.ano && row.mes)
+    .sort((a, b) => a.loja.localeCompare(b.loja) || a.ano - b.ano || a.mes - b.mes);
 }
 
 app.get('/sales_anuais', async (req, res) => {
