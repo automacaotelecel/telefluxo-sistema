@@ -4,7 +4,6 @@ import {
   ArrowDownRight,
   ArrowUpRight,
   BarChart3,
-  Bell,
   CalendarDays,
   Download,
   ChevronDown,
@@ -13,15 +12,12 @@ import {
   Crown,
   Gauge,
   MapPin,
-  Megaphone,
   Package,
   PackageCheck,
-  Plus,
   RefreshCw,
   ShieldCheck,
   ShoppingBag,
   Store,
-  Trash2,
   UserRound,
   X,
 } from 'lucide-react';
@@ -538,7 +534,6 @@ function InsuranceRankingCard({
         </button>
       </div>
 
-      {/* Mobile: uma linha principal + resumo inferior. Evita cinco colunas comprimidas. */}
       <div className="overflow-hidden rounded-xl border border-slate-100 md:hidden">
         {loading ? (
           <div className="bg-slate-50 px-3 py-5 text-center text-[9px] font-bold text-slate-400">
@@ -603,7 +598,6 @@ function InsuranceRankingCard({
         )}
       </div>
 
-      {/* Tablet/desktop */}
       <div className="hidden overflow-hidden rounded-xl border border-slate-100 md:block">
         <table className="w-full table-fixed border-collapse text-left">
           <thead className="bg-slate-50">
@@ -936,43 +930,6 @@ export default function Home({ currentUser }: Props) {
   const currentYear = Number(today.slice(0, 4));
   const currentMonth = Number(today.slice(5, 7));
 
-  const [announcements, setAnnouncements] = useState<any[]>([]);
-  const [showModal, setShowModal] = useState(false);
-
-  // Preferência visual por usuário: não exclui o informativo do banco.
-  const dailyTipStorageKey = `telefluxo:home:hide-daily-tip:${String(currentUser?.id || 'anon')}`;
-  const [hideDailyTip, setHideDailyTip] = useState(() => {
-    try {
-      return localStorage.getItem(dailyTipStorageKey) === '1';
-    } catch {
-      return false;
-    }
-  });
-
-  useEffect(() => {
-    try {
-      setHideDailyTip(localStorage.getItem(dailyTipStorageKey) === '1');
-    } catch {
-      setHideDailyTip(false);
-    }
-  }, [dailyTipStorageKey]);
-
-  const setDailyTipHidden = (hidden: boolean) => {
-    setHideDailyTip(hidden);
-    try {
-      if (hidden) localStorage.setItem(dailyTipStorageKey, '1');
-      else localStorage.removeItem(dailyTipStorageKey);
-    } catch {
-      // Se o armazenamento estiver indisponível, a preferência vale até recarregar a página.
-    }
-  };
-
-  const [newNotice, setNewNotice] = useState({
-    title: '',
-    content: '',
-    priority: 'Normal',
-    category: 'Aviso',
-  });
   const [dashboard, setDashboard] = useState<DashboardData | null>(null);
   const [dashboardLoading, setDashboardLoading] = useState(true);
   const [dashboardError, setDashboardError] = useState('');
@@ -990,25 +947,11 @@ export default function Home({ currentUser }: Props) {
   const [draftStart, setDraftStart] = useState(initialPeriod.startDate);
   const [draftEnd, setDraftEnd] = useState(initialPeriod.endDate);
 
-  const role = String(currentUser?.role || '').toUpperCase();
-  const isAdminOrManager =
-    role !== 'LOJA' &&
-    (currentUser?.isAdmin === true ||
-      Number(currentUser?.isAdmin) === 1 ||
-      ['CEO', 'DIRETOR', 'DIRETORIA', 'ADM', 'ADMIN', 'GESTOR'].includes(role));
-
   const isNetworkView = dashboard?.scope?.type === 'network';
   const hasMultiStoreScope =
     !isNetworkView && (dashboard?.scope?.stores?.length || 0) > 1;
   const isMultiStoreView = isNetworkView || hasMultiStoreScope;
   const firstName = String(currentUser?.name || 'Usuário').split(' ')[0];
-
-  const fetchAnnouncements = useCallback(() => {
-    fetch(`${API_URL}/announcements`)
-      .then((r) => r.json())
-      .then((data) => setAnnouncements(Array.isArray(data) ? data : []))
-      .catch(() => setAnnouncements([]));
-  }, []);
 
   const buildPeriodQuery = useCallback(() => {
     return `startDate=${encodeURIComponent(periodRequest.startDate)}&endDate=${encodeURIComponent(
@@ -1102,10 +1045,6 @@ export default function Home({ currentUser }: Props) {
   );
 
   useEffect(() => {
-    fetchAnnouncements();
-  }, [fetchAnnouncements]);
-
-  useEffect(() => {
     loadDashboard();
   }, [loadDashboard]);
 
@@ -1192,27 +1131,6 @@ export default function Home({ currentUser }: Props) {
     setPeriodOpen(false);
   };
 
-  const handleCreate = async () => {
-    if (!newNotice.title || !newNotice.content) return alert('Preencha título e conteúdo!');
-    await fetch(`${API_URL}/announcements`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...newNotice, author: currentUser.name }),
-    });
-    setShowModal(false);
-    setNewNotice({ title: '', content: '', priority: 'Normal', category: 'Aviso' });
-    fetchAnnouncements();
-  };
-
-  const handleDelete = async (id: string) => {
-    if (!confirm('Deseja remover este informativo?')) return;
-    await fetch(`${API_URL}/announcements/${id}`, { method: 'DELETE' });
-    fetchAnnouncements();
-  };
-
-  const notices = announcements.filter((a) => a.category === 'Aviso');
-  const dailyTip = announcements.find((a) => a.category === 'Dica');
-  const groupAgenda = announcements.filter((a) => a.category === 'Agenda');
   const networkKpis = dashboard?.kpis || {};
   const stores = dashboard?.stores || [];
   const visibleStores = isMultiStoreView ? stores : stores.slice(0, 1);
@@ -1495,14 +1413,6 @@ export default function Home({ currentUser }: Props) {
             >
               <RefreshCw size={14} className={viewLoading ? 'animate-spin' : ''} /> Atualizar
             </button>
-            {isAdminOrManager && (
-              <button
-                onClick={() => setShowModal(true)}
-                className="inline-flex h-11 min-w-0 items-center justify-center gap-2 rounded-2xl bg-orange-600 px-3 text-[10px] font-black uppercase tracking-wide text-white shadow-lg transition hover:bg-orange-700 sm:px-4 sm:text-[11px]"
-              >
-                <Plus size={15} /> Mural
-              </button>
-            )}
           </div>
         </section>
 
@@ -1685,7 +1595,11 @@ export default function Home({ currentUser }: Props) {
           storeMode={isStoreAnalysis || (!isMultiStoreView && dashboard?.scope?.type === 'store')}
         />
 
-        <section className="mt-3 grid grid-cols-1 items-start gap-2.5 sm:mt-4 sm:gap-4 xl:grid-cols-2">
+        <section
+          className={`mt-3 grid grid-cols-1 items-start gap-2.5 sm:mt-4 sm:gap-4 ${
+            isNetworkView ? 'xl:grid-cols-2' : 'xl:grid-cols-1'
+          }`}
+        >
           <div className="rounded-[20px] border border-slate-200/80 bg-white p-3 shadow-sm sm:rounded-[24px] sm:p-4 md:p-4.5">
             <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
               <div>
@@ -1873,103 +1787,15 @@ export default function Home({ currentUser }: Props) {
             </div>
           </div>
 
-          <div className="space-y-3 sm:space-y-4">
-            {isNetworkView && (
+          {isNetworkView && (
+            <div className="space-y-3 sm:space-y-4">
               <InsuranceRankingCard
                 stores={stores}
                 loading={dashboardLoading}
                 periodLabel={dashboard?.period?.label}
               />
-            )}
-
-            <div className="rounded-[20px] border border-slate-200/80 bg-white p-3 shadow-sm sm:rounded-[24px] sm:p-4">
-              <div className="mb-4 flex items-center justify-between">
-                <div>
-                  <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">
-                    Informativos
-                  </p>
-                  <h2 className="mt-1 text-lg font-black text-slate-950">Mural oficial</h2>
-                </div>
-                <Megaphone size={19} className="text-orange-500" />
-              </div>
-              <div className="space-y-3">
-                {notices.slice(0, 2).map((ann) => (
-                  <div key={ann.id} className="relative rounded-2xl bg-slate-50 p-4">
-                    {isAdminOrManager && (
-                      <button
-                        onClick={() => handleDelete(ann.id)}
-                        className="absolute right-3 top-3 text-slate-300 hover:text-rose-500"
-                      >
-                        <Trash2 size={13} />
-                      </button>
-                    )}
-                    <span
-                      className={`rounded-full px-2 py-1 text-[8px] font-black uppercase tracking-widest ${
-                        ann.priority === 'Urgente'
-                          ? 'bg-rose-100 text-rose-700'
-                          : 'bg-white text-slate-500'
-                      }`}
-                    >
-                      {ann.priority}
-                    </span>
-                    <p className="mt-3 pr-6 text-sm font-black text-slate-900">{ann.title}</p>
-                    <p className="mt-1 line-clamp-3 text-xs font-medium leading-relaxed text-slate-500">
-                      {ann.content}
-                    </p>
-                  </div>
-                ))}
-                {!notices.length && (
-                  <p className="rounded-2xl bg-slate-50 p-4 text-xs font-bold text-slate-400">
-                    Sem novos informativos.
-                  </p>
-                )}
-              </div>
             </div>
-
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
-              {hideDailyTip ? (
-                <button
-                  type="button"
-                  onClick={() => setDailyTipHidden(false)}
-                  className="flex items-center justify-center gap-2 rounded-[24px] border border-dashed border-slate-200 bg-white px-4 py-3 text-xs font-bold text-slate-500 transition hover:border-orange-300 hover:text-orange-600"
-                  title="Mostrar novamente o quadro Frase do dia"
-                >
-                  <Bell size={14} /> Reexibir frase do dia
-                </button>
-              ) : (
-                <div className="relative rounded-[24px] bg-orange-600 p-5 text-white">
-                  <button
-                    type="button"
-                    onClick={() => setDailyTipHidden(true)}
-                    className="absolute right-3 top-3 flex h-7 w-7 items-center justify-center rounded-lg bg-white/15 text-white transition hover:bg-white/30"
-                    aria-label="Ocultar quadro Frase do dia"
-                    title="Ocultar Frase do dia neste navegador"
-                  >
-                    <X size={16} />
-                  </button>
-                  <Bell size={17} />
-                  <p className="mt-4 text-[9px] font-black uppercase tracking-[0.18em] text-orange-100">
-                    Frase do dia
-                  </p>
-                  <p className="mt-2 text-sm font-black leading-relaxed">
-                    {dailyTip ? dailyTip.content : 'Organização é a base de tudo. Bom trabalho!'}
-                  </p>
-                </div>
-              )}
-              <div className="rounded-[24px] border border-slate-200 bg-white p-5">
-                <CalendarDays size={17} className="text-slate-900" />
-                <p className="mt-4 text-[9px] font-black uppercase tracking-[0.18em] text-slate-400">
-                  Agenda grupo
-                </p>
-                <p className="mt-2 text-sm font-black text-slate-900">
-                  {groupAgenda.length ? `${groupAgenda.length} compromisso(s)` : 'Sem reuniões hoje'}
-                </p>
-                {groupAgenda[0] && (
-                  <p className="mt-1 text-xs font-semibold text-slate-400">{groupAgenda[0].title}</p>
-                )}
-              </div>
-            </div>
-          </div>
+          )}
         </section>
       </div>
 
@@ -1991,67 +1817,6 @@ export default function Home({ currentUser }: Props) {
         endDate={periodRequest.endDate}
         onClose={() => setSelectedStore(null)}
       />
-
-      {showModal && (
-        <div className="fixed inset-0 z-[150] flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-lg rounded-[30px] bg-white p-7 shadow-2xl md:p-9">
-            <div className="mb-6 flex items-center justify-between">
-              <div>
-                <p className="text-[10px] font-black uppercase tracking-[0.18em] text-orange-600">
-                  Comunicação interna
-                </p>
-                <h2 className="mt-1 text-2xl font-black tracking-tight text-slate-900">Novo conteúdo</h2>
-              </div>
-              <button
-                onClick={() => setShowModal(false)}
-                className="flex h-10 w-10 items-center justify-center rounded-2xl bg-slate-100 text-slate-600 hover:bg-slate-200"
-              >
-                <X size={18} />
-              </button>
-            </div>
-            <div className="space-y-4">
-              <select
-                className="w-full rounded-2xl border border-slate-200 p-4 text-sm font-bold outline-none focus:border-orange-500"
-                value={newNotice.category}
-                onChange={(event) => setNewNotice({ ...newNotice, category: event.target.value })}
-              >
-                <option value="Aviso">Mural central</option>
-                <option value="Dica">Frase do dia</option>
-                <option value="Agenda">Agenda grupo</option>
-              </select>
-              <input
-                placeholder="Título / assunto"
-                className="w-full rounded-2xl border border-slate-200 p-4 text-sm font-bold outline-none focus:border-orange-500"
-                value={newNotice.title}
-                onChange={(event) => setNewNotice({ ...newNotice, title: event.target.value })}
-              />
-              <textarea
-                placeholder="Conteúdo ou mensagem..."
-                rows={4}
-                className="w-full rounded-2xl border border-slate-200 p-4 text-sm font-bold outline-none focus:border-orange-500"
-                value={newNotice.content}
-                onChange={(event) => setNewNotice({ ...newNotice, content: event.target.value })}
-              />
-              {newNotice.category === 'Aviso' && (
-                <select
-                  className="w-full rounded-2xl border border-slate-200 p-4 text-sm font-bold outline-none"
-                  value={newNotice.priority}
-                  onChange={(event) => setNewNotice({ ...newNotice, priority: event.target.value })}
-                >
-                  <option value="Normal">Prioridade normal</option>
-                  <option value="Urgente">Prioridade urgente</option>
-                </select>
-              )}
-            </div>
-            <button
-              onClick={handleCreate}
-              className="mt-7 flex w-full items-center justify-center gap-2 rounded-2xl bg-orange-600 py-4 text-xs font-black uppercase tracking-wide text-white shadow-lg hover:bg-orange-700"
-            >
-              Publicar <ChevronRight size={15} />
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
