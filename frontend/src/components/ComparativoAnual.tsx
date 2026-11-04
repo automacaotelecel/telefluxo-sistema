@@ -17,14 +17,19 @@ import {
 import {
   Activity,
   AlertCircle,
+  ArrowDown,
   ArrowDownRight,
+  ArrowUp,
+  ArrowUpDown,
   ArrowUpRight,
   BarChart3,
   Calendar,
   CheckSquare,
   ChevronDown,
   Filter,
+  Flame,
   Layers,
+  LayoutGrid,
   MapPin,
   Minus,
   Package,
@@ -139,15 +144,27 @@ const CHART_COLORS = {
 const PIE_COLORS = ['#F97316', '#334155', '#FB923C', '#64748B', '#FDBA74', '#94A3B8', '#C2410C', '#CBD5E1'];
 
 type AnyRow = Record<string, any>;
+type StoreSortKey = 'loja' | 'fatA' | 'fatB' | 'fatPct' | 'segA' | 'segB' | 'segPct';
+type MatrixDensity = 'complete' | 'heatmap' | 'clean';
 
 const formatMoney = (val: number) =>
   new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val || 0);
+
+const formatMoneyNoCents = (val: number) =>
+  new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL', maximumFractionDigits: 0 }).format(val || 0);
 
 const formatMoneyShort = (val: number) => {
   if (!val) return 'R$ 0';
   if (val >= 1_000_000) return `R$ ${(val / 1_000_000).toFixed(1)}M`;
   if (val >= 1_000) return `R$ ${(val / 1_000).toFixed(0)}k`;
   return `R$ ${val.toFixed(0)}`;
+};
+
+const formatCellCompact = (val: number) => {
+  if (!val || val <= 0) return '—';
+  if (val >= 1_000_000) return `${(val / 1_000_000).toFixed(2).replace('.', ',')}M`;
+  if (val >= 1_000) return `${Math.round(val / 1_000)}k`;
+  return `${Math.round(val)}`;
 };
 
 const pick = (obj: AnyRow, keys: string[], fallback: any = undefined) => {
@@ -190,6 +207,13 @@ const getStoreName = (raw: string) => {
   if (cleanDigits && STORE_MAP[cleanDigits]) return STORE_MAP[cleanDigits];
   const upper = String(raw).trim().toUpperCase();
   return STORE_MAP[upper] || STORE_ALIAS_MAP[upper] || upper;
+};
+
+const shortenStoreName = (name: string) => {
+  return name
+    .replace('CONJUNTO NACIONAL QUIOSQUE', 'CONJ. NACIONAL QQ')
+    .replace('CONJUNTO NACIONAL', 'CONJ. NACIONAL')
+    .replace('TAGUATINGA SHOPPING QQ', 'TAGUATINGA QQ');
 };
 
 const getStoreRegion = (storeName: string, rawRegion?: string) => {
@@ -241,10 +265,26 @@ const isInsuranceRow = (sale: AnyRow) => {
   return /SEGURO|PROTECAO|PROTEÇÃO|GARANTIA|SAMSUNG CARE|CARE\+/.test(text);
 };
 
+/**
+ * Calcula a variação percentual evitando:
+ * 1) Mostrar -100% quando o período atual (valB) ainda está zerado (ex: meses futuros como Dezembro)
+ * 2) Distorções visuais absurdas quando o ano anterior tinha apenas R$ 100 de teste de inauguração
+ */
 const calcVariationPct = (valA: number, valB: number): number | null => {
-  if (valA <= 0 && valB <= 0) return null;
+  if (valB <= 0) return null; // Se ainda não houve venda no período atual, não exibe -100%
   if (valA <= 0 && valB > 0) return 100;
   return ((valB - valA) / valA) * 100;
+};
+
+const formatPctBadgeText = (pct: number | null, valA?: number, valB?: number): string => {
+  if (pct === null) return '—';
+  if (valA !== undefined && valB !== undefined && valA > 0 && valA < 1000 && valB > 20000) {
+    return 'NOVO';
+  }
+  if (pct > 999) return '>999%';
+  if (pct < -99.9) return '-99%';
+  const rounded = Math.round(pct);
+  return `${rounded > 0 ? '+' : ''}${rounded}%`;
 };
 
 const extractYearMonth = (raw: any): { year: string; month: string } | null => {
@@ -408,8 +448,11 @@ export default function ComparativoAnual() {
 
   // Estados da aba "Visão por Loja"
   const [storeViewMode, setStoreViewMode] = useState<'comparativo' | 'mes_a_mes'>('comparativo');
+  const [matrixDensity, setMatrixDensity] = useState<MatrixDensity>('complete');
   const [selectedRegionFilter, setSelectedRegionFilter] = useState<string>('TODAS');
   const [searchStoreQuery, setSearchStoreQuery] = useState<string>('');
+  const [storeSortKey, setStoreSortKey] = useState<StoreSortKey>('loja');
+  const [storeSortDir, setStoreSortDir] = useState<'asc' | 'desc'>('asc');
 
   const API_URL = useMemo(() => {
     const envUrl = String(
@@ -581,6 +624,20 @@ export default function ComparativoAnual() {
   const clearDates = () => {
     setStartDate('');
     setEndDate('');
+  };
+
+  const handleStoreSort = (key: StoreSortKey) => {
+    if (storeSortKey === key) {
+      setStoreSortDir((prev) => (prev === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setStoreSortKey(key);
+      setStoreSortDir(key === 'loja' ? 'asc' : 'desc');
+    }
+  };
+
+  const renderSortIcon = (key: StoreSortKey) => {
+    if (storeSortKey !== key) return <ArrowUpDown size={11} className=" opacity-40" />;
+    return storeSortDir === 'asc' ? <ArrowUp size={11} className="text-orange-500" /> : <ArrowDown size={11} className="text-orange-500" />;
   };
 
   const baseFilteredRawData = useMemo(() => {
@@ -794,7 +851,6 @@ export default function ComparativoAnual() {
         byYear[ym.year].qtd += getQuantity(row) || 1;
       }
 
-      // Fallback para seguros_analytics do mês atual caso a rota anual ainda não tenha sido reiniciada no servidor
       const now = new Date();
       const curYear = String(now.getFullYear());
       const curMonth = String(now.getMonth() + 1);
@@ -865,7 +921,6 @@ export default function ComparativoAnual() {
       return storeMap.get(cleanName)!;
     };
 
-    // 1. Alimenta os meses (Jan-Dez) e o Faturamento/Seguro a partir das vendas brutas
     for (const sale of baseFilteredRawData) {
       const ym = extractYearMonth(getDateValue(sale));
       if (!ym || (ym.year !== yearA && ym.year !== yearB)) continue;
@@ -897,7 +952,6 @@ export default function ComparativoAnual() {
       }
     }
 
-    // 2. Alimenta Seguro (e Faturamento se necessário) vindo da rota `/anuais/lojas_compare`
     const apiInsuranceByStore = new Map<string, { segA: number; segB: number }>();
     for (const row of filteredAnnualStoreCompare) {
       const year = String(row.ano || row.ANO || '');
@@ -923,7 +977,6 @@ export default function ComparativoAnual() {
       }
     });
 
-    // 3. Fallback adicional: se ainda não houver seguro no ano atual, usa o ranking de `seguros_analytics`
     const now = new Date();
     const curYear = String(now.getFullYear());
     const curMonth = String(now.getMonth() + 1);
@@ -955,8 +1008,7 @@ export default function ComparativoAnual() {
         ...s,
         fatPct: calcVariationPct(s.fatA, s.fatB),
         segPct: calcVariationPct(s.segA, s.segB),
-      }))
-      .sort((a, b) => a.loja.localeCompare(b.loja));
+      }));
 
     const regionMap = new Map<
       string,
@@ -983,14 +1035,25 @@ export default function ComparativoAnual() {
       }))
       .sort((a, b) => b.fatB - a.fatB);
 
-    const visibleStores = allStores.filter((s) => {
-      if (selectedRegionFilter !== 'TODAS' && s.regiao !== selectedRegionFilter) return false;
-      if (searchStoreQuery.trim() !== '') {
-        const term = searchStoreQuery.trim().toLowerCase();
-        if (!s.loja.toLowerCase().includes(term) && !s.regiao.toLowerCase().includes(term)) return false;
-      }
-      return true;
-    });
+    const visibleStores = allStores
+      .filter((s) => {
+        if (selectedRegionFilter !== 'TODAS' && s.regiao !== selectedRegionFilter) return false;
+        if (searchStoreQuery.trim() !== '') {
+          const term = searchStoreQuery.trim().toLowerCase();
+          if (!s.loja.toLowerCase().includes(term) && !s.regiao.toLowerCase().includes(term)) return false;
+        }
+        return true;
+      })
+      .sort((a, b) => {
+        if (storeSortKey === 'loja') {
+          return storeSortDir === 'asc'
+            ? a.loja.localeCompare(b.loja)
+            : b.loja.localeCompare(a.loja);
+        }
+        const valA = a[storeSortKey] ?? -999999;
+        const valB = b[storeSortKey] ?? -999999;
+        return storeSortDir === 'asc' ? Number(valA) - Number(valB) : Number(valB) - Number(valA);
+      });
 
     const totals = visibleStores.reduce(
       (acc, s) => {
@@ -1034,6 +1097,8 @@ export default function ComparativoAnual() {
     monthFilter,
     selectedRegionFilter,
     searchStoreQuery,
+    storeSortKey,
+    storeSortDir,
   ]);
 
   const categoryMiniData = useMemo(() => {
@@ -1149,7 +1214,7 @@ export default function ComparativoAnual() {
   const periodHeaderB = monthFilter !== '0' ? `${String(monthFilter).padStart(2, '0')}/${yearB}` : `${yearB}`;
 
   return (
-    <div className="h-full overflow-y-auto p-4 md:p-6 bg-slate-50 font-sans text-slate-800">
+    <div className="h-full overflow-y-auto p-3 md:p-5 bg-[#F8FAFC] font-sans text-slate-800">
       {errorMsg && (
         <div className="mb-4 bg-red-100 border border-red-300 text-red-700 px-4 py-3 rounded-xl flex items-center gap-2">
           <AlertCircle size={20} />
@@ -1158,22 +1223,24 @@ export default function ComparativoAnual() {
       )}
 
       {/* Cabeçalho + filtros */}
-      <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center mb-6 gap-4 bg-white p-4 rounded-xl shadow-sm border border-slate-200">
+      <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center mb-4 gap-3 bg-white px-4 py-3.5 rounded-2xl shadow-2xs border border-slate-200/80">
         <div>
-          <div className="flex items-center gap-2 mb-1">
-            <div className="p-2 bg-orange-500 rounded-lg text-white"><Activity size={18} /></div>
-            <h1 className="text-lg font-black uppercase tracking-tight text-slate-900">
-              Comparativo Anual ({yearA || '—'} x {yearB || '—'})
-            </h1>
+          <div className="flex items-center gap-2.5">
+            <div className="p-2 bg-orange-500 rounded-xl text-white shadow-xs"><Activity size={18} /></div>
+            <div>
+              <h1 className="text-base md:text-lg font-black uppercase tracking-tight text-slate-900 leading-none">
+                Comparativo Anual ({yearA || '—'} x {yearB || '—'})
+              </h1>
+              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">
+                Histórico completo • Comparativo entre anos • Lojas & Produtos
+              </p>
+            </div>
           </div>
-          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-10">
-            Histórico completo • Comparativo entre anos • Lojas & Produtos
-          </p>
         </div>
 
-        <div className="flex flex-wrap gap-3 items-center w-full xl:w-auto">
-          <div className="flex items-center bg-white border border-slate-200 px-3 py-2 rounded-lg gap-2 shadow-sm focus-within:border-orange-400">
-            <Calendar size={14} className="text-orange-500" />
+        <div className="flex flex-wrap gap-2 items-center w-full xl:w-auto">
+          <div className="flex items-center bg-slate-50 border border-slate-200 px-2.5 py-1.5 rounded-xl gap-1.5 focus-within:border-orange-400 focus-within:bg-white">
+            <Calendar size={13} className="text-orange-500" />
             <input
               type="date"
               value={startDate}
@@ -1182,8 +1249,8 @@ export default function ComparativoAnual() {
             />
           </div>
 
-          <div className="flex items-center bg-white border border-slate-200 px-3 py-2 rounded-lg gap-2 shadow-sm focus-within:border-orange-400">
-            <Calendar size={14} className="text-orange-500" />
+          <div className="flex items-center bg-slate-50 border border-slate-200 px-2.5 py-1.5 rounded-xl gap-1.5 focus-within:border-orange-400 focus-within:bg-white">
+            <Calendar size={13} className="text-orange-500" />
             <input
               type="date"
               value={endDate}
@@ -1195,18 +1262,18 @@ export default function ComparativoAnual() {
           {(startDate || endDate) && (
             <button
               onClick={clearDates}
-              className="bg-white border border-slate-200 px-4 py-2 rounded-lg text-xs font-bold text-slate-500 hover:bg-slate-50 shadow-sm"
+              className="bg-white border border-slate-200 px-3 py-1.5 rounded-xl text-xs font-bold text-slate-500 hover:bg-slate-50"
             >
-              Limpar datas
+              Limpar
             </button>
           )}
 
-          <div className="flex items-center bg-white border border-slate-200 px-3 py-2 rounded-lg gap-2 shadow-sm">
-            <Calendar size={14} className="text-orange-500" />
+          <div className="flex items-center bg-slate-50 border border-slate-200 px-2.5 py-1.5 rounded-xl gap-1.5">
+            <Calendar size={13} className="text-orange-500" />
             <select
               value={monthFilter}
               onChange={(e) => setMonthFilter(e.target.value)}
-              className="bg-transparent text-xs font-bold text-slate-600 uppercase outline-none cursor-pointer"
+              className="bg-transparent text-xs font-bold text-slate-700 uppercase outline-none cursor-pointer"
             >
               <option value="0">Todos os meses</option>
               {Object.entries(MONTH_FULL).map(([key, label]) => (
@@ -1215,12 +1282,12 @@ export default function ComparativoAnual() {
             </select>
           </div>
 
-          <div className="flex items-center bg-white border border-slate-200 px-3 py-2 rounded-lg gap-2 shadow-sm">
-            <Layers size={14} className="text-orange-500" />
+          <div className="flex items-center bg-slate-50 border border-slate-200 px-2.5 py-1.5 rounded-xl gap-1.5">
+            <Layers size={13} className="text-orange-500" />
             <select
               value={categoryFilter}
               onChange={(e) => setCategoryFilter(e.target.value)}
-              className="bg-transparent text-xs font-bold text-slate-600 uppercase outline-none cursor-pointer w-full md:w-auto max-w-[180px] truncate"
+              className="bg-transparent text-xs font-bold text-slate-700 uppercase outline-none cursor-pointer max-w-[160px] truncate"
             >
               <option value="TODAS">Todas categorias</option>
               {uniqueCategories.map((c) => (
@@ -1232,24 +1299,24 @@ export default function ComparativoAnual() {
           <div className="relative" ref={storeMenuRef}>
             <button
               onClick={() => setIsStoreMenuOpen(!isStoreMenuOpen)}
-              className="flex items-center gap-2 bg-white border border-slate-200 px-4 py-2 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-50 transition-colors min-w-[170px] justify-between shadow-sm"
+              className="flex items-center gap-2 bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-xl text-xs font-bold text-slate-700 hover:bg-slate-100 transition-colors min-w-[155px] justify-between"
             >
-              <div className="flex items-center gap-2">
-                <Store size={14} className="text-orange-500" />
-                <span className="truncate max-w-[120px] uppercase">
+              <div className="flex items-center gap-1.5">
+                <Store size={13} className="text-orange-500" />
+                <span className="truncate max-w-[110px] uppercase">
                   {selectedStores.length === 0 ? 'Todas as lojas' : selectedStores.length === 1 ? selectedStores[0] : `${selectedStores.length} lojas`}
                 </span>
               </div>
-              <ChevronDown size={14} className="text-slate-400" />
+              <ChevronDown size={13} className="text-slate-400" />
             </button>
 
             {isStoreMenuOpen && (
               <div className="absolute top-full right-0 mt-2 w-64 bg-white rounded-xl shadow-xl border border-slate-100 z-50 p-2 max-h-80 overflow-y-auto">
                 <div
                   onClick={() => setSelectedStores([])}
-                  className="flex items-center gap-3 p-3 hover:bg-slate-50 rounded-lg cursor-pointer border-b border-slate-50 mb-1"
+                  className="flex items-center gap-3 p-2.5 hover:bg-slate-50 rounded-lg cursor-pointer border-b border-slate-50 mb-1"
                 >
-                  {selectedStores.length === 0 ? <CheckSquare size={16} className="text-orange-500" /> : <Square size={16} className="text-slate-300" />}
+                  {selectedStores.length === 0 ? <CheckSquare size={15} className="text-orange-500" /> : <Square size={15} className="text-slate-300" />}
                   <span className="text-xs font-bold text-slate-700 uppercase">Todas as lojas</span>
                 </div>
 
@@ -1257,11 +1324,11 @@ export default function ComparativoAnual() {
                   <div
                     key={store}
                     onClick={() => toggleStore(store)}
-                    className="flex items-center gap-3 p-3 hover:bg-slate-50 rounded-lg cursor-pointer"
+                    className="flex items-center gap-3 p-2.5 hover:bg-slate-50 rounded-lg cursor-pointer"
                   >
                     {selectedStores.includes(store)
-                      ? <CheckSquare size={16} className="text-orange-500" />
-                      : <Square size={16} className="text-slate-300" />
+                      ? <CheckSquare size={15} className="text-orange-500" />
+                      : <Square size={15} className="text-slate-300" />
                     }
                     <span className="text-xs font-bold text-slate-600 uppercase truncate">{store}</span>
                   </div>
@@ -1273,51 +1340,53 @@ export default function ComparativoAnual() {
           <button
             onClick={loadData}
             disabled={loading}
-            className="bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded-lg text-xs font-bold transition-all shadow-md shadow-orange-900/10 flex items-center gap-2 disabled:opacity-50"
+            className="bg-orange-500 hover:bg-orange-600 text-white px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5 disabled:opacity-50"
           >
-            <Filter size={14} /> {loading ? 'Atualizando...' : 'Atualizar'}
+            <Filter size={13} /> {loading ? 'Atualizando...' : 'Atualizar'}
           </button>
         </div>
       </div>
 
       {/* Abas */}
-      <div className="flex flex-wrap gap-2 mb-6">
-        <button
-          onClick={() => setActiveTab('geral')}
-          className={`px-5 py-2.5 rounded-lg text-xs font-bold uppercase transition-all flex items-center gap-2 ${
-            activeTab === 'geral'
-              ? 'bg-orange-500 text-white shadow-md'
-              : 'bg-white text-slate-500 hover:bg-slate-50 border border-slate-200'
-          }`}
-        >
-          <Activity size={16} /> Visão Geral
-        </button>
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={() => setActiveTab('geral')}
+            className={`px-4 py-2 rounded-xl text-xs font-black uppercase transition-all flex items-center gap-2 ${
+              activeTab === 'geral'
+                ? 'bg-orange-500 text-white shadow-sm'
+                : 'bg-white text-slate-600 hover:bg-slate-50 border border-slate-200'
+            }`}
+          >
+            <Activity size={15} /> Visão Geral
+          </button>
 
-        <button
-          onClick={() => setActiveTab('lojas')}
-          className={`px-5 py-2.5 rounded-lg text-xs font-bold uppercase transition-all flex items-center gap-2 ${
-            activeTab === 'lojas'
-              ? 'bg-orange-500 text-white shadow-md'
-              : 'bg-white text-slate-500 hover:bg-slate-50 border border-slate-200'
-          }`}
-        >
-          <Store size={16} /> Visão por Loja
-        </button>
+          <button
+            onClick={() => setActiveTab('lojas')}
+            className={`px-4 py-2 rounded-xl text-xs font-black uppercase transition-all flex items-center gap-2 ${
+              activeTab === 'lojas'
+                ? 'bg-orange-500 text-white shadow-sm'
+                : 'bg-white text-slate-600 hover:bg-slate-50 border border-slate-200'
+            }`}
+          >
+            <Store size={15} /> Visão por Loja
+          </button>
 
-        <button
-          onClick={() => setActiveTab('produtos')}
-          className={`px-5 py-2.5 rounded-lg text-xs font-bold uppercase transition-all flex items-center gap-2 ${
-            activeTab === 'produtos'
-              ? 'bg-orange-500 text-white shadow-md'
-              : 'bg-white text-slate-500 hover:bg-slate-50 border border-slate-200'
-          }`}
-        >
-          <Package size={16} /> Comparativo de Produtos
-        </button>
+          <button
+            onClick={() => setActiveTab('produtos')}
+            className={`px-4 py-2 rounded-xl text-xs font-black uppercase transition-all flex items-center gap-2 ${
+              activeTab === 'produtos'
+                ? 'bg-orange-500 text-white shadow-sm'
+                : 'bg-white text-slate-600 hover:bg-slate-50 border border-slate-200'
+            }`}
+          >
+            <Package size={15} /> Comparativo de Produtos
+          </button>
+        </div>
       </div>
 
       {noData && !loading && !errorMsg && (
-        <div className="bg-amber-50 border border-amber-200 text-amber-700 p-4 rounded-xl flex items-center gap-3 mb-6">
+        <div className="bg-amber-50 border border-amber-200 text-amber-700 p-4 rounded-xl flex items-center gap-3 mb-4">
           <AlertCircle size={20} />
           <div className="text-sm font-bold">Nenhum dado encontrado com os filtros atuais.</div>
         </div>
@@ -1538,288 +1607,369 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
       )}
 
       {/* ==========================================================================
-          ABA 2: VISÃO POR LOJA (FATURAMENTO GERAL + SEGURO GERAL + MÊS A MÊS)
+          ABA 2: VISÃO POR LOJA (REDESIGN EXECUTIVO DE ALTA DENSIDADE)
          ========================================================================== */}
       {activeTab === 'lojas' && (
-        <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-          {/* Barra Rápida de Seleção de Mês */}
-          <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4">
-            <div>
-              <span className="text-[10px] font-black text-orange-600 uppercase tracking-widest block">
-                Filtro Rápido de Competência ({yearA} x {yearB})
-              </span>
-              <h3 className="text-sm font-black text-slate-800 uppercase mt-0.5">
-                {monthFilter === '0'
-                  ? `Acumulado Anual (${yearA} vs ${yearB})`
-                  : `Comparativo Mensal • ${MONTH_FULL[Number(monthFilter)]} (${periodHeaderA} vs ${periodHeaderB})`}
-              </h3>
-            </div>
-
-            <div className="flex flex-wrap gap-1.5">
-              <button
-                onClick={() => setMonthFilter('0')}
-                className={`px-3 py-1.5 rounded-lg text-[11px] font-black uppercase transition-all ${
-                  monthFilter === '0'
-                    ? 'bg-slate-900 text-white shadow-sm'
-                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                }`}
-              >
-                Ano Todo
-              </button>
-              {MONTH_LABELS.map((label, idx) => {
-                const mKey = String(idx + 1);
-                const isSelected = monthFilter === mKey;
-                return (
-                  <button
-                    key={mKey}
-                    onClick={() => setMonthFilter(mKey)}
-                    className={`px-2.5 py-1.5 rounded-lg text-[11px] font-black uppercase transition-all ${
-                      isSelected
-                        ? 'bg-orange-500 text-white shadow-sm'
-                        : 'bg-slate-100 text-slate-600 hover:bg-orange-50 hover:text-orange-600'
+        <div className="space-y-3.5 animate-in fade-in duration-300">
+          {/* FAIXA COMPACTA DE REGIÕES (MINICARDS EXECUTIVOS) */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5">
+            {/* Card Rede Total */}
+            <div
+              onClick={() => setSelectedRegionFilter('TODAS')}
+              className={`cursor-pointer px-3.5 py-2.5 rounded-xl border transition-all flex flex-col justify-between ${
+                selectedRegionFilter === 'TODAS'
+                  ? 'bg-slate-900 text-white border-slate-900 shadow-sm'
+                  : 'bg-white text-slate-800 border-slate-200/90 hover:border-orange-300'
+              }`}
+            >
+              <div className="flex items-center justify-between gap-1">
+                <span className={`text-[9px] font-black uppercase tracking-wider truncate ${selectedRegionFilter === 'TODAS' ? 'text-orange-400' : 'text-slate-400'}`}>
+                  REDE TOTAL ({storeVisionData.allStores.length})
+                </span>
+                {storeVisionData.totals.fatPct !== null && (
+                  <span
+                    className={`px-1.5 py-0.5 rounded text-[9px] font-black shrink-0 ${
+                      storeVisionData.totals.fatPct >= 0
+                        ? 'bg-emerald-500/20 text-emerald-300'
+                        : 'bg-rose-500/20 text-rose-300'
                     }`}
                   >
-                    {label}
-                  </button>
-                );
-              })}
+                    {formatPctBadgeText(storeVisionData.totals.fatPct, storeVisionData.totals.fatA, storeVisionData.totals.fatB)}
+                  </span>
+                )}
+              </div>
+              <div className="mt-1 flex items-baseline justify-between gap-2">
+                <span className="text-sm md:text-base font-black tracking-tight truncate">
+                  {formatMoneyNoCents(storeVisionData.totals.fatB)}
+                </span>
+              </div>
+              <div className={`mt-1 pt-1 border-t flex items-center justify-between text-[9px] font-bold ${selectedRegionFilter === 'TODAS' ? 'border-slate-800 text-slate-400' : 'border-slate-100 text-slate-400'}`}>
+                <span className="truncate">{periodHeaderA}: {formatMoneyShort(storeVisionData.totals.fatA)}</span>
+                <span className={selectedRegionFilter === 'TODAS' ? 'text-orange-300 font-black' : 'text-slate-600 font-black'}>
+                  Seg: {formatMoneyShort(storeVisionData.totals.segB)}
+                </span>
+              </div>
             </div>
+
+            {/* Cards das Regiões */}
+            {storeVisionData.regions.map((reg) => {
+              const isSelected = selectedRegionFilter === reg.regiao;
+              const isPositive = (reg.fatPct ?? 0) >= 0;
+              return (
+                <div
+                  key={reg.regiao}
+                  onClick={() => setSelectedRegionFilter(isSelected ? 'TODAS' : reg.regiao)}
+                  className={`cursor-pointer px-3.5 py-2.5 rounded-xl border transition-all flex flex-col justify-between ${
+                    isSelected
+                      ? 'bg-orange-50/90 border-orange-500 ring-2 ring-orange-500/15 shadow-xs'
+                      : 'bg-white border-slate-200/90 hover:border-orange-300'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="text-[9px] font-black uppercase tracking-wider text-slate-500 truncate flex items-center gap-1">
+                      <MapPin size={10} className="text-orange-500 shrink-0" />
+                      {reg.regiao} ({reg.count})
+                    </span>
+                    {reg.fatPct !== null && (
+                      <span
+                        className={`px-1.5 py-0.5 rounded text-[9px] font-black shrink-0 ${
+                          isPositive ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-600'
+                        }`}
+                      >
+                        {formatPctBadgeText(reg.fatPct, reg.fatA, reg.fatB)}
+                      </span>
+                    )}
+                  </div>
+                  <div className="mt-1 flex items-baseline justify-between gap-2">
+                    <span className="text-sm md:text-base font-black text-slate-900 tracking-tight truncate">
+                      {formatMoneyNoCents(reg.fatB)}
+                    </span>
+                  </div>
+                  <div className="mt-1 pt-1 border-t border-slate-100 flex items-center justify-between text-[9px] font-bold text-slate-400">
+                    <span className="truncate">{periodHeaderA}: {formatMoneyShort(reg.fatA)}</span>
+                    <span className="text-slate-600 font-black">Seg: {formatMoneyShort(reg.segB)}</span>
+                  </div>
+                </div>
+              );
+            })}
           </div>
 
-          {/* Minicards com Totais por Região */}
-          <div>
-            <div className="flex items-center justify-between mb-3">
-              <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 flex items-center gap-1.5">
-                <MapPin size={13} className="text-orange-500" /> Totais por Região (Clique para filtrar a tabela)
-              </span>
-              {selectedRegionFilter !== 'TODAS' && (
-                <button
-                  onClick={() => setSelectedRegionFilter('TODAS')}
-                  className="text-[10px] font-black uppercase text-orange-600 hover:underline"
-                >
-                  Mostrar Todas as Regiões
-                </button>
-              )}
-            </div>
+          {/* PAINEL PRINCIPAL UNIFICADO */}
+          <div className="bg-white rounded-2xl shadow-xs border border-slate-200/90 overflow-hidden">
+            {/* Barra de Controle Unificada */}
+            <div className="px-4 py-3 border-b border-slate-200/80 bg-slate-50/60 flex flex-col xl:flex-row justify-between items-stretch xl:items-center gap-3">
+              {/* Esquerda: Alternador de Relatório */}
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="inline-flex rounded-xl bg-slate-200/70 p-1">
+                  <button
+                    onClick={() => setStoreViewMode('comparativo')}
+                    className={`px-3.5 py-1.5 rounded-lg text-[11px] font-black uppercase transition-all flex items-center gap-1.5 ${
+                      storeViewMode === 'comparativo'
+                        ? 'bg-slate-900 text-white shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <Store size={13} /> Faturamento & Seguro
+                  </button>
+                  <button
+                    onClick={() => setStoreViewMode('mes_a_mes')}
+                    className={`px-3.5 py-1.5 rounded-lg text-[11px] font-black uppercase transition-all flex items-center gap-1.5 ${
+                      storeViewMode === 'mes_a_mes'
+                        ? 'bg-slate-900 text-white shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <Table2 size={13} /> Anual Mês a Mês (Jan–Dez)
+                  </button>
+                </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5 gap-3">
-              <div
-                onClick={() => setSelectedRegionFilter('TODAS')}
-                className={`cursor-pointer p-4 rounded-2xl border transition-all ${
-                  selectedRegionFilter === 'TODAS'
-                    ? 'bg-slate-900 text-white border-slate-900 shadow-md'
-                    : 'bg-white text-slate-800 border-slate-200 hover:border-orange-300 shadow-sm'
-                }`}
-              >
-                <div className="flex justify-between items-start">
-                  <span className={`text-[10px] font-black uppercase tracking-widest ${selectedRegionFilter === 'TODAS' ? 'text-orange-400' : 'text-slate-400'}`}>
-                    REDE TOTAL ({storeVisionData.allStores.length} Lojas)
-                  </span>
-                  {storeVisionData.totals.fatPct !== null && (
-                    <span
-                      className={`px-2 py-0.5 rounded-full text-[10px] font-black ${
-                        storeVisionData.totals.fatPct >= 0
-                          ? 'bg-emerald-500/20 text-emerald-400'
-                          : 'bg-rose-500/20 text-rose-400'
+                {/* Seletor de Estilo exclusivo para a Matriz Mês a Mês */}
+                {storeViewMode === 'mes_a_mes' && (
+                  <div className="inline-flex items-center rounded-xl border border-slate-200 bg-white p-0.5">
+                    <button
+                      onClick={() => setMatrixDensity('complete')}
+                      className={`px-2.5 py-1 rounded-lg text-[10px] font-extrabold uppercase transition-all flex items-center gap-1 ${
+                        matrixDensity === 'complete'
+                          ? 'bg-orange-500 text-white'
+                          : 'text-slate-500 hover:text-slate-800'
+                      }`}
+                      title="Exibe 2026, 2025 e % em todas as células"
+                    >
+                      <LayoutGrid size={11} /> Completa
+                    </button>
+                    <button
+                      onClick={() => setMatrixDensity('heatmap')}
+                      className={`px-2.5 py-1 rounded-lg text-[10px] font-extrabold uppercase transition-all flex items-center gap-1 ${
+                        matrixDensity === 'heatmap'
+                          ? 'bg-orange-500 text-white'
+                          : 'text-slate-500 hover:text-slate-800'
+                      }`}
+                      title="Colore as células conforme o crescimento percentual"
+                    >
+                      <Flame size={11} /> Mapa de Calor
+                    </button>
+                    <button
+                      onClick={() => setMatrixDensity('clean')}
+                      className={`px-2.5 py-1 rounded-lg text-[10px] font-extrabold uppercase transition-all ${
+                        matrixDensity === 'clean'
+                          ? 'bg-orange-500 text-white'
+                          : 'text-slate-500 hover:text-slate-800'
+                      }`}
+                      title="Visão minimalista focada no realizado"
+                    >
+                      Compacta
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Centro: Seletor Rápido de Mês (Pills Compactas) */}
+              <div className="flex flex-wrap items-center gap-1">
+                <button
+                  onClick={() => setMonthFilter('0')}
+                  className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase transition-all ${
+                    monthFilter === '0'
+                      ? 'bg-orange-500 text-white shadow-2xs'
+                      : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
+                  }`}
+                >
+                  Ano Todo
+                </button>
+                {MONTH_LABELS.map((label, idx) => {
+                  const mKey = String(idx + 1);
+                  const isSelected = monthFilter === mKey;
+                  return (
+                    <button
+                      key={mKey}
+                      onClick={() => setMonthFilter(isSelected ? '0' : mKey)}
+                      className={`px-2 py-1 rounded-lg text-[10px] font-black uppercase transition-all ${
+                        isSelected
+                          ? 'bg-orange-500 text-white shadow-2xs'
+                          : 'bg-white border border-slate-200 text-slate-500 hover:border-orange-300 hover:text-orange-600'
                       }`}
                     >
-                      {storeVisionData.totals.fatPct >= 0 ? '+' : ''}
-                      {Math.round(storeVisionData.totals.fatPct)}%
-                    </span>
-                  )}
-                </div>
-                <p className="text-lg font-black mt-2 truncate">{formatMoney(storeVisionData.totals.fatB)}</p>
-                <p className={`text-[10px] font-bold mt-1 ${selectedRegionFilter === 'TODAS' ? 'text-slate-300' : 'text-slate-400'}`}>
-                  {periodHeaderA}: {formatMoney(storeVisionData.totals.fatA)}
-                </p>
-                <div className={`mt-2.5 pt-2 border-t flex justify-between text-[10px] font-bold ${selectedRegionFilter === 'TODAS' ? 'border-slate-800 text-slate-300' : 'border-slate-100 text-slate-500'}`}>
-                  <span>Seguro {yearB}:</span>
-                  <span className="font-black">{formatMoneyShort(storeVisionData.totals.segB)}</span>
-                </div>
+                      {label}
+                    </button>
+                  );
+                })}
               </div>
 
-              {storeVisionData.regions.map((reg) => {
-                const isSelected = selectedRegionFilter === reg.regiao;
-                const isPositive = (reg.fatPct ?? 0) >= 0;
-                return (
-                  <div
-                    key={reg.regiao}
-                    onClick={() => setSelectedRegionFilter(isSelected ? 'TODAS' : reg.regiao)}
-                    className={`cursor-pointer p-4 rounded-2xl border transition-all ${
-                      isSelected
-                        ? 'bg-orange-50/90 border-orange-500 ring-2 ring-orange-500/20 shadow-md'
-                        : 'bg-white border-slate-200 hover:border-orange-300 shadow-sm'
-                    }`}
-                  >
-                    <div className="flex justify-between items-start gap-2">
-                      <span className="text-[10px] font-black uppercase tracking-widest text-slate-500 truncate">
-                        {reg.regiao} ({reg.count})
-                      </span>
-                      {reg.fatPct !== null && (
-                        <span
-                          className={`px-2 py-0.5 rounded-full text-[10px] font-black shrink-0 ${
-                            isPositive ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'
-                          }`}
-                        >
-                          {isPositive ? '+' : ''}
-                          {Math.round(reg.fatPct)}%
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-lg font-black text-slate-900 mt-2 truncate">{formatMoney(reg.fatB)}</p>
-                    <p className="text-[10px] font-bold text-slate-400 mt-1 truncate">
-                      {periodHeaderA}: {formatMoney(reg.fatA)}
-                    </p>
-                    <div className="mt-2.5 pt-2 border-t border-slate-100 flex justify-between text-[10px] font-bold text-slate-500">
-                      <span>Seguro {yearB}:</span>
-                      <span className="font-black text-slate-700">{formatMoneyShort(reg.segB)}</span>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Container da Tabela */}
-          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden flex flex-col">
-            <div className="p-4 border-b border-slate-200 flex flex-col md:flex-row justify-between items-start md:items-center bg-slate-50/70 gap-4">
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  onClick={() => setStoreViewMode('comparativo')}
-                  className={`px-4 py-2 rounded-lg text-xs font-black uppercase transition-all flex items-center gap-2 ${
-                    storeViewMode === 'comparativo'
-                      ? 'bg-slate-900 text-white shadow-sm'
-                      : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100'
-                  }`}
-                >
-                  <Store size={14} /> Faturamento & Seguro ({periodHeaderA} x {periodHeaderB})
-                </button>
-                <button
-                  onClick={() => setStoreViewMode('mes_a_mes')}
-                  className={`px-4 py-2 rounded-lg text-xs font-black uppercase transition-all flex items-center gap-2 ${
-                    storeViewMode === 'mes_a_mes'
-                      ? 'bg-slate-900 text-white shadow-sm'
-                      : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100'
-                  }`}
-                >
-                  <Table2 size={14} /> Relatório Anual Mês a Mês (Jan - Dez)
-                </button>
-              </div>
-
-              <div className="relative w-full md:w-72">
-                <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              {/* Direita: Busca de Loja */}
+              <div className="relative min-w-[200px] xl:w-56">
+                <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                 <input
                   type="text"
-                  placeholder="Buscar loja ou região..."
+                  placeholder="Filtrar filial..."
                   value={searchStoreQuery}
                   onChange={(e) => setSearchStoreQuery(e.target.value)}
-                  className="w-full pl-9 pr-3 py-2 text-xs font-bold text-slate-700 bg-white border border-slate-200 rounded-lg outline-none focus:border-orange-400 transition-colors uppercase shadow-sm"
+                  className="w-full pl-8 pr-3 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-200 rounded-xl outline-none focus:border-orange-400 transition-colors uppercase"
                 />
               </div>
             </div>
 
-            {/* MODO 1: FATURAMENTO GERAL + SEGURO GERAL */}
+            {/* ====================================================================
+                MODO 1: TABELA EXECUTIVA FATURAMENTO GERAL & SEGURO GERAL
+               ==================================================================== */}
             {storeViewMode === 'comparativo' && (
-              <div className="overflow-x-auto max-h-[680px]">
-                <table className="w-full text-left border-collapse min-w-[950px]">
-                  <thead className="sticky top-0 z-20 shadow-sm">
-                    <tr className="border-b border-slate-200 text-[11px] font-black uppercase tracking-wider">
-                      <th className="p-3 bg-slate-100 text-slate-700 border-r border-slate-200">
-                        Unidade / Filial
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    {/* Agrupadores Superiores */}
+                    <tr className="border-b border-slate-200 bg-slate-900 text-white text-[10px] font-black uppercase tracking-wider">
+                      <th className="py-2.5 px-4 border-r border-slate-800">
+                        Unidade / Filial ({storeVisionData.visibleStores.length})
                       </th>
-                      <th
-                        colSpan={3}
-                        className="p-3 text-center bg-emerald-50/90 text-emerald-950 border-r border-slate-200"
-                      >
-                        Faturamento Geral
+                      <th colSpan={3} className="py-2.5 px-4 text-center border-r border-slate-800 text-orange-400">
+                        Faturamento Geral ({periodHeaderA} vs {periodHeaderB})
                       </th>
-                      <th
-                        colSpan={3}
-                        className="p-3 text-center bg-teal-50/80 text-teal-950"
-                      >
-                        Seguro Geral
+                      <th colSpan={3} className="py-2.5 px-4 text-center text-sky-400">
+                        Seguro Geral ({periodHeaderA} vs {periodHeaderB})
                       </th>
                     </tr>
 
-                    <tr className="border-b border-slate-200 bg-slate-100/95 text-[10px] font-black uppercase text-slate-600">
-                      <th className="py-2.5 px-4 border-r border-slate-200">Loja</th>
-                      <th className="py-2.5 px-3 text-right bg-sky-50/60">{periodHeaderA}</th>
-                      <th className="py-2.5 px-3 text-right bg-sky-50/60 border-l border-slate-200/70">{periodHeaderB}</th>
-                      <th className="py-2.5 px-3 text-center bg-amber-300/90 text-slate-900 border-x border-slate-200">
-                        % Ating. <span className="block text-[9px] font-extrabold">{yearA} x {yearB}</span>
+                    {/* Colunas Ordenáveis */}
+                    <tr className="border-b border-slate-200 bg-slate-100/90 text-[10px] font-black uppercase text-slate-600 select-none">
+                      <th
+                        onClick={() => handleStoreSort('loja')}
+                        className="cursor-pointer py-2 px-4 border-r border-slate-200 hover:bg-slate-200/60 transition-colors"
+                      >
+                        <div className="flex items-center gap-1.5">
+                          <span>Loja</span>
+                          {renderSortIcon('loja')}
+                        </div>
                       </th>
-                      <th className="py-2.5 px-3 text-right bg-sky-50/60">{periodHeaderA}</th>
-                      <th className="py-2.5 px-3 text-right bg-sky-50/60 border-l border-slate-200/70">{periodHeaderB}</th>
-                      <th className="py-2.5 px-3 text-center bg-amber-300/90 text-slate-900 border-l border-slate-200">
-                        % Ating. <span className="block text-[9px] font-extrabold">{yearA} x {yearB}</span>
+
+                      <th
+                        onClick={() => handleStoreSort('fatA')}
+                        className="cursor-pointer py-2 px-3 text-right hover:bg-slate-200/60 transition-colors"
+                      >
+                        <div className="inline-flex items-center justify-end gap-1">
+                          <span>{periodHeaderA}</span>
+                          {renderSortIcon('fatA')}
+                        </div>
+                      </th>
+
+                      <th
+                        onClick={() => handleStoreSort('fatB')}
+                        className="cursor-pointer py-2 px-3 text-right border-l border-slate-200/70 bg-orange-50/40 text-slate-900 hover:bg-orange-100/50 transition-colors"
+                      >
+                        <div className="inline-flex items-center justify-end gap-1">
+                          <span>{periodHeaderB}</span>
+                          {renderSortIcon('fatB')}
+                        </div>
+                      </th>
+
+                      <th
+                        onClick={() => handleStoreSort('fatPct')}
+                        className="cursor-pointer py-2 px-3 text-center border-x border-slate-200 hover:bg-slate-200/60 transition-colors"
+                      >
+                        <div className="inline-flex items-center justify-center gap-1">
+                          <span>% Ating.</span>
+                          {renderSortIcon('fatPct')}
+                        </div>
+                      </th>
+
+                      <th
+                        onClick={() => handleStoreSort('segA')}
+                        className="cursor-pointer py-2 px-3 text-right hover:bg-slate-200/60 transition-colors"
+                      >
+                        <div className="inline-flex items-center justify-end gap-1">
+                          <span>{periodHeaderA}</span>
+                          {renderSortIcon('segA')}
+                        </div>
+                      </th>
+
+                      <th
+                        onClick={() => handleStoreSort('segB')}
+                        className="cursor-pointer py-2 px-3 text-right border-l border-slate-200/70 bg-sky-50/40 text-slate-900 hover:bg-sky-100/50 transition-colors"
+                      >
+                        <div className="inline-flex items-center justify-end gap-1">
+                          <span>{periodHeaderB}</span>
+                          {renderSortIcon('segB')}
+                        </div>
+                      </th>
+
+                      <th
+                        onClick={() => handleStoreSort('segPct')}
+                        className="cursor-pointer py-2 px-3 text-center border-l border-slate-200 hover:bg-slate-200/60 transition-colors"
+                      >
+                        <div className="inline-flex items-center justify-center gap-1">
+                          <span>% Ating.</span>
+                          {renderSortIcon('segPct')}
+                        </div>
                       </th>
                     </tr>
                   </thead>
 
                   <tbody className="divide-y divide-slate-100 text-xs font-bold text-slate-700">
-                    {storeVisionData.visibleStores.map((item) => {
-                      const fatPctVal = item.fatPct;
-                      const segPctVal = item.segPct;
+                    {storeVisionData.visibleStores.map((item, idx) => {
+                      const fatPctText = formatPctBadgeText(item.fatPct, item.fatA, item.fatB);
+                      const segPctText = formatPctBadgeText(item.segPct, item.segA, item.segB);
 
                       return (
-                        <tr key={item.loja} className="hover:bg-orange-50/40 transition-colors">
-                          <td className="py-2.5 px-4 border-r border-slate-100 font-black text-slate-800 uppercase whitespace-nowrap">
+                        <tr key={item.loja} className="hover:bg-orange-50/30 transition-colors even:bg-slate-50/30">
+                          <td className="py-2 px-4 border-r border-slate-100 font-black text-slate-800 uppercase whitespace-nowrap">
                             <div className="flex items-center justify-between gap-2">
-                              <span>{item.loja}</span>
-                              <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">
+                              <div className="flex items-center gap-2">
+                                <span className="text-[10px] font-bold text-slate-400 w-4">{idx + 1}.</span>
+                                <span>{item.loja}</span>
+                              </div>
+                              <span className="text-[9px] font-extrabold px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">
                                 {item.regiao}
                               </span>
                             </div>
                           </td>
 
-                          <td className="py-2.5 px-3 text-right font-mono text-slate-600 whitespace-nowrap">
-                            {item.fatA > 0 ? formatMoney(item.fatA) : 'R$ -'}
+                          {/* Faturamento Ano A */}
+                          <td className="py-2 px-3 text-right font-mono text-slate-500 whitespace-nowrap">
+                            {item.fatA > 0 ? formatMoney(item.fatA) : '—'}
                           </td>
 
-                          <td className="py-2.5 px-3 text-right font-mono font-black text-slate-900 border-l border-slate-100 whitespace-nowrap">
-                            {item.fatB > 0 ? formatMoney(item.fatB) : 'R$ -'}
+                          {/* Faturamento Ano B */}
+                          <td className="py-2 px-3 text-right font-mono font-black text-slate-900 bg-orange-50/20 border-l border-slate-100 whitespace-nowrap">
+                            {item.fatB > 0 ? formatMoney(item.fatB) : '—'}
                           </td>
 
-                          <td className="py-2.5 px-3 text-center border-x border-slate-100 bg-amber-50/30 whitespace-nowrap">
-                            {fatPctVal === null ? (
-                              <span className="text-slate-400">—</span>
+                          {/* % Ating Faturamento */}
+                          <td className="py-2 px-3 text-center border-x border-slate-100 whitespace-nowrap">
+                            {item.fatPct === null ? (
+                              <span className="text-slate-300">—</span>
                             ) : (
                               <span
-                                className={`inline-block px-2 py-0.5 rounded font-black text-[11px] ${
-                                  fatPctVal < 0
-                                    ? 'text-red-600 bg-red-50'
-                                    : fatPctVal >= 50
-                                      ? 'text-emerald-700 bg-emerald-50'
-                                      : 'text-slate-900'
+                                className={`inline-flex items-center justify-center min-w-[52px] px-2 py-0.5 rounded-md font-black text-[11px] ${
+                                  item.fatPct < 0
+                                    ? 'text-rose-700 bg-rose-50 border border-rose-200/60'
+                                    : 'text-emerald-700 bg-emerald-50 border border-emerald-200/60'
                                 }`}
                               >
-                                {Math.round(fatPctVal)}%
+                                {fatPctText}
                               </span>
                             )}
                           </td>
 
-                          <td className="py-2.5 px-3 text-right font-mono text-slate-600 whitespace-nowrap">
-                            {item.segA > 0 ? formatMoney(item.segA) : 'R$ -'}
+                          {/* Seguro Ano A */}
+                          <td className="py-2 px-3 text-right font-mono text-slate-500 whitespace-nowrap">
+                            {item.segA > 0 ? formatMoney(item.segA) : '—'}
                           </td>
 
-                          <td className="py-2.5 px-3 text-right font-mono font-black text-slate-900 border-l border-slate-100 whitespace-nowrap">
-                            {item.segB > 0 ? formatMoney(item.segB) : 'R$ -'}
+                          {/* Seguro Ano B */}
+                          <td className="py-2 px-3 text-right font-mono font-black text-slate-900 bg-sky-50/20 border-l border-slate-100 whitespace-nowrap">
+                            {item.segB > 0 ? formatMoney(item.segB) : '—'}
                           </td>
 
-                          <td className="py-2.5 px-3 text-center border-l border-slate-100 bg-amber-50/30 whitespace-nowrap">
-                            {segPctVal === null ? (
-                              <span className="text-slate-400">—</span>
+                          {/* % Ating Seguro */}
+                          <td className="py-2 px-3 text-center border-l border-slate-100 whitespace-nowrap">
+                            {item.segPct === null ? (
+                              <span className="text-slate-300">—</span>
                             ) : (
                               <span
-                                className={`inline-block px-2 py-0.5 rounded font-black text-[11px] ${
-                                  segPctVal < 0
-                                    ? 'text-red-600 bg-red-50'
-                                    : segPctVal >= 50
-                                      ? 'text-emerald-700 bg-emerald-50'
-                                      : 'text-slate-900'
+                                className={`inline-flex items-center justify-center min-w-[52px] px-2 py-0.5 rounded-md font-black text-[11px] ${
+                                  item.segPct < 0
+                                    ? 'text-rose-700 bg-rose-50 border border-rose-200/60'
+                                    : 'text-emerald-700 bg-emerald-50 border border-emerald-200/60'
                                 }`}
                               >
-                                {Math.round(segPctVal)}%
+                                {segPctText}
                               </span>
                             )}
                           </td>
@@ -1837,30 +1987,60 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
                   </tbody>
 
                   {storeVisionData.visibleStores.length > 0 && (
-                    <tfoot className="sticky bottom-0 z-20 bg-sky-100/95 border-t-2 border-slate-300 text-xs font-black text-slate-900 shadow-inner">
+                    <tfoot className="bg-slate-900 text-white text-xs font-black">
                       <tr>
-                        <td className="py-3 px-4 uppercase border-r border-slate-300">TOTAL</td>
-                        <td className="py-3 px-3 text-right font-mono whitespace-nowrap">
+                        <td className="py-3 px-4 uppercase border-r border-slate-800">
+                          TOTAL CONSOLIDADO ({storeVisionData.visibleStores.length} Lojas)
+                        </td>
+                        <td className="py-3 px-3 text-right font-mono text-slate-300 whitespace-nowrap">
                           {formatMoney(storeVisionData.totals.fatA)}
                         </td>
-                        <td className="py-3 px-3 text-right font-mono border-l border-slate-300 whitespace-nowrap">
+                        <td className="py-3 px-3 text-right font-mono text-orange-400 border-l border-slate-800 whitespace-nowrap">
                           {formatMoney(storeVisionData.totals.fatB)}
                         </td>
-                        <td className="py-3 px-3 text-center border-x border-slate-300 bg-amber-200/80 whitespace-nowrap">
-                          {storeVisionData.totals.fatPct !== null
-                            ? `${Math.round(storeVisionData.totals.fatPct)}%`
-                            : '—'}
+                        <td className="py-3 px-3 text-center border-x border-slate-800 whitespace-nowrap">
+                          {storeVisionData.totals.fatPct !== null ? (
+                            <span
+                              className={`px-2 py-0.5 rounded text-[11px] ${
+                                storeVisionData.totals.fatPct >= 0
+                                  ? 'bg-emerald-500/20 text-emerald-300'
+                                  : 'bg-rose-500/20 text-rose-300'
+                              }`}
+                            >
+                              {formatPctBadgeText(
+                                storeVisionData.totals.fatPct,
+                                storeVisionData.totals.fatA,
+                                storeVisionData.totals.fatB
+                              )}
+                            </span>
+                          ) : (
+                            '—'
+                          )}
                         </td>
-                        <td className="py-3 px-3 text-right font-mono whitespace-nowrap">
+                        <td className="py-3 px-3 text-right font-mono text-slate-300 whitespace-nowrap">
                           {formatMoney(storeVisionData.totals.segA)}
                         </td>
-                        <td className="py-3 px-3 text-right font-mono border-l border-slate-300 whitespace-nowrap">
+                        <td className="py-3 px-3 text-right font-mono text-sky-400 border-l border-slate-800 whitespace-nowrap">
                           {formatMoney(storeVisionData.totals.segB)}
                         </td>
-                        <td className="py-3 px-3 text-center border-l border-slate-300 bg-amber-200/80 whitespace-nowrap">
-                          {storeVisionData.totals.segPct !== null
-                            ? `${Math.round(storeVisionData.totals.segPct)}%`
-                            : '—'}
+                        <td className="py-3 px-3 text-center border-l border-slate-800 whitespace-nowrap">
+                          {storeVisionData.totals.segPct !== null ? (
+                            <span
+                              className={`px-2 py-0.5 rounded text-[11px] ${
+                                storeVisionData.totals.segPct >= 0
+                                  ? 'bg-emerald-500/20 text-emerald-300'
+                                  : 'bg-rose-500/20 text-rose-300'
+                              }`}
+                            >
+                              {formatPctBadgeText(
+                                storeVisionData.totals.segPct,
+                                storeVisionData.totals.segA,
+                                storeVisionData.totals.segB
+                              )}
+                            </span>
+                          ) : (
+                            '—'
+                          )}
                         </td>
                       </tr>
                     </tfoot>
@@ -1869,146 +2049,235 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
               </div>
             )}
 
-            {/* MODO 2: MATRIZ ANUAL MÊS A MÊS (JAN A DEZ) */}
+            {/* ====================================================================
+                MODO 2: MATRIZ ANUAL MÊS A MÊS (100% NA TELA SEM ROLAGEM HORIZONTAL)
+               ==================================================================== */}
             {storeViewMode === 'mes_a_mes' && (
-              <div className="overflow-x-auto max-h-[680px]">
-                <table className="w-full text-left border-collapse min-w-[1800px]">
-                  <thead className="sticky top-0 z-20 bg-slate-100 border-b border-slate-200 shadow-sm">
-                    <tr className="text-[10px] font-black uppercase text-slate-600">
-                      <th className="sticky left-0 z-30 bg-slate-100 py-3 px-4 border-r border-slate-200 min-w-[210px]">
-                        Loja / Mês ({yearA} vs {yearB})
+              <div className="w-full overflow-x-auto">
+                <table className="w-full table-fixed border-collapse text-left min-w-[1120px]">
+                  <thead>
+                    <tr className="bg-slate-900 text-white text-[10px] font-black uppercase tracking-wider">
+                      <th
+                        onClick={() => handleStoreSort('loja')}
+                        className="w-[175px] cursor-pointer py-2.5 px-3 border-r border-slate-800 hover:bg-slate-800 transition-colors"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span>Filial ({storeVisionData.visibleStores.length})</span>
+                          {renderSortIcon('loja')}
+                        </div>
                       </th>
-                      {MONTH_LABELS.map((mLabel, idx) => (
-                        <th
-                          key={mLabel}
-                          onClick={() => setMonthFilter(String(idx + 1))}
-                          title="Clique para filtrar este mês"
-                          className="cursor-pointer py-2.5 px-3 text-center border-r border-slate-200 hover:bg-orange-50 transition-colors"
-                        >
-                          <span className="text-slate-800 block text-[11px]">{mLabel}</span>
-                          <span className="text-[9px] text-slate-400 font-bold">
-                            {yearA} → {yearB}
-                          </span>
-                        </th>
-                      ))}
-                      <th className="py-2.5 px-4 text-center bg-orange-50 text-orange-900">
-                        Acumulado Anual
+
+                      {MONTH_LABELS.map((mLabel, idx) => {
+                        const mNum = String(idx + 1);
+                        const isSelectedMonth = monthFilter === mNum;
+                        return (
+                          <th
+                            key={mLabel}
+                            onClick={() => setMonthFilter(isSelectedMonth ? '0' : mNum)}
+                            title="Clique para filtrar este mês"
+                            className={`cursor-pointer py-2 px-1 text-center border-r border-slate-800 transition-colors ${
+                              isSelectedMonth ? 'bg-orange-500 text-white' : 'hover:bg-slate-800'
+                            }`}
+                          >
+                            <span className="block text-[10px] font-black">{mLabel}</span>
+                            <span className={`block text-[8px] font-bold ${isSelectedMonth ? 'text-orange-100' : 'text-slate-400'}`}>
+                              {yearB.slice(-2)} vs {yearA.slice(-2)}
+                            </span>
+                          </th>
+                        );
+                      })}
+
+                      <th
+                        onClick={() => handleStoreSort('fatB')}
+                        className="w-[115px] cursor-pointer py-2 px-2.5 text-right bg-slate-950 text-orange-400 hover:bg-slate-900 transition-colors"
+                      >
+                        <div className="flex items-center justify-end gap-1">
+                          <span>Acumulado</span>
+                          {renderSortIcon('fatB')}
+                        </div>
+                        <span className="block text-[8px] text-slate-400 font-bold">
+                          {yearB} vs {yearA}
+                        </span>
                       </th>
                     </tr>
                   </thead>
 
-                  <tbody className="divide-y divide-slate-100 text-[11px] font-bold text-slate-700">
+                  <tbody className="divide-y divide-slate-200/70 text-[11px] font-bold text-slate-700">
                     {storeVisionData.visibleStores.map((store) => {
                       const totalYearA = Object.values(store.monthsA).reduce((a, b) => a + b, 0);
                       const totalYearB = Object.values(store.monthsB).reduce((a, b) => a + b, 0);
                       const totalDiffPct = calcVariationPct(totalYearA, totalYearB);
+                      const totalBadgeText = formatPctBadgeText(totalDiffPct, totalYearA, totalYearB);
 
                       return (
-                        <tr key={store.loja} className="hover:bg-orange-50/30 transition-colors group">
-                          <td className="sticky left-0 z-10 bg-white group-hover:bg-orange-50/60 py-3 px-4 border-r border-slate-200 font-black text-slate-900 uppercase whitespace-nowrap">
-                            <div>{store.loja}</div>
-                            <span className="text-[9px] text-slate-400 font-bold">{store.regiao}</span>
+                        <tr key={store.loja} className="hover:bg-orange-50/40 transition-colors even:bg-slate-50/40">
+                          {/* Coluna Fixa da Loja */}
+                          <td className="py-1.5 px-3 border-r border-slate-200/80 truncate" title={`${store.loja} (${store.regiao})`}>
+                            <div className="flex items-center justify-between gap-1">
+                              <span className="font-black text-[10px] text-slate-900 uppercase truncate">
+                                {shortenStoreName(store.loja)}
+                              </span>
+                              <span className="text-[8px] font-extrabold px-1 py-0.2 rounded bg-slate-200/70 text-slate-600 shrink-0">
+                                {store.regiao === 'MINAS GERAIS' ? 'MG' : store.regiao === 'NORDESTE' ? 'NE' : store.regiao === 'GOIÁS' ? 'GO' : store.regiao}
+                              </span>
+                            </div>
                           </td>
 
-                          {MONTH_LABELS.map((_, idx) => {
+                          {/* 12 Meses */}
+                          {MONTH_LABELS.map((mLabel, idx) => {
                             const mKey = String(idx + 1).padStart(2, '0');
                             const valA = store.monthsA[mKey] || 0;
                             const valB = store.monthsB[mKey] || 0;
                             const diff = calcVariationPct(valA, valB);
+                            const badgeText = formatPctBadgeText(diff, valA, valB);
+                            const isSelectedMonth = monthFilter === String(idx + 1);
+
+                            // Fundo condicional para o modo Mapa de Calor
+                            let heatBg = '';
+                            if (matrixDensity === 'heatmap' && diff !== null) {
+                              if (diff >= 30) heatBg = 'bg-emerald-100/70';
+                              else if (diff >= 0) heatBg = 'bg-emerald-50/60';
+                              else if (diff <= -20) heatBg = 'bg-rose-100/70';
+                              else heatBg = 'bg-rose-50/60';
+                            } else if (isSelectedMonth) {
+                              heatBg = 'bg-orange-50/50';
+                            }
+
+                            const tooltipText = `${store.loja} • ${mLabel}\n${yearB}: ${formatMoney(valB)}\n${yearA}: ${formatMoney(valA)}${diff !== null ? `\nVariação: ${badgeText}` : ''}`;
 
                             return (
-                              <td key={mKey} className="p-2.5 text-right border-r border-slate-100 whitespace-nowrap">
-                                <div className="font-mono font-black text-slate-900">
-                                  {valB > 0 ? formatMoneyShort(valB) : '—'}
-                                </div>
-                                <div className="font-mono text-[9px] text-slate-400">
-                                  {yearA}: {valA > 0 ? formatMoneyShort(valA) : '—'}
-                                </div>
-                                {diff !== null && (
-                                  <div
-                                    className={`mt-0.5 inline-block px-1.5 py-0.2 rounded text-[9px] font-black ${
-                                      diff >= 0
-                                        ? 'bg-emerald-50 text-emerald-700'
-                                        : 'bg-rose-50 text-rose-600'
-                                    }`}
-                                  >
-                                    {diff >= 0 ? '+' : ''}
-                                    {Math.round(diff)}%
+                              <td
+                                key={mKey}
+                                title={tooltipText}
+                                className={`py-1.5 px-1.5 text-right border-r border-slate-100 align-middle ${heatBg}`}
+                              >
+                                {valB === 0 && valA === 0 ? (
+                                  <span className="text-slate-300 text-[10px] block text-center">—</span>
+                                ) : (
+                                  <div className="flex flex-col items-end leading-tight">
+                                    {/* Linha 1: Valor Ano Atual (2026) */}
+                                    <span className={`font-mono text-[10px] font-black ${valB > 0 ? 'text-slate-900' : 'text-slate-300'}`}>
+                                      {formatCellCompact(valB)}
+                                    </span>
+
+                                    {/* Linha 2: Valor Ano Anterior (2025) + % na mesma linha ou empilhado conforme densidade */}
+                                    {matrixDensity !== 'clean' && (
+                                      <div className="flex items-center justify-end gap-1 mt-0.5 w-full">
+                                        {matrixDensity === 'complete' && (
+                                          <span className="font-mono text-[8px] text-slate-400 truncate">
+                                            {valA > 0 ? formatCellCompact(valA) : '—'}
+                                          </span>
+                                        )}
+                                        {diff !== null && (
+                                          <span
+                                            className={`px-1 rounded text-[8px] font-black leading-tight ${
+                                              diff >= 0
+                                                ? 'bg-emerald-500/15 text-emerald-700'
+                                                : 'bg-rose-500/15 text-rose-600'
+                                            }`}
+                                          >
+                                            {badgeText}
+                                          </span>
+                                        )}
+                                      </div>
+                                    )}
                                   </div>
                                 )}
                               </td>
                             );
                           })}
 
-                          <td className="p-2.5 text-right bg-orange-50/30 whitespace-nowrap">
-                            <div className="font-mono font-black text-orange-700">
-                              {formatMoney(totalYearB)}
-                            </div>
-                            <div className="font-mono text-[9px] text-slate-500">
-                              {yearA}: {formatMoney(totalYearA)}
-                            </div>
-                            {totalDiffPct !== null && (
-                              <div
-                                className={`mt-0.5 inline-block px-1.5 py-0.5 rounded text-[9px] font-black ${
-                                  totalDiffPct >= 0
-                                    ? 'bg-emerald-100 text-emerald-800'
-                                    : 'bg-rose-100 text-rose-700'
-                                }`}
-                              >
-                                {totalDiffPct >= 0 ? '+' : ''}
-                                {Math.round(totalDiffPct)}%
+                          {/* Acumulado Anual da Loja */}
+                          <td
+                            title={`${store.loja} • Acumulado Anual\n${yearB}: ${formatMoney(totalYearB)}\n${yearA}: ${formatMoney(totalYearA)}`}
+                            className="py-1.5 px-2.5 text-right bg-orange-50/35 align-middle"
+                          >
+                            <div className="flex flex-col items-end leading-tight">
+                              <span className="font-mono text-[11px] font-black text-orange-700">
+                                {formatCellCompact(totalYearB)}
+                              </span>
+                              <div className="flex items-center justify-end gap-1 mt-0.5">
+                                <span className="font-mono text-[8px] text-slate-500">
+                                  {totalYearA > 0 ? formatCellCompact(totalYearA) : '—'}
+                                </span>
+                                {totalDiffPct !== null && (
+                                  <span
+                                    className={`px-1 rounded text-[8px] font-black ${
+                                      totalDiffPct >= 0
+                                        ? 'bg-emerald-100 text-emerald-800'
+                                        : 'bg-rose-100 text-rose-700'
+                                    }`}
+                                  >
+                                    {totalBadgeText}
+                                  </span>
+                                )}
                               </div>
-                            )}
+                            </div>
                           </td>
                         </tr>
                       );
                     })}
                   </tbody>
 
+                  {/* Rodapé Consolidado da Rede Mês a Mês */}
                   {storeVisionData.visibleStores.length > 0 && (
-                    <tfoot className="sticky bottom-0 z-20 bg-slate-900 text-white text-[11px] font-black">
+                    <tfoot className="bg-slate-900 text-white text-[10px] font-black">
                       <tr>
-                        <td className="sticky left-0 z-30 bg-slate-900 py-3 px-4 border-r border-slate-700 uppercase">
-                          TOTAL REDE
+                        <td className="py-2.5 px-3 border-r border-slate-800 uppercase">
+                          TOTAL REDE ({storeVisionData.visibleStores.length})
                         </td>
                         {MONTH_LABELS.map((_, idx) => {
                           const mKey = String(idx + 1).padStart(2, '0');
                           const mTotalA = storeVisionData.totals.monthsA[mKey] || 0;
                           const mTotalB = storeVisionData.totals.monthsB[mKey] || 0;
                           const mDiff = calcVariationPct(mTotalA, mTotalB);
+                          const mBadge = formatPctBadgeText(mDiff, mTotalA, mTotalB);
 
                           return (
-                            <td key={mKey} className="p-2.5 text-right border-r border-slate-800 whitespace-nowrap">
-                              <div className="font-mono text-orange-400">
-                                {mTotalB > 0 ? formatMoneyShort(mTotalB) : '—'}
+                            <td key={mKey} className="py-2 px-1.5 text-right border-r border-slate-800">
+                              <div className="font-mono text-[10px] text-orange-400">
+                                {formatCellCompact(mTotalB)}
                               </div>
-                              <div className="font-mono text-[9px] text-slate-400">
-                                {mTotalA > 0 ? formatMoneyShort(mTotalA) : '—'}
+                              <div className="font-mono text-[8px] text-slate-400">
+                                {formatCellCompact(mTotalA)}
                               </div>
                               {mDiff !== null && (
                                 <span
-                                  className={`text-[9px] ${
+                                  className={`inline-block mt-0.5 text-[8px] font-black ${
                                     mDiff >= 0 ? 'text-emerald-400' : 'text-rose-400'
                                   }`}
                                 >
-                                  {mDiff >= 0 ? '+' : ''}
-                                  {Math.round(mDiff)}%
+                                  {mBadge}
                                 </span>
                               )}
                             </td>
                           );
                         })}
-                        <td className="p-2.5 text-right bg-slate-950 whitespace-nowrap">
-                          <div className="font-mono text-orange-400">
-                            {formatMoneyShort(
-                              Object.values(storeVisionData.totals.monthsB).reduce((a, b) => a + b, 0)
-                            )}
-                          </div>
-                          <div className="font-mono text-[9px] text-slate-400">
-                            {formatMoneyShort(
-                              Object.values(storeVisionData.totals.monthsA).reduce((a, b) => a + b, 0)
-                            )}
-                          </div>
+                        <td className="py-2 px-2.5 text-right bg-slate-950">
+                          {(() => {
+                            const grandB = Object.values(storeVisionData.totals.monthsB).reduce((a, b) => a + b, 0);
+                            const grandA = Object.values(storeVisionData.totals.monthsA).reduce((a, b) => a + b, 0);
+                            const grandDiff = calcVariationPct(grandA, grandB);
+                            return (
+                              <>
+                                <div className="font-mono text-[11px] text-orange-400">
+                                  {formatCellCompact(grandB)}
+                                </div>
+                                <div className="font-mono text-[8px] text-slate-400">
+                                  {formatCellCompact(grandA)}
+                                </div>
+                                {grandDiff !== null && (
+                                  <span
+                                    className={`inline-block mt-0.5 text-[8px] font-black ${
+                                      grandDiff >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                                    }`}
+                                  >
+                                    {formatPctBadgeText(grandDiff, grandA, grandB)}
+                                  </span>
+                                )}
+                              </>
+                            );
+                          })()}
                         </td>
                       </tr>
                     </tfoot>
