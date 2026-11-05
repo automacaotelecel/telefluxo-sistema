@@ -120,6 +120,40 @@ const STORE_REGION_MAP: Record<string, string> = {
   'CD TAGUATINGA': 'CD',
 };
 
+// UF real da filial, sem agrupar Ceará/Paraíba/Pernambuco como "Nordeste".
+const STORE_UF_MAP: Record<string, string> = {
+  'ARAGUAIA SHOPPING': 'GO', 'BOULEVARD SHOPPING': 'DF',
+  'BRASILIA SHOPPING': 'DF', 'CONJUNTO NACIONAL': 'DF',
+  'CONJUNTO NACIONAL QUIOSQUE': 'DF', 'GOIANIA SHOPPING': 'GO',
+  'IGUATEMI SHOPPING': 'DF', 'JK SHOPPING': 'DF',
+  'PARK SHOPPING': 'DF', 'PATIO BRASIL': 'DF',
+  'TAGUATINGA SHOPPING': 'DF', 'TERRAÇO SHOPPING': 'DF',
+  'TAGUATINGA SHOPPING QQ': 'DF', 'UBERLÂNDIA SHOPPING': 'MG',
+  'UBERABA SHOPPING': 'MG', 'FLAMBOYANT SHOPPING': 'GO',
+  'BURITI SHOPPING': 'GO', 'PASSEIO DAS AGUAS': 'GO',
+  'PORTAL SHOPPING': 'GO', 'SHOPPING SUL': 'GO',
+  'BURITI RIO VERDE': 'GO', 'PARK ANAPOLIS': 'GO',
+  'SHOPPING RECIFE': 'PE', 'MANAIRA SHOPPING': 'PB',
+  'IGUATEMI FORTALEZA': 'CE', 'CD TAGUATINGA': 'DF',
+};
+
+const UF_FULL_NAMES: Record<string, string> = {
+  CE: 'Ceará', DF: 'Distrito Federal', GO: 'Goiás',
+  MG: 'Minas Gerais', PB: 'Paraíba', PE: 'Pernambuco',
+};
+
+const getStoreUf = (name: string, rawRegion?: string): string => {
+  const canonicalName = getStoreName(name);
+  if (STORE_UF_MAP[canonicalName]) return STORE_UF_MAP[canonicalName];
+  const region = String(rawRegion || '').normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '').trim().toUpperCase();
+  const uf: Record<string, string> = {
+    DF: 'DF', GO: 'GO', GOIAS: 'GO', MG: 'MG', 'MINAS GERAIS': 'MG',
+    CE: 'CE', CEARA: 'CE', PB: 'PB', PARAIBA: 'PB', PE: 'PE', PERNAMBUCO: 'PE',
+  };
+  return uf[region] || 'OUTROS';
+};
+
 const MONTH_LABELS = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
 
 const MONTH_FULL: Record<number, string> = {
@@ -430,6 +464,7 @@ export default function ComparativoAnual() {
   const [monthlyRawData, setMonthlyRawData] = useState<any[]>([]);
   const [annualStoreCompareRows, setAnnualStoreCompareRows] = useState<any[]>([]);
   const [monthlyInsuranceFallback, setMonthlyInsuranceFallback] = useState<any[]>([]);
+  const [insuranceCompareError, setInsuranceCompareError] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string>('');
   const [loading, setLoading] = useState(false);
 
@@ -596,9 +631,11 @@ export default function ComparativoAnual() {
         const json = await res.json();
         const rows = (json && Array.isArray(json.data) && json.data) || (Array.isArray(json) ? json : []);
         setAnnualStoreCompareRows(rows);
+        setInsuranceCompareError(false);
       } catch (e: any) {
         console.error(e);
         setAnnualStoreCompareRows([]);
+        setInsuranceCompareError(true);
       }
     };
     loadAnnualStoreCompare();
@@ -824,60 +861,55 @@ export default function ComparativoAnual() {
   }, [filteredRawData, yearA, yearB, monthFilter, startDate, endDate]);
 
   const segurosComputed = useMemo(() => {
-    const byYear: Record<string, { total: number; qtd: number }> = {
-      [yearA]: { total: 0, qtd: 0 },
-      [yearB]: { total: 0, qtd: 0 },
+    type InsuranceTotal = { total: number; qtd: number; disponivel: boolean };
+    const byYear: Record<string, InsuranceTotal> = {
+      [yearA]: { total: 0, qtd: 0, disponivel: false },
+      [yearB]: { total: 0, qtd: 0, disponivel: false },
     };
+    const hasApiRows = filteredAnnualStoreCompare.length > 0 && !insuranceCompareError;
 
-    for (const row of filteredAnnualStoreCompare) {
-      const year = String(row.ano || row.ANO || '');
-      if (year !== yearA && year !== yearB) continue;
-
-      byYear[year] = {
-        total: (byYear[year]?.total || 0) + toNumberSafe(row.seguro_total || row.SEGURO_TOTAL || 0),
-        qtd: (byYear[year]?.qtd || 0) + toNumberSafe(row.seguro_qtd || row.SEGURO_QTD || 0),
-      };
-    }
-
-    const hasInsurance = Object.values(byYear).some((item) => item.total !== 0 || item.qtd !== 0);
-
-    if (!hasInsurance) {
+    if (hasApiRows) {
+      for (const row of filteredAnnualStoreCompare) {
+        const year = String(row.ano || row.ANO || '');
+        if (!byYear[year]) continue;
+        const total = toNumberSafe(row.seguro_total ?? row.SEGURO_TOTAL ?? 0);
+        const qtd = toNumberSafe(row.seguro_qtd ?? row.SEGURO_QTD ?? 0);
+        byYear[year].total += total;
+        byYear[year].qtd += qtd;
+        byYear[year].disponivel ||= Boolean(row.seguro_disponivel ?? (total !== 0 || qtd !== 0));
+      }
+    } else {
+      // Somente quando a API anual não fornece dados. Nunca soma o KPI
+      // mensal novamente sobre os seguros anuais já contabilizados.
       for (const row of filteredRawData) {
         const ym = extractYearMonth(getDateValue(row));
-        if (!ym || (ym.year !== yearA && ym.year !== yearB)) continue;
-        if (!isInsuranceRow(row)) continue;
-
+        if (!ym || !byYear[ym.year] || !isInsuranceRow(row)) continue;
         byYear[ym.year].total += getTotal(row);
         byYear[ym.year].qtd += getQuantity(row) || 1;
+        byYear[ym.year].disponivel = true;
       }
-
       const now = new Date();
-      const curYear = String(now.getFullYear());
-      const curMonth = String(now.getMonth() + 1);
+      const currentYear = String(now.getFullYear());
       if (
-        byYear[curYear] &&
-        byYear[curYear].total === 0 &&
-        (monthFilter === '0' || monthFilter === curMonth)
+        byYear[currentYear] && !byYear[currentYear].disponivel &&
+        (monthFilter === '0' || Number(monthFilter) === now.getMonth() + 1)
       ) {
         for (const sRow of monthlyInsuranceFallback) {
-          const storeName = getStoreName(String(sRow.loja || ''));
-          if (
-            selectedStores.length > 0 &&
-            !selectedStores.map((s) => s.toUpperCase()).includes(storeName.toUpperCase())
-          ) {
-            continue;
-          }
-          byYear[curYear].total += toNumberSafe(sRow.valorSeguro || sRow.seguros || 0);
-          byYear[curYear].qtd += toNumberSafe(sRow.qtdSeguros || 0);
+          const loja = getStoreName(String(sRow.loja || ''));
+          if (selectedStores.length && !selectedStores.includes(loja)) continue;
+          const valor = toNumberSafe(sRow.valorSeguro ?? sRow.seguros ?? 0);
+          const qtd = toNumberSafe(sRow.qtdSeguros ?? 0);
+          byYear[currentYear].total += valor;
+          byYear[currentYear].qtd += qtd;
+          byYear[currentYear].disponivel ||= valor !== 0 || qtd !== 0;
         }
       }
     }
-
     return {
-      yearA: byYear[yearA] || { total: 0, qtd: 0 },
-      yearB: byYear[yearB] || { total: 0, qtd: 0 },
+      yearA: byYear[yearA] || { total: 0, qtd: 0, disponivel: false },
+      yearB: byYear[yearB] || { total: 0, qtd: 0, disponivel: false },
     };
-  }, [filteredAnnualStoreCompare, filteredRawData, monthlyInsuranceFallback, selectedStores, monthFilter, yearA, yearB]);
+  }, [filteredAnnualStoreCompare, filteredRawData, monthlyInsuranceFallback, selectedStores, monthFilter, yearA, yearB, insuranceCompareError]);
 
   /* ============================================================================
      CÁLCULO DA ABA: "VISÃO POR LOJA" (FATURAMENTO, SEGURO E MÊS A MÊS)
@@ -888,6 +920,9 @@ export default function ComparativoAnual() {
     type StoreEntry = {
       loja: string;
       regiao: string;
+      uf: string;
+      segAvailableA: boolean;
+      segAvailableB: boolean;
       fatA: number;
       fatB: number;
       segA: number;
@@ -910,6 +945,9 @@ export default function ComparativoAnual() {
         storeMap.set(cleanName, {
           loja: cleanName,
           regiao: getStoreRegion(cleanName, rawRegion),
+          uf: getStoreUf(cleanName, rawRegion),
+          segAvailableA: false,
+          segAvailableB: false,
           fatA: 0,
           fatB: 0,
           segA: 0,
@@ -943,61 +981,70 @@ export default function ComparativoAnual() {
       const matchesSelectedMonth = monthFilter === '0' || ym.month === String(monthFilter).padStart(2, '0');
       if (matchesSelectedMonth) {
         if (ym.year === yearA) {
-          if (isSeg) entry.segA += total;
+          if (isSeg) { entry.segA += total; entry.segAvailableA = true; }
           else entry.fatA += total;
         } else if (ym.year === yearB) {
-          if (isSeg) entry.segB += total;
+          if (isSeg) { entry.segB += total; entry.segAvailableB = true; }
           else entry.fatB += total;
         }
       }
     }
 
-    const apiInsuranceByStore = new Map<string, { segA: number; segB: number }>();
+    // A rota anual envia o agregado por loja/mês e se existe fonte histórica.
+    // Se a loja não possui base de 2025, não exibimos "0" nem +100% falsos.
+    const apiInsuranceByStore = new Map<string, {
+      segA: number; segB: number; availableA: boolean; availableB: boolean;
+    }>();
     for (const row of filteredAnnualStoreCompare) {
       const year = String(row.ano || row.ANO || '');
       if (year !== yearA && year !== yearB) continue;
-
       const storeName = getStoreName(String(row.loja || row.LOJA || row.cnpj_empresa || row.CNPJ_EMPRESA || ''));
       if (!storeName || storeName === 'N/D') continue;
-
-      const segVal = toNumberSafe(row.seguro_total || row.SEGURO_TOTAL || 0);
       if (!apiInsuranceByStore.has(storeName)) {
-        apiInsuranceByStore.set(storeName, { segA: 0, segB: 0 });
+        apiInsuranceByStore.set(storeName, { segA: 0, segB: 0, availableA: false, availableB: false });
       }
-      const item = apiInsuranceByStore.get(storeName)!;
-      if (year === yearA) item.segA += segVal;
-      if (year === yearB) item.segB += segVal;
+      const current = apiInsuranceByStore.get(storeName)!;
+      const value = toNumberSafe(row.seguro_total ?? row.SEGURO_TOTAL ?? 0);
+      const qtd = toNumberSafe(row.seguro_qtd ?? row.SEGURO_QTD ?? 0);
+      const available = Boolean(row.seguro_disponivel ?? (value !== 0 || qtd !== 0));
+      if (year === yearA) {
+        current.segA += value;
+        current.availableA ||= available;
+      } else {
+        current.segB += value;
+        current.availableB ||= available;
+      }
     }
 
-    apiInsuranceByStore.forEach((segVals, storeName) => {
-      if (segVals.segA > 0 || segVals.segB > 0) {
-        const entry = ensureStore(storeName);
-        entry.segA = segVals.segA;
-        entry.segB = segVals.segB;
+    apiInsuranceByStore.forEach((seg, storeName) => {
+      const entry = ensureStore(storeName);
+      if (seg.availableA) {
+        entry.segA = seg.segA;
+        entry.segAvailableA = true;
+      }
+      if (seg.availableB) {
+        entry.segB = seg.segB;
+        entry.segAvailableB = true;
       }
     });
 
     const now = new Date();
     const curYear = String(now.getFullYear());
-    const curMonth = String(now.getMonth() + 1);
     if (
-      yearB === curYear &&
-      (monthFilter === '0' || monthFilter === curMonth) &&
-      apiInsuranceByStore.size === 0
+      yearB === curYear && (monthFilter === '0' || Number(monthFilter) === now.getMonth() + 1) &&
+      (insuranceCompareError || apiInsuranceByStore.size === 0)
     ) {
-      for (const sRow of monthlyInsuranceFallback) {
-        const storeName = getStoreName(String(sRow.loja || ''));
+      for (const row of monthlyInsuranceFallback) {
+        const storeName = getStoreName(String(row.loja || ''));
         if (!storeName || storeName === 'N/D') continue;
-        if (
-          selectedStores.length > 0 &&
-          !selectedStores.map((s) => s.toUpperCase()).includes(storeName.toUpperCase())
-        ) {
-          continue;
-        }
-        const val = toNumberSafe(sRow.valorSeguro || sRow.seguros || 0);
+        if (selectedStores.length && !selectedStores.includes(storeName)) continue;
+        const val = toNumberSafe(row.valorSeguro ?? row.seguros ?? 0);
         if (val > 0) {
           const entry = ensureStore(storeName);
-          if (entry.segB === 0) entry.segB = val;
+          if (!entry.segAvailableB) {
+            entry.segB = val;
+            entry.segAvailableB = true;
+          }
         }
       }
     }
@@ -1007,7 +1054,7 @@ export default function ComparativoAnual() {
       .map((s) => ({
         ...s,
         fatPct: calcVariationPct(s.fatA, s.fatB),
-        segPct: calcVariationPct(s.segA, s.segB),
+        segPct: s.segAvailableA && s.segAvailableB ? calcVariationPct(s.segA, s.segB) : null,
       }));
 
     const regionMap = new Map<
@@ -1016,10 +1063,10 @@ export default function ComparativoAnual() {
     >();
 
     for (const s of allStores) {
-      if (!regionMap.has(s.regiao)) {
-        regionMap.set(s.regiao, { regiao: s.regiao, fatA: 0, fatB: 0, segA: 0, segB: 0, count: 0 });
+      if (!regionMap.has(s.uf)) {
+        regionMap.set(s.uf, { regiao: s.uf, fatA: 0, fatB: 0, segA: 0, segB: 0, count: 0 });
       }
-      const r = regionMap.get(s.regiao)!;
+      const r = regionMap.get(s.uf)!;
       r.fatA += s.fatA;
       r.fatB += s.fatB;
       r.segA += s.segA;
@@ -1033,27 +1080,49 @@ export default function ComparativoAnual() {
         fatPct: calcVariationPct(r.fatA, r.fatB),
         segPct: calcVariationPct(r.segA, r.segB),
       }))
-      .sort((a, b) => b.fatB - a.fatB);
+      .sort((a, b) => a.regiao.localeCompare(b.regiao, 'pt-BR'));
 
     const visibleStores = allStores
       .filter((s) => {
-        if (selectedRegionFilter !== 'TODAS' && s.regiao !== selectedRegionFilter) return false;
+        if (selectedRegionFilter !== 'TODAS' && s.uf !== selectedRegionFilter) return false;
         if (searchStoreQuery.trim() !== '') {
           const term = searchStoreQuery.trim().toLowerCase();
-          if (!s.loja.toLowerCase().includes(term) && !s.regiao.toLowerCase().includes(term)) return false;
+          if (!s.loja.toLowerCase().includes(term) && !s.regiao.toLowerCase().includes(term) && !s.uf.toLowerCase().includes(term)) return false;
         }
         return true;
       })
       .sort((a, b) => {
+        // UF sempre é a ordenação primária, qualquer que seja a métrica escolhida.
+        const ufOrder = a.uf.localeCompare(b.uf, 'pt-BR');
+        if (ufOrder !== 0) return ufOrder;
         if (storeSortKey === 'loja') {
           return storeSortDir === 'asc'
-            ? a.loja.localeCompare(b.loja)
-            : b.loja.localeCompare(a.loja);
+            ? a.loja.localeCompare(b.loja, 'pt-BR')
+            : b.loja.localeCompare(a.loja, 'pt-BR');
         }
         const valA = a[storeSortKey] ?? -999999;
         const valB = b[storeSortKey] ?? -999999;
-        return storeSortDir === 'asc' ? Number(valA) - Number(valB) : Number(valB) - Number(valA);
+        const result = storeSortDir === 'asc' ? Number(valA) - Number(valB) : Number(valB) - Number(valA);
+        return result || a.loja.localeCompare(b.loja, 'pt-BR');
       });
+
+    const stateGroups = Array.from(new Set(visibleStores.map((store) => store.uf)))
+      .map((uf) => {
+        const stores = visibleStores.filter((store) => store.uf === uf);
+        return {
+          uf,
+          stores,
+          fatA: stores.reduce((sum, store) => sum + store.fatA, 0),
+          fatB: stores.reduce((sum, store) => sum + store.fatB, 0),
+        };
+      });
+
+    const networkTotals = {
+      fatA: allStores.reduce((sum, store) => sum + store.fatA, 0),
+      fatB: allStores.reduce((sum, store) => sum + store.fatB, 0),
+      segA: allStores.reduce((sum, store) => sum + store.segA, 0),
+      segB: allStores.reduce((sum, store) => sum + store.segB, 0),
+    };
 
     const totals = visibleStores.reduce(
       (acc, s) => {
@@ -1081,10 +1150,16 @@ export default function ComparativoAnual() {
       allStores,
       visibleStores,
       regions,
+      stateGroups,
+      networkTotals: {
+        ...networkTotals,
+        fatPct: calcVariationPct(networkTotals.fatA, networkTotals.fatB),
+      },
       totals: {
         ...totals,
         fatPct: calcVariationPct(totals.fatA, totals.fatB),
-        segPct: calcVariationPct(totals.segA, totals.segB),
+        segPct: visibleStores.every((store) => store.segAvailableA && store.segAvailableB)
+          ? calcVariationPct(totals.segA, totals.segB) : null,
       },
     };
   }, [
@@ -1201,6 +1276,23 @@ export default function ComparativoAnual() {
     const valid = productComparison.filter((p) => p.totalA > 10000);
     return valid.sort((a, b) => b.crescimentoPct - a.crescimentoPct)[0] || null;
   }, [productComparison]);
+
+  const insuranceMonthsLoaded = useMemo(() => {
+    const result: Record<string, Set<number>> = {
+      [yearA]: new Set<number>(),
+      [yearB]: new Set<number>(),
+    };
+    for (const row of filteredAnnualStoreCompare) {
+      const year = String(row.ano ?? '');
+      const month = Number(row.mes ?? 0);
+      const amount = toNumberSafe(row.seguro_total ?? row.SEGURO_TOTAL ?? 0);
+      const qty = toNumberSafe(row.seguro_qtd ?? row.SEGURO_QTD ?? 0);
+      if (result[year] && month >= 1 && month <= 12 && (amount !== 0 || qty !== 0)) {
+        result[year].add(month);
+      }
+    }
+    return { a: result[yearA]?.size || 0, b: result[yearB]?.size || 0 };
+  }, [filteredAnnualStoreCompare, yearA, yearB]);
 
   const noData = computed.totalA + computed.totalB + segurosComputed.yearB.total <= 0;
 
@@ -1427,9 +1519,9 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
             <SmallMetricCard
               title="Seguros"
               icon={<ShieldCheck size={16} />}
-              value={formatMoney(segurosComputed.yearB.total)}
+              value={segurosComputed.yearB.disponivel ? formatMoney(segurosComputed.yearB.total) : 'Sem histórico'}
               valueClass="text-slate-900"
-              subtitle={`Qtd. seguros (${yearB}): ${Math.round(segurosComputed.yearB.qtd).toLocaleString('pt-BR')}\nSeguros ${yearA}: ${formatMoney(segurosComputed.yearA.total)}`}
+              subtitle={`Qtd. seguros (${yearB}): ${segurosComputed.yearB.disponivel ? Math.round(segurosComputed.yearB.qtd).toLocaleString('pt-BR') : 'indisponível'}\nSeguros ${yearA}: ${segurosComputed.yearA.disponivel ? formatMoney(segurosComputed.yearA.total) : 'histórico não importado'}`}
             />
 
             <SmallMetricCard
@@ -1612,11 +1704,11 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
       {activeTab === 'lojas' && (
         <div className="space-y-3.5 animate-in fade-in duration-300">
           {/* FAIXA COMPACTA DE REGIÕES (MINICARDS EXECUTIVOS) */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5">
+          <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-7 gap-2">
             {/* Card Rede Total */}
             <div
               onClick={() => setSelectedRegionFilter('TODAS')}
-              className={`cursor-pointer px-3.5 py-2.5 rounded-xl border transition-all flex flex-col justify-between ${
+              className={`cursor-pointer px-3 py-2 rounded-xl border transition-all flex flex-col justify-between ${
                 selectedRegionFilter === 'TODAS'
                   ? 'bg-slate-900 text-white border-slate-900 shadow-sm'
                   : 'bg-white text-slate-800 border-slate-200/90 hover:border-orange-300'
@@ -1626,27 +1718,27 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
                 <span className={`text-[9px] font-black uppercase tracking-wider truncate ${selectedRegionFilter === 'TODAS' ? 'text-orange-400' : 'text-slate-400'}`}>
                   REDE TOTAL ({storeVisionData.allStores.length})
                 </span>
-                {storeVisionData.totals.fatPct !== null && (
+                {storeVisionData.networkTotals.fatPct !== null && (
                   <span
                     className={`px-1.5 py-0.5 rounded text-[9px] font-black shrink-0 ${
-                      storeVisionData.totals.fatPct >= 0
+                      storeVisionData.networkTotals.fatPct >= 0
                         ? 'bg-emerald-500/20 text-emerald-300'
                         : 'bg-rose-500/20 text-rose-300'
                     }`}
                   >
-                    {formatPctBadgeText(storeVisionData.totals.fatPct, storeVisionData.totals.fatA, storeVisionData.totals.fatB)}
+                    {formatPctBadgeText(storeVisionData.networkTotals.fatPct, storeVisionData.networkTotals.fatA, storeVisionData.networkTotals.fatB)}
                   </span>
                 )}
               </div>
               <div className="mt-1 flex items-baseline justify-between gap-2">
-                <span className="text-sm md:text-base font-black tracking-tight truncate">
-                  {formatMoneyNoCents(storeVisionData.totals.fatB)}
+                <span className="text-[13px] font-black tracking-tight tabular-nums truncate">
+                  {formatMoneyNoCents(storeVisionData.networkTotals.fatB)}
                 </span>
               </div>
               <div className={`mt-1 pt-1 border-t flex items-center justify-between text-[9px] font-bold ${selectedRegionFilter === 'TODAS' ? 'border-slate-800 text-slate-400' : 'border-slate-100 text-slate-400'}`}>
-                <span className="truncate">{periodHeaderA}: {formatMoneyShort(storeVisionData.totals.fatA)}</span>
+                <span className="truncate">{periodHeaderA}: {formatMoneyShort(storeVisionData.networkTotals.fatA)}</span>
                 <span className={selectedRegionFilter === 'TODAS' ? 'text-orange-300 font-black' : 'text-slate-600 font-black'}>
-                  Seg: {formatMoneyShort(storeVisionData.totals.segB)}
+                  Seguro: {segurosComputed.yearB.disponivel ? formatMoneyShort(storeVisionData.networkTotals.segB) : 'sem histórico'}
                 </span>
               </div>
             </div>
@@ -1659,7 +1751,7 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
                 <div
                   key={reg.regiao}
                   onClick={() => setSelectedRegionFilter(isSelected ? 'TODAS' : reg.regiao)}
-                  className={`cursor-pointer px-3.5 py-2.5 rounded-xl border transition-all flex flex-col justify-between ${
+                  className={`cursor-pointer px-3 py-2 rounded-xl border transition-all flex flex-col justify-between ${
                     isSelected
                       ? 'bg-orange-50/90 border-orange-500 ring-2 ring-orange-500/15 shadow-xs'
                       : 'bg-white border-slate-200/90 hover:border-orange-300'
@@ -1668,7 +1760,7 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
                   <div className="flex items-center justify-between gap-1">
                     <span className="text-[9px] font-black uppercase tracking-wider text-slate-500 truncate flex items-center gap-1">
                       <MapPin size={10} className="text-orange-500 shrink-0" />
-                      {reg.regiao} ({reg.count})
+                      {reg.regiao} · {reg.count} lojas
                     </span>
                     {reg.fatPct !== null && (
                       <span
@@ -1681,13 +1773,13 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
                     )}
                   </div>
                   <div className="mt-1 flex items-baseline justify-between gap-2">
-                    <span className="text-sm md:text-base font-black text-slate-900 tracking-tight truncate">
+                    <span className="text-[13px] font-black text-slate-900 tracking-tight truncate">
                       {formatMoneyNoCents(reg.fatB)}
                     </span>
                   </div>
                   <div className="mt-1 pt-1 border-t border-slate-100 flex items-center justify-between text-[9px] font-bold text-slate-400">
                     <span className="truncate">{periodHeaderA}: {formatMoneyShort(reg.fatA)}</span>
-                    <span className="text-slate-600 font-black">Seg: {formatMoneyShort(reg.segB)}</span>
+                    <span className="text-slate-600 font-black">Seguro: {segurosComputed.yearB.disponivel ? formatMoneyShort(reg.segB) : 'sem histórico'}</span>
                   </div>
                 </div>
               );
@@ -1811,241 +1903,135 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
                 MODO 1: TABELA EXECUTIVA FATURAMENTO GERAL & SEGURO GERAL
                ==================================================================== */}
             {storeViewMode === 'comparativo' && (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse">
-                  <thead>
-                    {/* Agrupadores Superiores */}
-                    <tr className="border-b border-slate-200 bg-slate-900 text-white text-[10px] font-black uppercase tracking-wider">
-                      <th className="py-2.5 px-4 border-r border-slate-800">
-                        Unidade / Filial ({storeVisionData.visibleStores.length})
-                      </th>
-                      <th colSpan={3} className="py-2.5 px-4 text-center border-r border-slate-800 text-orange-400">
-                        Faturamento Geral ({periodHeaderA} vs {periodHeaderB})
-                      </th>
-                      <th colSpan={3} className="py-2.5 px-4 text-center text-sky-400">
-                        Seguro Geral ({periodHeaderA} vs {periodHeaderB})
-                      </th>
-                    </tr>
-
-                    {/* Colunas Ordenáveis */}
-                    <tr className="border-b border-slate-200 bg-slate-100/90 text-[10px] font-black uppercase text-slate-600 select-none">
-                      <th
-                        onClick={() => handleStoreSort('loja')}
-                        className="cursor-pointer py-2 px-4 border-r border-slate-200 hover:bg-slate-200/60 transition-colors"
-                      >
-                        <div className="flex items-center gap-1.5">
-                          <span>Loja</span>
-                          {renderSortIcon('loja')}
-                        </div>
-                      </th>
-
-                      <th
-                        onClick={() => handleStoreSort('fatA')}
-                        className="cursor-pointer py-2 px-3 text-right hover:bg-slate-200/60 transition-colors"
-                      >
-                        <div className="inline-flex items-center justify-end gap-1">
-                          <span>{periodHeaderA}</span>
-                          {renderSortIcon('fatA')}
-                        </div>
-                      </th>
-
-                      <th
-                        onClick={() => handleStoreSort('fatB')}
-                        className="cursor-pointer py-2 px-3 text-right border-l border-slate-200/70 bg-orange-50/40 text-slate-900 hover:bg-orange-100/50 transition-colors"
-                      >
-                        <div className="inline-flex items-center justify-end gap-1">
-                          <span>{periodHeaderB}</span>
-                          {renderSortIcon('fatB')}
-                        </div>
-                      </th>
-
-                      <th
-                        onClick={() => handleStoreSort('fatPct')}
-                        className="cursor-pointer py-2 px-3 text-center border-x border-slate-200 hover:bg-slate-200/60 transition-colors"
-                      >
-                        <div className="inline-flex items-center justify-center gap-1">
-                          <span>% Ating.</span>
-                          {renderSortIcon('fatPct')}
-                        </div>
-                      </th>
-
-                      <th
-                        onClick={() => handleStoreSort('segA')}
-                        className="cursor-pointer py-2 px-3 text-right hover:bg-slate-200/60 transition-colors"
-                      >
-                        <div className="inline-flex items-center justify-end gap-1">
-                          <span>{periodHeaderA}</span>
-                          {renderSortIcon('segA')}
-                        </div>
-                      </th>
-
-                      <th
-                        onClick={() => handleStoreSort('segB')}
-                        className="cursor-pointer py-2 px-3 text-right border-l border-slate-200/70 bg-sky-50/40 text-slate-900 hover:bg-sky-100/50 transition-colors"
-                      >
-                        <div className="inline-flex items-center justify-end gap-1">
-                          <span>{periodHeaderB}</span>
-                          {renderSortIcon('segB')}
-                        </div>
-                      </th>
-
-                      <th
-                        onClick={() => handleStoreSort('segPct')}
-                        className="cursor-pointer py-2 px-3 text-center border-l border-slate-200 hover:bg-slate-200/60 transition-colors"
-                      >
-                        <div className="inline-flex items-center justify-center gap-1">
-                          <span>% Ating.</span>
-                          {renderSortIcon('segPct')}
-                        </div>
-                      </th>
-                    </tr>
-                  </thead>
-
-                  <tbody className="divide-y divide-slate-100 text-xs font-bold text-slate-700">
-                    {storeVisionData.visibleStores.map((item, idx) => {
-                      const fatPctText = formatPctBadgeText(item.fatPct, item.fatA, item.fatB);
-                      const segPctText = formatPctBadgeText(item.segPct, item.segA, item.segB);
-
-                      return (
-                        <tr key={item.loja} className="hover:bg-orange-50/30 transition-colors even:bg-slate-50/30">
-                          <td className="py-2 px-4 border-r border-slate-100 font-black text-slate-800 uppercase whitespace-nowrap">
-                            <div className="flex items-center justify-between gap-2">
-                              <div className="flex items-center gap-2">
-                                <span className="text-[10px] font-bold text-slate-400 w-4">{idx + 1}.</span>
-                                <span>{item.loja}</span>
-                              </div>
-                              <span className="text-[9px] font-extrabold px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">
-                                {item.regiao}
-                              </span>
-                            </div>
-                          </td>
-
-                          {/* Faturamento Ano A */}
-                          <td className="py-2 px-3 text-right font-mono text-slate-500 whitespace-nowrap">
-                            {item.fatA > 0 ? formatMoney(item.fatA) : '—'}
-                          </td>
-
-                          {/* Faturamento Ano B */}
-                          <td className="py-2 px-3 text-right font-mono font-black text-slate-900 bg-orange-50/20 border-l border-slate-100 whitespace-nowrap">
-                            {item.fatB > 0 ? formatMoney(item.fatB) : '—'}
-                          </td>
-
-                          {/* % Ating Faturamento */}
-                          <td className="py-2 px-3 text-center border-x border-slate-100 whitespace-nowrap">
-                            {item.fatPct === null ? (
-                              <span className="text-slate-300">—</span>
-                            ) : (
-                              <span
-                                className={`inline-flex items-center justify-center min-w-[52px] px-2 py-0.5 rounded-md font-black text-[11px] ${
-                                  item.fatPct < 0
-                                    ? 'text-rose-700 bg-rose-50 border border-rose-200/60'
-                                    : 'text-emerald-700 bg-emerald-50 border border-emerald-200/60'
-                                }`}
-                              >
-                                {fatPctText}
-                              </span>
-                            )}
-                          </td>
-
-                          {/* Seguro Ano A */}
-                          <td className="py-2 px-3 text-right font-mono text-slate-500 whitespace-nowrap">
-                            {item.segA > 0 ? formatMoney(item.segA) : '—'}
-                          </td>
-
-                          {/* Seguro Ano B */}
-                          <td className="py-2 px-3 text-right font-mono font-black text-slate-900 bg-sky-50/20 border-l border-slate-100 whitespace-nowrap">
-                            {item.segB > 0 ? formatMoney(item.segB) : '—'}
-                          </td>
-
-                          {/* % Ating Seguro */}
-                          <td className="py-2 px-3 text-center border-l border-slate-100 whitespace-nowrap">
-                            {item.segPct === null ? (
-                              <span className="text-slate-300">—</span>
-                            ) : (
-                              <span
-                                className={`inline-flex items-center justify-center min-w-[52px] px-2 py-0.5 rounded-md font-black text-[11px] ${
-                                  item.segPct < 0
-                                    ? 'text-rose-700 bg-rose-50 border border-rose-200/60'
-                                    : 'text-emerald-700 bg-emerald-50 border border-emerald-200/60'
-                                }`}
-                              >
-                                {segPctText}
-                              </span>
-                            )}
-                          </td>
-                        </tr>
-                      );
-                    })}
-
-                    {storeVisionData.visibleStores.length === 0 && (
-                      <tr>
-                        <td colSpan={7} className="p-10 text-center text-slate-400 font-bold">
-                          Nenhuma loja encontrada para os filtros selecionados.
-                        </td>
-                      </tr>
+              <div className="px-2 py-2 sm:px-3 sm:py-3">
+                <div className="flex flex-wrap items-center justify-between gap-2 px-2 pb-2.5">
+                  <div className="flex items-center gap-2 text-[11px] font-bold text-slate-600">
+                    <span className="inline-flex items-center gap-1.5 rounded-md bg-slate-100 px-2 py-1 text-slate-800">
+                      <MapPin size={12} className="text-orange-500" /> Ordenado por UF
+                    </span>
+                    <span>{storeVisionData.visibleStores.length} filiais · {storeVisionData.stateGroups.length} UFs</span>
+                  </div>
+                  <div className="text-right text-[10px] text-slate-500">
+                    <span className="block">Clique no cabeçalho para ordenar dentro de cada UF.</span>
+                    {monthFilter === '0' && (
+                      <span className="block mt-0.5 text-slate-400">Seguros: {insuranceMonthsLoaded.a} {insuranceMonthsLoaded.a === 1 ? 'mês' : 'meses'} com registros em {yearA} · {insuranceMonthsLoaded.b} {insuranceMonthsLoaded.b === 1 ? 'mês' : 'meses'} em {yearB}</span>
                     )}
-                  </tbody>
-
-                  {storeVisionData.visibleStores.length > 0 && (
-                    <tfoot className="bg-slate-900 text-white text-xs font-black">
-                      <tr>
-                        <td className="py-3 px-4 uppercase border-r border-slate-800">
-                          TOTAL CONSOLIDADO ({storeVisionData.visibleStores.length} Lojas)
-                        </td>
-                        <td className="py-3 px-3 text-right font-mono text-slate-300 whitespace-nowrap">
-                          {formatMoney(storeVisionData.totals.fatA)}
-                        </td>
-                        <td className="py-3 px-3 text-right font-mono text-orange-400 border-l border-slate-800 whitespace-nowrap">
-                          {formatMoney(storeVisionData.totals.fatB)}
-                        </td>
-                        <td className="py-3 px-3 text-center border-x border-slate-800 whitespace-nowrap">
-                          {storeVisionData.totals.fatPct !== null ? (
-                            <span
-                              className={`px-2 py-0.5 rounded text-[11px] ${
-                                storeVisionData.totals.fatPct >= 0
-                                  ? 'bg-emerald-500/20 text-emerald-300'
-                                  : 'bg-rose-500/20 text-rose-300'
-                              }`}
-                            >
-                              {formatPctBadgeText(
-                                storeVisionData.totals.fatPct,
-                                storeVisionData.totals.fatA,
-                                storeVisionData.totals.fatB
-                              )}
-                            </span>
-                          ) : (
-                            '—'
-                          )}
-                        </td>
-                        <td className="py-3 px-3 text-right font-mono text-slate-300 whitespace-nowrap">
-                          {formatMoney(storeVisionData.totals.segA)}
-                        </td>
-                        <td className="py-3 px-3 text-right font-mono text-sky-400 border-l border-slate-800 whitespace-nowrap">
-                          {formatMoney(storeVisionData.totals.segB)}
-                        </td>
-                        <td className="py-3 px-3 text-center border-l border-slate-800 whitespace-nowrap">
-                          {storeVisionData.totals.segPct !== null ? (
-                            <span
-                              className={`px-2 py-0.5 rounded text-[11px] ${
-                                storeVisionData.totals.segPct >= 0
-                                  ? 'bg-emerald-500/20 text-emerald-300'
-                                  : 'bg-rose-500/20 text-rose-300'
-                              }`}
-                            >
-                              {formatPctBadgeText(
-                                storeVisionData.totals.segPct,
-                                storeVisionData.totals.segA,
-                                storeVisionData.totals.segB
-                              )}
-                            </span>
-                          ) : (
-                            '—'
-                          )}
-                        </td>
+                  </div>
+                </div>
+                {(!segurosComputed.yearA.disponivel || !segurosComputed.yearB.disponivel || insuranceCompareError) && (
+                  <div className="mb-2 mx-1 flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] font-semibold text-amber-900">
+                    <AlertCircle size={14} className="shrink-0" />
+                    {insuranceCompareError
+                      ? 'Não foi possível consultar a rota anual de seguros. Os números precisam ser conferidos após restabelecer a API.'
+                      : `Histórico de seguros incompleto: ${!segurosComputed.yearA.disponivel ? yearA : ''}${!segurosComputed.yearA.disponivel && !segurosComputed.yearB.disponivel ? ' e ' : ''}${!segurosComputed.yearB.disponivel ? yearB : ''}. Valores sem fonte são exibidos como indisponíveis, não como zero.`}
+                  </div>
+                )}
+                <div className="overflow-x-auto rounded-xl border border-slate-200">
+                  <table className="w-full min-w-[1050px] table-fixed border-collapse text-left text-[11px] tabular-nums">
+                    <colgroup>
+                      <col style={{ width: '25%' }} />
+                      <col style={{ width: '14%' }} />
+                      <col style={{ width: '14%' }} />
+                      <col style={{ width: '9%' }} />
+                      <col style={{ width: '14%' }} />
+                      <col style={{ width: '14%' }} />
+                      <col style={{ width: '10%' }} />
+                    </colgroup>
+                    <thead>
+                      <tr className="bg-slate-900 text-[10px] font-black uppercase tracking-wide text-white">
+                        <th rowSpan={2} className="sticky left-0 z-20 border-r border-slate-700 bg-slate-900 px-3 py-3">
+                          <button onClick={() => handleStoreSort('loja')} className="flex items-center gap-2 hover:text-orange-300">
+                            <Store size={13} className="text-orange-400" /> UF / filial {renderSortIcon('loja')}
+                          </button>
+                        </th>
+                        <th colSpan={3} className="border-r border-slate-700 px-3 py-2 text-center text-orange-300">
+                          Faturamento · {yearA} × {yearB}
+                        </th>
+                        <th colSpan={3} className="px-3 py-2 text-center text-sky-300">
+                          Seguros · {yearA} × {yearB}
+                        </th>
                       </tr>
-                    </tfoot>
-                  )}
-                </table>
+                      <tr className="bg-slate-100 text-[10px] font-black uppercase text-slate-600">
+                        {([
+                          ['fatA', periodHeaderA, ''],
+                          ['fatB', periodHeaderB, 'text-orange-700 bg-orange-50/80'],
+                          ['fatPct', 'Variação', ''],
+                          ['segA', periodHeaderA, ''],
+                          ['segB', periodHeaderB, 'text-sky-800 bg-sky-50/80'],
+                          ['segPct', 'Variação', ''],
+                        ] as Array<[StoreSortKey, string, string]>).map(([key, name, accent]) => (
+                          <th key={key} scope="col" aria-sort={storeSortKey === key ? (storeSortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
+                            onClick={() => handleStoreSort(key)}
+                            className={`cursor-pointer border-l border-slate-200 px-2.5 py-2 text-right hover:bg-orange-100/60 ${accent}`}>
+                            <span className="inline-flex items-center justify-end gap-1.5">{name}{renderSortIcon(key)}</span>
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {storeVisionData.stateGroups.map((group) => (
+                        <React.Fragment key={group.uf}>
+                          <tr className="bg-slate-100/95 border-y border-slate-200">
+                            <td colSpan={7} className="px-3 py-2">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="flex items-center gap-2">
+                                  <span className="inline-flex h-6 min-w-7 items-center justify-center rounded-md bg-slate-900 px-1.5 text-[11px] font-black text-white">{group.uf}</span>
+                                  <span className="text-[11px] font-black uppercase tracking-wide text-slate-800">{UF_FULL_NAMES[group.uf] || group.uf}</span>
+                                  <span className="text-[10px] font-bold text-slate-500">{group.stores.length} {group.stores.length === 1 ? 'filial' : 'filiais'}</span>
+                                </div>
+                                <div className="flex items-center gap-3 text-[10px] font-bold text-slate-600">
+                                  <span>Faturamento {yearB}: <strong className="text-orange-700">{formatMoney(group.fatB)}</strong></span>
+                                  <span className="hidden md:inline">{formatPctBadgeText(calcVariationPct(group.fatA, group.fatB), group.fatA, group.fatB)} vs {yearA}</span>
+                                </div>
+                              </div>
+                            </td>
+                          </tr>
+                          {group.stores.map((item, index) => (
+                            <tr key={item.loja} className="group border-b border-slate-100 even:bg-slate-50/45 hover:bg-orange-50/60">
+                              <td className="sticky left-0 z-10 border-r border-slate-100 bg-white group-hover:bg-orange-50 px-3 py-[9px]">
+                                <div className="flex items-center gap-2.5 min-w-0">
+                                  <span className="w-4 shrink-0 text-[10px] font-semibold text-slate-400">{String(index + 1).padStart(2, '0')}</span>
+                                  <div className="h-5 w-[3px] shrink-0 rounded-full bg-orange-400/70" />
+                                  <span title={item.loja} className="truncate text-[11px] font-extrabold text-slate-800">{item.loja}</span>
+                                </div>
+                              </td>
+                              <td className="px-2.5 py-[9px] text-right font-semibold text-slate-500">{item.fatA ? formatMoney(item.fatA) : '—'}</td>
+                              <td className="border-l border-slate-100 bg-orange-50/35 px-2.5 py-[9px] text-right font-extrabold text-slate-900">{item.fatB ? formatMoney(item.fatB) : '—'}</td>
+                              <td className="px-2 py-[9px] text-right">
+                                <span className={`inline-flex min-w-[55px] justify-center rounded-md border px-1.5 py-1 text-[10px] font-extrabold ${item.fatPct === null ? 'border-slate-200 bg-slate-50 text-slate-400' : item.fatPct >= 0 ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-rose-200 bg-rose-50 text-rose-700'}`}>
+                                  {formatPctBadgeText(item.fatPct, item.fatA, item.fatB)}
+                                </span>
+                              </td>
+                              <td className="border-l border-slate-200 px-2.5 py-[9px] text-right font-semibold text-slate-500">{item.segAvailableA ? (item.segA ? formatMoney(item.segA) : 'R$ 0,00') : <span title="Sem fonte histórica para o período">s/ histórico</span>}</td>
+                              <td className="border-l border-slate-100 bg-sky-50/40 px-2.5 py-[9px] text-right font-extrabold text-slate-900">{item.segAvailableB ? formatMoney(item.segB) : <span className="font-semibold text-slate-400" title="Sem fonte histórica para o período">s/ histórico</span>}</td>
+                              <td className="px-2 py-[9px] text-right">
+                                <span className={`inline-flex min-w-[55px] justify-center rounded-md border px-1.5 py-1 text-[10px] font-extrabold ${item.segPct === null ? 'border-slate-200 bg-slate-50 text-slate-400' : item.segPct >= 0 ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-rose-200 bg-rose-50 text-rose-700'}`}>
+                                  {formatPctBadgeText(item.segPct, item.segA, item.segB)}
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                        </React.Fragment>
+                      ))}
+                      {storeVisionData.visibleStores.length === 0 && (
+                        <tr><td colSpan={7} className="p-10 text-center font-bold text-slate-400">Nenhuma filial encontrada para os filtros selecionados.</td></tr>
+                      )}
+                    </tbody>
+                    {storeVisionData.visibleStores.length > 0 && (
+                      <tfoot>
+                        <tr className="bg-slate-900 text-[11px] font-black text-white">
+                          <td className="sticky left-0 z-10 bg-slate-900 px-3 py-3 uppercase">Total · {storeVisionData.visibleStores.length} filiais</td>
+                          <td className="px-2.5 py-3 text-right text-slate-200">{formatMoney(storeVisionData.totals.fatA)}</td>
+                          <td className="border-l border-slate-700 px-2.5 py-3 text-right text-orange-300">{formatMoney(storeVisionData.totals.fatB)}</td>
+                          <td className="px-2 py-3 text-right">{formatPctBadgeText(storeVisionData.totals.fatPct, storeVisionData.totals.fatA, storeVisionData.totals.fatB)}</td>
+                          <td className="border-l border-slate-700 px-2.5 py-3 text-right text-slate-200">{segurosComputed.yearA.disponivel ? formatMoney(storeVisionData.totals.segA) : 's/ histórico'}</td>
+                          <td className="border-l border-slate-700 px-2.5 py-3 text-right text-sky-300">{segurosComputed.yearB.disponivel ? formatMoney(storeVisionData.totals.segB) : 's/ histórico'}</td>
+                          <td className="px-2 py-3 text-right">{formatPctBadgeText(storeVisionData.totals.segPct, storeVisionData.totals.segA, storeVisionData.totals.segB)}</td>
+                        </tr>
+                      </tfoot>
+                    )}
+                  </table>
+                </div>
               </div>
             )}
 
@@ -2118,7 +2104,7 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
                                 {shortenStoreName(store.loja)}
                               </span>
                               <span className="text-[8px] font-extrabold px-1 py-0.2 rounded bg-slate-200/70 text-slate-600 shrink-0">
-                                {store.regiao === 'MINAS GERAIS' ? 'MG' : store.regiao === 'NORDESTE' ? 'NE' : store.regiao === 'GOIÁS' ? 'GO' : store.regiao}
+                                {store.uf}
                               </span>
                             </div>
                           </td>
