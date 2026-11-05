@@ -13329,6 +13329,95 @@ app.post('/api/sync/vendedores_anuais', async (req, res) => {
 });
 // --- FIM DO BLOCO DE SINCRONIZAÇÃO ---
 
+// Exige ANNUAL_SYNC_TOKEN no ambiente do Render e X-Annual-Sync-Token no Python.
+app.post('/api/sync/seguros_anuais', async (req, res) => {
+  const expectedToken = String(process.env.ANNUAL_SYNC_TOKEN || '').trim();
+  const receivedToken = String(req.header('x-annual-sync-token') || '').trim();
+
+  if (!expectedToken || !receivedToken) {
+    return res.status(401).json({ error: 'Token de sincronização anual não configurado.' });
+  }
+  const expected = Buffer.from(expectedToken, 'utf8');
+  const received = Buffer.from(receivedToken, 'utf8');
+  if (expected.length !== received.length || !crypto.timingSafeEqual(expected, received)) {
+    return res.status(403).json({ error: 'Token de sincronização inválido.' });
+  }
+
+  const dados = req.body;
+  const shouldReset = req.query.reset === 'true';
+  if (!Array.isArray(dados) || dados.length === 0 || dados.length > 500) {
+    return res.status(400).json({ error: 'Envie de 1 a 500 seguros por lote.' });
+  }
+
+  // Rejeita dados inválidos ANTES de apagar os registros existentes.
+  const validated: Array<{
+    data_emissao: string; ano: number; mes: number; loja: string;
+    cnpj_empresa: string; nome_vendedor: string; descricao: string;
+    regiao: string; qtd: number; premio: number; nf: string;
+  }> = [];
+
+  for (const item of dados) {
+    const date = String(item?.data_emissao || '').trim();
+    const ano = Number(item?.ano);
+    const mes = Number(item?.mes);
+    const premio = Number(item?.premio);
+    const qtd = Number(item?.qtd);
+    const loja = String(item?.loja || '').trim();
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) ||
+        !Number.isInteger(ano) || !Number.isInteger(mes) || mes < 1 || mes > 12 ||
+        Number(date.slice(0, 4)) !== ano || Number(date.slice(5, 7)) !== mes ||
+        !Number.isFinite(premio) || !Number.isFinite(qtd) || !loja) {
+      return res.status(400).json({ error: 'Lote contém data, loja, prêmio ou quantidade inválidos.' });
+    }
+
+    validated.push({
+      data_emissao: date,
+      ano, mes, loja,
+      cnpj_empresa: String(item?.cnpj_empresa || '').replace(/\D/g, ''),
+      nome_vendedor: String(item?.nome_vendedor || ''),
+      descricao: String(item?.descricao || ''),
+      regiao: String(item?.regiao || ''),
+      qtd, premio,
+      nf: String(item?.nf || ''),
+    });
+  }
+
+  try {
+    await enqueueWrite(async () => {
+      const db = await open({ filename: ANUAL_DB_PATH, driver: sqlite3.Database });
+      let transactionOpen = false;
+      try {
+        await db.exec('PRAGMA busy_timeout = 15000;');
+        await db.exec('BEGIN IMMEDIATE TRANSACTION;');
+        transactionOpen = true;
+        if (shouldReset) await db.run('DELETE FROM seguros_anuais');
+        const sql = `INSERT INTO seguros_anuais
+          (data_emissao, ano, mes, loja, cnpj_empresa, nome_vendedor, descricao, regiao, qtd, premio, nf)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+        for (const item of validated) {
+          await db.run(sql, [
+            item.data_emissao, item.ano, item.mes, item.loja, item.cnpj_empresa,
+            item.nome_vendedor, item.descricao, item.regiao,
+            item.qtd, item.premio, item.nf,
+          ]);
+        }
+        await db.exec('COMMIT;');
+        transactionOpen = false;
+      } catch (error) {
+        if (transactionOpen) await db.exec('ROLLBACK;').catch(() => undefined);
+        throw error;
+      } finally {
+        await db.close();
+      }
+    });
+    return res.json({ ok: true, registros: validated.length, reset: shouldReset });
+  } catch (error: any) {
+    console.error('Erro /api/sync/seguros_anuais:', error);
+    return res.status(500).json({ error: 'Falha ao sincronizar seguros anuais.' });
+  }
+});
+
 app.post('/api/sync/vendas_anuais_raw', async (req, res) => {
   const dados = req.body;
   const shouldReset = req.query.reset !== 'false';

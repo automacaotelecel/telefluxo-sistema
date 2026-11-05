@@ -178,7 +178,7 @@ const CHART_COLORS = {
 const PIE_COLORS = ['#F97316', '#334155', '#FB923C', '#64748B', '#FDBA74', '#94A3B8', '#C2410C', '#CBD5E1'];
 
 type AnyRow = Record<string, any>;
-type StoreSortKey = 'loja' | 'fatA' | 'fatB' | 'fatPct' | 'segA' | 'segB' | 'segPct';
+type StoreSortKey = 'loja' | 'fatA' | 'fatB' | 'fatPct' | 'trendB' | 'trendPct' | 'segA' | 'segB' | 'segPct';
 type MatrixDensity = 'complete' | 'heatmap' | 'clean';
 
 const formatMoney = (val: number) =>
@@ -482,12 +482,17 @@ export default function ComparativoAnual() {
   const [searchProduct, setSearchProduct] = useState('');
 
   // Estados da aba "Visão por Loja"
-  const [storeViewMode, setStoreViewMode] = useState<'comparativo' | 'mes_a_mes'>('comparativo');
+  const [storeViewMode, setStoreViewMode] = useState<'comparativo' | 'mes_a_mes' | 'tendencia'>('comparativo');
   const [matrixDensity, setMatrixDensity] = useState<MatrixDensity>('complete');
   const [selectedRegionFilter, setSelectedRegionFilter] = useState<string>('TODAS');
   const [searchStoreQuery, setSearchStoreQuery] = useState<string>('');
   const [storeSortKey, setStoreSortKey] = useState<StoreSortKey>('loja');
   const [storeSortDir, setStoreSortDir] = useState<'asc' | 'desc'>('asc');
+
+  // A tendência não altera a visão mensal: aparece apenas em Ano Todo.
+  useEffect(() => {
+    if (monthFilter !== '0' && storeViewMode === 'tendencia') setStoreViewMode('comparativo');
+  }, [monthFilter, storeViewMode]);
 
   const API_URL = useMemo(() => {
     const envUrl = String(
@@ -911,6 +916,34 @@ export default function ComparativoAnual() {
     };
   }, [filteredAnnualStoreCompare, filteredRawData, monthlyInsuranceFallback, selectedStores, monthFilter, yearA, yearB, insuranceCompareError]);
 
+  // Fator de projeção para o encerramento de ano. Usa a última data real
+  // disponível na base selecionada (igual para todas as lojas), e não a
+  // última venda individual de cada filial, evitando tendências infladas.
+  const annualTrendInfo = useMemo(() => {
+    const now = new Date();
+    const targetYear = Number(yearB);
+    const daysInYear = Math.round((Date.UTC(targetYear + 1, 0, 1) - Date.UTC(targetYear, 0, 1)) / 86400000);
+    const isCurrentYear = targetYear === now.getFullYear();
+    if (!isCurrentYear || monthFilter !== '0' || startDate || endDate) {
+      return { factor: 1, cutoff: null as Date | null, isProjection: false, daysInYear, elapsedDays: daysInYear };
+    }
+    let latest: Date | null = null;
+    for (const sale of mergedRawData) {
+      const d = parseDateLoose(getDateValue(sale));
+      if (!d || d.getFullYear() !== targetYear || d.getTime() > now.getTime()) continue;
+      if (!latest || d.getTime() > latest.getTime()) latest = d;
+    }
+    if (!latest) return { factor: 1, cutoff: null as Date | null, isProjection: false, daysInYear, elapsedDays: 0 };
+    const elapsedDays = Math.round((Date.UTC(targetYear, latest.getMonth(), latest.getDate()) - Date.UTC(targetYear, 0, 1)) / 86400000) + 1;
+    return {
+      factor: daysInYear / Math.max(1, elapsedDays),
+      cutoff: latest,
+      isProjection: elapsedDays < daysInYear,
+      daysInYear,
+      elapsedDays,
+    };
+  }, [mergedRawData, yearB, monthFilter, startDate, endDate]);
+
   /* ============================================================================
      CÁLCULO DA ABA: "VISÃO POR LOJA" (FATURAMENTO, SEGURO E MÊS A MÊS)
      ============================================================================ */
@@ -1054,6 +1087,10 @@ export default function ComparativoAnual() {
       .map((s) => ({
         ...s,
         fatPct: calcVariationPct(s.fatA, s.fatB),
+        trendB: s.fatB * annualTrendInfo.factor,
+        trendPct: s.fatA > 0 && s.fatB > 0
+          ? ((s.fatB * annualTrendInfo.factor - s.fatA) / s.fatA) * 100
+          : null,
         segPct: s.segAvailableA && s.segAvailableB ? calcVariationPct(s.segA, s.segB) : null,
       }));
 
@@ -1157,6 +1194,10 @@ export default function ComparativoAnual() {
       },
       totals: {
         ...totals,
+        trendB: totals.fatB * annualTrendInfo.factor,
+        trendPct: totals.fatA > 0 && totals.fatB > 0
+          ? ((totals.fatB * annualTrendInfo.factor - totals.fatA) / totals.fatA) * 100
+          : null,
         fatPct: calcVariationPct(totals.fatA, totals.fatB),
         segPct: visibleStores.every((store) => store.segAvailableA && store.segAvailableB)
           ? calcVariationPct(totals.segA, totals.segB) : null,
@@ -1174,6 +1215,7 @@ export default function ComparativoAnual() {
     searchStoreQuery,
     storeSortKey,
     storeSortDir,
+    annualTrendInfo,
   ]);
 
   const categoryMiniData = useMemo(() => {
@@ -1708,19 +1750,19 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
             {/* Card Rede Total */}
             <div
               onClick={() => setSelectedRegionFilter('TODAS')}
-              className={`cursor-pointer px-3 py-2 rounded-xl border transition-all flex flex-col justify-between ${
+              className={`cursor-pointer px-3 py-2.5 rounded-xl border transition-all flex flex-col justify-between ${
                 selectedRegionFilter === 'TODAS'
                   ? 'bg-slate-900 text-white border-slate-900 shadow-sm'
                   : 'bg-white text-slate-800 border-slate-200/90 hover:border-orange-300'
               }`}
             >
               <div className="flex items-center justify-between gap-1">
-                <span className={`text-[9px] font-black uppercase tracking-wider truncate ${selectedRegionFilter === 'TODAS' ? 'text-orange-400' : 'text-slate-400'}`}>
+                <span className={`text-[11px] font-black uppercase tracking-wider truncate ${selectedRegionFilter === 'TODAS' ? 'text-orange-400' : 'text-slate-400'}`}>
                   REDE TOTAL ({storeVisionData.allStores.length})
                 </span>
                 {storeVisionData.networkTotals.fatPct !== null && (
                   <span
-                    className={`px-1.5 py-0.5 rounded text-[9px] font-black shrink-0 ${
+                    className={`px-1.5 py-0.5 rounded text-[11px] font-black shrink-0 ${
                       storeVisionData.networkTotals.fatPct >= 0
                         ? 'bg-emerald-500/20 text-emerald-300'
                         : 'bg-rose-500/20 text-rose-300'
@@ -1731,11 +1773,11 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
                 )}
               </div>
               <div className="mt-1 flex items-baseline justify-between gap-2">
-                <span className="text-[13px] font-black tracking-tight tabular-nums truncate">
+                <span className="text-[16px] font-black tracking-tight tabular-nums truncate">
                   {formatMoneyNoCents(storeVisionData.networkTotals.fatB)}
                 </span>
               </div>
-              <div className={`mt-1 pt-1 border-t flex items-center justify-between text-[9px] font-bold ${selectedRegionFilter === 'TODAS' ? 'border-slate-800 text-slate-400' : 'border-slate-100 text-slate-400'}`}>
+              <div className={`mt-1 pt-1 border-t flex items-center justify-between text-[11px] font-bold ${selectedRegionFilter === 'TODAS' ? 'border-slate-800 text-slate-400' : 'border-slate-100 text-slate-400'}`}>
                 <span className="truncate">{periodHeaderA}: {formatMoneyShort(storeVisionData.networkTotals.fatA)}</span>
                 <span className={selectedRegionFilter === 'TODAS' ? 'text-orange-300 font-black' : 'text-slate-600 font-black'}>
                   Seguro: {segurosComputed.yearB.disponivel ? formatMoneyShort(storeVisionData.networkTotals.segB) : 'sem histórico'}
@@ -1751,20 +1793,20 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
                 <div
                   key={reg.regiao}
                   onClick={() => setSelectedRegionFilter(isSelected ? 'TODAS' : reg.regiao)}
-                  className={`cursor-pointer px-3 py-2 rounded-xl border transition-all flex flex-col justify-between ${
+                  className={`cursor-pointer px-3 py-2.5 rounded-xl border transition-all flex flex-col justify-between ${
                     isSelected
                       ? 'bg-orange-50/90 border-orange-500 ring-2 ring-orange-500/15 shadow-xs'
                       : 'bg-white border-slate-200/90 hover:border-orange-300'
                   }`}
                 >
                   <div className="flex items-center justify-between gap-1">
-                    <span className="text-[9px] font-black uppercase tracking-wider text-slate-500 truncate flex items-center gap-1">
+                    <span className="text-[11px] font-black uppercase tracking-wider text-slate-500 truncate flex items-center gap-1">
                       <MapPin size={10} className="text-orange-500 shrink-0" />
                       {reg.regiao} · {reg.count} lojas
                     </span>
                     {reg.fatPct !== null && (
                       <span
-                        className={`px-1.5 py-0.5 rounded text-[9px] font-black shrink-0 ${
+                        className={`px-1.5 py-0.5 rounded text-[11px] font-black shrink-0 ${
                           isPositive ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-600'
                         }`}
                       >
@@ -1773,11 +1815,11 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
                     )}
                   </div>
                   <div className="mt-1 flex items-baseline justify-between gap-2">
-                    <span className="text-[13px] font-black text-slate-900 tracking-tight truncate">
+                    <span className="text-[16px] font-black text-slate-900 tracking-tight truncate">
                       {formatMoneyNoCents(reg.fatB)}
                     </span>
                   </div>
-                  <div className="mt-1 pt-1 border-t border-slate-100 flex items-center justify-between text-[9px] font-bold text-slate-400">
+                  <div className="mt-1 pt-1 border-t border-slate-100 flex items-center justify-between text-[11px] font-bold text-slate-400">
                     <span className="truncate">{periodHeaderA}: {formatMoneyShort(reg.fatA)}</span>
                     <span className="text-slate-600 font-black">Seguro: {segurosComputed.yearB.disponivel ? formatMoneyShort(reg.segB) : 'sem histórico'}</span>
                   </div>
@@ -1795,7 +1837,7 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
                 <div className="inline-flex rounded-xl bg-slate-200/70 p-1">
                   <button
                     onClick={() => setStoreViewMode('comparativo')}
-                    className={`px-3.5 py-1.5 rounded-lg text-[11px] font-black uppercase transition-all flex items-center gap-1.5 ${
+                    className={`px-3.5 py-2 rounded-lg text-[12px] font-black uppercase transition-all flex items-center gap-1.5 ${
                       storeViewMode === 'comparativo'
                         ? 'bg-slate-900 text-white shadow-xs'
                         : 'text-slate-600 hover:text-slate-900'
@@ -1803,9 +1845,22 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
                   >
                     <Store size={13} /> Faturamento & Seguro
                   </button>
+                  {monthFilter === '0' && (
+                    <button
+                      onClick={() => setStoreViewMode('tendencia')}
+                      className={`px-3.5 py-2 rounded-lg text-[12px] font-extrabold transition-all flex items-center gap-1.5 ${
+                        storeViewMode === 'tendencia'
+                          ? 'bg-slate-900 text-white shadow-sm'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                      title="Projeção de faturamento da filial até dezembro e variação sobre o ano anterior"
+                    >
+                      <TrendingUp size={15} /> Tendência anual
+                    </button>
+                  )}
                   <button
                     onClick={() => setStoreViewMode('mes_a_mes')}
-                    className={`px-3.5 py-1.5 rounded-lg text-[11px] font-black uppercase transition-all flex items-center gap-1.5 ${
+                    className={`px-3.5 py-2 rounded-lg text-[12px] font-black uppercase transition-all flex items-center gap-1.5 ${
                       storeViewMode === 'mes_a_mes'
                         ? 'bg-slate-900 text-white shadow-xs'
                         : 'text-slate-600 hover:text-slate-900'
@@ -1899,6 +1954,88 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
               </div>
             </div>
 
+            {/* Projeção anual por loja. A navegação mensal permanece idêntica à anterior. */}
+            {storeViewMode === 'tendencia' && monthFilter === '0' && (
+              <section className="px-3 pb-4 pt-3 sm:px-5 sm:pb-5" aria-label="Projeção anual por loja">
+                <div className="mx-auto max-w-[1360px]">
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-orange-200 bg-orange-50 px-4 py-3">
+                    <div>
+                      <h3 className="text-[15px] font-black text-slate-900">Tendência de fechamento · {yearB}</h3>
+                      <p className="mt-0.5 text-[12px] font-medium text-slate-600">
+                        {annualTrendInfo.isProjection && annualTrendInfo.cutoff
+                          ? `Realizado até ${annualTrendInfo.cutoff.toLocaleDateString('pt-BR')} · projeção pelo ritmo diário (${annualTrendInfo.elapsedDays} de ${annualTrendInfo.daysInYear} dias).`
+                          : Number(yearB) < new Date().getFullYear()
+                            ? 'Ano encerrado: a tendência coincide com o faturamento realizado.'
+                            : 'Sem período parcial projetável. Os valores exibidos são os realizados.'}
+                      </p>
+                    </div>
+                    <div className="text-left sm:text-right">
+                      <span className="block text-[10px] font-black uppercase tracking-wide text-slate-500">Projeção da rede filtrada</span>
+                      <strong className="block text-[20px] font-black tabular-nums text-orange-700">{formatMoney(storeVisionData.totals.trendB)}</strong>
+                      <span className="text-[12px] font-extrabold text-slate-700">
+                        {storeVisionData.totals.trendPct === null ? 'Sem base comparável' : `${formatPctBadgeText(storeVisionData.totals.trendPct)} sobre ${yearA}`}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="overflow-x-auto rounded-xl border border-slate-200">
+                    <table className="w-full min-w-[850px] table-fixed border-collapse text-[13px] tabular-nums">
+                      <colgroup>
+                        <col style={{width: '32%'}} />
+                        <col style={{width: '17%'}} />
+                        <col style={{width: '17%'}} />
+                        <col style={{width: '19%'}} />
+                        <col style={{width: '15%'}} />
+                      </colgroup>
+                      <thead className="bg-slate-900 text-white">
+                        <tr className="text-[12px] font-extrabold">
+                          <th className="border-r border-slate-700 px-4 py-3 text-left">UF / Filial</th>
+                          <th className="border-r border-slate-700 px-4 py-3 text-right">Realizado {yearA}</th>
+                          <th className="border-r border-slate-700 px-4 py-3 text-right">Realizado {yearB}</th>
+                          <th className="border-r border-slate-700 px-4 py-3 text-right text-orange-300">Tendência {yearB}</th>
+                          <th className="px-4 py-3 text-right">Tendência vs. {yearA}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {storeVisionData.stateGroups.map((group) => (
+                          <React.Fragment key={group.uf}>
+                            <tr className="border-y-2 border-slate-200 bg-slate-100">
+                              <td colSpan={5} className="px-4 py-2.5 text-[12px] font-black text-slate-800">
+                                <span className="mr-2 rounded bg-slate-900 px-2 py-1 text-white">{group.uf}</span>
+                                {UF_FULL_NAMES[group.uf] || group.uf} · {group.stores.length} filiais
+                              </td>
+                            </tr>
+                            {group.stores.map((item) => (
+                              <tr key={item.loja} className="border-b border-slate-200 bg-white hover:bg-orange-50/50">
+                                <td className="border-r border-slate-200 px-4 py-3 font-bold text-slate-800">{item.loja}</td>
+                                <td className="border-r border-slate-200 px-4 py-3 text-right text-slate-600">{formatMoney(item.fatA)}</td>
+                                <td className="border-r border-slate-200 px-4 py-3 text-right font-bold text-slate-900">{formatMoney(item.fatB)}</td>
+                                <td className="border-r border-slate-200 bg-orange-50/60 px-4 py-3 text-right font-black text-orange-700">{formatMoney(item.trendB)}</td>
+                                <td className="px-4 py-3 text-right">
+                                  <span className={`inline-flex min-w-[70px] justify-center rounded-md border px-2 py-1 font-extrabold ${item.trendPct === null ? 'border-slate-200 text-slate-400' : item.trendPct >= 0 ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-rose-200 bg-rose-50 text-rose-700'}`}>
+                                    {item.trendPct === null ? 's/ base' : formatPctBadgeText(item.trendPct)}
+                                  </span>
+                                </td>
+                              </tr>
+                            ))}
+                          </React.Fragment>
+                        ))}
+                      </tbody>
+                      <tfoot>
+                        <tr className="bg-slate-900 text-white font-black">
+                          <td className="px-4 py-4">TOTAL · {storeVisionData.visibleStores.length} FILIAIS</td>
+                          <td className="px-4 py-4 text-right">{formatMoney(storeVisionData.totals.fatA)}</td>
+                          <td className="px-4 py-4 text-right">{formatMoney(storeVisionData.totals.fatB)}</td>
+                          <td className="px-4 py-4 text-right text-orange-300">{formatMoney(storeVisionData.totals.trendB)}</td>
+                          <td className="px-4 py-4 text-right">{formatPctBadgeText(storeVisionData.totals.trendPct)}</td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
+                  <p className="mt-3 text-[11px] text-slate-500">Projeção linear indicativa, sem sazonalidade ou metas; não é faturamento realizado. Filiais sem base em {yearA} não recebem percentual comparativo.</p>
+                </div>
+              </section>
+            )}
+
             {/* ====================================================================
                 MODO 1: TABELA EXECUTIVA FATURAMENTO GERAL & SEGURO GERAL
                ==================================================================== */}
@@ -1926,19 +2063,19 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
                       : `Histórico de seguros incompleto: ${!segurosComputed.yearA.disponivel ? yearA : ''}${!segurosComputed.yearA.disponivel && !segurosComputed.yearB.disponivel ? ' e ' : ''}${!segurosComputed.yearB.disponivel ? yearB : ''}. Valores sem fonte são exibidos como indisponíveis, não como zero.`}
                   </div>
                 )}
-                <div className="overflow-x-auto rounded-xl border border-slate-200">
-                  <table className="w-full min-w-[1050px] table-fixed border-collapse text-left text-[11px] tabular-nums">
+                <div className="mx-auto max-w-[1380px] overflow-x-auto rounded-xl border border-slate-300 shadow-sm">
+                  <table className="w-full min-w-[1050px] table-fixed border-collapse text-left text-[13px] tabular-nums">
                     <colgroup>
-                      <col style={{ width: '25%' }} />
+                      <col style={{ width: '29%' }} />
                       <col style={{ width: '14%' }} />
                       <col style={{ width: '14%' }} />
+                      <col style={{ width: '8%' }} />
+                      <col style={{ width: '13%' }} />
+                      <col style={{ width: '13%' }} />
                       <col style={{ width: '9%' }} />
-                      <col style={{ width: '14%' }} />
-                      <col style={{ width: '14%' }} />
-                      <col style={{ width: '10%' }} />
                     </colgroup>
                     <thead>
-                      <tr className="bg-slate-900 text-[10px] font-black uppercase tracking-wide text-white">
+                      <tr className="bg-slate-900 text-[12px] font-black uppercase tracking-wide text-white">
                         <th rowSpan={2} className="sticky left-0 z-20 border-r border-slate-700 bg-slate-900 px-3 py-3">
                           <button onClick={() => handleStoreSort('loja')} className="flex items-center gap-2 hover:text-orange-300">
                             <Store size={13} className="text-orange-400" /> UF / filial {renderSortIcon('loja')}
@@ -1947,11 +2084,11 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
                         <th colSpan={3} className="border-r border-slate-700 px-3 py-2 text-center text-orange-300">
                           Faturamento · {yearA} × {yearB}
                         </th>
-                        <th colSpan={3} className="px-3 py-2 text-center text-sky-300">
+                        <th colSpan={3} className="border-l-[10px] border-white px-3 py-3 text-center text-sky-300">
                           Seguros · {yearA} × {yearB}
                         </th>
                       </tr>
-                      <tr className="bg-slate-100 text-[10px] font-black uppercase text-slate-600">
+                      <tr className="bg-slate-100 text-[11px] font-black uppercase text-slate-700">
                         {([
                           ['fatA', periodHeaderA, ''],
                           ['fatB', periodHeaderB, 'text-orange-700 bg-orange-50/80'],
@@ -1962,7 +2099,7 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
                         ] as Array<[StoreSortKey, string, string]>).map(([key, name, accent]) => (
                           <th key={key} scope="col" aria-sort={storeSortKey === key ? (storeSortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
                             onClick={() => handleStoreSort(key)}
-                            className={`cursor-pointer border-l border-slate-200 px-2.5 py-2 text-right hover:bg-orange-100/60 ${accent}`}>
+                            className={`cursor-pointer ${key === 'segA' ? 'border-l-[10px] border-white' : 'border-l border-slate-200'} px-2.5 py-2.5 text-right hover:bg-orange-100/60 ${accent}`}>
                             <span className="inline-flex items-center justify-end gap-1.5">{name}{renderSortIcon(key)}</span>
                           </th>
                         ))}
@@ -1971,12 +2108,12 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
                     <tbody>
                       {storeVisionData.stateGroups.map((group) => (
                         <React.Fragment key={group.uf}>
-                          <tr className="bg-slate-100/95 border-y border-slate-200">
-                            <td colSpan={7} className="px-3 py-2">
+                          <tr className="bg-slate-100 border-y-2 border-slate-300">
+                            <td colSpan={7} className="px-3 py-3">
                               <div className="flex flex-wrap items-center justify-between gap-2">
                                 <div className="flex items-center gap-2">
                                   <span className="inline-flex h-6 min-w-7 items-center justify-center rounded-md bg-slate-900 px-1.5 text-[11px] font-black text-white">{group.uf}</span>
-                                  <span className="text-[11px] font-black uppercase tracking-wide text-slate-800">{UF_FULL_NAMES[group.uf] || group.uf}</span>
+                                  <span className="text-[13px] font-black uppercase tracking-wide text-slate-800">{UF_FULL_NAMES[group.uf] || group.uf}</span>
                                   <span className="text-[10px] font-bold text-slate-500">{group.stores.length} {group.stores.length === 1 ? 'filial' : 'filiais'}</span>
                                 </div>
                                 <div className="flex items-center gap-3 text-[10px] font-bold text-slate-600">
@@ -1987,24 +2124,24 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
                             </td>
                           </tr>
                           {group.stores.map((item, index) => (
-                            <tr key={item.loja} className="group border-b border-slate-100 even:bg-slate-50/45 hover:bg-orange-50/60">
-                              <td className="sticky left-0 z-10 border-r border-slate-100 bg-white group-hover:bg-orange-50 px-3 py-[9px]">
+                            <tr key={item.loja} className="group border-b border-slate-200 even:bg-slate-50/50 hover:bg-orange-50/60">
+                              <td className="sticky left-0 z-10 border-r border-slate-200 bg-white group-hover:bg-orange-50 px-3 py-[12px]">
                                 <div className="flex items-center gap-2.5 min-w-0">
                                   <span className="w-4 shrink-0 text-[10px] font-semibold text-slate-400">{String(index + 1).padStart(2, '0')}</span>
                                   <div className="h-5 w-[3px] shrink-0 rounded-full bg-orange-400/70" />
-                                  <span title={item.loja} className="truncate text-[11px] font-extrabold text-slate-800">{item.loja}</span>
+                                  <span title={item.loja} className="truncate text-[13px] font-extrabold text-slate-800">{item.loja}</span>
                                 </div>
                               </td>
-                              <td className="px-2.5 py-[9px] text-right font-semibold text-slate-500">{item.fatA ? formatMoney(item.fatA) : '—'}</td>
-                              <td className="border-l border-slate-100 bg-orange-50/35 px-2.5 py-[9px] text-right font-extrabold text-slate-900">{item.fatB ? formatMoney(item.fatB) : '—'}</td>
-                              <td className="px-2 py-[9px] text-right">
+                              <td className="border-r border-slate-200 px-3 py-[12px] text-right font-semibold text-slate-600">{item.fatA ? formatMoney(item.fatA) : '—'}</td>
+                              <td className="border-r border-slate-200 bg-orange-50/40 px-3 py-[12px] text-right font-extrabold text-slate-900">{item.fatB ? formatMoney(item.fatB) : '—'}</td>
+                              <td className="border-r border-slate-200 px-2 py-[12px] text-right">
                                 <span className={`inline-flex min-w-[55px] justify-center rounded-md border px-1.5 py-1 text-[10px] font-extrabold ${item.fatPct === null ? 'border-slate-200 bg-slate-50 text-slate-400' : item.fatPct >= 0 ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-rose-200 bg-rose-50 text-rose-700'}`}>
                                   {formatPctBadgeText(item.fatPct, item.fatA, item.fatB)}
                                 </span>
                               </td>
-                              <td className="border-l border-slate-200 px-2.5 py-[9px] text-right font-semibold text-slate-500">{item.segAvailableA ? (item.segA ? formatMoney(item.segA) : 'R$ 0,00') : <span title="Sem fonte histórica para o período">s/ histórico</span>}</td>
-                              <td className="border-l border-slate-100 bg-sky-50/40 px-2.5 py-[9px] text-right font-extrabold text-slate-900">{item.segAvailableB ? formatMoney(item.segB) : <span className="font-semibold text-slate-400" title="Sem fonte histórica para o período">s/ histórico</span>}</td>
-                              <td className="px-2 py-[9px] text-right">
+                              <td className="border-l-[10px] border-white bg-white px-3 py-[12px] text-right font-semibold text-slate-600">{item.segAvailableA ? (item.segA ? formatMoney(item.segA) : 'R$ 0,00') : <span title="Sem fonte histórica para o período">s/ histórico</span>}</td>
+                              <td className="border-l border-slate-200 bg-sky-50/40 px-3 py-[12px] text-right font-extrabold text-slate-900">{item.segAvailableB ? formatMoney(item.segB) : <span className="font-semibold text-slate-400" title="Sem fonte histórica para o período">s/ histórico</span>}</td>
+                              <td className="border-r border-slate-200 px-2 py-[12px] text-right">
                                 <span className={`inline-flex min-w-[55px] justify-center rounded-md border px-1.5 py-1 text-[10px] font-extrabold ${item.segPct === null ? 'border-slate-200 bg-slate-50 text-slate-400' : item.segPct >= 0 ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-rose-200 bg-rose-50 text-rose-700'}`}>
                                   {formatPctBadgeText(item.segPct, item.segA, item.segB)}
                                 </span>
@@ -2019,12 +2156,12 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
                     </tbody>
                     {storeVisionData.visibleStores.length > 0 && (
                       <tfoot>
-                        <tr className="bg-slate-900 text-[11px] font-black text-white">
-                          <td className="sticky left-0 z-10 bg-slate-900 px-3 py-3 uppercase">Total · {storeVisionData.visibleStores.length} filiais</td>
+                        <tr className="bg-slate-900 text-[13px] font-black text-white">
+                          <td className="sticky left-0 z-10 bg-slate-900 px-3 py-4 uppercase">Total · {storeVisionData.visibleStores.length} filiais</td>
                           <td className="px-2.5 py-3 text-right text-slate-200">{formatMoney(storeVisionData.totals.fatA)}</td>
                           <td className="border-l border-slate-700 px-2.5 py-3 text-right text-orange-300">{formatMoney(storeVisionData.totals.fatB)}</td>
                           <td className="px-2 py-3 text-right">{formatPctBadgeText(storeVisionData.totals.fatPct, storeVisionData.totals.fatA, storeVisionData.totals.fatB)}</td>
-                          <td className="border-l border-slate-700 px-2.5 py-3 text-right text-slate-200">{segurosComputed.yearA.disponivel ? formatMoney(storeVisionData.totals.segA) : 's/ histórico'}</td>
+                          <td className="border-l-[10px] border-white px-2.5 py-3 text-right text-slate-200">{segurosComputed.yearA.disponivel ? formatMoney(storeVisionData.totals.segA) : 's/ histórico'}</td>
                           <td className="border-l border-slate-700 px-2.5 py-3 text-right text-sky-300">{segurosComputed.yearB.disponivel ? formatMoney(storeVisionData.totals.segB) : 's/ histórico'}</td>
                           <td className="px-2 py-3 text-right">{formatPctBadgeText(storeVisionData.totals.segPct, storeVisionData.totals.segA, storeVisionData.totals.segB)}</td>
                         </tr>

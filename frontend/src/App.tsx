@@ -1034,7 +1034,7 @@ function App() {
             Ambiente Testers • Dados de produção • Somente leitura
           </div>
         )}
-        {!['estoque_vendas', 'ponto_pedido_prontos'].includes(currentView) && (
+        {!['estoque_vendas', 'ponto_pedido_prontos', 'comparativo'].includes(currentView) && (
         <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-4 md:px-8 shadow-sm shrink-0">
           <div className="flex items-center gap-3">
             <button
