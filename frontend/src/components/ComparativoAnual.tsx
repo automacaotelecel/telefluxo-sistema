@@ -29,7 +29,6 @@ import {
   Filter,
   Flame,
   Layers,
-  LayoutGrid,
   MapPin,
   Minus,
   Package,
@@ -120,40 +119,6 @@ const STORE_REGION_MAP: Record<string, string> = {
   'CD TAGUATINGA': 'CD',
 };
 
-// UF real da filial, sem agrupar Ceará/Paraíba/Pernambuco como "Nordeste".
-const STORE_UF_MAP: Record<string, string> = {
-  'ARAGUAIA SHOPPING': 'GO', 'BOULEVARD SHOPPING': 'DF',
-  'BRASILIA SHOPPING': 'DF', 'CONJUNTO NACIONAL': 'DF',
-  'CONJUNTO NACIONAL QUIOSQUE': 'DF', 'GOIANIA SHOPPING': 'GO',
-  'IGUATEMI SHOPPING': 'DF', 'JK SHOPPING': 'DF',
-  'PARK SHOPPING': 'DF', 'PATIO BRASIL': 'DF',
-  'TAGUATINGA SHOPPING': 'DF', 'TERRAÇO SHOPPING': 'DF',
-  'TAGUATINGA SHOPPING QQ': 'DF', 'UBERLÂNDIA SHOPPING': 'MG',
-  'UBERABA SHOPPING': 'MG', 'FLAMBOYANT SHOPPING': 'GO',
-  'BURITI SHOPPING': 'GO', 'PASSEIO DAS AGUAS': 'GO',
-  'PORTAL SHOPPING': 'GO', 'SHOPPING SUL': 'GO',
-  'BURITI RIO VERDE': 'GO', 'PARK ANAPOLIS': 'GO',
-  'SHOPPING RECIFE': 'PE', 'MANAIRA SHOPPING': 'PB',
-  'IGUATEMI FORTALEZA': 'CE', 'CD TAGUATINGA': 'DF',
-};
-
-const UF_FULL_NAMES: Record<string, string> = {
-  CE: 'Ceará', DF: 'Distrito Federal', GO: 'Goiás',
-  MG: 'Minas Gerais', PB: 'Paraíba', PE: 'Pernambuco',
-};
-
-const getStoreUf = (name: string, rawRegion?: string): string => {
-  const canonicalName = getStoreName(name);
-  if (STORE_UF_MAP[canonicalName]) return STORE_UF_MAP[canonicalName];
-  const region = String(rawRegion || '').normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '').trim().toUpperCase();
-  const uf: Record<string, string> = {
-    DF: 'DF', GO: 'GO', GOIAS: 'GO', MG: 'MG', 'MINAS GERAIS': 'MG',
-    CE: 'CE', CEARA: 'CE', PB: 'PB', PARAIBA: 'PB', PE: 'PE', PERNAMBUCO: 'PE',
-  };
-  return uf[region] || 'OUTROS';
-};
-
 const MONTH_LABELS = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
 
 const MONTH_FULL: Record<number, string> = {
@@ -178,8 +143,7 @@ const CHART_COLORS = {
 const PIE_COLORS = ['#F97316', '#334155', '#FB923C', '#64748B', '#FDBA74', '#94A3B8', '#C2410C', '#CBD5E1'];
 
 type AnyRow = Record<string, any>;
-type StoreSortKey = 'loja' | 'fatA' | 'fatB' | 'fatPct' | 'trendB' | 'trendPct' | 'segA' | 'segB' | 'segPct';
-type MatrixDensity = 'complete' | 'heatmap' | 'clean';
+type StoreSortKey = 'loja' | 'fatA' | 'fatB' | 'fatPct' | 'segA' | 'segB' | 'segPct';
 
 const formatMoney = (val: number) =>
   new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val || 0);
@@ -260,6 +224,18 @@ const getStoreRegion = (storeName: string, rawRegion?: string) => {
   }
   const upperStore = getStoreName(storeName);
   return STORE_REGION_MAP[upperStore] || 'OUTRAS';
+};
+
+const REGION_ORDER = ['DF', 'GOIÁS', 'MINAS GERAIS', 'NORDESTE', 'CD', 'OUTRAS'];
+const sortRegionName = (region: string) => {
+  const idx = REGION_ORDER.indexOf(region);
+  return idx === -1 ? 999 : idx;
+};
+const regionShortLabel = (region: string) => {
+  if (region === 'MINAS GERAIS') return 'MG';
+  if (region === 'NORDESTE') return 'NE';
+  if (region === 'GOIÁS') return 'GO';
+  return region;
 };
 
 const getDateValue = (sale: AnyRow) =>
@@ -464,7 +440,6 @@ export default function ComparativoAnual() {
   const [monthlyRawData, setMonthlyRawData] = useState<any[]>([]);
   const [annualStoreCompareRows, setAnnualStoreCompareRows] = useState<any[]>([]);
   const [monthlyInsuranceFallback, setMonthlyInsuranceFallback] = useState<any[]>([]);
-  const [insuranceCompareError, setInsuranceCompareError] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string>('');
   const [loading, setLoading] = useState(false);
 
@@ -482,17 +457,12 @@ export default function ComparativoAnual() {
   const [searchProduct, setSearchProduct] = useState('');
 
   // Estados da aba "Visão por Loja"
-  const [storeViewMode, setStoreViewMode] = useState<'comparativo' | 'mes_a_mes' | 'tendencia'>('comparativo');
-  const [matrixDensity, setMatrixDensity] = useState<MatrixDensity>('complete');
+  const [storeViewMode, setStoreViewMode] = useState<'comparativo' | 'mes_a_mes'>('comparativo');
   const [selectedRegionFilter, setSelectedRegionFilter] = useState<string>('TODAS');
+  const [showRegionSubtotals, setShowRegionSubtotals] = useState<boolean>(true);
   const [searchStoreQuery, setSearchStoreQuery] = useState<string>('');
   const [storeSortKey, setStoreSortKey] = useState<StoreSortKey>('loja');
   const [storeSortDir, setStoreSortDir] = useState<'asc' | 'desc'>('asc');
-
-  // A tendência não altera a visão mensal: aparece apenas em Ano Todo.
-  useEffect(() => {
-    if (monthFilter !== '0' && storeViewMode === 'tendencia') setStoreViewMode('comparativo');
-  }, [monthFilter, storeViewMode]);
 
   const API_URL = useMemo(() => {
     const envUrl = String(
@@ -636,11 +606,9 @@ export default function ComparativoAnual() {
         const json = await res.json();
         const rows = (json && Array.isArray(json.data) && json.data) || (Array.isArray(json) ? json : []);
         setAnnualStoreCompareRows(rows);
-        setInsuranceCompareError(false);
       } catch (e: any) {
         console.error(e);
         setAnnualStoreCompareRows([]);
-        setInsuranceCompareError(true);
       }
     };
     loadAnnualStoreCompare();
@@ -866,83 +834,60 @@ export default function ComparativoAnual() {
   }, [filteredRawData, yearA, yearB, monthFilter, startDate, endDate]);
 
   const segurosComputed = useMemo(() => {
-    type InsuranceTotal = { total: number; qtd: number; disponivel: boolean };
-    const byYear: Record<string, InsuranceTotal> = {
-      [yearA]: { total: 0, qtd: 0, disponivel: false },
-      [yearB]: { total: 0, qtd: 0, disponivel: false },
+    const byYear: Record<string, { total: number; qtd: number }> = {
+      [yearA]: { total: 0, qtd: 0 },
+      [yearB]: { total: 0, qtd: 0 },
     };
-    const hasApiRows = filteredAnnualStoreCompare.length > 0 && !insuranceCompareError;
 
-    if (hasApiRows) {
-      for (const row of filteredAnnualStoreCompare) {
-        const year = String(row.ano || row.ANO || '');
-        if (!byYear[year]) continue;
-        const total = toNumberSafe(row.seguro_total ?? row.SEGURO_TOTAL ?? 0);
-        const qtd = toNumberSafe(row.seguro_qtd ?? row.SEGURO_QTD ?? 0);
-        byYear[year].total += total;
-        byYear[year].qtd += qtd;
-        byYear[year].disponivel ||= Boolean(row.seguro_disponivel ?? (total !== 0 || qtd !== 0));
-      }
-    } else {
-      // Somente quando a API anual não fornece dados. Nunca soma o KPI
-      // mensal novamente sobre os seguros anuais já contabilizados.
+    for (const row of filteredAnnualStoreCompare) {
+      const year = String(row.ano || row.ANO || '');
+      if (year !== yearA && year !== yearB) continue;
+
+      byYear[year] = {
+        total: (byYear[year]?.total || 0) + toNumberSafe(row.seguro_total || row.SEGURO_TOTAL || 0),
+        qtd: (byYear[year]?.qtd || 0) + toNumberSafe(row.seguro_qtd || row.SEGURO_QTD || 0),
+      };
+    }
+
+    const hasInsurance = Object.values(byYear).some((item) => item.total !== 0 || item.qtd !== 0);
+
+    if (!hasInsurance) {
       for (const row of filteredRawData) {
         const ym = extractYearMonth(getDateValue(row));
-        if (!ym || !byYear[ym.year] || !isInsuranceRow(row)) continue;
+        if (!ym || (ym.year !== yearA && ym.year !== yearB)) continue;
+        if (!isInsuranceRow(row)) continue;
+
         byYear[ym.year].total += getTotal(row);
         byYear[ym.year].qtd += getQuantity(row) || 1;
-        byYear[ym.year].disponivel = true;
       }
+
       const now = new Date();
-      const currentYear = String(now.getFullYear());
+      const curYear = String(now.getFullYear());
+      const curMonth = String(now.getMonth() + 1);
       if (
-        byYear[currentYear] && !byYear[currentYear].disponivel &&
-        (monthFilter === '0' || Number(monthFilter) === now.getMonth() + 1)
+        byYear[curYear] &&
+        byYear[curYear].total === 0 &&
+        (monthFilter === '0' || monthFilter === curMonth)
       ) {
         for (const sRow of monthlyInsuranceFallback) {
-          const loja = getStoreName(String(sRow.loja || ''));
-          if (selectedStores.length && !selectedStores.includes(loja)) continue;
-          const valor = toNumberSafe(sRow.valorSeguro ?? sRow.seguros ?? 0);
-          const qtd = toNumberSafe(sRow.qtdSeguros ?? 0);
-          byYear[currentYear].total += valor;
-          byYear[currentYear].qtd += qtd;
-          byYear[currentYear].disponivel ||= valor !== 0 || qtd !== 0;
+          const storeName = getStoreName(String(sRow.loja || ''));
+          if (
+            selectedStores.length > 0 &&
+            !selectedStores.map((s) => s.toUpperCase()).includes(storeName.toUpperCase())
+          ) {
+            continue;
+          }
+          byYear[curYear].total += toNumberSafe(sRow.valorSeguro || sRow.seguros || 0);
+          byYear[curYear].qtd += toNumberSafe(sRow.qtdSeguros || 0);
         }
       }
     }
-    return {
-      yearA: byYear[yearA] || { total: 0, qtd: 0, disponivel: false },
-      yearB: byYear[yearB] || { total: 0, qtd: 0, disponivel: false },
-    };
-  }, [filteredAnnualStoreCompare, filteredRawData, monthlyInsuranceFallback, selectedStores, monthFilter, yearA, yearB, insuranceCompareError]);
 
-  // Fator de projeção para o encerramento de ano. Usa a última data real
-  // disponível na base selecionada (igual para todas as lojas), e não a
-  // última venda individual de cada filial, evitando tendências infladas.
-  const annualTrendInfo = useMemo(() => {
-    const now = new Date();
-    const targetYear = Number(yearB);
-    const daysInYear = Math.round((Date.UTC(targetYear + 1, 0, 1) - Date.UTC(targetYear, 0, 1)) / 86400000);
-    const isCurrentYear = targetYear === now.getFullYear();
-    if (!isCurrentYear || monthFilter !== '0' || startDate || endDate) {
-      return { factor: 1, cutoff: null as Date | null, isProjection: false, daysInYear, elapsedDays: daysInYear };
-    }
-    let latest: Date | null = null;
-    for (const sale of mergedRawData) {
-      const d = parseDateLoose(getDateValue(sale));
-      if (!d || d.getFullYear() !== targetYear || d.getTime() > now.getTime()) continue;
-      if (!latest || d.getTime() > latest.getTime()) latest = d;
-    }
-    if (!latest) return { factor: 1, cutoff: null as Date | null, isProjection: false, daysInYear, elapsedDays: 0 };
-    const elapsedDays = Math.round((Date.UTC(targetYear, latest.getMonth(), latest.getDate()) - Date.UTC(targetYear, 0, 1)) / 86400000) + 1;
     return {
-      factor: daysInYear / Math.max(1, elapsedDays),
-      cutoff: latest,
-      isProjection: elapsedDays < daysInYear,
-      daysInYear,
-      elapsedDays,
+      yearA: byYear[yearA] || { total: 0, qtd: 0 },
+      yearB: byYear[yearB] || { total: 0, qtd: 0 },
     };
-  }, [mergedRawData, yearB, monthFilter, startDate, endDate]);
+  }, [filteredAnnualStoreCompare, filteredRawData, monthlyInsuranceFallback, selectedStores, monthFilter, yearA, yearB]);
 
   /* ============================================================================
      CÁLCULO DA ABA: "VISÃO POR LOJA" (FATURAMENTO, SEGURO E MÊS A MÊS)
@@ -953,9 +898,6 @@ export default function ComparativoAnual() {
     type StoreEntry = {
       loja: string;
       regiao: string;
-      uf: string;
-      segAvailableA: boolean;
-      segAvailableB: boolean;
       fatA: number;
       fatB: number;
       segA: number;
@@ -978,9 +920,6 @@ export default function ComparativoAnual() {
         storeMap.set(cleanName, {
           loja: cleanName,
           regiao: getStoreRegion(cleanName, rawRegion),
-          uf: getStoreUf(cleanName, rawRegion),
-          segAvailableA: false,
-          segAvailableB: false,
           fatA: 0,
           fatB: 0,
           segA: 0,
@@ -1014,70 +953,61 @@ export default function ComparativoAnual() {
       const matchesSelectedMonth = monthFilter === '0' || ym.month === String(monthFilter).padStart(2, '0');
       if (matchesSelectedMonth) {
         if (ym.year === yearA) {
-          if (isSeg) { entry.segA += total; entry.segAvailableA = true; }
+          if (isSeg) entry.segA += total;
           else entry.fatA += total;
         } else if (ym.year === yearB) {
-          if (isSeg) { entry.segB += total; entry.segAvailableB = true; }
+          if (isSeg) entry.segB += total;
           else entry.fatB += total;
         }
       }
     }
 
-    // A rota anual envia o agregado por loja/mês e se existe fonte histórica.
-    // Se a loja não possui base de 2025, não exibimos "0" nem +100% falsos.
-    const apiInsuranceByStore = new Map<string, {
-      segA: number; segB: number; availableA: boolean; availableB: boolean;
-    }>();
+    const apiInsuranceByStore = new Map<string, { segA: number; segB: number }>();
     for (const row of filteredAnnualStoreCompare) {
       const year = String(row.ano || row.ANO || '');
       if (year !== yearA && year !== yearB) continue;
+
       const storeName = getStoreName(String(row.loja || row.LOJA || row.cnpj_empresa || row.CNPJ_EMPRESA || ''));
       if (!storeName || storeName === 'N/D') continue;
+
+      const segVal = toNumberSafe(row.seguro_total || row.SEGURO_TOTAL || 0);
       if (!apiInsuranceByStore.has(storeName)) {
-        apiInsuranceByStore.set(storeName, { segA: 0, segB: 0, availableA: false, availableB: false });
+        apiInsuranceByStore.set(storeName, { segA: 0, segB: 0 });
       }
-      const current = apiInsuranceByStore.get(storeName)!;
-      const value = toNumberSafe(row.seguro_total ?? row.SEGURO_TOTAL ?? 0);
-      const qtd = toNumberSafe(row.seguro_qtd ?? row.SEGURO_QTD ?? 0);
-      const available = Boolean(row.seguro_disponivel ?? (value !== 0 || qtd !== 0));
-      if (year === yearA) {
-        current.segA += value;
-        current.availableA ||= available;
-      } else {
-        current.segB += value;
-        current.availableB ||= available;
-      }
+      const item = apiInsuranceByStore.get(storeName)!;
+      if (year === yearA) item.segA += segVal;
+      if (year === yearB) item.segB += segVal;
     }
 
-    apiInsuranceByStore.forEach((seg, storeName) => {
-      const entry = ensureStore(storeName);
-      if (seg.availableA) {
-        entry.segA = seg.segA;
-        entry.segAvailableA = true;
-      }
-      if (seg.availableB) {
-        entry.segB = seg.segB;
-        entry.segAvailableB = true;
+    apiInsuranceByStore.forEach((segVals, storeName) => {
+      if (segVals.segA > 0 || segVals.segB > 0) {
+        const entry = ensureStore(storeName);
+        entry.segA = segVals.segA;
+        entry.segB = segVals.segB;
       }
     });
 
     const now = new Date();
     const curYear = String(now.getFullYear());
+    const curMonth = String(now.getMonth() + 1);
     if (
-      yearB === curYear && (monthFilter === '0' || Number(monthFilter) === now.getMonth() + 1) &&
-      (insuranceCompareError || apiInsuranceByStore.size === 0)
+      yearB === curYear &&
+      (monthFilter === '0' || monthFilter === curMonth) &&
+      apiInsuranceByStore.size === 0
     ) {
-      for (const row of monthlyInsuranceFallback) {
-        const storeName = getStoreName(String(row.loja || ''));
+      for (const sRow of monthlyInsuranceFallback) {
+        const storeName = getStoreName(String(sRow.loja || ''));
         if (!storeName || storeName === 'N/D') continue;
-        if (selectedStores.length && !selectedStores.includes(storeName)) continue;
-        const val = toNumberSafe(row.valorSeguro ?? row.seguros ?? 0);
+        if (
+          selectedStores.length > 0 &&
+          !selectedStores.map((s) => s.toUpperCase()).includes(storeName.toUpperCase())
+        ) {
+          continue;
+        }
+        const val = toNumberSafe(sRow.valorSeguro || sRow.seguros || 0);
         if (val > 0) {
           const entry = ensureStore(storeName);
-          if (!entry.segAvailableB) {
-            entry.segB = val;
-            entry.segAvailableB = true;
-          }
+          if (entry.segB === 0) entry.segB = val;
         }
       }
     }
@@ -1087,11 +1017,7 @@ export default function ComparativoAnual() {
       .map((s) => ({
         ...s,
         fatPct: calcVariationPct(s.fatA, s.fatB),
-        trendB: s.fatB * annualTrendInfo.factor,
-        trendPct: s.fatA > 0 && s.fatB > 0
-          ? ((s.fatB * annualTrendInfo.factor - s.fatA) / s.fatA) * 100
-          : null,
-        segPct: s.segAvailableA && s.segAvailableB ? calcVariationPct(s.segA, s.segB) : null,
+        segPct: calcVariationPct(s.segA, s.segB),
       }));
 
     const regionMap = new Map<
@@ -1100,10 +1026,10 @@ export default function ComparativoAnual() {
     >();
 
     for (const s of allStores) {
-      if (!regionMap.has(s.uf)) {
-        regionMap.set(s.uf, { regiao: s.uf, fatA: 0, fatB: 0, segA: 0, segB: 0, count: 0 });
+      if (!regionMap.has(s.regiao)) {
+        regionMap.set(s.regiao, { regiao: s.regiao, fatA: 0, fatB: 0, segA: 0, segB: 0, count: 0 });
       }
-      const r = regionMap.get(s.uf)!;
+      const r = regionMap.get(s.regiao)!;
       r.fatA += s.fatA;
       r.fatB += s.fatB;
       r.segA += s.segA;
@@ -1117,49 +1043,27 @@ export default function ComparativoAnual() {
         fatPct: calcVariationPct(r.fatA, r.fatB),
         segPct: calcVariationPct(r.segA, r.segB),
       }))
-      .sort((a, b) => a.regiao.localeCompare(b.regiao, 'pt-BR'));
+      .sort((a, b) => sortRegionName(a.regiao) - sortRegionName(b.regiao) || b.fatB - a.fatB);
 
     const visibleStores = allStores
       .filter((s) => {
-        if (selectedRegionFilter !== 'TODAS' && s.uf !== selectedRegionFilter) return false;
+        if (selectedRegionFilter !== 'TODAS' && s.regiao !== selectedRegionFilter) return false;
         if (searchStoreQuery.trim() !== '') {
           const term = searchStoreQuery.trim().toLowerCase();
-          if (!s.loja.toLowerCase().includes(term) && !s.regiao.toLowerCase().includes(term) && !s.uf.toLowerCase().includes(term)) return false;
+          if (!s.loja.toLowerCase().includes(term) && !s.regiao.toLowerCase().includes(term)) return false;
         }
         return true;
       })
       .sort((a, b) => {
-        // UF sempre é a ordenação primária, qualquer que seja a métrica escolhida.
-        const ufOrder = a.uf.localeCompare(b.uf, 'pt-BR');
-        if (ufOrder !== 0) return ufOrder;
         if (storeSortKey === 'loja') {
           return storeSortDir === 'asc'
-            ? a.loja.localeCompare(b.loja, 'pt-BR')
-            : b.loja.localeCompare(a.loja, 'pt-BR');
+            ? a.loja.localeCompare(b.loja)
+            : b.loja.localeCompare(a.loja);
         }
         const valA = a[storeSortKey] ?? -999999;
         const valB = b[storeSortKey] ?? -999999;
-        const result = storeSortDir === 'asc' ? Number(valA) - Number(valB) : Number(valB) - Number(valA);
-        return result || a.loja.localeCompare(b.loja, 'pt-BR');
+        return storeSortDir === 'asc' ? Number(valA) - Number(valB) : Number(valB) - Number(valA);
       });
-
-    const stateGroups = Array.from(new Set(visibleStores.map((store) => store.uf)))
-      .map((uf) => {
-        const stores = visibleStores.filter((store) => store.uf === uf);
-        return {
-          uf,
-          stores,
-          fatA: stores.reduce((sum, store) => sum + store.fatA, 0),
-          fatB: stores.reduce((sum, store) => sum + store.fatB, 0),
-        };
-      });
-
-    const networkTotals = {
-      fatA: allStores.reduce((sum, store) => sum + store.fatA, 0),
-      fatB: allStores.reduce((sum, store) => sum + store.fatB, 0),
-      segA: allStores.reduce((sum, store) => sum + store.segA, 0),
-      segB: allStores.reduce((sum, store) => sum + store.segB, 0),
-    };
 
     const totals = visibleStores.reduce(
       (acc, s) => {
@@ -1183,24 +1087,60 @@ export default function ComparativoAnual() {
       }
     );
 
+    const groupedVisibleStores = Array.from(
+      visibleStores.reduce((map, store) => {
+        if (!map.has(store.regiao)) {
+          const emptyMonthsA: Record<string, number> = {};
+          const emptyMonthsB: Record<string, number> = {};
+          monthKeys.forEach((m) => {
+            emptyMonthsA[m] = 0;
+            emptyMonthsB[m] = 0;
+          });
+          map.set(store.regiao, {
+            regiao: store.regiao,
+            stores: [] as typeof visibleStores,
+            subtotal: {
+              fatA: 0,
+              fatB: 0,
+              segA: 0,
+              segB: 0,
+              monthsA: emptyMonthsA,
+              monthsB: emptyMonthsB,
+              count: 0,
+            },
+          });
+        }
+        const current = map.get(store.regiao)!;
+        current.stores.push(store);
+        current.subtotal.fatA += store.fatA;
+        current.subtotal.fatB += store.fatB;
+        current.subtotal.segA += store.segA;
+        current.subtotal.segB += store.segB;
+        current.subtotal.count += 1;
+        monthKeys.forEach((m) => {
+          current.subtotal.monthsA[m] += store.monthsA[m] || 0;
+          current.subtotal.monthsB[m] += store.monthsB[m] || 0;
+        });
+        return map;
+      }, new Map<string, any>()).values()
+    ).map((group) => ({
+      ...group,
+      subtotal: {
+        ...group.subtotal,
+        fatPct: calcVariationPct(group.subtotal.fatA, group.subtotal.fatB),
+        segPct: calcVariationPct(group.subtotal.segA, group.subtotal.segB),
+      },
+    })).sort((a, b) => sortRegionName(a.regiao) - sortRegionName(b.regiao) || a.regiao.localeCompare(b.regiao));
+
     return {
       allStores,
       visibleStores,
       regions,
-      stateGroups,
-      networkTotals: {
-        ...networkTotals,
-        fatPct: calcVariationPct(networkTotals.fatA, networkTotals.fatB),
-      },
+      groupedVisibleStores,
       totals: {
         ...totals,
-        trendB: totals.fatB * annualTrendInfo.factor,
-        trendPct: totals.fatA > 0 && totals.fatB > 0
-          ? ((totals.fatB * annualTrendInfo.factor - totals.fatA) / totals.fatA) * 100
-          : null,
         fatPct: calcVariationPct(totals.fatA, totals.fatB),
-        segPct: visibleStores.every((store) => store.segAvailableA && store.segAvailableB)
-          ? calcVariationPct(totals.segA, totals.segB) : null,
+        segPct: calcVariationPct(totals.segA, totals.segB),
       },
     };
   }, [
@@ -1215,7 +1155,6 @@ export default function ComparativoAnual() {
     searchStoreQuery,
     storeSortKey,
     storeSortDir,
-    annualTrendInfo,
   ]);
 
   const categoryMiniData = useMemo(() => {
@@ -1318,23 +1257,6 @@ export default function ComparativoAnual() {
     const valid = productComparison.filter((p) => p.totalA > 10000);
     return valid.sort((a, b) => b.crescimentoPct - a.crescimentoPct)[0] || null;
   }, [productComparison]);
-
-  const insuranceMonthsLoaded = useMemo(() => {
-    const result: Record<string, Set<number>> = {
-      [yearA]: new Set<number>(),
-      [yearB]: new Set<number>(),
-    };
-    for (const row of filteredAnnualStoreCompare) {
-      const year = String(row.ano ?? '');
-      const month = Number(row.mes ?? 0);
-      const amount = toNumberSafe(row.seguro_total ?? row.SEGURO_TOTAL ?? 0);
-      const qty = toNumberSafe(row.seguro_qtd ?? row.SEGURO_QTD ?? 0);
-      if (result[year] && month >= 1 && month <= 12 && (amount !== 0 || qty !== 0)) {
-        result[year].add(month);
-      }
-    }
-    return { a: result[yearA]?.size || 0, b: result[yearB]?.size || 0 };
-  }, [filteredAnnualStoreCompare, yearA, yearB]);
 
   const noData = computed.totalA + computed.totalB + segurosComputed.yearB.total <= 0;
 
@@ -1561,9 +1483,9 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
             <SmallMetricCard
               title="Seguros"
               icon={<ShieldCheck size={16} />}
-              value={segurosComputed.yearB.disponivel ? formatMoney(segurosComputed.yearB.total) : 'Sem histórico'}
+              value={formatMoney(segurosComputed.yearB.total)}
               valueClass="text-slate-900"
-              subtitle={`Qtd. seguros (${yearB}): ${segurosComputed.yearB.disponivel ? Math.round(segurosComputed.yearB.qtd).toLocaleString('pt-BR') : 'indisponível'}\nSeguros ${yearA}: ${segurosComputed.yearA.disponivel ? formatMoney(segurosComputed.yearA.total) : 'histórico não importado'}`}
+              subtitle={`Qtd. seguros (${yearB}): ${Math.round(segurosComputed.yearB.qtd).toLocaleString('pt-BR')}\nSeguros ${yearA}: ${formatMoney(segurosComputed.yearA.total)}`}
             />
 
             <SmallMetricCard
@@ -1746,41 +1668,41 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
       {activeTab === 'lojas' && (
         <div className="space-y-3.5 animate-in fade-in duration-300">
           {/* FAIXA COMPACTA DE REGIÕES (MINICARDS EXECUTIVOS) */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-7 gap-2">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5">
             {/* Card Rede Total */}
             <div
               onClick={() => setSelectedRegionFilter('TODAS')}
-              className={`cursor-pointer px-3 py-2.5 rounded-xl border transition-all flex flex-col justify-between ${
+              className={`cursor-pointer px-3.5 py-2.5 rounded-xl border transition-all flex flex-col justify-between ${
                 selectedRegionFilter === 'TODAS'
                   ? 'bg-slate-900 text-white border-slate-900 shadow-sm'
                   : 'bg-white text-slate-800 border-slate-200/90 hover:border-orange-300'
               }`}
             >
               <div className="flex items-center justify-between gap-1">
-                <span className={`text-[11px] font-black uppercase tracking-wider truncate ${selectedRegionFilter === 'TODAS' ? 'text-orange-400' : 'text-slate-400'}`}>
+                <span className={`text-[9px] font-black uppercase tracking-wider truncate ${selectedRegionFilter === 'TODAS' ? 'text-orange-400' : 'text-slate-400'}`}>
                   REDE TOTAL ({storeVisionData.allStores.length})
                 </span>
-                {storeVisionData.networkTotals.fatPct !== null && (
+                {storeVisionData.totals.fatPct !== null && (
                   <span
-                    className={`px-1.5 py-0.5 rounded text-[11px] font-black shrink-0 ${
-                      storeVisionData.networkTotals.fatPct >= 0
+                    className={`px-1.5 py-0.5 rounded text-[9px] font-black shrink-0 ${
+                      storeVisionData.totals.fatPct >= 0
                         ? 'bg-emerald-500/20 text-emerald-300'
                         : 'bg-rose-500/20 text-rose-300'
                     }`}
                   >
-                    {formatPctBadgeText(storeVisionData.networkTotals.fatPct, storeVisionData.networkTotals.fatA, storeVisionData.networkTotals.fatB)}
+                    {formatPctBadgeText(storeVisionData.totals.fatPct, storeVisionData.totals.fatA, storeVisionData.totals.fatB)}
                   </span>
                 )}
               </div>
               <div className="mt-1 flex items-baseline justify-between gap-2">
-                <span className="text-[16px] font-black tracking-tight tabular-nums truncate">
-                  {formatMoneyNoCents(storeVisionData.networkTotals.fatB)}
+                <span className="text-sm md:text-base font-black tracking-tight truncate">
+                  {formatMoneyNoCents(storeVisionData.totals.fatB)}
                 </span>
               </div>
-              <div className={`mt-1 pt-1 border-t flex items-center justify-between text-[11px] font-bold ${selectedRegionFilter === 'TODAS' ? 'border-slate-800 text-slate-400' : 'border-slate-100 text-slate-400'}`}>
-                <span className="truncate">{periodHeaderA}: {formatMoneyShort(storeVisionData.networkTotals.fatA)}</span>
+              <div className={`mt-1 pt-1 border-t flex items-center justify-between text-[9px] font-bold ${selectedRegionFilter === 'TODAS' ? 'border-slate-800 text-slate-400' : 'border-slate-100 text-slate-400'}`}>
+                <span className="truncate">{periodHeaderA}: {formatMoneyShort(storeVisionData.totals.fatA)}</span>
                 <span className={selectedRegionFilter === 'TODAS' ? 'text-orange-300 font-black' : 'text-slate-600 font-black'}>
-                  Seguro: {segurosComputed.yearB.disponivel ? formatMoneyShort(storeVisionData.networkTotals.segB) : 'sem histórico'}
+                  Seg: {formatMoneyShort(storeVisionData.totals.segB)}
                 </span>
               </div>
             </div>
@@ -1793,20 +1715,20 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
                 <div
                   key={reg.regiao}
                   onClick={() => setSelectedRegionFilter(isSelected ? 'TODAS' : reg.regiao)}
-                  className={`cursor-pointer px-3 py-2.5 rounded-xl border transition-all flex flex-col justify-between ${
+                  className={`cursor-pointer px-3.5 py-2.5 rounded-xl border transition-all flex flex-col justify-between ${
                     isSelected
                       ? 'bg-orange-50/90 border-orange-500 ring-2 ring-orange-500/15 shadow-xs'
                       : 'bg-white border-slate-200/90 hover:border-orange-300'
                   }`}
                 >
                   <div className="flex items-center justify-between gap-1">
-                    <span className="text-[11px] font-black uppercase tracking-wider text-slate-500 truncate flex items-center gap-1">
+                    <span className="text-[9px] font-black uppercase tracking-wider text-slate-500 truncate flex items-center gap-1">
                       <MapPin size={10} className="text-orange-500 shrink-0" />
-                      {reg.regiao} · {reg.count} lojas
+                      {reg.regiao} ({reg.count})
                     </span>
                     {reg.fatPct !== null && (
                       <span
-                        className={`px-1.5 py-0.5 rounded text-[11px] font-black shrink-0 ${
+                        className={`px-1.5 py-0.5 rounded text-[9px] font-black shrink-0 ${
                           isPositive ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-600'
                         }`}
                       >
@@ -1815,13 +1737,13 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
                     )}
                   </div>
                   <div className="mt-1 flex items-baseline justify-between gap-2">
-                    <span className="text-[16px] font-black text-slate-900 tracking-tight truncate">
+                    <span className="text-sm md:text-base font-black text-slate-900 tracking-tight truncate">
                       {formatMoneyNoCents(reg.fatB)}
                     </span>
                   </div>
-                  <div className="mt-1 pt-1 border-t border-slate-100 flex items-center justify-between text-[11px] font-bold text-slate-400">
+                  <div className="mt-1 pt-1 border-t border-slate-100 flex items-center justify-between text-[9px] font-bold text-slate-400">
                     <span className="truncate">{periodHeaderA}: {formatMoneyShort(reg.fatA)}</span>
-                    <span className="text-slate-600 font-black">Seguro: {segurosComputed.yearB.disponivel ? formatMoneyShort(reg.segB) : 'sem histórico'}</span>
+                    <span className="text-slate-600 font-black">Seg: {formatMoneyShort(reg.segB)}</span>
                   </div>
                 </div>
               );
@@ -1837,7 +1759,7 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
                 <div className="inline-flex rounded-xl bg-slate-200/70 p-1">
                   <button
                     onClick={() => setStoreViewMode('comparativo')}
-                    className={`px-3.5 py-2 rounded-lg text-[12px] font-black uppercase transition-all flex items-center gap-1.5 ${
+                    className={`px-3.5 py-1.5 rounded-lg text-[11px] font-black uppercase transition-all flex items-center gap-1.5 ${
                       storeViewMode === 'comparativo'
                         ? 'bg-slate-900 text-white shadow-xs'
                         : 'text-slate-600 hover:text-slate-900'
@@ -1845,22 +1767,9 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
                   >
                     <Store size={13} /> Faturamento & Seguro
                   </button>
-                  {monthFilter === '0' && (
-                    <button
-                      onClick={() => setStoreViewMode('tendencia')}
-                      className={`px-3.5 py-2 rounded-lg text-[12px] font-extrabold transition-all flex items-center gap-1.5 ${
-                        storeViewMode === 'tendencia'
-                          ? 'bg-slate-900 text-white shadow-sm'
-                          : 'text-slate-600 hover:text-slate-900'
-                      }`}
-                      title="Projeção de faturamento da filial até dezembro e variação sobre o ano anterior"
-                    >
-                      <TrendingUp size={15} /> Tendência anual
-                    </button>
-                  )}
                   <button
                     onClick={() => setStoreViewMode('mes_a_mes')}
-                    className={`px-3.5 py-2 rounded-lg text-[12px] font-black uppercase transition-all flex items-center gap-1.5 ${
+                    className={`px-3.5 py-1.5 rounded-lg text-[11px] font-black uppercase transition-all flex items-center gap-1.5 ${
                       storeViewMode === 'mes_a_mes'
                         ? 'bg-slate-900 text-white shadow-xs'
                         : 'text-slate-600 hover:text-slate-900'
@@ -1870,51 +1779,30 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
                   </button>
                 </div>
 
-                {/* Seletor de Estilo exclusivo para a Matriz Mês a Mês */}
                 {storeViewMode === 'mes_a_mes' && (
-                  <div className="inline-flex items-center rounded-xl border border-slate-200 bg-white p-0.5">
-                    <button
-                      onClick={() => setMatrixDensity('complete')}
-                      className={`px-2.5 py-1 rounded-lg text-[10px] font-extrabold uppercase transition-all flex items-center gap-1 ${
-                        matrixDensity === 'complete'
-                          ? 'bg-orange-500 text-white'
-                          : 'text-slate-500 hover:text-slate-800'
-                      }`}
-                      title="Exibe 2026, 2025 e % em todas as células"
-                    >
-                      <LayoutGrid size={11} /> Completa
-                    </button>
-                    <button
-                      onClick={() => setMatrixDensity('heatmap')}
-                      className={`px-2.5 py-1 rounded-lg text-[10px] font-extrabold uppercase transition-all flex items-center gap-1 ${
-                        matrixDensity === 'heatmap'
-                          ? 'bg-orange-500 text-white'
-                          : 'text-slate-500 hover:text-slate-800'
-                      }`}
-                      title="Colore as células conforme o crescimento percentual"
-                    >
-                      <Flame size={11} /> Mapa de Calor
-                    </button>
-                    <button
-                      onClick={() => setMatrixDensity('clean')}
-                      className={`px-2.5 py-1 rounded-lg text-[10px] font-extrabold uppercase transition-all ${
-                        matrixDensity === 'clean'
-                          ? 'bg-orange-500 text-white'
-                          : 'text-slate-500 hover:text-slate-800'
-                      }`}
-                      title="Visão minimalista focada no realizado"
-                    >
-                      Compacta
-                    </button>
+                  <div className="inline-flex items-center rounded-xl border border-orange-200 bg-orange-50 px-3 py-1.5 text-[11px] font-extrabold uppercase text-orange-700">
+                    <Flame size={12} className="mr-1" /> Mapa de Calor
                   </div>
                 )}
+
+                <button
+                  onClick={() => setShowRegionSubtotals((prev) => !prev)}
+                  className={`inline-flex items-center rounded-xl border px-3 py-1.5 text-[11px] font-extrabold uppercase transition-colors ${
+                    showRegionSubtotals
+                      ? 'border-slate-300 bg-slate-900 text-white'
+                      : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                  }`}
+                  title="Exibir ou ocultar subtotais por região"
+                >
+                  <Layers size={12} className="mr-1" /> {showRegionSubtotals ? 'Ocultar subtotais' : 'Mostrar subtotais'}
+                </button>
               </div>
 
               {/* Centro: Seletor Rápido de Mês (Pills Compactas) */}
               <div className="flex flex-wrap items-center gap-1">
                 <button
                   onClick={() => setMonthFilter('0')}
-                  className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase transition-all ${
+                  className={`px-3 py-1.5 rounded-lg text-[11px] font-black uppercase transition-all ${
                     monthFilter === '0'
                       ? 'bg-orange-500 text-white shadow-2xs'
                       : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
@@ -1929,7 +1817,7 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
                     <button
                       key={mKey}
                       onClick={() => setMonthFilter(isSelected ? '0' : mKey)}
-                      className={`px-2 py-1 rounded-lg text-[10px] font-black uppercase transition-all ${
+                      className={`px-2.5 py-1.5 rounded-lg text-[11px] font-black uppercase transition-all ${
                         isSelected
                           ? 'bg-orange-500 text-white shadow-2xs'
                           : 'bg-white border border-slate-200 text-slate-500 hover:border-orange-300 hover:text-orange-600'
@@ -1949,247 +1837,115 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
                   placeholder="Filtrar filial..."
                   value={searchStoreQuery}
                   onChange={(e) => setSearchStoreQuery(e.target.value)}
-                  className="w-full pl-8 pr-3 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-200 rounded-xl outline-none focus:border-orange-400 transition-colors uppercase"
+                  className="w-full pl-8 pr-3 py-2 text-[12px] font-bold text-slate-700 bg-white border border-slate-200 rounded-xl outline-none focus:border-orange-400 transition-colors uppercase"
                 />
               </div>
             </div>
-
-            {/* Projeção anual por loja. A navegação mensal permanece idêntica à anterior. */}
-            {storeViewMode === 'tendencia' && monthFilter === '0' && (
-              <section className="px-3 pb-4 pt-3 sm:px-5 sm:pb-5" aria-label="Projeção anual por loja">
-                <div className="mx-auto max-w-[1360px]">
-                  <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-orange-200 bg-orange-50 px-4 py-3">
-                    <div>
-                      <h3 className="text-[15px] font-black text-slate-900">Tendência de fechamento · {yearB}</h3>
-                      <p className="mt-0.5 text-[12px] font-medium text-slate-600">
-                        {annualTrendInfo.isProjection && annualTrendInfo.cutoff
-                          ? `Realizado até ${annualTrendInfo.cutoff.toLocaleDateString('pt-BR')} · projeção pelo ritmo diário (${annualTrendInfo.elapsedDays} de ${annualTrendInfo.daysInYear} dias).`
-                          : Number(yearB) < new Date().getFullYear()
-                            ? 'Ano encerrado: a tendência coincide com o faturamento realizado.'
-                            : 'Sem período parcial projetável. Os valores exibidos são os realizados.'}
-                      </p>
-                    </div>
-                    <div className="text-left sm:text-right">
-                      <span className="block text-[10px] font-black uppercase tracking-wide text-slate-500">Projeção da rede filtrada</span>
-                      <strong className="block text-[20px] font-black tabular-nums text-orange-700">{formatMoney(storeVisionData.totals.trendB)}</strong>
-                      <span className="text-[12px] font-extrabold text-slate-700">
-                        {storeVisionData.totals.trendPct === null ? 'Sem base comparável' : `${formatPctBadgeText(storeVisionData.totals.trendPct)} sobre ${yearA}`}
-                      </span>
-                    </div>
-                  </div>
-                  <div className="overflow-x-auto rounded-xl border border-slate-200">
-                    <table className="w-full min-w-[850px] table-fixed border-collapse text-[13px] tabular-nums">
-                      <colgroup>
-                        <col style={{width: '32%'}} />
-                        <col style={{width: '17%'}} />
-                        <col style={{width: '17%'}} />
-                        <col style={{width: '19%'}} />
-                        <col style={{width: '15%'}} />
-                      </colgroup>
-                      <thead className="bg-slate-900 text-white">
-                        <tr className="text-[12px] font-extrabold">
-                          <th className="border-r border-slate-700 px-4 py-3 text-left">UF / Filial</th>
-                          <th className="border-r border-slate-700 px-4 py-3 text-right">Realizado {yearA}</th>
-                          <th className="border-r border-slate-700 px-4 py-3 text-right">Realizado {yearB}</th>
-                          <th className="border-r border-slate-700 px-4 py-3 text-right text-orange-300">Tendência {yearB}</th>
-                          <th className="px-4 py-3 text-right">Tendência vs. {yearA}</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {storeVisionData.stateGroups.map((group) => (
-                          <React.Fragment key={group.uf}>
-                            <tr className="border-y-2 border-slate-200 bg-slate-100">
-                              <td colSpan={5} className="px-4 py-2.5 text-[12px] font-black text-slate-800">
-                                <span className="mr-2 rounded bg-slate-900 px-2 py-1 text-white">{group.uf}</span>
-                                {UF_FULL_NAMES[group.uf] || group.uf} · {group.stores.length} filiais
-                              </td>
-                            </tr>
-                            {group.stores.map((item) => (
-                              <tr key={item.loja} className="border-b border-slate-200 bg-white hover:bg-orange-50/50">
-                                <td className="border-r border-slate-200 px-4 py-3 font-bold text-slate-800">{item.loja}</td>
-                                <td className="border-r border-slate-200 px-4 py-3 text-right text-slate-600">{formatMoney(item.fatA)}</td>
-                                <td className="border-r border-slate-200 px-4 py-3 text-right font-bold text-slate-900">{formatMoney(item.fatB)}</td>
-                                <td className="border-r border-slate-200 bg-orange-50/60 px-4 py-3 text-right font-black text-orange-700">{formatMoney(item.trendB)}</td>
-                                <td className="px-4 py-3 text-right">
-                                  <span className={`inline-flex min-w-[70px] justify-center rounded-md border px-2 py-1 font-extrabold ${item.trendPct === null ? 'border-slate-200 text-slate-400' : item.trendPct >= 0 ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-rose-200 bg-rose-50 text-rose-700'}`}>
-                                    {item.trendPct === null ? 's/ base' : formatPctBadgeText(item.trendPct)}
-                                  </span>
-                                </td>
-                              </tr>
-                            ))}
-                          </React.Fragment>
-                        ))}
-                      </tbody>
-                      <tfoot>
-                        <tr className="bg-slate-900 text-white font-black">
-                          <td className="px-4 py-4">TOTAL · {storeVisionData.visibleStores.length} FILIAIS</td>
-                          <td className="px-4 py-4 text-right">{formatMoney(storeVisionData.totals.fatA)}</td>
-                          <td className="px-4 py-4 text-right">{formatMoney(storeVisionData.totals.fatB)}</td>
-                          <td className="px-4 py-4 text-right text-orange-300">{formatMoney(storeVisionData.totals.trendB)}</td>
-                          <td className="px-4 py-4 text-right">{formatPctBadgeText(storeVisionData.totals.trendPct)}</td>
-                        </tr>
-                      </tfoot>
-                    </table>
-                  </div>
-                  <p className="mt-3 text-[11px] text-slate-500">Projeção linear indicativa, sem sazonalidade ou metas; não é faturamento realizado. Filiais sem base em {yearA} não recebem percentual comparativo.</p>
-                </div>
-              </section>
-            )}
 
             {/* ====================================================================
                 MODO 1: TABELA EXECUTIVA FATURAMENTO GERAL & SEGURO GERAL
                ==================================================================== */}
             {storeViewMode === 'comparativo' && (
-              <div className="px-2 py-2 sm:px-3 sm:py-3">
-                <div className="flex flex-wrap items-center justify-between gap-2 px-2 pb-2.5">
-                  <div className="flex items-center gap-2 text-[11px] font-bold text-slate-600">
-                    <span className="inline-flex items-center gap-1.5 rounded-md bg-slate-100 px-2 py-1 text-slate-800">
-                      <MapPin size={12} className="text-orange-500" /> Ordenado por UF
-                    </span>
-                    <span>{storeVisionData.visibleStores.length} filiais · {storeVisionData.stateGroups.length} UFs</span>
-                  </div>
-                  <div className="text-right text-[10px] text-slate-500">
-                    <span className="block">Clique no cabeçalho para ordenar dentro de cada UF.</span>
-                    {monthFilter === '0' && (
-                      <span className="block mt-0.5 text-slate-400">Seguros: {insuranceMonthsLoaded.a} {insuranceMonthsLoaded.a === 1 ? 'mês' : 'meses'} com registros em {yearA} · {insuranceMonthsLoaded.b} {insuranceMonthsLoaded.b === 1 ? 'mês' : 'meses'} em {yearB}</span>
-                    )}
-                  </div>
-                </div>
-                {(!segurosComputed.yearA.disponivel || !segurosComputed.yearB.disponivel || insuranceCompareError) && (
-                  <div className="mb-2 mx-1 flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] font-semibold text-amber-900">
-                    <AlertCircle size={14} className="shrink-0" />
-                    {insuranceCompareError
-                      ? 'Não foi possível consultar a rota anual de seguros. Os números precisam ser conferidos após restabelecer a API.'
-                      : `Histórico de seguros incompleto: ${!segurosComputed.yearA.disponivel ? yearA : ''}${!segurosComputed.yearA.disponivel && !segurosComputed.yearB.disponivel ? ' e ' : ''}${!segurosComputed.yearB.disponivel ? yearB : ''}. Valores sem fonte são exibidos como indisponíveis, não como zero.`}
-                  </div>
-                )}
-                <div className="mx-auto max-w-[1380px] overflow-x-auto rounded-xl border border-slate-300 shadow-sm">
-                  <table className="w-full min-w-[1050px] table-fixed border-collapse text-left text-[13px] tabular-nums">
-                    <colgroup>
-                      <col style={{ width: '29%' }} />
-                      <col style={{ width: '14%' }} />
-                      <col style={{ width: '14%' }} />
-                      <col style={{ width: '8%' }} />
-                      <col style={{ width: '13%' }} />
-                      <col style={{ width: '13%' }} />
-                      <col style={{ width: '9%' }} />
-                    </colgroup>
-                    <thead>
-                      <tr className="bg-slate-900 text-[12px] font-black uppercase tracking-wide text-white">
-                        <th rowSpan={2} className="sticky left-0 z-20 border-r border-slate-700 bg-slate-900 px-3 py-3">
-                          <button onClick={() => handleStoreSort('loja')} className="flex items-center gap-2 hover:text-orange-300">
-                            <Store size={13} className="text-orange-400" /> UF / filial {renderSortIcon('loja')}
-                          </button>
-                        </th>
-                        <th colSpan={3} className="border-r border-slate-700 px-3 py-2 text-center text-orange-300">
-                          Faturamento · {yearA} × {yearB}
-                        </th>
-                        <th colSpan={3} className="border-l-[10px] border-white px-3 py-3 text-center text-sky-300">
-                          Seguros · {yearA} × {yearB}
-                        </th>
-                      </tr>
-                      <tr className="bg-slate-100 text-[11px] font-black uppercase text-slate-700">
-                        {([
-                          ['fatA', periodHeaderA, ''],
-                          ['fatB', periodHeaderB, 'text-orange-700 bg-orange-50/80'],
-                          ['fatPct', 'Variação', ''],
-                          ['segA', periodHeaderA, ''],
-                          ['segB', periodHeaderB, 'text-sky-800 bg-sky-50/80'],
-                          ['segPct', 'Variação', ''],
-                        ] as Array<[StoreSortKey, string, string]>).map(([key, name, accent]) => (
-                          <th key={key} scope="col" aria-sort={storeSortKey === key ? (storeSortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
-                            onClick={() => handleStoreSort(key)}
-                            className={`cursor-pointer ${key === 'segA' ? 'border-l-[10px] border-white' : 'border-l border-slate-200'} px-2.5 py-2.5 text-right hover:bg-orange-100/60 ${accent}`}>
-                            <span className="inline-flex items-center justify-end gap-1.5">{name}{renderSortIcon(key)}</span>
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {storeVisionData.stateGroups.map((group) => (
-                        <React.Fragment key={group.uf}>
-                          <tr className="bg-slate-100 border-y-2 border-slate-300">
-                            <td colSpan={7} className="px-3 py-3">
-                              <div className="flex flex-wrap items-center justify-between gap-2">
-                                <div className="flex items-center gap-2">
-                                  <span className="inline-flex h-6 min-w-7 items-center justify-center rounded-md bg-slate-900 px-1.5 text-[11px] font-black text-white">{group.uf}</span>
-                                  <span className="text-[13px] font-black uppercase tracking-wide text-slate-800">{UF_FULL_NAMES[group.uf] || group.uf}</span>
-                                  <span className="text-[10px] font-bold text-slate-500">{group.stores.length} {group.stores.length === 1 ? 'filial' : 'filiais'}</span>
-                                </div>
-                                <div className="flex items-center gap-3 text-[10px] font-bold text-slate-600">
-                                  <span>Faturamento {yearB}: <strong className="text-orange-700">{formatMoney(group.fatB)}</strong></span>
-                                  <span className="hidden md:inline">{formatPctBadgeText(calcVariationPct(group.fatA, group.fatB), group.fatA, group.fatB)} vs {yearA}</span>
-                                </div>
-                              </div>
-                            </td>
-                          </tr>
-                          {group.stores.map((item, index) => (
-                            <tr key={item.loja} className="group border-b border-slate-200 even:bg-slate-50/50 hover:bg-orange-50/60">
-                              <td className="sticky left-0 z-10 border-r border-slate-200 bg-white group-hover:bg-orange-50 px-3 py-[12px]">
-                                <div className="flex items-center gap-2.5 min-w-0">
-                                  <span className="w-4 shrink-0 text-[10px] font-semibold text-slate-400">{String(index + 1).padStart(2, '0')}</span>
-                                  <div className="h-5 w-[3px] shrink-0 rounded-full bg-orange-400/70" />
-                                  <span title={item.loja} className="truncate text-[13px] font-extrabold text-slate-800">{item.loja}</span>
-                                </div>
-                              </td>
-                              <td className="border-r border-slate-200 px-3 py-[12px] text-right font-semibold text-slate-600">{item.fatA ? formatMoney(item.fatA) : '—'}</td>
-                              <td className="border-r border-slate-200 bg-orange-50/40 px-3 py-[12px] text-right font-extrabold text-slate-900">{item.fatB ? formatMoney(item.fatB) : '—'}</td>
-                              <td className="border-r border-slate-200 px-2 py-[12px] text-right">
-                                <span className={`inline-flex min-w-[55px] justify-center rounded-md border px-1.5 py-1 text-[10px] font-extrabold ${item.fatPct === null ? 'border-slate-200 bg-slate-50 text-slate-400' : item.fatPct >= 0 ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-rose-200 bg-rose-50 text-rose-700'}`}>
-                                  {formatPctBadgeText(item.fatPct, item.fatA, item.fatB)}
-                                </span>
-                              </td>
-                              <td className="border-l-[10px] border-white bg-white px-3 py-[12px] text-right font-semibold text-slate-600">{item.segAvailableA ? (item.segA ? formatMoney(item.segA) : 'R$ 0,00') : <span title="Sem fonte histórica para o período">s/ histórico</span>}</td>
-                              <td className="border-l border-slate-200 bg-sky-50/40 px-3 py-[12px] text-right font-extrabold text-slate-900">{item.segAvailableB ? formatMoney(item.segB) : <span className="font-semibold text-slate-400" title="Sem fonte histórica para o período">s/ histórico</span>}</td>
-                              <td className="border-r border-slate-200 px-2 py-[12px] text-right">
-                                <span className={`inline-flex min-w-[55px] justify-center rounded-md border px-1.5 py-1 text-[10px] font-extrabold ${item.segPct === null ? 'border-slate-200 bg-slate-50 text-slate-400' : item.segPct >= 0 ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-rose-200 bg-rose-50 text-rose-700'}`}>
-                                  {formatPctBadgeText(item.segPct, item.segA, item.segB)}
-                                </span>
-                              </td>
-                            </tr>
-                          ))}
-                        </React.Fragment>
-                      ))}
-                      {storeVisionData.visibleStores.length === 0 && (
-                        <tr><td colSpan={7} className="p-10 text-center font-bold text-slate-400">Nenhuma filial encontrada para os filtros selecionados.</td></tr>
-                      )}
-                    </tbody>
-                    {storeVisionData.visibleStores.length > 0 && (
-                      <tfoot>
-                        <tr className="bg-slate-900 text-[13px] font-black text-white">
-                          <td className="sticky left-0 z-10 bg-slate-900 px-3 py-4 uppercase">Total · {storeVisionData.visibleStores.length} filiais</td>
-                          <td className="px-2.5 py-3 text-right text-slate-200">{formatMoney(storeVisionData.totals.fatA)}</td>
-                          <td className="border-l border-slate-700 px-2.5 py-3 text-right text-orange-300">{formatMoney(storeVisionData.totals.fatB)}</td>
-                          <td className="px-2 py-3 text-right">{formatPctBadgeText(storeVisionData.totals.fatPct, storeVisionData.totals.fatA, storeVisionData.totals.fatB)}</td>
-                          <td className="border-l-[10px] border-white px-2.5 py-3 text-right text-slate-200">{segurosComputed.yearA.disponivel ? formatMoney(storeVisionData.totals.segA) : 's/ histórico'}</td>
-                          <td className="border-l border-slate-700 px-2.5 py-3 text-right text-sky-300">{segurosComputed.yearB.disponivel ? formatMoney(storeVisionData.totals.segB) : 's/ histórico'}</td>
-                          <td className="px-2 py-3 text-right">{formatPctBadgeText(storeVisionData.totals.segPct, storeVisionData.totals.segA, storeVisionData.totals.segB)}</td>
+              <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white shadow-sm">
+                <table className="w-full min-w-[1120px] border-collapse text-left">
+                  <thead>
+                    <tr className="bg-slate-900 text-white text-[11px] font-black uppercase tracking-wider">
+                      <th className="py-2 px-4 border-r border-slate-800">Unidade / Filial ({storeVisionData.visibleStores.length})</th>
+                      <th colSpan={3} className="py-2 px-4 text-center border-r border-slate-800 text-orange-300">Faturamento ({periodHeaderA} vs {periodHeaderB})</th>
+                      <th colSpan={3} className="py-2 px-4 text-center border-l-[10px] border-white text-sky-300">Seguros ({periodHeaderA} vs {periodHeaderB})</th>
+                    </tr>
+                    <tr className="border-b border-slate-200 bg-slate-100 text-[11px] font-black uppercase text-slate-700 select-none">
+                      <th onClick={() => handleStoreSort('loja')} className="cursor-pointer py-2 px-4 border-r border-slate-200 hover:bg-slate-200/70 transition-colors"><div className="flex items-center gap-1.5"><span>Loja</span>{renderSortIcon('loja')}</div></th>
+                      <th onClick={() => handleStoreSort('fatA')} className="cursor-pointer py-2 px-3 text-right hover:bg-slate-200/70 transition-colors">{periodHeaderA}</th>
+                      <th onClick={() => handleStoreSort('fatB')} className="cursor-pointer py-2 px-3 text-right border-l border-slate-200 bg-orange-50/50 hover:bg-orange-100/60 transition-colors">{periodHeaderB}</th>
+                      <th onClick={() => handleStoreSort('fatPct')} className="cursor-pointer py-2 px-3 text-center border-x border-slate-200 hover:bg-slate-200/70 transition-colors">Variação</th>
+                      <th onClick={() => handleStoreSort('segA')} className="cursor-pointer py-2 px-3 text-right border-l-[10px] border-white bg-sky-50/50 hover:bg-sky-100/60 transition-colors">{periodHeaderA}</th>
+                      <th onClick={() => handleStoreSort('segB')} className="cursor-pointer py-2 px-3 text-right border-l border-slate-200 bg-sky-50/70 hover:bg-sky-100/70 transition-colors">{periodHeaderB}</th>
+                      <th onClick={() => handleStoreSort('segPct')} className="cursor-pointer py-2 px-3 text-center border-l border-slate-200 hover:bg-slate-200/70 transition-colors">Variação</th>
+                    </tr>
+                  </thead>
+                  <tbody className="text-[12px] font-bold text-slate-700">
+                    {storeVisionData.groupedVisibleStores.flatMap((group) => {
+                      const rows: React.ReactNode[] = [
+                        <tr key={`${group.regiao}-header`} className="bg-slate-50 border-y border-slate-200">
+                          <td colSpan={7} className="px-4 py-2 text-[11px] font-black uppercase text-slate-700">
+                            <div className="flex items-center gap-2">
+                              <span className="inline-flex min-w-[28px] justify-center rounded-md bg-slate-900 px-2 py-1 text-white">{regionShortLabel(group.regiao)}</span>
+                              <span>{group.regiao}</span>
+                              <span className="text-slate-400">• {group.stores.length} filiais</span>
+                            </div>
+                          </td>
                         </tr>
-                      </tfoot>
+                      ];
+                      group.stores.forEach((item) => {
+                        const fatPctText = item.fatPct === null ? '0%' : formatPctBadgeText(item.fatPct, item.fatA, item.fatB);
+                        const segPctText = item.segPct === null ? '0%' : formatPctBadgeText(item.segPct, item.segA, item.segB);
+                        rows.push(
+                          <tr key={`${group.regiao}-${item.loja}`} className="border-b border-slate-200 even:bg-slate-50/50 hover:bg-orange-50/35 transition-colors">
+                            <td className="py-1.5 px-4 border-r border-slate-200 whitespace-nowrap"><span className="font-black text-[12px] text-slate-900 uppercase truncate inline-block max-w-[280px] align-middle" title={item.loja}>{shortenStoreName(item.loja)}</span></td>
+                            <td className="py-1.5 px-3 text-right font-mono text-slate-600 whitespace-nowrap">{formatMoney(item.fatA)}</td>
+                            <td className="py-1.5 px-3 text-right font-mono font-black text-slate-900 bg-orange-50/35 border-l border-slate-200 whitespace-nowrap">{formatMoney(item.fatB)}</td>
+                            <td className="py-1.5 px-3 text-center border-x border-slate-200 whitespace-nowrap"><span className={`inline-flex items-center justify-center min-w-[58px] px-2 py-0.5 rounded-md font-black text-[11px] ${item.fatPct !== null && item.fatPct < 0 ? 'text-rose-700 bg-rose-50 border border-rose-200/60' : 'text-emerald-700 bg-emerald-50 border border-emerald-200/60'}`}>{fatPctText}</span></td>
+                            <td className="py-1.5 px-3 text-right font-mono text-slate-600 bg-sky-50/30 border-l-[10px] border-white whitespace-nowrap">{formatMoney(item.segA)}</td>
+                            <td className="py-1.5 px-3 text-right font-mono font-black text-slate-900 bg-sky-50/55 border-l border-slate-200 whitespace-nowrap">{formatMoney(item.segB)}</td>
+                            <td className="py-1.5 px-3 text-center border-l border-slate-200 whitespace-nowrap"><span className={`inline-flex items-center justify-center min-w-[58px] px-2 py-0.5 rounded-md font-black text-[11px] ${item.segPct !== null && item.segPct < 0 ? 'text-rose-700 bg-rose-50 border border-rose-200/60' : 'text-emerald-700 bg-emerald-50 border border-emerald-200/60'}`}>{segPctText}</span></td>
+                          </tr>
+                        );
+                      });
+                      if (showRegionSubtotals) {
+                        const subFatText = group.subtotal.fatPct === null ? '0%' : formatPctBadgeText(group.subtotal.fatPct, group.subtotal.fatA, group.subtotal.fatB);
+                        const subSegText = group.subtotal.segPct === null ? '0%' : formatPctBadgeText(group.subtotal.segPct, group.subtotal.segA, group.subtotal.segB);
+                        rows.push(
+                          <tr key={`${group.regiao}-subtotal`} className="bg-slate-100/80 border-b-2 border-slate-300 text-[12px] font-black">
+                            <td className="py-2 px-4 border-r border-slate-200 uppercase text-slate-800">Subtotal {group.regiao}</td>
+                            <td className="py-2 px-3 text-right font-mono text-slate-700 whitespace-nowrap">{formatMoney(group.subtotal.fatA)}</td>
+                            <td className="py-2 px-3 text-right font-mono text-orange-700 bg-orange-50/60 border-l border-slate-200 whitespace-nowrap">{formatMoney(group.subtotal.fatB)}</td>
+                            <td className="py-2 px-3 text-center border-x border-slate-200 whitespace-nowrap">{subFatText}</td>
+                            <td className="py-2 px-3 text-right font-mono text-slate-700 bg-sky-50/30 border-l-[10px] border-white whitespace-nowrap">{formatMoney(group.subtotal.segA)}</td>
+                            <td className="py-2 px-3 text-right font-mono text-sky-700 bg-sky-50/60 border-l border-slate-200 whitespace-nowrap">{formatMoney(group.subtotal.segB)}</td>
+                            <td className="py-2 px-3 text-center border-l border-slate-200 whitespace-nowrap">{subSegText}</td>
+                          </tr>
+                        );
+                      }
+                      return rows;
+                    })}
+                    {storeVisionData.visibleStores.length === 0 && (
+                      <tr><td colSpan={7} className="p-10 text-center text-slate-400 font-bold">Nenhuma loja encontrada para os filtros selecionados.</td></tr>
                     )}
-                  </table>
-                </div>
+                  </tbody>
+                  {storeVisionData.visibleStores.length > 0 && (
+                    <tfoot className="bg-slate-900 text-white text-[12px] font-black">
+                      <tr>
+                        <td className="py-3 px-4 uppercase border-r border-slate-800">TOTAL CONSOLIDADO ({storeVisionData.visibleStores.length} LOJAS)</td>
+                        <td className="py-3 px-3 text-right font-mono text-slate-300 whitespace-nowrap">{formatMoney(storeVisionData.totals.fatA)}</td>
+                        <td className="py-3 px-3 text-right font-mono text-orange-400 border-l border-slate-800 whitespace-nowrap">{formatMoney(storeVisionData.totals.fatB)}</td>
+                        <td className="py-3 px-3 text-center border-x border-slate-800 whitespace-nowrap">{storeVisionData.totals.fatPct === null ? '0%' : formatPctBadgeText(storeVisionData.totals.fatPct, storeVisionData.totals.fatA, storeVisionData.totals.fatB)}</td>
+                        <td className="py-3 px-3 text-right font-mono text-slate-300 border-l-[10px] border-white whitespace-nowrap">{formatMoney(storeVisionData.totals.segA)}</td>
+                        <td className="py-3 px-3 text-right font-mono text-sky-400 border-l border-slate-800 whitespace-nowrap">{formatMoney(storeVisionData.totals.segB)}</td>
+                        <td className="py-3 px-3 text-center border-l border-slate-800 whitespace-nowrap">{storeVisionData.totals.segPct === null ? '0%' : formatPctBadgeText(storeVisionData.totals.segPct, storeVisionData.totals.segA, storeVisionData.totals.segB)}</td>
+                      </tr>
+                    </tfoot>
+                  )}
+                </table>
               </div>
             )}
-
             {/* ====================================================================
                 MODO 2: MATRIZ ANUAL MÊS A MÊS (100% NA TELA SEM ROLAGEM HORIZONTAL)
                ==================================================================== */}
             {storeViewMode === 'mes_a_mes' && (
-              <div className="w-full overflow-x-auto">
-                <table className="w-full table-fixed border-collapse text-left min-w-[1120px]">
+              <div className="w-full overflow-x-auto rounded-2xl border border-slate-200 bg-white shadow-sm">
+                <table className="w-full table-fixed border-collapse text-left min-w-[1520px]">
                   <thead>
-                    <tr className="bg-slate-900 text-white text-[10px] font-black uppercase tracking-wider">
+                    <tr className="bg-slate-900 text-white text-[11px] font-black uppercase tracking-wider">
                       <th
                         onClick={() => handleStoreSort('loja')}
-                        className="w-[175px] cursor-pointer py-2.5 px-3 border-r border-slate-800 hover:bg-slate-800 transition-colors"
+                        className="w-[210px] cursor-pointer py-3 px-3 border-r border-slate-800 hover:bg-slate-800 transition-colors"
                       >
                         <div className="flex items-center justify-between">
                           <span>Filial ({storeVisionData.visibleStores.length})</span>
                           {renderSortIcon('loja')}
                         </div>
                       </th>
-
                       {MONTH_LABELS.map((mLabel, idx) => {
                         const mNum = String(idx + 1);
                         const isSelectedMonth = monthFilter === mNum;
@@ -2198,206 +1954,186 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
                             key={mLabel}
                             onClick={() => setMonthFilter(isSelectedMonth ? '0' : mNum)}
                             title="Clique para filtrar este mês"
-                            className={`cursor-pointer py-2 px-1 text-center border-r border-slate-800 transition-colors ${
+                            className={`cursor-pointer py-3 px-2 text-center border-r border-slate-800 transition-colors ${
                               isSelectedMonth ? 'bg-orange-500 text-white' : 'hover:bg-slate-800'
                             }`}
                           >
-                            <span className="block text-[10px] font-black">{mLabel}</span>
-                            <span className={`block text-[8px] font-bold ${isSelectedMonth ? 'text-orange-100' : 'text-slate-400'}`}>
+                            <span className="block text-[12px] font-black">{mLabel}</span>
+                            <span className={`block text-[9px] font-bold ${isSelectedMonth ? 'text-orange-100' : 'text-slate-400'}`}>
                               {yearB.slice(-2)} vs {yearA.slice(-2)}
                             </span>
                           </th>
                         );
                       })}
-
                       <th
                         onClick={() => handleStoreSort('fatB')}
-                        className="w-[115px] cursor-pointer py-2 px-2.5 text-right bg-slate-950 text-orange-400 hover:bg-slate-900 transition-colors"
+                        className="w-[125px] cursor-pointer py-3 px-2.5 text-right bg-slate-950 text-orange-400 hover:bg-slate-900 transition-colors"
                       >
                         <div className="flex items-center justify-end gap-1">
                           <span>Acumulado</span>
                           {renderSortIcon('fatB')}
                         </div>
-                        <span className="block text-[8px] text-slate-400 font-bold">
+                        <span className="block text-[9px] text-slate-400 font-bold">
                           {yearB} vs {yearA}
                         </span>
                       </th>
                     </tr>
                   </thead>
 
-                  <tbody className="divide-y divide-slate-200/70 text-[11px] font-bold text-slate-700">
-                    {storeVisionData.visibleStores.map((store) => {
-                      const totalYearA = Object.values(store.monthsA).reduce((a, b) => a + b, 0);
-                      const totalYearB = Object.values(store.monthsB).reduce((a, b) => a + b, 0);
-                      const totalDiffPct = calcVariationPct(totalYearA, totalYearB);
-                      const totalBadgeText = formatPctBadgeText(totalDiffPct, totalYearA, totalYearB);
-
-                      return (
-                        <tr key={store.loja} className="hover:bg-orange-50/40 transition-colors even:bg-slate-50/40">
-                          {/* Coluna Fixa da Loja */}
-                          <td className="py-1.5 px-3 border-r border-slate-200/80 truncate" title={`${store.loja} (${store.regiao})`}>
-                            <div className="flex items-center justify-between gap-1">
-                              <span className="font-black text-[10px] text-slate-900 uppercase truncate">
-                                {shortenStoreName(store.loja)}
+                  <tbody className="divide-y divide-slate-200/70 text-[12px] font-bold text-slate-700">
+                    {storeVisionData.groupedVisibleStores.map((group) => (
+                      <React.Fragment key={`${group.regiao}-matrix-group`}>
+                        <tr className="bg-slate-50 border-y border-slate-200">
+                          <td colSpan={14} className="px-3 py-2 text-[11px] font-black uppercase text-slate-700">
+                            <div className="flex items-center gap-2">
+                              <span className="inline-flex min-w-[28px] justify-center rounded-md bg-slate-900 px-2 py-1 text-white">
+                                {regionShortLabel(group.regiao)}
                               </span>
-                              <span className="text-[8px] font-extrabold px-1 py-0.2 rounded bg-slate-200/70 text-slate-600 shrink-0">
-                                {store.uf}
-                              </span>
-                            </div>
-                          </td>
-
-                          {/* 12 Meses */}
-                          {MONTH_LABELS.map((mLabel, idx) => {
-                            const mKey = String(idx + 1).padStart(2, '0');
-                            const valA = store.monthsA[mKey] || 0;
-                            const valB = store.monthsB[mKey] || 0;
-                            const diff = calcVariationPct(valA, valB);
-                            const badgeText = formatPctBadgeText(diff, valA, valB);
-                            const isSelectedMonth = monthFilter === String(idx + 1);
-
-                            // Fundo condicional para o modo Mapa de Calor
-                            let heatBg = '';
-                            if (matrixDensity === 'heatmap' && diff !== null) {
-                              if (diff >= 30) heatBg = 'bg-emerald-100/70';
-                              else if (diff >= 0) heatBg = 'bg-emerald-50/60';
-                              else if (diff <= -20) heatBg = 'bg-rose-100/70';
-                              else heatBg = 'bg-rose-50/60';
-                            } else if (isSelectedMonth) {
-                              heatBg = 'bg-orange-50/50';
-                            }
-
-                            const tooltipText = `${store.loja} • ${mLabel}\n${yearB}: ${formatMoney(valB)}\n${yearA}: ${formatMoney(valA)}${diff !== null ? `\nVariação: ${badgeText}` : ''}`;
-
-                            return (
-                              <td
-                                key={mKey}
-                                title={tooltipText}
-                                className={`py-1.5 px-1.5 text-right border-r border-slate-100 align-middle ${heatBg}`}
-                              >
-                                {valB === 0 && valA === 0 ? (
-                                  <span className="text-slate-300 text-[10px] block text-center">—</span>
-                                ) : (
-                                  <div className="flex flex-col items-end leading-tight">
-                                    {/* Linha 1: Valor Ano Atual (2026) */}
-                                    <span className={`font-mono text-[10px] font-black ${valB > 0 ? 'text-slate-900' : 'text-slate-300'}`}>
-                                      {formatCellCompact(valB)}
-                                    </span>
-
-                                    {/* Linha 2: Valor Ano Anterior (2025) + % na mesma linha ou empilhado conforme densidade */}
-                                    {matrixDensity !== 'clean' && (
-                                      <div className="flex items-center justify-end gap-1 mt-0.5 w-full">
-                                        {matrixDensity === 'complete' && (
-                                          <span className="font-mono text-[8px] text-slate-400 truncate">
-                                            {valA > 0 ? formatCellCompact(valA) : '—'}
-                                          </span>
-                                        )}
-                                        {diff !== null && (
-                                          <span
-                                            className={`px-1 rounded text-[8px] font-black leading-tight ${
-                                              diff >= 0
-                                                ? 'bg-emerald-500/15 text-emerald-700'
-                                                : 'bg-rose-500/15 text-rose-600'
-                                            }`}
-                                          >
-                                            {badgeText}
-                                          </span>
-                                        )}
-                                      </div>
-                                    )}
-                                  </div>
-                                )}
-                              </td>
-                            );
-                          })}
-
-                          {/* Acumulado Anual da Loja */}
-                          <td
-                            title={`${store.loja} • Acumulado Anual\n${yearB}: ${formatMoney(totalYearB)}\n${yearA}: ${formatMoney(totalYearA)}`}
-                            className="py-1.5 px-2.5 text-right bg-orange-50/35 align-middle"
-                          >
-                            <div className="flex flex-col items-end leading-tight">
-                              <span className="font-mono text-[11px] font-black text-orange-700">
-                                {formatCellCompact(totalYearB)}
-                              </span>
-                              <div className="flex items-center justify-end gap-1 mt-0.5">
-                                <span className="font-mono text-[8px] text-slate-500">
-                                  {totalYearA > 0 ? formatCellCompact(totalYearA) : '—'}
-                                </span>
-                                {totalDiffPct !== null && (
-                                  <span
-                                    className={`px-1 rounded text-[8px] font-black ${
-                                      totalDiffPct >= 0
-                                        ? 'bg-emerald-100 text-emerald-800'
-                                        : 'bg-rose-100 text-rose-700'
-                                    }`}
-                                  >
-                                    {totalBadgeText}
-                                  </span>
-                                )}
-                              </div>
+                              <span>{group.regiao}</span>
+                              <span className="text-slate-400">• {group.stores.length} filiais</span>
                             </div>
                           </td>
                         </tr>
-                      );
-                    })}
+
+                        {group.stores.map((store) => {
+                          const totalYearA = (Object.values(store.monthsA) as number[]).reduce((a, b) => a + b, 0);
+                          const totalYearB = (Object.values(store.monthsB) as number[]).reduce((a, b) => a + b, 0);
+                          const totalDiffPct = calcVariationPct(totalYearA, totalYearB);
+                          const totalBadgeText = totalDiffPct === null ? '0%' : formatPctBadgeText(totalDiffPct, totalYearA, totalYearB);
+
+                          return (
+                            <tr key={`${group.regiao}-${store.loja}-matrix`} className="hover:bg-orange-50/40 transition-colors even:bg-slate-50/30">
+                              <td className="py-2 px-3 border-r border-slate-200/80 truncate" title={`${store.loja} (${store.regiao})`}>
+                                <div className="flex items-center justify-between gap-1.5">
+                                  <span className="font-black text-[11px] text-slate-900 uppercase truncate">
+                                    {shortenStoreName(store.loja)}
+                                  </span>
+                                  <span className="text-[9px] font-extrabold px-1.5 py-0.5 rounded bg-slate-200/70 text-slate-600 shrink-0">
+                                    {regionShortLabel(store.regiao)}
+                                  </span>
+                                </div>
+                              </td>
+
+                              {MONTH_LABELS.map((mLabel, idx) => {
+                                const mKey = String(idx + 1).padStart(2, '0');
+                                const valA = store.monthsA[mKey] || 0;
+                                const valB = store.monthsB[mKey] || 0;
+                                const diff = calcVariationPct(valA, valB);
+                                const badgeText = diff === null ? '0%' : formatPctBadgeText(diff, valA, valB);
+                                const isSelectedMonth = monthFilter === String(idx + 1);
+                                let heatBg = '';
+                                if (diff !== null) {
+                                  if (diff >= 30) heatBg = 'bg-emerald-100/80';
+                                  else if (diff >= 0) heatBg = 'bg-emerald-50/70';
+                                  else if (diff <= -20) heatBg = 'bg-rose-100/80';
+                                  else heatBg = 'bg-rose-50/70';
+                                } else if (isSelectedMonth) {
+                                  heatBg = 'bg-orange-50/60';
+                                }
+
+                                const tooltipText = `${store.loja} • ${mLabel}
+${yearB}: ${formatMoney(valB)}
+${yearA}: ${formatMoney(valA)}
+Variação: ${badgeText}`;
+
+                                return (
+                                  <td key={mKey} title={tooltipText} className={`py-2 px-2 text-right border-r border-slate-100 align-middle ${heatBg}`}>
+                                    <div className="flex flex-col items-end leading-tight gap-0.5">
+                                      <span className={`font-mono text-[11px] font-black ${valB > 0 ? 'text-slate-900' : 'text-slate-300'}`}>
+                                        {formatCellCompact(valB)}
+                                      </span>
+                                      <span className="font-mono text-[9px] text-slate-400 truncate">
+                                        {valA > 0 ? formatCellCompact(valA) : '0'}
+                                      </span>
+                                      <span className={`px-1.5 rounded text-[9px] font-black leading-tight ${diff !== null && diff < 0 ? 'bg-rose-500/15 text-rose-600' : 'bg-emerald-500/15 text-emerald-700'}`}>
+                                        {badgeText}
+                                      </span>
+                                    </div>
+                                  </td>
+                                );
+                              })}
+
+                              <td className="py-2 px-2.5 text-right bg-orange-50/35 align-middle" title={`${store.loja} • Acumulado Anual
+${yearB}: ${formatMoney(totalYearB)}
+${yearA}: ${formatMoney(totalYearA)}`}>
+                                <div className="flex flex-col items-end leading-tight gap-0.5">
+                                  <span className="font-mono text-[12px] font-black text-orange-700">{formatCellCompact(totalYearB)}</span>
+                                  <span className="font-mono text-[9px] text-slate-400">{totalYearA > 0 ? formatCellCompact(totalYearA) : '0'}</span>
+                                  <span className={`px-1.5 rounded text-[9px] font-black ${totalDiffPct !== null && totalDiffPct < 0 ? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-800'}`}>
+                                    {totalBadgeText}
+                                  </span>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+
+                        {showRegionSubtotals && (
+                          <tr className="bg-slate-100/90 border-b-2 border-slate-300 text-[12px] font-black">
+                            <td className="py-2 px-3 border-r border-slate-200 uppercase text-slate-800">
+                              Subtotal {group.regiao}
+                            </td>
+                            {MONTH_LABELS.map((_, idx) => {
+                              const mKey = String(idx + 1).padStart(2, '0');
+                              const valA = group.subtotal.monthsA[mKey] || 0;
+                              const valB = group.subtotal.monthsB[mKey] || 0;
+                              const diff = calcVariationPct(valA, valB);
+                              const badgeText = diff === null ? '0%' : formatPctBadgeText(diff, valA, valB);
+                              return (
+                                <td key={`${group.regiao}-sub-${mKey}`} className="py-2 px-2 text-right border-r border-slate-200 bg-slate-50">
+                                  <div className="flex flex-col items-end leading-tight gap-0.5">
+                                    <span className="font-mono text-[11px] text-slate-900">{formatCellCompact(valB)}</span>
+                                    <span className="font-mono text-[9px] text-slate-400">{valA > 0 ? formatCellCompact(valA) : '0'}</span>
+                                    <span className={`text-[9px] ${diff !== null && diff < 0 ? 'text-rose-600' : 'text-emerald-700'}`}>{badgeText}</span>
+                                  </div>
+                                </td>
+                              );
+                            })}
+                            <td className="py-2 px-2.5 text-right bg-orange-50/55">
+                              <div className="flex flex-col items-end leading-tight gap-0.5">
+                                <span className="font-mono text-[12px] text-orange-700">{formatCellCompact(group.subtotal.fatB)}</span>
+                                <span className="font-mono text-[9px] text-slate-400">{group.subtotal.fatA > 0 ? formatCellCompact(group.subtotal.fatA) : '0'}</span>
+                                <span className={`text-[9px] ${group.subtotal.fatPct !== null && group.subtotal.fatPct < 0 ? 'text-rose-600' : 'text-emerald-700'}`}>
+                                  {group.subtotal.fatPct === null ? '0%' : formatPctBadgeText(group.subtotal.fatPct, group.subtotal.fatA, group.subtotal.fatB)}
+                                </span>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
+                    ))}
                   </tbody>
 
-                  {/* Rodapé Consolidado da Rede Mês a Mês */}
                   {storeVisionData.visibleStores.length > 0 && (
-                    <tfoot className="bg-slate-900 text-white text-[10px] font-black">
+                    <tfoot className="bg-slate-900 text-white text-[11px] font-black">
                       <tr>
-                        <td className="py-2.5 px-3 border-r border-slate-800 uppercase">
-                          TOTAL REDE ({storeVisionData.visibleStores.length})
-                        </td>
+                        <td className="py-3 px-3 border-r border-slate-800 uppercase">TOTAL REDE ({storeVisionData.visibleStores.length})</td>
                         {MONTH_LABELS.map((_, idx) => {
                           const mKey = String(idx + 1).padStart(2, '0');
                           const mTotalA = storeVisionData.totals.monthsA[mKey] || 0;
                           const mTotalB = storeVisionData.totals.monthsB[mKey] || 0;
                           const mDiff = calcVariationPct(mTotalA, mTotalB);
-                          const mBadge = formatPctBadgeText(mDiff, mTotalA, mTotalB);
-
+                          const mBadge = mDiff === null ? '0%' : formatPctBadgeText(mDiff, mTotalA, mTotalB);
                           return (
-                            <td key={mKey} className="py-2 px-1.5 text-right border-r border-slate-800">
-                              <div className="font-mono text-[10px] text-orange-400">
-                                {formatCellCompact(mTotalB)}
-                              </div>
-                              <div className="font-mono text-[8px] text-slate-400">
-                                {formatCellCompact(mTotalA)}
-                              </div>
-                              {mDiff !== null && (
-                                <span
-                                  className={`inline-block mt-0.5 text-[8px] font-black ${
-                                    mDiff >= 0 ? 'text-emerald-400' : 'text-rose-400'
-                                  }`}
-                                >
-                                  {mBadge}
-                                </span>
-                              )}
+                            <td key={mKey} className="py-2.5 px-2 text-right border-r border-slate-800">
+                              <div className="font-mono text-[11px] text-orange-400">{formatCellCompact(mTotalB)}</div>
+                              <div className="font-mono text-[9px] text-slate-400">{mTotalA > 0 ? formatCellCompact(mTotalA) : '0'}</div>
+                              <span className={`inline-block mt-0.5 text-[9px] font-black ${mDiff !== null && mDiff < 0 ? 'text-rose-400' : 'text-emerald-400'}`}>{mBadge}</span>
                             </td>
                           );
                         })}
-                        <td className="py-2 px-2.5 text-right bg-slate-950">
+                        <td className="py-2.5 px-2.5 text-right bg-slate-950">
                           {(() => {
                             const grandB = Object.values(storeVisionData.totals.monthsB).reduce((a, b) => a + b, 0);
                             const grandA = Object.values(storeVisionData.totals.monthsA).reduce((a, b) => a + b, 0);
                             const grandDiff = calcVariationPct(grandA, grandB);
                             return (
                               <>
-                                <div className="font-mono text-[11px] text-orange-400">
-                                  {formatCellCompact(grandB)}
-                                </div>
-                                <div className="font-mono text-[8px] text-slate-400">
-                                  {formatCellCompact(grandA)}
-                                </div>
-                                {grandDiff !== null && (
-                                  <span
-                                    className={`inline-block mt-0.5 text-[8px] font-black ${
-                                      grandDiff >= 0 ? 'text-emerald-400' : 'text-rose-400'
-                                    }`}
-                                  >
-                                    {formatPctBadgeText(grandDiff, grandA, grandB)}
-                                  </span>
-                                )}
+                                <div className="font-mono text-[12px] text-orange-400">{formatCellCompact(grandB)}</div>
+                                <div className="font-mono text-[9px] text-slate-400">{grandA > 0 ? formatCellCompact(grandA) : '0'}</div>
+                                <span className={`inline-block mt-0.5 text-[9px] font-black ${grandDiff !== null && grandDiff < 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
+                                  {grandDiff === null ? '0%' : formatPctBadgeText(grandDiff, grandA, grandB)}
+                                </span>
                               </>
                             );
                           })()}
