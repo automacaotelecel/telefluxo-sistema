@@ -38,6 +38,13 @@ import * as XLSX from 'xlsx';
 import ExecutiveReportButton from './ExecutiveReportButton';
 import KpiDrilldownDrawer from './KpiDrilldownDrawer';
 import StoreDetailDrawer from './StoreDetailDrawer';
+import {
+  CLASSIFICACAO_LOJAS_STORAGE_KEY,
+  lerClassificacaoPersonalizada,
+  lojaEhLiquida,
+  normalizarLojaLiquida,
+  type StatusLojaLiquida,
+} from '../utils/lojasLiquidas';
 
 type MetricKey =
   | 'faturamentoMes'
@@ -129,6 +136,51 @@ type Props = {
   currentUser: any;
   onNavigate?: (view: string) => void;
 };
+
+type AnnualStoreRow = {
+  ano: number;
+  mes: number;
+  loja: string;
+  cnpj_empresa?: string;
+  venda_total: number;
+};
+
+type LiquidSources = {
+  previousStores: NonNullable<DashboardData['stores']>;
+  annualRows: AnnualStoreRow[];
+  monthToDateStores: NonNullable<DashboardData['stores']> | null;
+  previousAvailable: boolean;
+  annualAvailable: boolean;
+  error: string;
+};
+
+const EMPTY_LIQUID_SOURCES: LiquidSources = {
+  previousStores: [], annualRows: [], monthToDateStores: null,
+  previousAvailable: false, annualAvailable: false, error: '',
+};
+
+function comparablePreviousDate(date: string): string {
+  const year = Number(date.slice(0, 4)) - 1;
+  const month = Number(date.slice(5, 7));
+  const day = Number(date.slice(8, 10));
+  const last = new Date(year, month, 0).getDate();
+  return `${year}-${String(month).padStart(2, '0')}-${String(Math.min(day, last)).padStart(2, '0')}`;
+}
+
+function changePercent(current: number, previous: number): number | null {
+  return previous > 0 ? ((current - previous) / previous) * 100 : null;
+}
+
+function validNumber(value: unknown): number {
+  const result = Number(value || 0);
+  return Number.isFinite(result) ? result : 0;
+}
+
+function sumRevenue(items: Array<{ faturamento: number }>): number {
+  return items.reduce((sum, store) => sum + validNumber(store.faturamento), 0);
+}
+
+
 
 type PeriodRequest = {
   startDate: string;
@@ -228,6 +280,7 @@ function KpiCard({
   icon: Icon,
   change,
   onClick,
+  secondary,
 }: {
   title: string;
   value: string;
@@ -235,6 +288,7 @@ function KpiCard({
   icon: any;
   change?: number | null;
   onClick?: () => void;
+  secondary?: { label: string; value: string; change?: number | null; detail?: string };
 }) {
   const positive = Number(change || 0) >= 0;
 
@@ -267,6 +321,22 @@ function KpiCard({
           </span>
         )}
       </div>
+      {secondary && (
+        <div className="mt-2.5 border-t border-slate-100 pt-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-1.5">
+            <div className="min-w-0">
+              <span className="block text-[9px] font-extrabold uppercase tracking-wide text-slate-500">{secondary.label}</span>
+              <span className="block text-[13px] font-black tabular-nums text-slate-900 sm:text-[15px]">{secondary.value}</span>
+            </div>
+            {typeof secondary.change === 'number' && Number.isFinite(secondary.change) && (
+              <span className={`rounded-lg px-2 py-1 text-[10px] font-black tabular-nums ${secondary.change >= 0 ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
+                {secondary.change >= 0 ? '+' : ''}{number(secondary.change, 1)}%
+              </span>
+            )}
+          </div>
+          {secondary.detail && <p className="mt-1 text-[9px] font-semibold leading-tight text-slate-400">{secondary.detail}</p>}
+        </div>
+      )}
     </button>
   );
 }
@@ -740,7 +810,7 @@ function OperationalPanel({
               Visão operacional
             </p>
             <h2 className="mt-1 text-lg font-black leading-tight tracking-tight text-slate-950 sm:text-xl">
-              O que está acontecendo na operação
+              Indicadores de Vendas
             </h2>
           </div>
           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-slate-950 text-white sm:h-10 sm:w-10 sm:rounded-2xl">
@@ -939,6 +1009,13 @@ export default function Home({ currentUser }: Props) {
   const [storeView, setStoreView] = useState<any | null>(null);
   const [storeViewLoading, setStoreViewLoading] = useState(false);
   const [storeViewError, setStoreViewError] = useState('');
+  const [liquidOnly, setLiquidOnly] = useState(false);
+  const [storeClassification, setStoreClassification] = useState<Record<string, StatusLojaLiquida>>(
+    () => lerClassificacaoPersonalizada(),
+  );
+  const [liquidSources, setLiquidSources] = useState<LiquidSources>(EMPTY_LIQUID_SOURCES);
+  const [liquidLoading, setLiquidLoading] = useState(true);
+
 
   const [periodRequest, setPeriodRequest] = useState<PeriodRequest>(initialPeriod);
   const [periodOpen, setPeriodOpen] = useState(false);
@@ -946,6 +1023,19 @@ export default function Home({ currentUser }: Props) {
   const [draftMonth, setDraftMonth] = useState(Number(initialPeriod.startDate.slice(5, 7)));
   const [draftStart, setDraftStart] = useState(initialPeriod.startDate);
   const [draftEnd, setDraftEnd] = useState(initialPeriod.endDate);
+
+  useEffect(() => {
+    const reload = () => setStoreClassification(lerClassificacaoPersonalizada());
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === CLASSIFICACAO_LOJAS_STORAGE_KEY) reload();
+    };
+    window.addEventListener('storage', onStorage);
+    window.addEventListener('focus', reload);
+    return () => {
+      window.removeEventListener('storage', onStorage);
+      window.removeEventListener('focus', reload);
+    };
+  }, []);
 
   const isNetworkView = dashboard?.scope?.type === 'network';
   const hasMultiStoreScope =
@@ -985,6 +1075,66 @@ export default function Home({ currentUser }: Props) {
     }
   }, [buildPeriodQuery, currentUser?.id]);
 
+  // Os dados por loja do ano anterior são requisitados separadamente para
+  // calcular variação líquida sobre a MESMA seleção de lojas (OK em ambos os anos).
+  // Os agregados anuais já são calculados e autorizados pelo backend.
+  useEffect(() => {
+    const userId = String(currentUser?.id || '').trim();
+    if (!userId) return;
+    const controller = new AbortController();
+    let alive = true;
+    const yearB = Number(periodRequest.startDate.slice(0, 4));
+    const yearA = yearB - 1;
+    const queryPrevious = `startDate=${comparablePreviousDate(periodRequest.startDate)}&endDate=${comparablePreviousDate(periodRequest.endDate)}`;
+    const selectedMonthStart = `${periodRequest.startDate.slice(0, 7)}-01`;
+    const monthToDateNeeded = periodRequest.startDate !== selectedMonthStart;
+    const urlHome = (query: string) => `${API_URL}/api/home/resumo?userId=${encodeURIComponent(userId)}&${query}`;
+
+    const fetchSources = async () => {
+      setLiquidLoading(true);
+      try {
+        const [previous, annual, monthToDate] = await Promise.allSettled([
+          fetch(urlHome(queryPrevious), { signal: controller.signal, cache: 'no-store' }),
+          fetch(`${API_URL}/anuais/lojas_compare?userId=${encodeURIComponent(userId)}&yearA=${yearA}&yearB=${yearB}&month=0`, {
+            signal: controller.signal, cache: 'no-store',
+          }),
+          monthToDateNeeded
+            ? fetch(urlHome(`startDate=${selectedMonthStart}&endDate=${periodRequest.endDate}`), {
+                signal: controller.signal, cache: 'no-store',
+              })
+            : Promise.resolve(null),
+        ]);
+        if (!alive) return;
+        const readJson = async (result: PromiseSettledResult<Response | null>) => {
+          if (result.status !== 'fulfilled' || !result.value?.ok) return null;
+          try { return await result.value.json(); } catch { return null; }
+        };
+        const [prevData, yearData, monthData] = await Promise.all([
+          readJson(previous), readJson(annual), readJson(monthToDate),
+        ]);
+        if (!alive) return;
+        const prevValid = prevData?.success === true && Array.isArray(prevData.stores);
+        const annualValid = Array.isArray(yearData?.data);
+        setLiquidSources({
+          previousStores: prevValid ? prevData.stores : [],
+          annualRows: annualValid ? yearData.data : [],
+          monthToDateStores: monthToDateNeeded && monthData?.success && Array.isArray(monthData.stores)
+            ? monthData.stores : null,
+          previousAvailable: prevValid,
+          annualAvailable: annualValid,
+          error: !prevValid || !annualValid || (monthToDateNeeded && !monthData?.success)
+            ? 'Algumas bases de comparação líquida não estão disponíveis no momento.' : '',
+        });
+      } catch (error) {
+        if (alive) setLiquidSources({ ...EMPTY_LIQUID_SOURCES, error: 'Falha ao consultar dados líquidos.' });
+      } finally {
+        if (alive) setLiquidLoading(false);
+      }
+    };
+    void fetchSources();
+    return () => { alive = false; controller.abort(); };
+  }, [currentUser?.id, periodRequest.startDate, periodRequest.endDate]);
+
   const loadStoreView = useCallback(
     async (store: string) => {
       const userId = String(currentUser?.id || '').trim();
@@ -1019,6 +1169,17 @@ export default function Home({ currentUser }: Props) {
     },
     [buildPeriodQuery, currentUser?.id],
   );
+
+  const toggleLiquid = useCallback(() => {
+    setLiquidOnly((previous) => {
+      const next = !previous;
+      if (next && storeFilter && !lojaEhLiquida(storeFilter, storeClassification)) {
+        setStoreFilter(null);
+        setStoreView(null);
+      }
+      return next;
+    });
+  }, [storeFilter, storeClassification]);
 
   const clearStoreAnalysis = useCallback(() => {
     setStoreFilter(null);
@@ -1133,10 +1294,57 @@ export default function Home({ currentUser }: Props) {
 
   const networkKpis = dashboard?.kpis || {};
   const stores = dashboard?.stores || [];
-  const visibleStores = isMultiStoreView ? stores : stores.slice(0, 1);
   const isStoreAnalysis = Boolean(storeFilter && storeView?.success);
+  const scopedStores = isStoreAnalysis
+    ? stores.filter((item) => normalizarLojaLiquida(item.loja) === normalizarLojaLiquida(storeFilter || ''))
+    : stores;
+  const allowedStoreNames = dashboard?.scope?.stores || stores.map((item) => item.loja);
+  const allowedNormalized = new Set(allowedStoreNames.map(normalizarLojaLiquida));
+  const currentLiquidStores = scopedStores.filter((store) => lojaEhLiquida(store.loja, storeClassification));
+  const visibleStores = liquidOnly ? currentLiquidStores : scopedStores;
 
-  const kpis = isStoreAnalysis
+  const eligible = (name: string) => {
+    const normalized = normalizarLojaLiquida(name);
+    return lojaEhLiquida(normalized, storeClassification) &&
+      (isNetworkView || allowedNormalized.has(normalized)) &&
+      (!isStoreAnalysis || normalized === normalizarLojaLiquida(storeFilter || ''));
+  };
+  const sumLiquidAnnual = (year: number, monthPredicate: (month: number) => boolean) =>
+    liquidSources.annualRows.reduce((sum, row) => {
+      const yr = Number(row.ano);
+      const month = Number(row.mes);
+      return yr === year && monthPredicate(month) && eligible(String(row.loja || row.cnpj_empresa || ''))
+        ? sum + validNumber(row.venda_total) : sum;
+    }, 0);
+  const currentYearSelected = Number(periodRequest.startDate.slice(0, 4));
+  const selectedMonth = Number(periodRequest.startDate.slice(5, 7));
+  const currentLiquidMonthly = sumRevenue(currentLiquidStores);
+  const previousLiquidMonthly = liquidSources.previousStores.reduce((sum, store) =>
+    eligible(store.loja) ? sum + validNumber(store.faturamento) : sum, 0);
+  const monthGrowthLiquid = liquidSources.previousAvailable
+    ? changePercent(currentLiquidMonthly, previousLiquidMonthly) : null;
+  const monthToDateLiquid = liquidSources.monthToDateStores === null
+    ? (periodRequest.startDate.endsWith('-01') ? currentLiquidMonthly : null)
+    : liquidSources.monthToDateStores.reduce((sum, store) =>
+        eligible(store.loja) ? sum + validNumber(store.faturamento) : sum, 0);
+  const completedYearMonths = sumLiquidAnnual(currentYearSelected, (month) => month < selectedMonth);
+  const priorYearFullLiquid = sumLiquidAnnual(currentYearSelected - 1, () => true);
+  const priorYearMonths = new Set(liquidSources.annualRows.filter((row) =>
+    Number(row.ano) === currentYearSelected - 1 && eligible(String(row.loja || row.cnpj_empresa || ''))
+  ).map((row) => Number(row.mes)));
+  const pastYearAvailable = liquidSources.annualAvailable && priorYearMonths.size === 12;
+  const currentYearMonthsAvailable = selectedMonth === 1 || liquidSources.annualRows.some((row) =>
+    Number(row.ano) === currentYearSelected && Number(row.mes) < selectedMonth && eligible(String(row.loja || row.cnpj_empresa || ''))
+  );
+  const yearLiquidReady = currentYearMonthsAvailable && monthToDateLiquid !== null && liquidSources.annualAvailable;
+  const liquidYearActual = yearLiquidReady ? completedYearMonths + Number(monthToDateLiquid) : null;
+  const liquidYearTrend = liquidYearActual !== null && validNumber(networkKpis.realizadoAno) > 0
+    ? liquidYearActual * validNumber(networkKpis.tendenciaAno) / validNumber(networkKpis.realizadoAno)
+    : null;
+  const yearLiquidGrowth = pastYearAvailable && liquidYearTrend !== null
+    ? changePercent(liquidYearTrend, priorYearFullLiquid) : null;
+
+  const baseKpis = isStoreAnalysis
     ? {
         ...networkKpis,
         faturamentoMes: storeView?.kpis?.faturamento || 0,
@@ -1158,7 +1366,68 @@ export default function Home({ currentUser }: Props) {
       }
     : networkKpis;
 
-  const operations = isStoreAnalysis ? storeView?.operations : dashboard?.operations;
+  const liquidMonthlyPieces = currentLiquidStores.reduce((sum, store) => sum + validNumber(store.quantidade), 0);
+  const liquidMonthlyInsurance = currentLiquidStores.reduce((sum, store) => sum + validNumber(store.seguros), 0);
+  // Tendência líquida mensal: usa o acumulado do mês desde o dia 1,
+  // inclusive quando o usuário seleciona um intervalo personalizado.
+  // Em mês encerrado, tendência é igual ao realizado (sem projeção).
+  const isCurrentSelectedMonth = currentYearSelected === currentYear && selectedMonth === currentMonth;
+  const calendarDaysInSelectedMonth = lastDayOfMonth(currentYearSelected, selectedMonth);
+  const elapsedSelectedMonth = Math.min(
+    calendarDaysInSelectedMonth,
+    Math.max(1, Number(periodRequest.endDate.slice(8, 10)) || 1),
+  );
+  const currentMonthSourceAvailable = Boolean(dashboard?.success && Array.isArray(dashboard.stores));
+  const projectedLiquidBasis = monthToDateLiquid !== null && currentMonthSourceAvailable
+    ? monthToDateLiquid : null;
+  const liquidMonthProjection = projectedLiquidBasis === null ? null
+    : isCurrentSelectedMonth
+      ? projectedLiquidBasis * calendarDaysInSelectedMonth / elapsedSelectedMonth
+      : projectedLiquidBasis;
+  const previousFullMonthLiquid = sumLiquidAnnual(currentYearSelected - 1, (month) => month === selectedMonth);
+  const previousFullMonthAvailable = liquidSources.annualAvailable && liquidSources.annualRows.some(
+    (row) => Number(row.ano) === currentYearSelected - 1 && Number(row.mes) === selectedMonth &&
+      eligible(String(row.loja || row.cnpj_empresa || '')),
+  );
+  const liquidTrendGrowth = previousFullMonthAvailable && previousFullMonthLiquid > 0 && liquidMonthProjection !== null
+    ? changePercent(liquidMonthProjection, previousFullMonthLiquid) : null;
+
+  const kpis = liquidOnly
+    ? {
+        ...baseKpis,
+        faturamentoMes: currentLiquidMonthly,
+        faturamentoAnterior: previousLiquidMonthly,
+        crescimento: monthGrowthLiquid,
+        tendenciaMes: liquidMonthProjection ?? 0,
+        crescimentoTendencia: liquidTrendGrowth,
+        tendenciaAno: liquidYearTrend ?? 0,
+        realizadoAno: liquidYearActual ?? 0,
+        pecasMes: liquidMonthlyPieces,
+        ticketMedio: liquidMonthlyPieces > 0 ? currentLiquidMonthly / liquidMonthlyPieces : 0,
+        seguros: liquidMonthlyInsurance,
+        lojasAtivas: currentLiquidStores.length,
+      }
+    : baseKpis;
+
+  const liquidRegions = currentLiquidStores.reduce<Record<string, number>>((result, store) => {
+    const region = String(store.regiao || 'SEM REGIÃO').trim().toUpperCase();
+    result[region] = (result[region] || 0) + validNumber(store.faturamento);
+    return result;
+  }, {});
+  const operations = liquidOnly ? {
+    mediaDiaria: currentLiquidMonthly / Math.max(1, dashboard?.period?.daysSelected || 1),
+    quantidade: liquidMonthlyPieces,
+    lojasAtivas: currentLiquidStores.length,
+    vendedoresAtivos: undefined,
+    topLoja: [...currentLiquidStores].sort((a, b) => b.faturamento - a.faturamento)[0] || null,
+    categorias: [],
+    regioes: Object.entries(liquidRegions).map(([regiao, faturamento]) => ({
+      regiao, faturamento, quantidade: 0,
+      participacao: currentLiquidMonthly > 0 ? faturamento / currentLiquidMonthly * 100 : 0,
+    })),
+    source: dashboard?.operations?.source,
+    insuranceScope: dashboard?.operations?.insuranceScope,
+  } : isStoreAnalysis ? storeView?.operations : dashboard?.operations;
 
   const trend = useMemo(
     () =>
@@ -1169,7 +1438,7 @@ export default function Home({ currentUser }: Props) {
     [dashboard?.trend, isStoreAnalysis, storeView?.trend],
   );
 
-  const viewLoading = dashboardLoading || (Boolean(storeFilter) && storeViewLoading);
+  const viewLoading = dashboardLoading || (Boolean(storeFilter) && storeViewLoading) || (liquidOnly && liquidLoading);
   const scopeLabel = isStoreAnalysis
     ? `Análise da loja • ${storeFilter}`
     : dashboard?.scope?.label || 'Validando seu acesso';
@@ -1215,7 +1484,8 @@ export default function Home({ currentUser }: Props) {
     return years;
   }, [currentYear]);
 
-  const allowedStoreOptions = dashboard?.scope?.stores || stores.map((item) => item.loja);
+  const allowedStoreOptions = (dashboard?.scope?.stores || stores.map((item) => item.loja))
+    .filter((store) => !liquidOnly || lojaEhLiquida(store, storeClassification));
 
   return (
     <div className="flex-1 overflow-y-auto bg-[#f5f7fb]" style={{ touchAction: 'pan-x pan-y pinch-zoom' }}>
@@ -1398,11 +1668,28 @@ export default function Home({ currentUser }: Props) {
               </select>
             )}
 
-            <ExecutiveReportButton
-              currentUser={currentUser}
-              dashboard={reportDashboard}
-              disabled={viewLoading}
-            />
+            {isMultiStoreView && (
+              <button
+                type="button"
+                onClick={toggleLiquid}
+                aria-pressed={liquidOnly}
+                title={liquidOnly ? 'Voltar a exibir todas as lojas' : 'Considerar apenas as lojas OK no cadastro do Comparativo Anual'}
+                className={`inline-flex h-11 items-center justify-center gap-2 rounded-2xl border px-4 text-[11px] font-black uppercase tracking-wide shadow-sm transition ${
+                  liquidOnly
+                    ? 'border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700'
+                    : 'border-emerald-200 bg-white text-emerald-700 hover:bg-emerald-50'
+                }`}
+              >
+                <ShieldCheck size={15} /> Líquido {liquidOnly ? '✓' : ''}
+              </button>
+            )}
+            <div title={liquidOnly ? 'O relatório executivo existente utiliza a base bruta. Desative Líquido para gerá-lo.' : ''}>
+              <ExecutiveReportButton
+                currentUser={currentUser}
+                dashboard={reportDashboard}
+                disabled={viewLoading || liquidOnly}
+              />
+            </div>
             <button
               onClick={() => {
                 loadDashboard();
@@ -1422,59 +1709,108 @@ export default function Home({ currentUser }: Props) {
           </div>
         )}
 
+        {(liquidSources.error || liquidOnly) && (
+          <div className={`mb-3 mt-1 rounded-xl border px-3 py-2 text-[11px] font-semibold ${
+            liquidSources.error ? 'border-amber-200 bg-amber-50 text-amber-800' : 'border-emerald-200 bg-emerald-50 text-emerald-800'
+          }`}>
+            {liquidOnly
+              ? `Filtro líquido: ${currentLiquidStores.length} lojas OK com movimento no período. Ranking e totalizadores usam apenas essas unidades. O gráfico diário é substituído pelo ranking mensal por não haver uma série diária segmentada nesta API.`
+              : 'Líquido considera somente as lojas OK do cadastro de Vendas Anuais, tanto no ano atual quanto na comparação anterior.'}
+            {liquidSources.error && <span className="ml-1">{liquidSources.error}</span>}
+          </div>
+        )}
         <section className="grid grid-cols-2 gap-2 sm:gap-3 xl:grid-cols-5">
           <KpiCard
             title="Vendas do dia"
-            value={viewLoading ? '—' : money(kpis.vendasDia)}
-            subtitle="realizado hoje"
+            value={liquidOnly || viewLoading ? '—' : money(kpis.vendasDia)}
+            subtitle={liquidOnly ? 'diário por loja indisponível neste filtro' : 'realizado hoje'}
             icon={ShoppingBag}
           />
           <KpiCard
-            title={isCustomCurrent ? 'Faturamento do período' : 'Faturamento do mês'}
+            title={liquidOnly ? 'Faturamento líquido do mês' : (isCustomCurrent ? 'Faturamento do período' : 'Faturamento do mês')}
             value={viewLoading ? '—' : money(kpis.faturamentoMes)}
-            subtitle={
-              kpis.faturamentoAnterior && kpis.referenciaAnoAnterior
-                ? `vs. mesmo período de ${kpis.referenciaAnoAnterior.slice(0, 4)}`
-                : isStoreAnalysis
-                  ? storeFilter || 'Loja selecionada'
-                  : isHistorical
-                    ? effectivePeriod?.label || 'mês selecionado'
-                    : 'realizado até agora'
-            }
+            subtitle={liquidOnly ? 'somente lojas OK' : (isStoreAnalysis ? storeFilter || 'Loja selecionada' : 'faturamento bruto')}
             icon={CircleDollarSign}
-            change={kpis.crescimento}
-            onClick={() => setSelectedMetric('faturamentoMes')}
+            secondary={{
+              label: liquidOnly ? `Líquido no mesmo período de ${currentYearSelected - 1}` : 'Faturamento líquido',
+              value: liquidLoading ? 'Calculando…' : liquidOnly ? (liquidSources.previousAvailable ? money(previousLiquidMonthly) : 'Sem histórico') : money(currentLiquidMonthly),
+              change: !liquidLoading ? monthGrowthLiquid : null,
+              detail: !liquidLoading && monthGrowthLiquid === null
+                ? 'Sem base líquida do mesmo período do ano anterior'
+                : liquidOnly ? 'Variação percentual apenas das lojas OK' : `Variação líquida vs. mesmo intervalo de ${currentYearSelected - 1}`,
+            }}
+            onClick={() => { if (!liquidOnly) setSelectedMetric('faturamentoMes'); }}
           />
           <KpiCard
-            title={isHistorical ? 'Fechamento do mês' : 'Tendência mês'}
-            value={viewLoading ? '—' : money(kpis.tendenciaMes)}
+            title={liquidOnly
+              ? (isHistorical ? 'Fechamento líquido do mês' : 'Tendência líquida mês')
+              : (isHistorical ? 'Fechamento do mês' : 'Tendência mês')}
+            value={viewLoading ? '—' : liquidOnly && liquidMonthProjection === null
+              ? 'Sem base suficiente' : money(kpis.tendenciaMes)}
             subtitle={
-              isHistorical
-                ? 'mês fechado selecionado'
-                : typeof kpis.crescimentoTendencia === 'number' && kpis.faturamentoAnteriorMesCompleto && kpis.referenciaAnoAnterior
-                  ? `vs. ${MONTHS[Number(kpis.referenciaAnoAnterior.slice(5, 7)) - 1]}/${kpis.referenciaAnoAnterior.slice(0, 4)}: ${money(kpis.faturamentoAnteriorMesCompleto)}`
-                  : 'projeção pelo ritmo do período · histórico insuficiente'
+              liquidOnly
+                ? isHistorical ? 'realizado somente das lojas OK' : 'projeção somente das lojas OK'
+                : isHistorical
+                  ? 'mês fechado selecionado'
+                  : typeof kpis.crescimentoTendencia === 'number' && kpis.faturamentoAnteriorMesCompleto && kpis.referenciaAnoAnterior
+                    ? `vs. ${MONTHS[Number(kpis.referenciaAnoAnterior.slice(5, 7)) - 1]}/${kpis.referenciaAnoAnterior.slice(0, 4)}: ${money(kpis.faturamentoAnteriorMesCompleto)}`
+                    : 'projeção pelo ritmo do período · histórico insuficiente'
             }
             icon={BarChart3}
-            change={kpis.crescimentoTendencia}
+            change={liquidOnly ? liquidTrendGrowth : kpis.crescimentoTendencia}
+            secondary={{
+              label: liquidOnly
+                ? `Base líquida ${MONTHS[selectedMonth - 1]}/${currentYearSelected - 1}`
+                : (isHistorical ? 'Fechamento líquido do mês' : 'Tendência líquida'),
+              value: liquidLoading ? 'Calculando…'
+                : liquidOnly
+                  ? previousFullMonthAvailable ? money(previousFullMonthLiquid) : 'Sem base anterior'
+                  : liquidMonthProjection !== null ? money(liquidMonthProjection) : 'Sem base suficiente',
+              change: liquidOnly ? null : liquidTrendGrowth,
+              detail: liquidOnly
+                ? `Comparação da tendência líquida contra o mês fechado de ${currentYearSelected - 1}`
+                : isHistorical
+                  ? `Realizado das lojas OK vs. o mês correspondente de ${currentYearSelected - 1}`
+                  : `Projeção das lojas OK vs. o mês completo de ${currentYearSelected - 1}`,
+            }}
           />
           <KpiCard
-            title="Tendência ano"
-            value={viewLoading ? '—' : money(kpis.tendenciaAno)}
-            subtitle={
-              viewLoading ? 'calculando projeção' : `${money(kpis.realizadoAno)} realizado até o período`
-            }
+            title={liquidOnly ? 'Tendência líquida do ano' : 'Tendência ano'}
+            value={viewLoading ? '—' : liquidOnly && liquidYearTrend === null ? 'Indisponível' : money(kpis.tendenciaAno)}
+            subtitle={viewLoading ? 'calculando projeção' : liquidOnly
+              ? `${liquidYearActual !== null ? money(liquidYearActual) : '—'} realizado líquido no ano`
+              : `${money(kpis.realizadoAno)} realizado até o período`}
             icon={Activity}
+            secondary={{
+              label: liquidOnly ? `Líquido ${currentYearSelected - 1} (ano fechado)` : 'Tendência líquida anual',
+              value: liquidLoading ? 'Calculando…' : liquidOnly
+                ? pastYearAvailable ? money(priorYearFullLiquid) : 'Sem base anual'
+                : liquidYearTrend !== null ? money(liquidYearTrend) : 'Sem base suficiente',
+              change: !liquidLoading ? yearLiquidGrowth : null,
+              detail: 'Variação da projeção líquida contra o ano anterior completo',
+            }}
           />
-          <ConversionCard
-            acessorios={Number(kpis.conversaoAcessorios || 0)}
-            peliculas={Number(kpis.conversaoPeliculas || 0)}
-            seguro={Number(kpis.seguroPct || 0)}
-            segurosValor={Number(kpis.seguros || 0)}
-            loading={viewLoading}
-            onSelectMetric={setSelectedMetric}
-            insuranceScope={operations?.insuranceScope}
-          />
+          {liquidOnly ? (
+            <div className="rounded-[18px] border border-emerald-200 bg-emerald-50 p-3 sm:rounded-[22px] sm:p-4">
+              <p className="text-[10px] font-black uppercase tracking-widest text-emerald-700">Lojas líquidas</p>
+              <p className="mt-2 text-[25px] font-black text-slate-900">{currentLiquidStores.length}</p>
+              <p className="mt-0.5 text-[10px] font-bold text-slate-500">com movimento no período</p>
+              <div className="mt-3 border-t border-emerald-200 pt-2">
+                <p className="text-[9px] font-extrabold uppercase text-emerald-700">Seguros nessas lojas</p>
+                <p className="text-[16px] font-black text-slate-900">{money(liquidMonthlyInsurance)}</p>
+              </div>
+            </div>
+          ) : (
+            <ConversionCard
+              acessorios={Number(kpis.conversaoAcessorios || 0)}
+              peliculas={Number(kpis.conversaoPeliculas || 0)}
+              seguro={Number(kpis.seguroPct || 0)}
+              segurosValor={Number(kpis.seguros || 0)}
+              loading={viewLoading}
+              onSelectMetric={setSelectedMetric}
+              insuranceScope={operations?.insuranceScope}
+            />
+          )}
         </section>
 
         <section className="mt-4">
@@ -1485,10 +1821,10 @@ export default function Home({ currentUser }: Props) {
                   Performance
                 </p>
                 <h2 className="mt-1 text-lg font-black tracking-tight text-slate-950 sm:text-xl">
-                  {isStoreAnalysis ? `Faturamento diário • ${storeFilter}` : 'Faturamento diário'}
+                  {liquidOnly ? 'Faturamento líquido por loja' : isStoreAnalysis ? `Faturamento diário • ${storeFilter}` : 'Faturamento diário'}
                 </h2>
                 <p className="mt-1 text-[10px] font-semibold text-slate-400">
-                  {effectivePeriod?.label || 'Este mês'}
+                  {liquidOnly ? 'Valores do período apenas das lojas OK' : effectivePeriod?.label || 'Este mês'}
                 </p>
               </div>
 
@@ -1506,8 +1842,23 @@ export default function Home({ currentUser }: Props) {
               </div>
             </div>
 
-            <div className="h-[235px] w-full sm:h-[300px] lg:h-[320px]">
-              {trend.length ? (
+            <div className={liquidOnly ? 'min-h-[245px] w-full' : 'h-[235px] w-full sm:h-[300px] lg:h-[320px]'}>
+              {liquidOnly ? (
+                <div className="grid grid-cols-1 gap-x-6 gap-y-2.5 py-2 md:grid-cols-2">
+                  {[...currentLiquidStores].sort((a, b) => b.faturamento - a.faturamento).map((store) => (
+                    <div key={store.loja} className="min-w-0 rounded-xl border border-slate-100 bg-slate-50/70 px-3 py-2">
+                      <div className="flex items-center justify-between gap-2 text-[11px] font-extrabold">
+                        <span className="truncate text-slate-800">{store.loja}</span>
+                        <span className="shrink-0 tabular-nums text-slate-950">{money(store.faturamento)}</span>
+                      </div>
+                      <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-slate-200">
+                        <div className="h-full rounded-full bg-orange-500" style={{ width: `${currentLiquidMonthly > 0 ? Math.min(100, store.faturamento / currentLiquidMonthly * 100) : 0}%` }} />
+                      </div>
+                    </div>
+                  ))}
+                  {!currentLiquidStores.length && <p className="p-6 text-sm font-bold text-slate-400">Nenhuma loja OK com faturamento neste período.</p>}
+                </div>
+              ) : trend.length ? (
                 <ResponsiveContainer width="100%" height="100%">
                   <ComposedChart data={trend} margin={{ top: 30, right: 10, left: -18, bottom: 0 }}>
                     <defs>
@@ -1588,12 +1939,29 @@ export default function Home({ currentUser }: Props) {
           </div>
         </section>
 
-        <OperationalPanel
-          operations={operations}
-          kpis={kpis}
-          loading={viewLoading}
-          storeMode={isStoreAnalysis || (!isMultiStoreView && dashboard?.scope?.type === 'store')}
-        />
+        {liquidOnly ? (
+          <section className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <p className="text-[10px] font-black uppercase tracking-wide text-slate-500">Peças das lojas OK</p>
+              <p className="mt-1 text-xl font-black text-slate-900">{number(liquidMonthlyPieces)}</p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <p className="text-[10px] font-black uppercase tracking-wide text-slate-500">Ticket médio líquido</p>
+              <p className="mt-1 text-xl font-black text-slate-900">{money(kpis.ticketMedio)}</p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <p className="text-[10px] font-black uppercase tracking-wide text-slate-500">Média diária líquida</p>
+              <p className="mt-1 text-xl font-black text-slate-900">{money(operations?.mediaDiaria)}</p>
+            </div>
+          </section>
+        ) : (
+          <OperationalPanel
+            operations={operations}
+            kpis={kpis}
+            loading={viewLoading}
+            storeMode={isStoreAnalysis || (!isMultiStoreView && dashboard?.scope?.type === 'store')}
+          />
+        )}
 
         <section
           className={`mt-3 grid grid-cols-1 items-start gap-2.5 sm:mt-4 sm:gap-4 ${
@@ -1790,8 +2158,8 @@ export default function Home({ currentUser }: Props) {
           {isNetworkView && (
             <div className="space-y-3 sm:space-y-4">
               <InsuranceRankingCard
-                stores={stores}
-                loading={dashboardLoading}
+                stores={visibleStores}
+                loading={viewLoading}
                 periodLabel={dashboard?.period?.label}
               />
             </div>
@@ -1800,7 +2168,7 @@ export default function Home({ currentUser }: Props) {
       </div>
 
       <KpiDrilldownDrawer
-        open={Boolean(selectedMetric)}
+        open={Boolean(selectedMetric) && !liquidOnly}
         metric={selectedMetric}
         dashboard={reportDashboard}
         onClose={() => setSelectedMetric(null)}

@@ -71,6 +71,9 @@ const STORE_MAP: Record<string, string> = {
 
 const STORE_ALIAS_MAP: Record<string, string> = {
   'CNB SHOPPING': 'CONJUNTO NACIONAL',
+  'UBERLÂNDIA': 'UBERLÂNDIA SHOPPING',
+  'UBERLANDIA': 'UBERLÂNDIA SHOPPING',
+  'UBERABA': 'UBERABA SHOPPING',
   'CONJUNTO NACIONAL SHOPPING': 'CONJUNTO NACIONAL',
   'SD CONJUNTO NACIONAL': 'CONJUNTO NACIONAL',
   'CNB QUIOSQUE': 'CONJUNTO NACIONAL QUIOSQUE',
@@ -116,6 +119,40 @@ const STORE_REGION_MAP: Record<string, string> = {
   'MANAIRA SHOPPING': 'PB',
   'IGUATEMI FORTALEZA': 'CE',
   'CD TAGUATINGA': 'CD',
+};
+
+// Classificação inicial exatamente como a planilha LOJA LIQUIDA.
+// OK = considerável (entra na análise líquida).
+// NÃO OK = não considerável (aparece somente na análise bruta).
+// Uma loja não cadastrada permanece PENDENTE e não entra na análise líquida.
+type LojaConsideravel = 'OK' | 'NAO_OK' | 'PENDENTE';
+type ModoAnalise = 'bruto' | 'liquido';
+const CLASSIFICACAO_STORAGE_KEY = 'telefluxo.classificacao.lojas.liquidas.v1';
+const CLASSIFICACAO_PADRAO: Record<string, LojaConsideravel> = {
+  'UBERLÂNDIA SHOPPING': 'OK',
+  'JK SHOPPING': 'OK',
+  'UBERABA SHOPPING': 'OK',
+  'GOIANIA SHOPPING': 'OK',
+  'BRASILIA SHOPPING': 'OK',
+  'PARK SHOPPING': 'OK',
+  'PATIO BRASIL': 'OK',
+  'IGUATEMI SHOPPING': 'OK',
+  'TAGUATINGA SHOPPING': 'OK',
+  'ARAGUAIA SHOPPING': 'OK',
+  'TERRAÇO SHOPPING': 'OK',
+  'CONJUNTO NACIONAL': 'OK',
+  'PASSEIO DAS AGUAS': 'OK',
+  'SHOPPING SUL': 'OK',
+  'FLAMBOYANT SHOPPING': 'OK',
+  'BURITI RIO VERDE': 'OK',
+  'BURITI SHOPPING': 'OK',
+  'PORTAL SHOPPING': 'OK',
+  'PARK ANAPOLIS': 'OK',
+  'SHOPPING RECIFE': 'NAO_OK',
+  'MANAIRA SHOPPING': 'NAO_OK',
+  'IGUATEMI FORTALEZA': 'NAO_OK',
+  'BOULEVARD SHOPPING': 'OK',
+  'CONJUNTO NACIONAL QUIOSQUE': 'OK',
 };
 
 const MONTH_LABELS = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
@@ -503,6 +540,33 @@ export default function ComparativoAnual() {
   const [yearA, setYearA] = useState<string>('');
   const [yearB, setYearB] = useState<string>('');
   const [activeTab, setActiveTab] = useState<'geral' | 'lojas' | 'produtos'>('geral');
+  // Alterações feitas pela tabela são locais ao navegador, sem gravar no servidor.
+  const [modoAnalise, setModoAnalise] = useState<ModoAnalise>('bruto');
+  const [mostrarCadastroLojas, setMostrarCadastroLojas] = useState(false);
+  const [filtroCadastroLojas, setFiltroCadastroLojas] = useState('');
+  const [classificacaoPersonalizada, setClassificacaoPersonalizada] = useState<Record<string, LojaConsideravel>>(() => {
+    try {
+      const valor = window.localStorage.getItem(CLASSIFICACAO_STORAGE_KEY);
+      const objeto = valor ? JSON.parse(valor) : {};
+      if (!objeto || typeof objeto !== 'object' || Array.isArray(objeto)) return {};
+      const seguro: Record<string, LojaConsideravel> = {};
+      for (const [nome, status] of Object.entries(objeto)) {
+        if (status === 'OK' || status === 'NAO_OK' || status === 'PENDENTE') seguro[nome] = status;
+      }
+      return seguro;
+    } catch {
+      return {};
+    }
+  });
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(CLASSIFICACAO_STORAGE_KEY, JSON.stringify(classificacaoPersonalizada));
+    } catch (e) {
+      console.warn('Não foi possível salvar a classificação local das lojas.', e);
+    }
+  }, [classificacaoPersonalizada]);
+
   const [searchProduct, setSearchProduct] = useState('');
 
   // Estados da aba "Visão por Loja"
@@ -677,6 +741,39 @@ export default function ComparativoAnual() {
     return Array.from(stores).sort();
   }, [mergedRawData]);
 
+  // A lista de cadastro permanece completa, mesmo quando o filtro Líquido está ativo.
+  const tabelaClassificacao = useMemo(() => {
+    const lojas = new Set<string>([...Object.keys(CLASSIFICACAO_PADRAO), ...Object.values(STORE_MAP), ...uniqueStores]);
+    const ufDaLoja = (loja: string) => {
+      const regiao = STORE_REGION_MAP[loja] || 'OUTRAS';
+      return regiao === 'GOIÁS' ? 'GO' : regiao === 'MINAS GERAIS' ? 'MG' : regiao === 'CD' ? 'DF' : regiao;
+    };
+    return Array.from(lojas)
+      .map((loja) => ({
+        loja,
+        uf: ufDaLoja(loja),
+        status: classificacaoPersonalizada[loja] ?? CLASSIFICACAO_PADRAO[loja] ?? 'PENDENTE' as LojaConsideravel,
+      }))
+      .sort((a, b) => a.uf.localeCompare(b.uf, 'pt-BR') || a.loja.localeCompare(b.loja, 'pt-BR'));
+  }, [uniqueStores, classificacaoPersonalizada]);
+
+  const classificacaoResumo = useMemo(() => ({
+    ok: tabelaClassificacao.filter((l) => l.status === 'OK').length,
+    naoOk: tabelaClassificacao.filter((l) => l.status === 'NAO_OK').length,
+    pendentes: tabelaClassificacao.filter((l) => l.status === 'PENDENTE').length,
+  }), [tabelaClassificacao]);
+
+  const linhasTabelaClassificacao = useMemo(() => {
+    const pesquisa = filtroCadastroLojas.trim().toLocaleUpperCase('pt-BR');
+    return tabelaClassificacao.filter((linha) =>
+      !pesquisa || `${linha.loja} ${linha.uf}`.includes(pesquisa)
+    );
+  }, [tabelaClassificacao, filtroCadastroLojas]);
+
+  const alterarClassificacaoLoja = (loja: string, status: LojaConsideravel) => {
+    setClassificacaoPersonalizada((anterior) => ({ ...anterior, [loja]: status }));
+  };
+
   const toggleStore = (store: string) => {
     if (selectedStores.includes(store)) setSelectedStores(selectedStores.filter((s) => s !== store));
     else setSelectedStores([...selectedStores, store]);
@@ -708,6 +805,8 @@ export default function ComparativoAnual() {
 
       const storeName = getStoreName(getStoreRaw(sale)).toUpperCase();
 
+      if (modoAnalise === 'liquido' && (classificacaoPersonalizada[storeName] ?? CLASSIFICACAO_PADRAO[storeName] ?? 'PENDENTE') !== 'OK') return false;
+
       if (selectedStores.length > 0 && !selectedStores.map((s) => s.toUpperCase()).includes(storeName)) {
         return false;
       }
@@ -722,7 +821,7 @@ export default function ComparativoAnual() {
 
       return true;
     });
-  }, [mergedRawData, selectedStores, categoryFilter, startDate, endDate]);
+  }, [mergedRawData, selectedStores, categoryFilter, startDate, endDate, modoAnalise, classificacaoPersonalizada]);
 
   const filteredRawData = useMemo(() => {
     return baseFilteredRawData.filter((sale) => {
@@ -740,12 +839,13 @@ export default function ComparativoAnual() {
   const filteredAnnualStoreCompare = useMemo(() => {
     return annualStoreCompareRows.filter((row) => {
       const storeName = getStoreName(String(row.loja || row.LOJA || row.cnpj_empresa || row.CNPJ_EMPRESA || ''));
+      if (modoAnalise === 'liquido' && (classificacaoPersonalizada[storeName] ?? CLASSIFICACAO_PADRAO[storeName] ?? 'PENDENTE') !== 'OK') return false;
       if (selectedStores.length > 0 && !selectedStores.map((s) => s.toUpperCase()).includes(storeName.toUpperCase())) {
         return false;
       }
       return true;
     });
-  }, [annualStoreCompareRows, selectedStores]);
+  }, [annualStoreCompareRows, selectedStores, modoAnalise, classificacaoPersonalizada]);
 
   const computed = useMemo(() => {
     const today = new Date();
@@ -922,6 +1022,7 @@ export default function ComparativoAnual() {
       ) {
         for (const sRow of monthlyInsuranceFallback) {
           const storeName = getStoreName(String(sRow.loja || ''));
+          if (modoAnalise === 'liquido' && (classificacaoPersonalizada[storeName] ?? CLASSIFICACAO_PADRAO[storeName] ?? 'PENDENTE') !== 'OK') continue;
           if (
             selectedStores.length > 0 &&
             !selectedStores.map((s) => s.toUpperCase()).includes(storeName.toUpperCase())
@@ -938,7 +1039,7 @@ export default function ComparativoAnual() {
       yearA: byYear[yearA] || { total: 0, qtd: 0 },
       yearB: byYear[yearB] || { total: 0, qtd: 0 },
     };
-  }, [filteredAnnualStoreCompare, filteredRawData, monthlyInsuranceFallback, selectedStores, monthFilter, yearA, yearB]);
+  }, [filteredAnnualStoreCompare, filteredRawData, monthlyInsuranceFallback, selectedStores, monthFilter, yearA, yearB, modoAnalise, classificacaoPersonalizada]);
 
   /* ============================================================================
      CÁLCULO DA ABA: "VISÃO POR LOJA" (FATURAMENTO, SEGURO E MÊS A MÊS)
@@ -1049,6 +1150,7 @@ export default function ComparativoAnual() {
       for (const sRow of monthlyInsuranceFallback) {
         const storeName = getStoreName(String(sRow.loja || ''));
         if (!storeName || storeName === 'N/D') continue;
+        if (modoAnalise === 'liquido' && (classificacaoPersonalizada[storeName] ?? CLASSIFICACAO_PADRAO[storeName] ?? 'PENDENTE') !== 'OK') continue;
         if (
           selectedStores.length > 0 &&
           !selectedStores.map((s) => s.toUpperCase()).includes(storeName.toUpperCase())
@@ -1219,6 +1321,8 @@ export default function ComparativoAnual() {
     searchStoreQuery,
     storeSortKey,
     storeSortDir,
+    modoAnalise,
+    classificacaoPersonalizada,
   ]);
 
   const categoryMiniData = useMemo(() => {
@@ -1504,6 +1608,88 @@ export default function ComparativoAnual() {
           </button>
         </div>
       </div>
+
+      {/* A classificação altera apenas o conjunto de lojas utilizado no cálculo;
+          nunca altera dados no backend ou as bases de vendas. */}
+      <section className="mb-3 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5 sm:px-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="mr-1 text-[12px] font-black uppercase text-slate-700">Tipo de análise</span>
+            <div role="group" aria-label="Tipo de análise" className="inline-flex rounded-lg bg-slate-100 p-1">
+              <button type="button" onClick={() => setModoAnalise('bruto')}
+                aria-pressed={modoAnalise === 'bruto'}
+                className={`rounded-md px-3 py-1.5 text-[12px] font-bold transition-colors ${modoAnalise === 'bruto' ? 'bg-slate-900 text-white shadow-sm' : 'text-slate-700 hover:bg-white'}`}>
+                Bruto
+              </button>
+              <button type="button" onClick={() => setModoAnalise('liquido')}
+                aria-pressed={modoAnalise === 'liquido'}
+                className={`rounded-md px-3 py-1.5 text-[12px] font-bold transition-colors ${modoAnalise === 'liquido' ? 'bg-orange-500 text-white shadow-sm' : 'text-slate-700 hover:bg-white'}`}>
+                Líquido
+              </button>
+            </div>
+            <span className="text-[11px] font-semibold text-slate-500">{modoAnalise === 'liquido' ? `${classificacaoResumo.ok} lojas consideráveis` : 'Todas as lojas'}</span>
+          </div>
+          <button type="button" onClick={() => setMostrarCadastroLojas((v) => !v)}
+            aria-expanded={mostrarCadastroLojas}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-[12px] font-bold text-slate-700 hover:bg-slate-50">
+            <Store size={14} className="text-orange-500" /> Classificar lojas
+            <ChevronDown size={14} className={`transition-transform ${mostrarCadastroLojas ? 'rotate-180' : ''}`} />
+          </button>
+        </div>
+        {mostrarCadastroLojas && (
+          <div className="border-t border-slate-200 bg-slate-50/50 p-3 sm:p-4">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h3 className="text-[14px] font-black text-slate-900">Cadastro de lojas consideráveis</h3>
+                <p className="text-[11px] font-medium text-slate-500">OK entra no Líquido; NÃO OK e pendentes aparecem somente no Bruto.</p>
+              </div>
+              <div className="flex flex-wrap items-center gap-3 text-[11px] font-black">
+                <span className="text-emerald-700">OK: {classificacaoResumo.ok}</span>
+                <span className="text-rose-700">NÃO OK: {classificacaoResumo.naoOk}</span>
+                <span className="text-slate-500">Pendentes: {classificacaoResumo.pendentes}</span>
+              </div>
+            </div>
+            <div className="mb-3 flex flex-wrap items-center gap-2">
+              <div className="relative min-w-[180px] flex-1 sm:max-w-sm">
+                <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input value={filtroCadastroLojas} onChange={(e) => setFiltroCadastroLojas(e.target.value)}
+                  placeholder="Buscar loja ou UF..."
+                  className="w-full rounded-lg border border-slate-200 bg-white py-2 pl-8 pr-3 text-[12px] text-slate-700 outline-none focus:border-orange-400" />
+              </div>
+              <button type="button" onClick={() => setClassificacaoPersonalizada({})}
+                className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-[11px] font-bold text-slate-600 hover:border-orange-300">
+                Restaurar classificação da planilha
+              </button>
+            </div>
+            <div className="max-h-80 overflow-auto rounded-lg border border-slate-200 bg-white">
+              <table className="w-full table-fixed border-collapse text-left text-[12px]">
+                <thead className="sticky top-0 z-10 bg-slate-900 text-[11px] uppercase text-white">
+                  <tr><th className="w-[54%] px-3 py-2">Loja</th><th className="w-[12%] px-3 py-2">UF</th><th className="w-[34%] px-3 py-2">Considerável?</th></tr>
+                </thead>
+                <tbody>
+                  {linhasTabelaClassificacao.map(({ loja, uf, status }) => (
+                    <tr key={loja} className="border-t border-slate-200 even:bg-slate-50/50">
+                      <td title={loja} className="truncate px-3 py-2 font-extrabold text-slate-800">{loja}</td>
+                      <td className="px-3 py-2 font-bold text-slate-500">{uf}</td>
+                      <td className="px-3 py-1.5">
+                        <select value={status} onChange={(e) => alterarClassificacaoLoja(loja, e.target.value as LojaConsideravel)}
+                          aria-label={`Classificação de ${loja}`}
+                          className={`w-full max-w-44 rounded-md border px-2 py-1.5 text-[12px] font-bold outline-none ${status === 'OK' ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : status === 'NAO_OK' ? 'border-rose-200 bg-rose-50 text-rose-700' : 'border-slate-200 bg-slate-50 text-slate-500'}`}>
+                          <option value="OK">OK · considerável</option>
+                          <option value="NAO_OK">NÃO OK</option>
+                          <option value="PENDENTE">Não definida</option>
+                        </select>
+                      </td>
+                    </tr>
+                  ))}
+                  {linhasTabelaClassificacao.length === 0 && <tr><td colSpan={3} className="p-4 text-center text-slate-500">Nenhuma loja encontrada.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+            <p className="mt-2 text-[11px] font-medium text-amber-800">Alterações feitas nesta tabela ficam salvas somente neste navegador. Para definir a mesma classificação para todos os usuários, atualize a lista padrão no frontend e publique uma nova versão, ou crie um cadastro no backend.</p>
+          </div>
+        )}
+      </section>
 
       {noData && !loading && !errorMsg && (
         <div className="bg-amber-50 border border-amber-200 text-amber-700 p-4 rounded-xl flex items-center gap-3 mb-4">
@@ -1881,7 +2067,7 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
                 <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                 <input
                   type="text"
-                  placeholder="Filtrar filial..."
+                  placeholder="Filtrar Loja..."
                   value={searchStoreQuery}
                   onChange={(e) => setSearchStoreQuery(e.target.value)}
                   className="w-full pl-8 pr-3 py-2 text-[12px] font-bold text-slate-700 bg-white border border-slate-200 rounded-xl outline-none focus:border-orange-400 transition-colors uppercase"
