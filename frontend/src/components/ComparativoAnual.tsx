@@ -37,7 +37,6 @@ import {
   ShieldCheck,
   Square,
   Store,
-  Table2,
   TrendingUp,
 } from 'lucide-react';
 
@@ -113,9 +112,9 @@ const STORE_REGION_MAP: Record<string, string> = {
   'SHOPPING SUL': 'GOIÁS',
   'BURITI RIO VERDE': 'GOIÁS',
   'PARK ANAPOLIS': 'GOIÁS',
-  'SHOPPING RECIFE': 'NORDESTE',
-  'MANAIRA SHOPPING': 'NORDESTE',
-  'IGUATEMI FORTALEZA': 'NORDESTE',
+  'SHOPPING RECIFE': 'PE',
+  'MANAIRA SHOPPING': 'PB',
+  'IGUATEMI FORTALEZA': 'CE',
   'CD TAGUATINGA': 'CD',
 };
 
@@ -215,6 +214,11 @@ const shortenStoreName = (name: string) => {
 };
 
 const getStoreRegion = (storeName: string, rawRegion?: string) => {
+  const canonicalStore = getStoreName(storeName);
+  // Para as filiais conhecidas, a UF prevalece sobre a região genérica do ERP.
+  if (['SHOPPING RECIFE', 'MANAIRA SHOPPING', 'IGUATEMI FORTALEZA'].includes(canonicalStore)) {
+    return STORE_REGION_MAP[canonicalStore];
+  }
   const cleanRegion = String(rawRegion || '').trim().toUpperCase();
   if (cleanRegion && cleanRegion !== 'N/D' && cleanRegion !== 'NAN' && cleanRegion !== 'UNDEFINED' && cleanRegion !== 'SEM REGIÃO') {
     if (cleanRegion === 'GO') return 'GOIÁS';
@@ -226,7 +230,7 @@ const getStoreRegion = (storeName: string, rawRegion?: string) => {
   return STORE_REGION_MAP[upperStore] || 'OUTRAS';
 };
 
-const REGION_ORDER = ['DF', 'GOIÁS', 'MINAS GERAIS', 'NORDESTE', 'CD', 'OUTRAS'];
+const REGION_ORDER = ['CE', 'DF', 'GOIÁS', 'MINAS GERAIS', 'PB', 'PE', 'CD', 'OUTRAS'];
 const sortRegionName = (region: string) => {
   const idx = REGION_ORDER.indexOf(region);
   return idx === -1 ? 999 : idx;
@@ -288,10 +292,12 @@ const calcVariationPct = (valA: number, valB: number): number | null => {
 
 const formatPctBadgeText = (pct: number | null, valA?: number, valB?: number): string => {
   if (pct === null) return '—';
-  if (valA !== undefined && valB !== undefined && valA > 0 && valA < 1000 && valB > 20000) {
-    return 'NOVO';
+  if (valA !== undefined && valB !== undefined && valA <= 0 && valB > 0) return 'NOVO';
+  if (pct > 999) {
+    return valA !== undefined && valB !== undefined && valA > 0
+      ? `${Math.round(valB / valA).toLocaleString('pt-BR')}×`
+      : '10×+';
   }
-  if (pct > 999) return '>999%';
   if (pct < -99.9) return '-99%';
   const rounded = Math.round(pct);
   return `${rounded > 0 ? '+' : ''}${rounded}%`;
@@ -435,6 +441,49 @@ const LegendItem = ({ color, label }: { color: string; label: string }) => (
   </span>
 );
 
+// A indicação de crescimento usa o mesmo jogo de cores do painel, inclusive nos subtotais.
+const GrowthChip = ({
+  pct, previous, current, prominent = false, dark = false,
+}: {
+  pct: number | null;
+  previous: number;
+  current: number;
+  prominent?: boolean;
+  dark?: boolean;
+}) => {
+  const label = formatPctBadgeText(pct, previous, current);
+  const tone = pct === null
+    ? (dark ? 'border-slate-600 bg-slate-800 text-slate-300' : 'border-slate-200 bg-slate-100 text-slate-500')
+    : pct < 0
+      ? 'border-rose-200 bg-rose-50 text-rose-700'
+      : 'border-emerald-200 bg-emerald-50 text-emerald-700';
+  return (
+    <span className={`inline-flex shrink-0 items-center justify-center rounded-md border font-extrabold tabular-nums leading-none ${prominent ? 'min-w-[40px] px-1.5 py-1 text-[11px]' : 'min-w-[38px] px-1.5 py-1 text-[10px]'} ${tone}`} title={`Variação: ${label}`}>
+      {label}
+    </span>
+  );
+};
+
+const HeatCell = ({
+  current, previous, total = false, dark = false,
+}: {
+  current: number;
+  previous: number;
+  total?: boolean;
+  dark?: boolean;
+}) => {
+  const pct = calcVariationPct(previous, current);
+  const bg = dark ? '' : pct === null ? 'bg-slate-50' : pct >= 30 ? 'bg-emerald-100/80' : pct >= 0 ? 'bg-emerald-50/70' : pct <= -20 ? 'bg-rose-100/80' : 'bg-rose-50/70';
+  return (
+    <div className={`flex min-h-[31px] w-full items-center justify-between gap-1 rounded-md px-1 py-1 ${bg}`} title={`Atual: ${formatMoney(current)} | Anterior: ${formatMoney(previous)} | ${formatPctBadgeText(pct, previous, current)}`}>
+      <span className={`truncate font-sans font-black tracking-tight tabular-nums ${total ? 'text-[15px] xl:text-[16px]' : 'text-[13px] xl:text-[13px]'} ${dark ? 'text-orange-300' : 'text-slate-900'}`}>
+        {current > 0 ? formatCellCompact(current) : '0'}
+      </span>
+      <GrowthChip pct={pct} previous={previous} current={current} prominent={total} dark={dark} />
+    </div>
+  );
+};
+
 export default function ComparativoAnual() {
   const [annualRawData, setAnnualRawData] = useState<any[]>([]);
   const [monthlyRawData, setMonthlyRawData] = useState<any[]>([]);
@@ -459,10 +508,12 @@ export default function ComparativoAnual() {
   // Estados da aba "Visão por Loja"
   const [storeViewMode, setStoreViewMode] = useState<'comparativo' | 'mes_a_mes'>('comparativo');
   const [selectedRegionFilter, setSelectedRegionFilter] = useState<string>('TODAS');
-  const [showRegionSubtotals, setShowRegionSubtotals] = useState<boolean>(true);
+  const [collapsedRegions, setCollapsedRegions] = useState<Record<string, boolean>>({});
   const [searchStoreQuery, setSearchStoreQuery] = useState<string>('');
   const [storeSortKey, setStoreSortKey] = useState<StoreSortKey>('loja');
   const [storeSortDir, setStoreSortDir] = useState<'asc' | 'desc'>('asc');
+
+  const toggleRegion = (region: string) => setCollapsedRegions((old) => ({ ...old, [region]: !old[region] }));
 
   const API_URL = useMemo(() => {
     const envUrl = String(
@@ -1087,6 +1138,19 @@ export default function ComparativoAnual() {
       }
     );
 
+    type RegionGroup = {
+      regiao: string;
+      stores: typeof visibleStores;
+      subtotal: {
+        fatA: number;
+        fatB: number;
+        segA: number;
+        segB: number;
+        monthsA: Record<string, number>;
+        monthsB: Record<string, number>;
+        count: number;
+      };
+    };
     const groupedVisibleStores = Array.from(
       visibleStores.reduce((map, store) => {
         if (!map.has(store.regiao)) {
@@ -1122,7 +1186,7 @@ export default function ComparativoAnual() {
           current.subtotal.monthsB[m] += store.monthsB[m] || 0;
         });
         return map;
-      }, new Map<string, any>()).values()
+      }, new Map<string, RegionGroup>()).values()
     ).map((group) => ({
       ...group,
       subtotal: {
@@ -1596,7 +1660,7 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
                     axisLine={false}
                     tickLine={false}
                   />
-                  <YAxis tickFormatter={(value) => formatMoneyShort(Number(value))} tick={{ fontSize: 10, fill: '#94A3B8' }} axisLine={false} tickLine={false} />
+                  <YAxis tickFormatter={(value: any) => formatMoneyShort(Number(value))} tick={{ fontSize: 10, fill: '#94A3B8' }} axisLine={false} tickLine={false} />
                   <Tooltip
                     cursor={{ fill: '#FFF7ED' }}
                     contentStyle={{ backgroundColor: '#0F172A', borderRadius: '10px', border: 'none', color: '#fff' }}
@@ -1668,7 +1732,7 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
       {activeTab === 'lojas' && (
         <div className="space-y-3.5 animate-in fade-in duration-300">
           {/* FAIXA COMPACTA DE REGIÕES (MINICARDS EXECUTIVOS) */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-7 gap-2.5">
             {/* Card Rede Total */}
             <div
               onClick={() => setSelectedRegionFilter('TODAS')}
@@ -1679,7 +1743,7 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
               }`}
             >
               <div className="flex items-center justify-between gap-1">
-                <span className={`text-[9px] font-black uppercase tracking-wider truncate ${selectedRegionFilter === 'TODAS' ? 'text-orange-400' : 'text-slate-400'}`}>
+                <span className={`text-[10px] font-black uppercase tracking-wider truncate ${selectedRegionFilter === 'TODAS' ? 'text-orange-400' : 'text-slate-400'}`}>
                   REDE TOTAL ({storeVisionData.allStores.length})
                 </span>
                 {storeVisionData.totals.fatPct !== null && (
@@ -1722,7 +1786,7 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
                   }`}
                 >
                   <div className="flex items-center justify-between gap-1">
-                    <span className="text-[9px] font-black uppercase tracking-wider text-slate-500 truncate flex items-center gap-1">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-slate-500 truncate flex items-center gap-1">
                       <MapPin size={10} className="text-orange-500 shrink-0" />
                       {reg.regiao} ({reg.count})
                     </span>
@@ -1741,7 +1805,7 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
                       {formatMoneyNoCents(reg.fatB)}
                     </span>
                   </div>
-                  <div className="mt-1 pt-1 border-t border-slate-100 flex items-center justify-between text-[9px] font-bold text-slate-400">
+                  <div className="mt-1 pt-1 border-t border-slate-100 flex items-center justify-between text-[10px] font-bold text-slate-400">
                     <span className="truncate">{periodHeaderA}: {formatMoneyShort(reg.fatA)}</span>
                     <span className="text-slate-600 font-black">Seg: {formatMoneyShort(reg.segB)}</span>
                   </div>
@@ -1753,7 +1817,7 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
           {/* PAINEL PRINCIPAL UNIFICADO */}
           <div className="bg-white rounded-2xl shadow-xs border border-slate-200/90 overflow-hidden">
             {/* Barra de Controle Unificada */}
-            <div className="px-4 py-3 border-b border-slate-200/80 bg-slate-50/60 flex flex-col xl:flex-row justify-between items-stretch xl:items-center gap-3">
+            <div className="px-3 py-2.5 border-b border-slate-200/80 bg-slate-50/60 flex flex-col xl:flex-row justify-between items-stretch xl:items-center gap-2">
               {/* Esquerda: Alternador de Relatório */}
               <div className="flex flex-wrap items-center gap-2">
                 <div className="inline-flex rounded-xl bg-slate-200/70 p-1">
@@ -1775,27 +1839,10 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
                         : 'text-slate-600 hover:text-slate-900'
                     }`}
                   >
-                    <Table2 size={13} /> Anual Mês a Mês (Jan–Dez)
+                    <Flame size={13} /> Mapa de Calor (Jan–Dez)
                   </button>
                 </div>
 
-                {storeViewMode === 'mes_a_mes' && (
-                  <div className="inline-flex items-center rounded-xl border border-orange-200 bg-orange-50 px-3 py-1.5 text-[11px] font-extrabold uppercase text-orange-700">
-                    <Flame size={12} className="mr-1" /> Mapa de Calor
-                  </div>
-                )}
-
-                <button
-                  onClick={() => setShowRegionSubtotals((prev) => !prev)}
-                  className={`inline-flex items-center rounded-xl border px-3 py-1.5 text-[11px] font-extrabold uppercase transition-colors ${
-                    showRegionSubtotals
-                      ? 'border-slate-300 bg-slate-900 text-white'
-                      : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
-                  }`}
-                  title="Exibir ou ocultar subtotais por região"
-                >
-                  <Layers size={12} className="mr-1" /> {showRegionSubtotals ? 'Ocultar subtotais' : 'Mostrar subtotais'}
-                </button>
               </div>
 
               {/* Centro: Seletor Rápido de Mês (Pills Compactas) */}
@@ -1846,302 +1893,337 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
                 MODO 1: TABELA EXECUTIVA FATURAMENTO GERAL & SEGURO GERAL
                ==================================================================== */}
             {storeViewMode === 'comparativo' && (
-              <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white shadow-sm">
-                <table className="w-full min-w-[1120px] border-collapse text-left">
-                  <thead>
-                    <tr className="bg-slate-900 text-white text-[11px] font-black uppercase tracking-wider">
-                      <th className="py-2 px-4 border-r border-slate-800">Unidade / Filial ({storeVisionData.visibleStores.length})</th>
-                      <th colSpan={3} className="py-2 px-4 text-center border-r border-slate-800 text-orange-300">Faturamento ({periodHeaderA} vs {periodHeaderB})</th>
-                      <th colSpan={3} className="py-2 px-4 text-center border-l-[10px] border-white text-sky-300">Seguros ({periodHeaderA} vs {periodHeaderB})</th>
-                    </tr>
-                    <tr className="border-b border-slate-200 bg-slate-100 text-[11px] font-black uppercase text-slate-700 select-none">
-                      <th onClick={() => handleStoreSort('loja')} className="cursor-pointer py-2 px-4 border-r border-slate-200 hover:bg-slate-200/70 transition-colors"><div className="flex items-center gap-1.5"><span>Loja</span>{renderSortIcon('loja')}</div></th>
-                      <th onClick={() => handleStoreSort('fatA')} className="cursor-pointer py-2 px-3 text-right hover:bg-slate-200/70 transition-colors">{periodHeaderA}</th>
-                      <th onClick={() => handleStoreSort('fatB')} className="cursor-pointer py-2 px-3 text-right border-l border-slate-200 bg-orange-50/50 hover:bg-orange-100/60 transition-colors">{periodHeaderB}</th>
-                      <th onClick={() => handleStoreSort('fatPct')} className="cursor-pointer py-2 px-3 text-center border-x border-slate-200 hover:bg-slate-200/70 transition-colors">Variação</th>
-                      <th onClick={() => handleStoreSort('segA')} className="cursor-pointer py-2 px-3 text-right border-l-[10px] border-white bg-sky-50/50 hover:bg-sky-100/60 transition-colors">{periodHeaderA}</th>
-                      <th onClick={() => handleStoreSort('segB')} className="cursor-pointer py-2 px-3 text-right border-l border-slate-200 bg-sky-50/70 hover:bg-sky-100/70 transition-colors">{periodHeaderB}</th>
-                      <th onClick={() => handleStoreSort('segPct')} className="cursor-pointer py-2 px-3 text-center border-l border-slate-200 hover:bg-slate-200/70 transition-colors">Variação</th>
-                    </tr>
-                  </thead>
-                  <tbody className="text-[12px] font-bold text-slate-700">
-                    {storeVisionData.groupedVisibleStores.flatMap((group) => {
-                      const rows: React.ReactNode[] = [
-                        <tr key={`${group.regiao}-header`} className="bg-slate-50 border-y border-slate-200">
-                          <td colSpan={7} className="px-4 py-2 text-[11px] font-black uppercase text-slate-700">
-                            <div className="flex items-center gap-2">
-                              <span className="inline-flex min-w-[28px] justify-center rounded-md bg-slate-900 px-2 py-1 text-white">{regionShortLabel(group.regiao)}</span>
-                              <span>{group.regiao}</span>
-                              <span className="text-slate-400">• {group.stores.length} filiais</span>
-                            </div>
-                          </td>
-                        </tr>
-                      ];
-                      group.stores.forEach((item) => {
-                        const fatPctText = item.fatPct === null ? '0%' : formatPctBadgeText(item.fatPct, item.fatA, item.fatB);
-                        const segPctText = item.segPct === null ? '0%' : formatPctBadgeText(item.segPct, item.segA, item.segB);
-                        rows.push(
-                          <tr key={`${group.regiao}-${item.loja}`} className="border-b border-slate-200 even:bg-slate-50/50 hover:bg-orange-50/35 transition-colors">
-                            <td className="py-1.5 px-4 border-r border-slate-200 whitespace-nowrap"><span className="font-black text-[12px] text-slate-900 uppercase truncate inline-block max-w-[280px] align-middle" title={item.loja}>{shortenStoreName(item.loja)}</span></td>
-                            <td className="py-1.5 px-3 text-right font-mono text-slate-600 whitespace-nowrap">{formatMoney(item.fatA)}</td>
-                            <td className="py-1.5 px-3 text-right font-mono font-black text-slate-900 bg-orange-50/35 border-l border-slate-200 whitespace-nowrap">{formatMoney(item.fatB)}</td>
-                            <td className="py-1.5 px-3 text-center border-x border-slate-200 whitespace-nowrap"><span className={`inline-flex items-center justify-center min-w-[58px] px-2 py-0.5 rounded-md font-black text-[11px] ${item.fatPct !== null && item.fatPct < 0 ? 'text-rose-700 bg-rose-50 border border-rose-200/60' : 'text-emerald-700 bg-emerald-50 border border-emerald-200/60'}`}>{fatPctText}</span></td>
-                            <td className="py-1.5 px-3 text-right font-mono text-slate-600 bg-sky-50/30 border-l-[10px] border-white whitespace-nowrap">{formatMoney(item.segA)}</td>
-                            <td className="py-1.5 px-3 text-right font-mono font-black text-slate-900 bg-sky-50/55 border-l border-slate-200 whitespace-nowrap">{formatMoney(item.segB)}</td>
-                            <td className="py-1.5 px-3 text-center border-l border-slate-200 whitespace-nowrap"><span className={`inline-flex items-center justify-center min-w-[58px] px-2 py-0.5 rounded-md font-black text-[11px] ${item.segPct !== null && item.segPct < 0 ? 'text-rose-700 bg-rose-50 border border-rose-200/60' : 'text-emerald-700 bg-emerald-50 border border-emerald-200/60'}`}>{segPctText}</span></td>
-                          </tr>
-                        );
-                      });
-                      if (showRegionSubtotals) {
-                        const subFatText = group.subtotal.fatPct === null ? '0%' : formatPctBadgeText(group.subtotal.fatPct, group.subtotal.fatA, group.subtotal.fatB);
-                        const subSegText = group.subtotal.segPct === null ? '0%' : formatPctBadgeText(group.subtotal.segPct, group.subtotal.segA, group.subtotal.segB);
-                        rows.push(
-                          <tr key={`${group.regiao}-subtotal`} className="bg-slate-100/80 border-b-2 border-slate-300 text-[12px] font-black">
-                            <td className="py-2 px-4 border-r border-slate-200 uppercase text-slate-800">Subtotal {group.regiao}</td>
-                            <td className="py-2 px-3 text-right font-mono text-slate-700 whitespace-nowrap">{formatMoney(group.subtotal.fatA)}</td>
-                            <td className="py-2 px-3 text-right font-mono text-orange-700 bg-orange-50/60 border-l border-slate-200 whitespace-nowrap">{formatMoney(group.subtotal.fatB)}</td>
-                            <td className="py-2 px-3 text-center border-x border-slate-200 whitespace-nowrap">{subFatText}</td>
-                            <td className="py-2 px-3 text-right font-mono text-slate-700 bg-sky-50/30 border-l-[10px] border-white whitespace-nowrap">{formatMoney(group.subtotal.segA)}</td>
-                            <td className="py-2 px-3 text-right font-mono text-sky-700 bg-sky-50/60 border-l border-slate-200 whitespace-nowrap">{formatMoney(group.subtotal.segB)}</td>
-                            <td className="py-2 px-3 text-center border-l border-slate-200 whitespace-nowrap">{subSegText}</td>
-                          </tr>
-                        );
-                      }
-                      return rows;
-                    })}
-                    {storeVisionData.visibleStores.length === 0 && (
-                      <tr><td colSpan={7} className="p-10 text-center text-slate-400 font-bold">Nenhuma loja encontrada para os filtros selecionados.</td></tr>
-                    )}
-                  </tbody>
-                  {storeVisionData.visibleStores.length > 0 && (
-                    <tfoot className="bg-slate-900 text-white text-[12px] font-black">
-                      <tr>
-                        <td className="py-3 px-4 uppercase border-r border-slate-800">TOTAL CONSOLIDADO ({storeVisionData.visibleStores.length} LOJAS)</td>
-                        <td className="py-3 px-3 text-right font-mono text-slate-300 whitespace-nowrap">{formatMoney(storeVisionData.totals.fatA)}</td>
-                        <td className="py-3 px-3 text-right font-mono text-orange-400 border-l border-slate-800 whitespace-nowrap">{formatMoney(storeVisionData.totals.fatB)}</td>
-                        <td className="py-3 px-3 text-center border-x border-slate-800 whitespace-nowrap">{storeVisionData.totals.fatPct === null ? '0%' : formatPctBadgeText(storeVisionData.totals.fatPct, storeVisionData.totals.fatA, storeVisionData.totals.fatB)}</td>
-                        <td className="py-3 px-3 text-right font-mono text-slate-300 border-l-[10px] border-white whitespace-nowrap">{formatMoney(storeVisionData.totals.segA)}</td>
-                        <td className="py-3 px-3 text-right font-mono text-sky-400 border-l border-slate-800 whitespace-nowrap">{formatMoney(storeVisionData.totals.segB)}</td>
-                        <td className="py-3 px-3 text-center border-l border-slate-800 whitespace-nowrap">{storeVisionData.totals.segPct === null ? '0%' : formatPctBadgeText(storeVisionData.totals.segPct, storeVisionData.totals.segA, storeVisionData.totals.segB)}</td>
+              <div className="mx-auto w-full max-w-[1380px] px-2 pb-3 pt-2 sm:px-3">
+                {/* Desktop: relatório centrado, colunas contidas e subtotais ao pé de cada grupo. */}
+                <div className="hidden overflow-x-auto rounded-xl border border-slate-200 shadow-sm xl:block">
+                  <table className="w-full min-w-[1130px] table-fixed border-collapse text-left tabular-nums">
+                    <colgroup>
+                      <col style={{ width: '26%' }} />
+                      <col style={{ width: '14%' }} />
+                      <col style={{ width: '14%' }} />
+                      <col style={{ width: '8%' }} />
+                      <col style={{ width: '14%' }} />
+                      <col style={{ width: '14%' }} />
+                      <col style={{ width: '10%' }} />
+                    </colgroup>
+                    <thead>
+                      <tr className="bg-slate-900 text-[13px] font-black uppercase tracking-wide text-white">
+                        <th className="border-r border-slate-700 px-3 py-2.5">Unidade / Filial ({storeVisionData.visibleStores.length})</th>
+                        <th colSpan={3} className="border-r border-slate-700 px-3 py-2.5 text-center text-orange-300">Faturamento · {periodHeaderA} × {periodHeaderB}</th>
+                        <th colSpan={3} className="border-l-[12px] border-white px-3 py-2.5 text-center text-sky-300">Seguros · {periodHeaderA} × {periodHeaderB}</th>
                       </tr>
-                    </tfoot>
+                      <tr className="border-b border-slate-200 bg-slate-100 text-[12px] font-extrabold uppercase text-slate-700">
+                        <th className="cursor-pointer border-r border-slate-200 px-3 py-2 text-left hover:bg-slate-200" onClick={() => handleStoreSort('loja')}>
+                          <span className="inline-flex items-center gap-1">Loja {renderSortIcon('loja')}</span>
+                        </th>
+                        {([
+                          ['fatA', periodHeaderA], ['fatB', periodHeaderB], ['fatPct', 'Variação'],
+                          ['segA', periodHeaderA], ['segB', periodHeaderB], ['segPct', 'Variação'],
+                        ] as Array<[StoreSortKey, string]>).map(([key, label]) => (
+                          <th key={key} onClick={() => handleStoreSort(key)}
+                            className={`cursor-pointer px-2 py-2 text-right hover:bg-slate-200 ${key === 'segA' ? 'border-l-[12px] border-white' : 'border-l border-slate-200'} ${key === 'fatB' ? 'bg-orange-50/60' : key === 'segB' ? 'bg-sky-50/60' : ''}`}>
+                            <span className="inline-flex items-center justify-end gap-1">{label} {renderSortIcon(key)}</span>
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody className="text-[12px] font-semibold text-slate-700">
+                      {storeVisionData.groupedVisibleStores.map((group) => (
+                        <React.Fragment key={`comp-${group.regiao}`}>
+                          <tr className="border-y border-slate-300 bg-slate-100">
+                            <td colSpan={7} className="px-3 py-2">
+                              <button type="button" aria-expanded={!collapsedRegions[group.regiao]}
+                                aria-label={`${collapsedRegions[group.regiao] ? 'Expandir' : 'Recolher'} filiais de ${group.regiao}`}
+                                onClick={() => toggleRegion(group.regiao)}
+                                className="flex w-full items-center gap-2 text-left text-[12px] font-black uppercase text-slate-800 hover:text-orange-700">
+                                <span className="inline-flex min-w-7 justify-center rounded bg-slate-900 px-1.5 py-1 text-white">{regionShortLabel(group.regiao)}</span>
+                                <span>{group.regiao}</span>
+                                <span className="font-bold normal-case text-slate-500">{group.stores.length} filiais</span>
+                                <ChevronDown size={16} className={`ml-auto transition-transform ${collapsedRegions[group.regiao] ? '-rotate-90' : ''}`} />
+                              </button>
+                            </td>
+                          </tr>
+                          {!collapsedRegions[group.regiao] && group.stores.map((store) => (
+                            <tr key={`comp-${group.regiao}-${store.loja}`} className="border-b border-slate-200 even:bg-slate-50/50 hover:bg-orange-50/40">
+                              <td className="border-r border-slate-200 px-3 py-1.5 text-[12px] font-extrabold text-slate-900" title={store.loja}>{store.loja}</td>
+                              <td className="border-l border-slate-200 px-2.5 py-1.5 text-right">{formatMoney(store.fatA)}</td>
+                              <td className="border-l border-slate-200 bg-orange-50/40 px-2.5 py-1.5 text-right font-extrabold text-slate-900">{formatMoney(store.fatB)}</td>
+                              <td className="border-l border-slate-200 px-1.5 py-1 text-center"><GrowthChip pct={store.fatPct} previous={store.fatA} current={store.fatB} /></td>
+                              <td className="border-l-[12px] border-white bg-sky-50/25 px-2.5 py-1.5 text-right">{formatMoney(store.segA)}</td>
+                              <td className="border-l border-slate-200 bg-sky-50/50 px-2.5 py-1.5 text-right font-extrabold text-slate-900">{formatMoney(store.segB)}</td>
+                              <td className="border-l border-slate-200 px-1.5 py-1 text-center"><GrowthChip pct={store.segPct} previous={store.segA} current={store.segB} /></td>
+                            </tr>
+                          ))}
+                          <tr className="border-b-2 border-slate-300 bg-slate-100/90 text-[13px] font-black">
+                            <td className="border-r border-slate-200 px-3 py-2 text-slate-800">SUBTOTAL {group.regiao}</td>
+                            <td className="border-l border-slate-200 px-2.5 py-2 text-right text-slate-700">{formatMoney(group.subtotal.fatA)}</td>
+                            <td className="border-l border-slate-200 bg-orange-50/60 px-2.5 py-2 text-right text-orange-700">{formatMoney(group.subtotal.fatB)}</td>
+                            <td className="border-l border-slate-200 px-1.5 py-1.5 text-center"><GrowthChip pct={group.subtotal.fatPct} previous={group.subtotal.fatA} current={group.subtotal.fatB} prominent /></td>
+                            <td className="border-l-[12px] border-white bg-sky-50/40 px-2.5 py-2 text-right text-slate-700">{formatMoney(group.subtotal.segA)}</td>
+                            <td className="border-l border-slate-200 bg-sky-50/70 px-2.5 py-2 text-right text-sky-700">{formatMoney(group.subtotal.segB)}</td>
+                            <td className="border-l border-slate-200 px-1.5 py-1.5 text-center"><GrowthChip pct={group.subtotal.segPct} previous={group.subtotal.segA} current={group.subtotal.segB} prominent /></td>
+                          </tr>
+                        </React.Fragment>
+                      ))}
+                      {storeVisionData.visibleStores.length === 0 && (
+                        <tr><td colSpan={7} className="p-8 text-center font-bold text-slate-500">Nenhuma filial encontrada para os filtros selecionados.</td></tr>
+                      )}
+                    </tbody>
+                    {storeVisionData.visibleStores.length > 0 && (
+                      <tfoot>
+                        <tr className="bg-slate-900 text-[14px] font-black text-white">
+                          <td className="border-r border-slate-700 px-3 py-3">TOTAL DA REDE ({storeVisionData.visibleStores.length})</td>
+                          <td className="px-2.5 py-3 text-right">{formatMoney(storeVisionData.totals.fatA)}</td>
+                          <td className="border-l border-slate-700 px-2.5 py-3 text-right text-orange-300">{formatMoney(storeVisionData.totals.fatB)}</td>
+                          <td className="border-l border-slate-700 px-1 py-2 text-center"><GrowthChip pct={storeVisionData.totals.fatPct} previous={storeVisionData.totals.fatA} current={storeVisionData.totals.fatB} prominent dark /></td>
+                          <td className="border-l-[12px] border-white px-2.5 py-3 text-right">{formatMoney(storeVisionData.totals.segA)}</td>
+                          <td className="border-l border-slate-700 px-2.5 py-3 text-right text-sky-300">{formatMoney(storeVisionData.totals.segB)}</td>
+                          <td className="border-l border-slate-700 px-1 py-2 text-center"><GrowthChip pct={storeVisionData.totals.segPct} previous={storeVisionData.totals.segA} current={storeVisionData.totals.segB} prominent dark /></td>
+                        </tr>
+                      </tfoot>
+                    )}
+                  </table>
+                </div>
+
+                {/* Celular e tablet: mesmos valores em cartões de leitura confortável. */}
+                <div className="space-y-3 xl:hidden">
+                  {storeVisionData.groupedVisibleStores.map((group) => (
+                    <section key={`mobile-comp-${group.regiao}`} className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+                      <button type="button" onClick={() => toggleRegion(group.regiao)} aria-expanded={!collapsedRegions[group.regiao]}
+                        className="flex w-full items-center gap-2 bg-slate-100 px-3 py-2.5 text-left text-[13px] font-black text-slate-900">
+                        <span className="rounded bg-slate-900 px-2 py-1 text-white">{regionShortLabel(group.regiao)}</span>
+                        <span className="truncate">{group.regiao}</span>
+                        <span className="text-[11px] font-semibold text-slate-500">({group.stores.length})</span>
+                        <ChevronDown size={17} className={`ml-auto shrink-0 transition-transform ${collapsedRegions[group.regiao] ? '-rotate-90' : ''}`} />
+                      </button>
+                      {!collapsedRegions[group.regiao] && group.stores.map((store) => (
+                        <div key={`mc-${store.loja}`} className="border-t border-slate-200 p-3">
+                          <div className="mb-2 text-[13px] font-black uppercase text-slate-900">{store.loja}</div>
+                          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                            <div className="rounded-lg border border-orange-100 bg-orange-50/40 p-2.5">
+                              <div className="mb-1 flex items-center justify-between gap-1"><span className="text-[11px] font-bold uppercase text-slate-600">Faturamento {yearB}</span><GrowthChip pct={store.fatPct} previous={store.fatA} current={store.fatB} /></div>
+                              <div className="text-[17px] font-black tabular-nums text-slate-900">{formatMoney(store.fatB)}</div>
+                              <div className="mt-1 text-[11px] text-slate-500">{yearA}: {formatMoney(store.fatA)}</div>
+                            </div>
+                            <div className="rounded-lg border border-sky-100 bg-sky-50/40 p-2.5">
+                              <div className="mb-1 flex items-center justify-between gap-1"><span className="text-[11px] font-bold uppercase text-slate-600">Seguros {yearB}</span><GrowthChip pct={store.segPct} previous={store.segA} current={store.segB} /></div>
+                              <div className="text-[17px] font-black tabular-nums text-slate-900">{formatMoney(store.segB)}</div>
+                              <div className="mt-1 text-[11px] text-slate-500">{yearA}: {formatMoney(store.segA)}</div>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                      <div className="border-t-2 border-slate-300 bg-slate-100 px-3 py-2.5">
+                        <div className="mb-2 text-[13px] font-black uppercase text-slate-800">Subtotal {group.regiao}</div>
+                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                          <div className="flex items-center justify-between gap-2 rounded-lg bg-orange-50 px-2 py-2"><div><div className="text-[10px] font-bold text-slate-500">Faturamento {yearB}</div><div className="text-[15px] font-black tabular-nums text-orange-700">{formatMoney(group.subtotal.fatB)}</div></div><GrowthChip pct={group.subtotal.fatPct} previous={group.subtotal.fatA} current={group.subtotal.fatB} prominent /></div>
+                          <div className="flex items-center justify-between gap-2 rounded-lg bg-sky-50 px-2 py-2"><div><div className="text-[10px] font-bold text-slate-500">Seguros {yearB}</div><div className="text-[15px] font-black tabular-nums text-sky-700">{formatMoney(group.subtotal.segB)}</div></div><GrowthChip pct={group.subtotal.segPct} previous={group.subtotal.segA} current={group.subtotal.segB} prominent /></div>
+                        </div>
+                      </div>
+                    </section>
+                  ))}
+                  {storeVisionData.visibleStores.length > 0 && (
+                    <div className="rounded-xl bg-slate-900 p-3 text-white">
+                      <div className="mb-2 text-[14px] font-black uppercase">TOTAL REDE ({storeVisionData.visibleStores.length} lojas)</div>
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                        <div className="flex justify-between gap-2"><div><span className="block text-[11px] text-slate-300">Faturamento {yearB}</span><strong className="text-[18px] text-orange-300">{formatMoney(storeVisionData.totals.fatB)}</strong></div><GrowthChip pct={storeVisionData.totals.fatPct} previous={storeVisionData.totals.fatA} current={storeVisionData.totals.fatB} prominent dark /></div>
+                        <div className="flex justify-between gap-2"><div><span className="block text-[11px] text-slate-300">Seguros {yearB}</span><strong className="text-[18px] text-sky-300">{formatMoney(storeVisionData.totals.segB)}</strong></div><GrowthChip pct={storeVisionData.totals.segPct} previous={storeVisionData.totals.segA} current={storeVisionData.totals.segB} prominent dark /></div>
+                      </div>
+                    </div>
                   )}
-                </table>
+                </div>
               </div>
             )}
+
             {/* ====================================================================
                 MODO 2: MATRIZ ANUAL MÊS A MÊS (100% NA TELA SEM ROLAGEM HORIZONTAL)
                ==================================================================== */}
             {storeViewMode === 'mes_a_mes' && (
-              <div className="w-full overflow-x-auto rounded-2xl border border-slate-200 bg-white shadow-sm">
-                <table className="w-full table-fixed border-collapse text-left min-w-[1520px]">
-                  <thead>
-                    <tr className="bg-slate-900 text-white text-[11px] font-black uppercase tracking-wider">
-                      <th
-                        onClick={() => handleStoreSort('loja')}
-                        className="w-[210px] cursor-pointer py-3 px-3 border-r border-slate-800 hover:bg-slate-800 transition-colors"
-                      >
-                        <div className="flex items-center justify-between">
-                          <span>Filial ({storeVisionData.visibleStores.length})</span>
-                          {renderSortIcon('loja')}
-                        </div>
-                      </th>
-                      {MONTH_LABELS.map((mLabel, idx) => {
-                        const mNum = String(idx + 1);
-                        const isSelectedMonth = monthFilter === mNum;
-                        return (
-                          <th
-                            key={mLabel}
-                            onClick={() => setMonthFilter(isSelectedMonth ? '0' : mNum)}
-                            title="Clique para filtrar este mês"
-                            className={`cursor-pointer py-3 px-2 text-center border-r border-slate-800 transition-colors ${
-                              isSelectedMonth ? 'bg-orange-500 text-white' : 'hover:bg-slate-800'
-                            }`}
-                          >
-                            <span className="block text-[12px] font-black">{mLabel}</span>
-                            <span className={`block text-[9px] font-bold ${isSelectedMonth ? 'text-orange-100' : 'text-slate-400'}`}>
-                              {yearB.slice(-2)} vs {yearA.slice(-2)}
-                            </span>
-                          </th>
-                        );
-                      })}
-                      <th
-                        onClick={() => handleStoreSort('fatB')}
-                        className="w-[125px] cursor-pointer py-3 px-2.5 text-right bg-slate-950 text-orange-400 hover:bg-slate-900 transition-colors"
-                      >
-                        <div className="flex items-center justify-end gap-1">
-                          <span>Acumulado</span>
-                          {renderSortIcon('fatB')}
-                        </div>
-                        <span className="block text-[9px] text-slate-400 font-bold">
-                          {yearB} vs {yearA}
-                        </span>
-                      </th>
-                    </tr>
-                  </thead>
-
-                  <tbody className="divide-y divide-slate-200/70 text-[12px] font-bold text-slate-700">
-                    {storeVisionData.groupedVisibleStores.map((group) => (
-                      <React.Fragment key={`${group.regiao}-matrix-group`}>
-                        <tr className="bg-slate-50 border-y border-slate-200">
-                          <td colSpan={14} className="px-3 py-2 text-[11px] font-black uppercase text-slate-700">
-                            <div className="flex items-center gap-2">
-                              <span className="inline-flex min-w-[28px] justify-center rounded-md bg-slate-900 px-2 py-1 text-white">
-                                {regionShortLabel(group.regiao)}
-                              </span>
-                              <span>{group.regiao}</span>
-                              <span className="text-slate-400">• {group.stores.length} filiais</span>
-                            </div>
-                          </td>
-                        </tr>
-
-                        {group.stores.map((store) => {
-                          const totalYearA = (Object.values(store.monthsA) as number[]).reduce((a, b) => a + b, 0);
-                          const totalYearB = (Object.values(store.monthsB) as number[]).reduce((a, b) => a + b, 0);
-                          const totalDiffPct = calcVariationPct(totalYearA, totalYearB);
-                          const totalBadgeText = totalDiffPct === null ? '0%' : formatPctBadgeText(totalDiffPct, totalYearA, totalYearB);
-
+              <div className="mx-auto w-full max-w-[1680px] px-2 pb-3 pt-2 sm:px-3">
+                <div className="mb-2 hidden items-center justify-between text-[11px] font-semibold text-slate-500 xl:flex">
+                  <span>Venda realizada em {yearB} e variação sobre {yearA} · valores resumidos</span>
+                  <span>Clique na seta de cada região para recolher as filiais</span>
+                </div>
+                {/* Desktop: cada mês tem somente o valor atual e a variação na mesma linha. */}
+                <div className="hidden overflow-x-auto rounded-xl border border-slate-200 shadow-sm xl:block">
+                  <table className="w-full min-w-[1460px] table-fixed border-collapse text-left tabular-nums">
+                    <colgroup>
+                      <col style={{ width: '14%' }} />
+                      {MONTH_LABELS.map((month) => <col key={month} style={{ width: '6.55%' }} />)}
+                      <col style={{ width: '7.4%' }} />
+                    </colgroup>
+                    <thead>
+                      <tr className="bg-slate-900 text-[14px] font-black uppercase text-white">
+                        <th className="sticky left-0 z-20 border-r border-slate-700 bg-slate-900 px-3 py-3">
+                          <button type="button" className="flex w-full items-center justify-between gap-1 text-left" onClick={() => handleStoreSort('loja')}>
+                            Filial {renderSortIcon('loja')}
+                          </button>
+                        </th>
+                        {MONTH_LABELS.map((month, index) => {
+                          const active = monthFilter === String(index + 1);
                           return (
-                            <tr key={`${group.regiao}-${store.loja}-matrix`} className="hover:bg-orange-50/40 transition-colors even:bg-slate-50/30">
-                              <td className="py-2 px-3 border-r border-slate-200/80 truncate" title={`${store.loja} (${store.regiao})`}>
-                                <div className="flex items-center justify-between gap-1.5">
-                                  <span className="font-black text-[11px] text-slate-900 uppercase truncate">
-                                    {shortenStoreName(store.loja)}
-                                  </span>
-                                  <span className="text-[9px] font-extrabold px-1.5 py-0.5 rounded bg-slate-200/70 text-slate-600 shrink-0">
-                                    {regionShortLabel(store.regiao)}
-                                  </span>
-                                </div>
-                              </td>
-
-                              {MONTH_LABELS.map((mLabel, idx) => {
-                                const mKey = String(idx + 1).padStart(2, '0');
-                                const valA = store.monthsA[mKey] || 0;
-                                const valB = store.monthsB[mKey] || 0;
-                                const diff = calcVariationPct(valA, valB);
-                                const badgeText = diff === null ? '0%' : formatPctBadgeText(diff, valA, valB);
-                                const isSelectedMonth = monthFilter === String(idx + 1);
-                                let heatBg = '';
-                                if (diff !== null) {
-                                  if (diff >= 30) heatBg = 'bg-emerald-100/80';
-                                  else if (diff >= 0) heatBg = 'bg-emerald-50/70';
-                                  else if (diff <= -20) heatBg = 'bg-rose-100/80';
-                                  else heatBg = 'bg-rose-50/70';
-                                } else if (isSelectedMonth) {
-                                  heatBg = 'bg-orange-50/60';
-                                }
-
-                                const tooltipText = `${store.loja} • ${mLabel}
-${yearB}: ${formatMoney(valB)}
-${yearA}: ${formatMoney(valA)}
-Variação: ${badgeText}`;
-
-                                return (
-                                  <td key={mKey} title={tooltipText} className={`py-2 px-2 text-right border-r border-slate-100 align-middle ${heatBg}`}>
-                                    <div className="flex flex-col items-end leading-tight gap-0.5">
-                                      <span className={`font-mono text-[11px] font-black ${valB > 0 ? 'text-slate-900' : 'text-slate-300'}`}>
-                                        {formatCellCompact(valB)}
-                                      </span>
-                                      <span className="font-mono text-[9px] text-slate-400 truncate">
-                                        {valA > 0 ? formatCellCompact(valA) : '0'}
-                                      </span>
-                                      <span className={`px-1.5 rounded text-[9px] font-black leading-tight ${diff !== null && diff < 0 ? 'bg-rose-500/15 text-rose-600' : 'bg-emerald-500/15 text-emerald-700'}`}>
-                                        {badgeText}
-                                      </span>
-                                    </div>
-                                  </td>
-                                );
-                              })}
-
-                              <td className="py-2 px-2.5 text-right bg-orange-50/35 align-middle" title={`${store.loja} • Acumulado Anual
-${yearB}: ${formatMoney(totalYearB)}
-${yearA}: ${formatMoney(totalYearA)}`}>
-                                <div className="flex flex-col items-end leading-tight gap-0.5">
-                                  <span className="font-mono text-[12px] font-black text-orange-700">{formatCellCompact(totalYearB)}</span>
-                                  <span className="font-mono text-[9px] text-slate-400">{totalYearA > 0 ? formatCellCompact(totalYearA) : '0'}</span>
-                                  <span className={`px-1.5 rounded text-[9px] font-black ${totalDiffPct !== null && totalDiffPct < 0 ? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-800'}`}>
-                                    {totalBadgeText}
-                                  </span>
-                                </div>
-                              </td>
-                            </tr>
+                            <th key={month} className={`cursor-pointer border-r border-slate-700 px-1 py-3 text-center ${active ? 'bg-orange-600' : ''}`}
+                              onClick={() => setMonthFilter(active ? '0' : String(index + 1))} title={`Filtrar ${month}`}>
+                              {month}
+                            </th>
                           );
                         })}
-
-                        {showRegionSubtotals && (
-                          <tr className="bg-slate-100/90 border-b-2 border-slate-300 text-[12px] font-black">
-                            <td className="py-2 px-3 border-r border-slate-200 uppercase text-slate-800">
+                        <th className="border-l-2 border-slate-600 bg-slate-950 px-2 py-3 text-center text-orange-300">Total {yearB}</th>
+                      </tr>
+                    </thead>
+                    <tbody className="text-[12px] font-semibold">
+                      {storeVisionData.groupedVisibleStores.map((group) => (
+                        <React.Fragment key={`heat-${group.regiao}`}>
+                          <tr className="border-y border-slate-300 bg-slate-100">
+                            <td colSpan={14} className="px-3 py-2">
+                              <button type="button" aria-expanded={!collapsedRegions[group.regiao]}
+                                aria-label={`${collapsedRegions[group.regiao] ? 'Expandir' : 'Recolher'} filiais de ${group.regiao}`}
+                                onClick={() => toggleRegion(group.regiao)}
+                                className="flex w-full items-center gap-2 text-left text-[12px] font-black uppercase text-slate-800 hover:text-orange-700">
+                                <span className="rounded bg-slate-900 px-2 py-1 text-white">{regionShortLabel(group.regiao)}</span>
+                                <span>{group.regiao}</span><span className="font-bold normal-case text-slate-500">{group.stores.length} filiais</span>
+                                <ChevronDown size={16} className={`ml-auto transition-transform ${collapsedRegions[group.regiao] ? '-rotate-90' : ''}`} />
+                              </button>
+                            </td>
+                          </tr>
+                          {!collapsedRegions[group.regiao] && group.stores.map((store) => {
+                            const totalYearA = (Object.values(store.monthsA) as number[]).reduce((a, b) => a + b, 0);
+                            const totalYearB = (Object.values(store.monthsB) as number[]).reduce((a, b) => a + b, 0);
+                            return (
+                              <tr key={`heat-${group.regiao}-${store.loja}`} className="border-b border-slate-200 hover:bg-orange-50/30">
+                                <td className="sticky left-0 z-10 max-w-0 truncate border-r border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-extrabold text-slate-900" title={store.loja}>
+                                  {shortenStoreName(store.loja)}
+                                </td>
+                                {MONTH_LABELS.map((month, index) => {
+                                  const key = String(index + 1).padStart(2, '0');
+                                  return (
+                                    <td key={key} className="border-r border-slate-100 px-0.5 py-1.5" title={`${store.loja} · ${month}`}>
+                                      <HeatCell current={store.monthsB[key] || 0} previous={store.monthsA[key] || 0} />
+                                    </td>
+                                  );
+                                })}
+                                <td className="border-l-2 border-slate-200 bg-orange-50/35 px-0.5 py-1.5">
+                                  <HeatCell current={totalYearB} previous={totalYearA} total />
+                                </td>
+                              </tr>
+                            );
+                          })}
+                          <tr className="border-b-2 border-slate-300 bg-slate-100/95 font-black">
+                            <td className="sticky left-0 z-10 max-w-0 border-r border-slate-200 bg-slate-100 px-2.5 py-2 text-[13px] text-slate-800">
                               Subtotal {group.regiao}
                             </td>
-                            {MONTH_LABELS.map((_, idx) => {
-                              const mKey = String(idx + 1).padStart(2, '0');
-                              const valA = group.subtotal.monthsA[mKey] || 0;
-                              const valB = group.subtotal.monthsB[mKey] || 0;
-                              const diff = calcVariationPct(valA, valB);
-                              const badgeText = diff === null ? '0%' : formatPctBadgeText(diff, valA, valB);
+                            {MONTH_LABELS.map((month, index) => {
+                              const key = String(index + 1).padStart(2, '0');
                               return (
-                                <td key={`${group.regiao}-sub-${mKey}`} className="py-2 px-2 text-right border-r border-slate-200 bg-slate-50">
-                                  <div className="flex flex-col items-end leading-tight gap-0.5">
-                                    <span className="font-mono text-[11px] text-slate-900">{formatCellCompact(valB)}</span>
-                                    <span className="font-mono text-[9px] text-slate-400">{valA > 0 ? formatCellCompact(valA) : '0'}</span>
-                                    <span className={`text-[9px] ${diff !== null && diff < 0 ? 'text-rose-600' : 'text-emerald-700'}`}>{badgeText}</span>
-                                  </div>
+                                <td key={month} className="border-r border-slate-200 px-0.5 py-1.5">
+                                  <HeatCell current={group.subtotal.monthsB[key] || 0} previous={group.subtotal.monthsA[key] || 0} total />
                                 </td>
                               );
                             })}
-                            <td className="py-2 px-2.5 text-right bg-orange-50/55">
-                              <div className="flex flex-col items-end leading-tight gap-0.5">
-                                <span className="font-mono text-[12px] text-orange-700">{formatCellCompact(group.subtotal.fatB)}</span>
-                                <span className="font-mono text-[9px] text-slate-400">{group.subtotal.fatA > 0 ? formatCellCompact(group.subtotal.fatA) : '0'}</span>
-                                <span className={`text-[9px] ${group.subtotal.fatPct !== null && group.subtotal.fatPct < 0 ? 'text-rose-600' : 'text-emerald-700'}`}>
-                                  {group.subtotal.fatPct === null ? '0%' : formatPctBadgeText(group.subtotal.fatPct, group.subtotal.fatA, group.subtotal.fatB)}
-                                </span>
-                              </div>
+                            <td className="border-l-2 border-slate-200 bg-orange-50/50 px-0.5 py-1.5">
+                              <HeatCell current={group.subtotal.fatB} previous={group.subtotal.fatA} total />
                             </td>
                           </tr>
-                        )}
-                      </React.Fragment>
-                    ))}
-                  </tbody>
+                        </React.Fragment>
+                      ))}
+                      {storeVisionData.visibleStores.length === 0 && (
+                        <tr><td colSpan={14} className="p-8 text-center text-slate-500">Nenhuma filial encontrada.</td></tr>
+                      )}
+                    </tbody>
+                    {storeVisionData.visibleStores.length > 0 && (
+                      <tfoot className="bg-slate-900 text-white">
+                        <tr>
+                          <td className="sticky left-0 z-10 bg-slate-900 px-3 py-3 text-[15px] font-black">TOTAL REDE ({storeVisionData.visibleStores.length})</td>
+                          {MONTH_LABELS.map((month, index) => {
+                            const key = String(index + 1).padStart(2, '0');
+                            return <td key={month} className="border-l border-slate-700 px-0.5 py-2"><HeatCell current={storeVisionData.totals.monthsB[key] || 0} previous={storeVisionData.totals.monthsA[key] || 0} total dark /></td>;
+                          })}
+                          <td className="border-l-2 border-slate-600 bg-slate-950 px-0.5 py-2"><HeatCell current={storeVisionData.totals.fatB} previous={storeVisionData.totals.fatA} total dark /></td>
+                        </tr>
+                      </tfoot>
+                    )}
+                  </table>
+                </div>
 
+                {/* Smartphone e tablet: grade adaptável para leitura sem zoom ou tabela espremida. */}
+                <div className="space-y-3 xl:hidden">
+                  <div className="text-[12px] font-semibold text-slate-500">{yearB} realizado · variação vs. {yearA}</div>
+                  {storeVisionData.groupedVisibleStores.map((group) => (
+                    <section key={`hm-${group.regiao}`} className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+                      <button type="button" aria-expanded={!collapsedRegions[group.regiao]} onClick={() => toggleRegion(group.regiao)}
+                        className="flex w-full items-center gap-2 bg-slate-100 px-3 py-2.5 text-left text-[13px] font-black text-slate-800">
+                        <span className="rounded bg-slate-900 px-2 py-1 text-white">{regionShortLabel(group.regiao)}</span>
+                        <span className="truncate">{group.regiao}</span>
+                        <span className="text-[11px] font-semibold text-slate-500">({group.stores.length})</span>
+                        <ChevronDown size={17} className={`ml-auto shrink-0 transition-transform ${collapsedRegions[group.regiao] ? '-rotate-90' : ''}`} />
+                      </button>
+                      {!collapsedRegions[group.regiao] && group.stores.map((store) => {
+                        const totalA = (Object.values(store.monthsA) as number[]).reduce((a, b) => a + b, 0);
+                        const totalB = (Object.values(store.monthsB) as number[]).reduce((a, b) => a + b, 0);
+                        return (
+                          <div key={`hms-${store.loja}`} className="border-t border-slate-200 p-3">
+                            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                              <strong className="text-[13px] uppercase text-slate-900">{store.loja}</strong>
+                              <span className="inline-flex items-center gap-2 rounded-md bg-orange-50 px-2 py-1 text-[14px] font-black text-orange-700">
+                                {formatMoneyShort(totalB)} <GrowthChip pct={calcVariationPct(totalA, totalB)} previous={totalA} current={totalB} />
+                              </span>
+                            </div>
+                            <div className="grid grid-cols-2 gap-1.5 min-[420px]:grid-cols-3 sm:grid-cols-4 md:grid-cols-6">
+                              {MONTH_LABELS.map((month, index) => {
+                                const key = String(index + 1).padStart(2, '0');
+                                return (
+                                  <div key={month} className="min-w-0 rounded-lg border border-slate-200 p-1">
+                                    <div className="px-1 pt-0.5 text-[10px] font-black uppercase text-slate-500">{month}</div>
+                                    <HeatCell current={store.monthsB[key] || 0} previous={store.monthsA[key] || 0} />
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      })}
+                      <div className="border-t-2 border-slate-300 bg-slate-100 px-3 py-3">
+                        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                          <strong className="text-[13px] uppercase text-slate-800">Subtotal {group.regiao}</strong>
+                          <div className="inline-flex items-center gap-2 text-[15px] font-black text-orange-700">
+                            {formatMoneyShort(group.subtotal.fatB)}
+                            <GrowthChip pct={group.subtotal.fatPct} previous={group.subtotal.fatA} current={group.subtotal.fatB} />
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-1.5 min-[420px]:grid-cols-3 sm:grid-cols-4 md:grid-cols-6">
+                          {MONTH_LABELS.map((month, index) => {
+                            const key = String(index + 1).padStart(2, '0');
+                            return (
+                              <div key={month} className="rounded-lg border border-slate-200 bg-white p-1">
+                                <div className="px-1 pt-0.5 text-[10px] font-black text-slate-500">{month}</div>
+                                <HeatCell current={group.subtotal.monthsB[key] || 0} previous={group.subtotal.monthsA[key] || 0} total />
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </section>
+                  ))}
                   {storeVisionData.visibleStores.length > 0 && (
-                    <tfoot className="bg-slate-900 text-white text-[11px] font-black">
-                      <tr>
-                        <td className="py-3 px-3 border-r border-slate-800 uppercase">TOTAL REDE ({storeVisionData.visibleStores.length})</td>
-                        {MONTH_LABELS.map((_, idx) => {
-                          const mKey = String(idx + 1).padStart(2, '0');
-                          const mTotalA = storeVisionData.totals.monthsA[mKey] || 0;
-                          const mTotalB = storeVisionData.totals.monthsB[mKey] || 0;
-                          const mDiff = calcVariationPct(mTotalA, mTotalB);
-                          const mBadge = mDiff === null ? '0%' : formatPctBadgeText(mDiff, mTotalA, mTotalB);
+                    <div className="rounded-xl bg-slate-900 p-3 text-white">
+                      <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-[14px] font-black">
+                        <span>TOTAL REDE ({storeVisionData.visibleStores.length})</span>
+                        <span className="text-[17px] text-orange-300">{formatMoneyShort(storeVisionData.totals.fatB)}</span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-1.5 min-[420px]:grid-cols-3 sm:grid-cols-4 md:grid-cols-6">
+                        {MONTH_LABELS.map((month, index) => {
+                          const key = String(index + 1).padStart(2, '0');
                           return (
-                            <td key={mKey} className="py-2.5 px-2 text-right border-r border-slate-800">
-                              <div className="font-mono text-[11px] text-orange-400">{formatCellCompact(mTotalB)}</div>
-                              <div className="font-mono text-[9px] text-slate-400">{mTotalA > 0 ? formatCellCompact(mTotalA) : '0'}</div>
-                              <span className={`inline-block mt-0.5 text-[9px] font-black ${mDiff !== null && mDiff < 0 ? 'text-rose-400' : 'text-emerald-400'}`}>{mBadge}</span>
-                            </td>
+                            <div key={month} className="rounded-lg border border-slate-700 bg-slate-800 p-1">
+                              <div className="px-1 pt-0.5 text-[10px] font-black text-slate-300">{month}</div>
+                              <HeatCell current={storeVisionData.totals.monthsB[key] || 0} previous={storeVisionData.totals.monthsA[key] || 0} total dark />
+                            </div>
                           );
                         })}
-                        <td className="py-2.5 px-2.5 text-right bg-slate-950">
-                          {(() => {
-                            const grandB = Object.values(storeVisionData.totals.monthsB).reduce((a, b) => a + b, 0);
-                            const grandA = Object.values(storeVisionData.totals.monthsA).reduce((a, b) => a + b, 0);
-                            const grandDiff = calcVariationPct(grandA, grandB);
-                            return (
-                              <>
-                                <div className="font-mono text-[12px] text-orange-400">{formatCellCompact(grandB)}</div>
-                                <div className="font-mono text-[9px] text-slate-400">{grandA > 0 ? formatCellCompact(grandA) : '0'}</div>
-                                <span className={`inline-block mt-0.5 text-[9px] font-black ${grandDiff !== null && grandDiff < 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
-                                  {grandDiff === null ? '0%' : formatPctBadgeText(grandDiff, grandA, grandB)}
-                                </span>
-                              </>
-                            );
-                          })()}
-                        </td>
-                      </tr>
-                    </tfoot>
+                      </div>
+                    </div>
                   )}
-                </table>
+                </div>
               </div>
             )}
           </div>
