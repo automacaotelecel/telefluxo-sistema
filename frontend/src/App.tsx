@@ -624,7 +624,7 @@ function App() {
           <div className={`flex items-center gap-3 ${isSidebarCollapsed ? 'justify-center w-full md:w-auto' : ''}`}>
             <div className="w-14 h-14 bg-white rounded-2xl flex items-center justify-center shadow-lg overflow-hidden shrink-0">
               <img
-                src="/logo2.png"
+                src="/Logotipo_Telefluxo.png"
                 alt="TeleFluxo"
                 className="w-[99%] h-[99%] object-contain scale-[1.0]"
               />

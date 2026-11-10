@@ -501,22 +501,53 @@ const GrowthChip = ({
   );
 };
 
+// Célula exclusiva do Mapa de Calor: realizado, variação e referência do ano anterior.
+// Mantém os cálculos existentes e usa dicas completas (title) para auditoria dos valores.
 const HeatCell = ({
-  current, previous, total = false, dark = false,
+  current,
+  previous,
+  previousYear,
+  total = false,
+  dark = false,
 }: {
   current: number;
   previous: number;
+  previousYear?: string;
   total?: boolean;
   dark?: boolean;
 }) => {
   const pct = calcVariationPct(previous, current);
-  const bg = dark ? '' : pct === null ? 'bg-slate-50' : pct >= 30 ? 'bg-emerald-100/80' : pct >= 0 ? 'bg-emerald-50/70' : pct <= -20 ? 'bg-rose-100/80' : 'bg-rose-50/70';
+  const empty = current <= 0 && previous <= 0;
+  const bg = dark
+    ? 'bg-slate-900 border-slate-700'
+    : empty
+      ? 'bg-slate-50 border-slate-200'
+      : pct === null
+        ? 'bg-slate-50 border-slate-200'
+        : pct >= 30
+          ? 'bg-emerald-100/85 border-emerald-200/80'
+          : pct >= 0
+            ? 'bg-emerald-50 border-emerald-100'
+            : pct <= -20
+              ? 'bg-rose-100/85 border-rose-200/80'
+              : 'bg-rose-50 border-rose-100';
+
   return (
-    <div className={`flex min-h-[31px] w-full items-center justify-between gap-1 rounded-md px-1 py-1 ${bg}`} title={`Atual: ${formatMoney(current)} | Anterior: ${formatMoney(previous)} | ${formatPctBadgeText(pct, previous, current)}`}>
-      <span className={`truncate font-sans font-black tracking-tight tabular-nums ${total ? 'text-[15px] xl:text-[16px]' : 'text-[13px] xl:text-[13px]'} ${dark ? 'text-orange-300' : 'text-slate-900'}`}>
-        {current > 0 ? formatCellCompact(current) : '0'}
+    <div
+      className={`flex min-h-[54px] w-full flex-col justify-center gap-1 rounded-md border px-1.5 py-1.5 ${bg}`}
+      title={`Realizado: ${formatMoney(current)} | ${previousYear || 'Ano anterior'}: ${formatMoney(previous)} | Variação: ${formatPctBadgeText(pct, previous, current)}`}
+    >
+      <div className="flex w-full min-w-0 items-center justify-between gap-1">
+        <span className={`min-w-0 whitespace-nowrap font-sans font-black tracking-tight tabular-nums ${total ? 'text-[14px] xl:text-[15px]' : 'text-[13px] xl:text-[14px]'} ${dark ? 'text-orange-300' : 'text-slate-900'}`}>
+          {current > 0 ? formatCellCompact(current) : empty ? '—' : '0'}
+        </span>
+        {!empty && (
+          <GrowthChip pct={pct} previous={previous} current={current} prominent={false} dark={dark} />
+        )}
+      </div>
+      <span className={`block truncate whitespace-nowrap text-[10px] font-semibold tabular-nums ${dark ? 'text-slate-300' : 'text-slate-500'}`}>
+        {previousYear ? `${previousYear}: ` : 'Anterior: '}{previous > 0 ? formatCellCompact(previous) : '—'}
       </span>
-      <GrowthChip pct={pct} previous={previous} current={current} prominent={total} dark={dark} />
     </div>
   );
 };
@@ -2225,22 +2256,30 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
                 MODO 2: MATRIZ ANUAL MÊS A MÊS (100% NA TELA SEM ROLAGEM HORIZONTAL)
                ==================================================================== */}
             {storeViewMode === 'mes_a_mes' && (
-              <div className="mx-auto w-full max-w-[1680px] px-2 pb-3 pt-2 sm:px-3">
-                <div className="mb-2 hidden items-center justify-between text-[11px] font-semibold text-slate-500 xl:flex">
-                  <span>Venda realizada em {yearB} e variação sobre {yearA} · valores resumidos</span>
-                  <span>Clique na seta de cada região para recolher as filiais</span>
+              <div className="w-full max-w-none px-0 pb-3 pt-3">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-3 pb-3 text-xs font-semibold text-slate-600">
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                    <strong className="text-sm text-slate-900">Mapa mensal · {yearB} versus {yearA}</strong>
+                    <span>Valor em destaque: {yearB} · linha inferior: {yearA}</span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-3 text-[11px]">
+                    <span className="flex items-center gap-1.5"><i className="h-3 w-3 rounded-sm bg-emerald-200" /> Crescimento</span>
+                    <span className="flex items-center gap-1.5"><i className="h-3 w-3 rounded-sm bg-rose-200" /> Queda</span>
+                    <span className="flex items-center gap-1.5"><i className="h-3 w-3 rounded-sm border border-slate-300 bg-slate-100" /> Sem comparação</span>
+                    <span className="text-slate-400">Arraste lateralmente se necessário</span>
+                  </div>
                 </div>
-                {/* Desktop: cada mês tem somente o valor atual e a variação na mesma linha. */}
-                <div className="hidden overflow-x-auto rounded-xl border border-slate-200 shadow-sm xl:block">
-                  <table className="w-full min-w-[1460px] table-fixed border-collapse text-left tabular-nums">
+                {/* Desktop: preserva legibilidade sem espremer as 12 colunas; scroll apenas se necessário. */}
+                <div className="hidden w-full overflow-x-auto rounded-lg border-y border-slate-300 xl:block">
+                  <table className="w-full min-w-[1750px] table-fixed border-separate border-spacing-0 text-left tabular-nums">
                     <colgroup>
-                      <col style={{ width: '14%' }} />
-                      {MONTH_LABELS.map((month) => <col key={month} style={{ width: '6.55%' }} />)}
-                      <col style={{ width: '7.4%' }} />
+                      <col style={{ width: '18%' }} />
+                      {MONTH_LABELS.map((month) => <col key={month} style={{ width: '5.9%' }} />)}
+                      <col style={{ width: '11%' }} />
                     </colgroup>
                     <thead>
-                      <tr className="bg-slate-900 text-[14px] font-black uppercase text-white">
-                        <th className="sticky left-0 z-20 border-r border-slate-700 bg-slate-900 px-3 py-3">
+                      <tr className="bg-slate-900 text-[13px] font-black uppercase tracking-wide text-white">
+                        <th className="sticky left-0 z-20 border-r border-slate-700 bg-slate-900 px-4 py-3.5">
                           <button type="button" className="flex w-full items-center justify-between gap-1 text-left" onClick={() => handleStoreSort('loja')}>
                             Filial {renderSortIcon('loja')}
                           </button>
@@ -2276,40 +2315,24 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
                             const totalYearA = (Object.values(store.monthsA) as number[]).reduce((a, b) => a + b, 0);
                             const totalYearB = (Object.values(store.monthsB) as number[]).reduce((a, b) => a + b, 0);
                             return (
-                              <tr key={`heat-${group.regiao}-${store.loja}`} className="border-b border-slate-200 hover:bg-orange-50/30">
-                                <td className="sticky left-0 z-10 max-w-0 truncate border-r border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-extrabold text-slate-900" title={store.loja}>
+                              <tr key={`heat-${group.regiao}-${store.loja}`} className="hover:bg-orange-50/30">
+                                <td className="sticky left-0 z-10 max-w-0 truncate border-b border-r border-slate-300 bg-white px-4 py-2.5 text-[12px] font-black text-slate-900" title={store.loja}>
                                   {shortenStoreName(store.loja)}
                                 </td>
                                 {MONTH_LABELS.map((month, index) => {
                                   const key = String(index + 1).padStart(2, '0');
                                   return (
-                                    <td key={key} className="border-r border-slate-100 px-0.5 py-1.5" title={`${store.loja} · ${month}`}>
-                                      <HeatCell current={store.monthsB[key] || 0} previous={store.monthsA[key] || 0} />
+                                    <td key={key} className="border-b border-r border-slate-200 bg-white px-1 py-2" title={`${store.loja} · ${month}`}>
+                                      <HeatCell current={store.monthsB[key] || 0} previous={store.monthsA[key] || 0} previousYear={yearA} />
                                     </td>
                                   );
                                 })}
-                                <td className="border-l-2 border-slate-200 bg-orange-50/35 px-0.5 py-1.5">
-                                  <HeatCell current={totalYearB} previous={totalYearA} total />
+                                <td className="border-b border-l-2 border-slate-300 bg-orange-50/60 px-1.5 py-2">
+                                  <HeatCell current={totalYearB} previous={totalYearA} previousYear={yearA} total />
                                 </td>
                               </tr>
                             );
                           })}
-                          <tr className="border-b-2 border-slate-300 bg-slate-100/95 font-black">
-                            <td className="sticky left-0 z-10 max-w-0 border-r border-slate-200 bg-slate-100 px-2.5 py-2 text-[13px] text-slate-800">
-                              Subtotal {group.regiao}
-                            </td>
-                            {MONTH_LABELS.map((month, index) => {
-                              const key = String(index + 1).padStart(2, '0');
-                              return (
-                                <td key={month} className="border-r border-slate-200 px-0.5 py-1.5">
-                                  <HeatCell current={group.subtotal.monthsB[key] || 0} previous={group.subtotal.monthsA[key] || 0} total />
-                                </td>
-                              );
-                            })}
-                            <td className="border-l-2 border-slate-200 bg-orange-50/50 px-0.5 py-1.5">
-                              <HeatCell current={group.subtotal.fatB} previous={group.subtotal.fatA} total />
-                            </td>
-                          </tr>
                         </React.Fragment>
                       ))}
                       {storeVisionData.visibleStores.length === 0 && (
@@ -2322,9 +2345,9 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
                           <td className="sticky left-0 z-10 bg-slate-900 px-3 py-3 text-[15px] font-black">TOTAL REDE ({storeVisionData.visibleStores.length})</td>
                           {MONTH_LABELS.map((month, index) => {
                             const key = String(index + 1).padStart(2, '0');
-                            return <td key={month} className="border-l border-slate-700 px-0.5 py-2"><HeatCell current={storeVisionData.totals.monthsB[key] || 0} previous={storeVisionData.totals.monthsA[key] || 0} total dark /></td>;
+                            return <td key={month} className="border-l border-slate-700 px-1 py-2"><HeatCell current={storeVisionData.totals.monthsB[key] || 0} previous={storeVisionData.totals.monthsA[key] || 0} previousYear={yearA} total dark /></td>;
                           })}
-                          <td className="border-l-2 border-slate-600 bg-slate-950 px-0.5 py-2"><HeatCell current={storeVisionData.totals.fatB} previous={storeVisionData.totals.fatA} total dark /></td>
+                          <td className="border-l-2 border-slate-600 bg-slate-950 px-0.5 py-2"><HeatCell current={storeVisionData.totals.fatB} previous={storeVisionData.totals.fatA} previousYear={yearA} total dark /></td>
                         </tr>
                       </tfoot>
                     )}
@@ -2333,7 +2356,7 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
 
                 {/* Smartphone e tablet: grade adaptável para leitura sem zoom ou tabela espremida. */}
                 <div className="space-y-3 xl:hidden">
-                  <div className="text-[12px] font-semibold text-slate-500">{yearB} realizado · variação vs. {yearA}</div>
+                  <div className="px-3 text-[12px] font-semibold text-slate-600">{yearB}: realizado · {yearA}: comparação · verde: crescimento · vermelho: queda</div>
                   {storeVisionData.groupedVisibleStores.map((group) => (
                     <section key={`hm-${group.regiao}`} className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
                       <button type="button" aria-expanded={!collapsedRegions[group.regiao]} onClick={() => toggleRegion(group.regiao)}
@@ -2358,9 +2381,9 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
                               {MONTH_LABELS.map((month, index) => {
                                 const key = String(index + 1).padStart(2, '0');
                                 return (
-                                  <div key={month} className="min-w-0 rounded-lg border border-slate-200 p-1">
+                                  <div key={month} className="min-w-0 rounded-lg border border-slate-200 p-1.5">
                                     <div className="px-1 pt-0.5 text-[10px] font-black uppercase text-slate-500">{month}</div>
-                                    <HeatCell current={store.monthsB[key] || 0} previous={store.monthsA[key] || 0} />
+                                    <HeatCell current={store.monthsB[key] || 0} previous={store.monthsA[key] || 0} previousYear={yearA} />
                                   </div>
                                 );
                               })}
@@ -2368,26 +2391,6 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
                           </div>
                         );
                       })}
-                      <div className="border-t-2 border-slate-300 bg-slate-100 px-3 py-3">
-                        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                          <strong className="text-[13px] uppercase text-slate-800">Subtotal {group.regiao}</strong>
-                          <div className="inline-flex items-center gap-2 text-[15px] font-black text-orange-700">
-                            {formatMoneyShort(group.subtotal.fatB)}
-                            <GrowthChip pct={group.subtotal.fatPct} previous={group.subtotal.fatA} current={group.subtotal.fatB} />
-                          </div>
-                        </div>
-                        <div className="grid grid-cols-2 gap-1.5 min-[420px]:grid-cols-3 sm:grid-cols-4 md:grid-cols-6">
-                          {MONTH_LABELS.map((month, index) => {
-                            const key = String(index + 1).padStart(2, '0');
-                            return (
-                              <div key={month} className="rounded-lg border border-slate-200 bg-white p-1">
-                                <div className="px-1 pt-0.5 text-[10px] font-black text-slate-500">{month}</div>
-                                <HeatCell current={group.subtotal.monthsB[key] || 0} previous={group.subtotal.monthsA[key] || 0} total />
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
                     </section>
                   ))}
                   {storeVisionData.visibleStores.length > 0 && (
@@ -2402,7 +2405,7 @@ Crescimento: ${computed.growthVsYearA >= 0 ? '+' : ''}${computed.growthVsYearA.t
                           return (
                             <div key={month} className="rounded-lg border border-slate-700 bg-slate-800 p-1">
                               <div className="px-1 pt-0.5 text-[10px] font-black text-slate-300">{month}</div>
-                              <HeatCell current={storeVisionData.totals.monthsB[key] || 0} previous={storeVisionData.totals.monthsA[key] || 0} total dark />
+                              <HeatCell current={storeVisionData.totals.monthsB[key] || 0} previous={storeVisionData.totals.monthsA[key] || 0} previousYear={yearA} total dark />
                             </div>
                           );
                         })}

@@ -49,7 +49,7 @@ export default function Login({ onLogin }: LoginProps) {
             <img
               src="/logo2.png"
               alt="TeleFluxo"
-              className="w-full h-full object-contain scale-[1.45]"
+              className="w-full h-full object-contain scale-[1.00]"
             />
           </div>
           
@@ -102,7 +102,7 @@ export default function Login({ onLogin }: LoginProps) {
             )}
 
             <button type="submit" className="w-full bg-slate-900 text-white font-bold py-3 rounded-lg hover:bg-slate-800 transition flex items-center justify-center gap-2 shadow-lg transform active:scale-95">
-              Entrar no Sistema <ArrowRight size={18} />
+              Entrar <ArrowRight size={18} />
             </button>
           </form>
 
