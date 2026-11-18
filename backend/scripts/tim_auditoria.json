@@ -1,0 +1,67 @@
+{
+  "sales": {
+    "rows": 6967,
+    "months": [
+      "2026-11"
+    ],
+    "first": "2026-11-01",
+    "last": "2026-11-17",
+    "source_total": 1857065.86,
+    "revenue": 1857025.86,
+    "liquid_known": 1738910.89,
+    "stores": 21,
+    "quantity": 4303.0
+  },
+  "services": {
+    "rows": 4380,
+    "months": [
+      "2026-11"
+    ],
+    "first": "2026-11-01",
+    "last": "2026-11-17",
+    "released": 2631,
+    "pending_docs": 1749,
+    "franchise": 300687.18,
+    "commission_known": 9424.47
+  },
+  "stock": {
+    "rows": 17631,
+    "quantity": 21227.0,
+    "available_quantity": 17183.0,
+    "cost_total": 4170414.47,
+    "sale_value": 9105991.59
+  },
+  "quality": {
+    "sales": {
+      "liquido_pendente": 427,
+      "valor_liquido_ausente": 427,
+      "categoria_fallback": 82,
+      "devolucoes": 1,
+      "erros_excel": {
+        "CENTRAL": 427,
+        "COORDENADOR": 427,
+        "LOJALIQUIDA": 427,
+        "VALORTOTALLIQUIDO": 427,
+        "DESCRICAO2": 82
+      },
+      "formulas_sem_cache": {}
+    },
+    "services": {
+      "comissao_ausente": 2030,
+      "franquia_ausente": 663,
+      "categoria_pendente": 251,
+      "liquido_pendente": 9,
+      "erros_excel": {
+        "STATUS": 269,
+        "LIQUIDO": 9,
+        "TIPOSERVICO": 10
+      },
+      "formulas_sem_cache": {}
+    },
+    "stock": {
+      "sem_filial": 32,
+      "erros_excel": {},
+      "formulas_sem_cache": {}
+    }
+  }
+}

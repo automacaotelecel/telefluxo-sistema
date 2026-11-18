@@ -579,6 +579,20 @@ export function planejarLocalClark(ctx: ClarkBrainContext): ClarkAgentPlan {
 
 
 
+  if (/\b(VENDAS?|FATURAMENTO)\b/.test(texto) && /ANALIS|ANALISE|RELATORIO|EVOLUCAO|MES A MES|QUADRO/.test(texto)
+      && !/ESTOQUE|SEGURO|DIRETORIA/.test(texto)) {
+    return {
+      understoodQuestion: pergunta, taskType: 'sales_report', mode: 'analitico', confidence: 0.95,
+      entities: { store: ctx.filtros.lojaCanonica || null, period: ctx.periodo },
+      toolCalls: [call('consultar_relatorio_vendas', {
+        store: ctx.filtros.lojaCanonica || undefined,
+        category: ctx.filtros.categoriaCanonica || undefined,
+      }, 'Analisar vendas, evolução mensal e composição com dados reais.', ctx.periodo, pergunta)],
+      validationRules: ['Mostrar todos os meses solicitados.', 'Não confundir ausência de registros com zero.', 'Separar fatos de hipóteses.'],
+      answerStyle: { shouldExplainUncertainty: true, shouldIncludeTables: true, shouldIncludeInsights: true, shouldIncludeSuggestions: true },
+    };
+  }
+
   if (texto.includes('RELATORIO') || texto.includes('RELATÓRIO') || texto.includes('ANALISE') || texto.includes('ANÁLISE') || texto.includes('EXECUTIVO')) {
     return {
       understoodQuestion: pergunta,
@@ -722,10 +736,10 @@ Retorne SOMENTE JSON válido neste formato:
 }
 
 // Tasks locais (regex) que agora são decididas pelo interpretador (período/intenção livres).
-// Produto, estoque, navegação, conversa, modo diretoria, sales_report e sql_analytics NÃO entram aqui
+// Produto, estoque, navegação, conversa, modo diretoria e sql_analytics NÃO entram aqui
 // e seguem o caminho antigo (inclusive o planner LLM com normalizarPlano, que permanece intocado).
 const TASKS_VIA_INTERPRETADOR = new Set<string>([
-  'sales_summary', 'sales_by_store', 'sales_by_seller', 'sales_by_category',
+  'sales_report', 'sales_summary', 'sales_by_store', 'sales_by_seller', 'sales_by_category',
   'sales_store_ranking', 'sales_seller_ranking', 'sales_category_ranking',
   'sales_growth', 'insurance_by_seller', 'insurance_by_store',
   'insurance_seller_ranking', 'insurance_store_ranking', 'help',
@@ -771,6 +785,15 @@ function planoDeInterpretacaoClark(ctx: ClarkBrainContext, interp: ClarkInterpre
     .map((t, i) => ({ t, i }))
     .sort((a, b) => Number(a.t.args.periodo) - Number(b.t.args.periodo) || a.i - b.i)
     .map((x) => x.t);
+
+  if (lojaNaoReconhecida) {
+    return { periodo: principal, plan: {
+      understoodQuestion: ctx.perguntaOriginal, taskType: 'help', mode: 'simples', confidence: 0,
+      entities: { avisosFiltro: [`Não reconheci a loja "${lojaCitada}". Informe o nome cadastrado para consultar as vendas dessa unidade.`] } as any,
+      toolCalls: [], validationRules: ['Solicitar identificação da loja; não consultar todas as lojas.'],
+      answerStyle: { shouldExplainUncertainty: true, shouldIncludeTables: false, shouldIncludeInsights: false, shouldIncludeSuggestions: false },
+    } };
+  }
 
   const toolCalls: ClarkToolCall[] = ferramentasOrdenadas.map((t) => {
     const { periodo: idx, ...resto } = t.args;

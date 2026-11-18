@@ -7,6 +7,7 @@ import {
 export function normalizarTextoClark(value: any) {
   return String(value || '')
     .toUpperCase()
+    .replace(/\bPARKSHOPPING\b/g, 'PARK SHOPPING')
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/[^\w\s\-\/]/g, ' ')

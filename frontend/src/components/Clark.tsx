@@ -1,3 +1,4 @@
+import RichAnswer from './ClarkRichAnswer';
 import ClarkExecutiveReport from "./ClarkExecutiveReport";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -500,13 +501,13 @@ export default function Clark({
                           {msg.text && (
                             <details className="border-t border-slate-100 pt-2">
                               <summary className="cursor-pointer text-[11px] font-semibold text-slate-500 hover:text-orange-600">Ver resposta detalhada</summary>
-                              <div className="mt-2 whitespace-pre-wrap text-[12px] leading-relaxed text-slate-600">{msg.text}</div>
+                              <div className="mt-2"><RichAnswer text={msg.text} /></div>
                             </details>
                           )}
                         </div>
                       ) : (
                         <div className="whitespace-pre-wrap text-[13px] font-medium leading-relaxed">
-                          {msg.text}
+                          {isUser ? msg.text : <RichAnswer text={msg.text} />}
                         </div>
                       )}
 

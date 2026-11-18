@@ -180,6 +180,15 @@ export async function processarComClarkBrain(input: ClarkPerguntaInput): Promise
   const contextoExec: ClarkBrainContext = periodoEfetivo ? { ...context, periodo: periodoEfetivo } : context;
   const filtrosFinais: ClarkFiltros = filtrosDoInterpretador(filtros, planned, origem);
 
+  const avisos = (planned.entities as any)?.avisosFiltro;
+  if (!planned.toolCalls.length && Array.isArray(avisos) && avisos.length) {
+    return {
+      ok: false, clark: avisos.join('\n'), intencao: 'ajuda', modo: 'simples',
+      periodo: periodoFinal, filtros: filtrosFinais, dados: null, resposta_origem: 'local_precisa',
+      sugestoes: ['Informe o nome da loja conforme o cadastro'],
+    };
+  }
+
   let execution = await executarFerramentasClark(planned, contextoExec);
   let plan = execution.plan;
   let results = execution.results;

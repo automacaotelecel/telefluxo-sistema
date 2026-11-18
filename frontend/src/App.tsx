@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, lazy, Suspense } from 'react';
 import TaskList from "./components/TaskList";
 import TaskDashboard from "./components/TaskDashboard";
 import UserList from "./components/UserList";
@@ -42,6 +42,7 @@ import InventoryAuditModule from './components/InventoryAuditModule';
 import InventoryAuditDashboard from './components/InventoryAuditDashboard';
 import SampleConferenceModule from './components/SampleConferenceModule';
 import { isTesterReadOnly } from './lib/testerReadOnly';
+import { canOpenTim } from './components/tim/timApi';
 
 import {
   FileText,
@@ -67,6 +68,8 @@ import {
   ExternalLink,
   Target,
 } from 'lucide-react';
+
+const TimWorkspace = lazy(() => import('./components/tim/TimWorkspace'));
 
 const DEFAULT_EXPANDED = {
   general: false,
@@ -97,6 +100,7 @@ function clearTelefluxoSession() {
 
 const STORE_ALLOWED_VIEWS = new Set([
   'home',
+  'tim',
   'rh',
   'stock',
   'inventory_audit',
@@ -303,7 +307,7 @@ function App() {
     if (!user) return;
 
     setMountedViews((previous) =>
-      previous.includes(currentView)
+      currentView === 'tim' || previous.includes(currentView)
         ? previous
         : [...previous, currentView]
     );
@@ -318,6 +322,7 @@ function App() {
   };
 
   const handleNavigate = (view: string) => {
+    if (view === 'tim' && !canOpenTim(user)) return;
     setCurrentView(view);
     setIsMobileMenuOpen(false);
   };
@@ -390,6 +395,11 @@ function App() {
         }}
       />
     );
+  }
+
+  // A operação usa uma navegação totalmente própria, mantendo o mesmo login e timeout.
+  if (currentView === 'tim' && canOpenTim(user)) {
+    return <Suspense fallback={<div className="h-screen bg-slate-50 flex items-center justify-center text-blue-800 font-bold">Abrindo operação TIM...</div>}><TimWorkspace user={user} onBack={() => handleNavigate(getInitialViewForUser(user))} onLogout={handleLogout} /></Suspense>;
   }
 
   const SubMenuItem = ({ label, view, active, nested = false }: any) => {
@@ -997,6 +1007,15 @@ function App() {
                 onClick={() => handleNavigate('team')}
                 customClass="bg-slate-800 text-white"
               />
+            </div>
+          )}
+          {canOpenTim(user) && (
+            <div className="mt-5 pt-4 border-t border-slate-700/80">
+              {!isSidebarCollapsed && <p className="px-3 mb-2 text-[10px] font-black uppercase tracking-widest text-slate-500">Operações</p>}
+              <button type="button" title="TIM • Abrir operação" onClick={() => handleNavigate('tim')} className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center px-1' : 'gap-3 px-3'} py-3 rounded-xl border border-blue-500/45 bg-blue-900/35 text-blue-100 hover:bg-blue-700 transition-colors`}>
+                <span className="inline-flex items-center justify-center rounded-md bg-white text-blue-800 text-[13px] font-black w-9 h-8 shrink-0">TIM</span>
+                {!isSidebarCollapsed && <><span className="flex-1 min-w-0 text-left"><strong className="block text-sm font-black">TIM</strong><span className="block text-[10px] text-blue-200/80">Operação independente</span></span><ChevronRight size={16} /></>}
+              </button>
             </div>
           )}
         </nav>

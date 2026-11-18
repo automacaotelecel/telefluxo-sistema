@@ -61,31 +61,15 @@ function extrairPeriodoEntreMesesClark(pergunta: string): ClarkPeriodo | null {
   const hoje = todayIsoSaoPaulo();
   const anoAtual = Number(hoje.slice(0, 4));
 
-  const encontrados = Object.entries(MESES)
-    .filter(([nome]) => texto.includes(nome))
-    .map(([nome, numero]) => ({ nome, numero }));
-
-  const unicos = encontrados.filter((item, index, arr) => {
-    return arr.findIndex((x) => x.numero === item.numero) === index;
-  });
-
-  if (unicos.length < 2) return null;
-
-  const primeiro = unicos[0];
-  const ultimo = unicos[unicos.length - 1];
-
-  if (!primeiro || !ultimo) return null;
-
-  const ano = extrairAno(texto, anoAtual);
-  const ultimoDia = obterUltimoDiaMes(ano, ultimo.numero);
-
-  return {
-    inicio: `${ano}-${String(primeiro.numero).padStart(2, '0')}-01`,
-    fim: `${ano}-${String(ultimo.numero).padStart(2, '0')}-${String(
-      ultimoDia
-    ).padStart(2, '0')}`,
-    descricao: `${primeiro.nome} até ${ultimo.nome} de ${ano}`,
-  };
+  const names = Object.keys(MESES).join('|');
+  const match = texto.match(new RegExp(`\\b(${names})(?:\\s+(?:DE\\s+)?(20\\d{2}))?\\s+(?:A|ATE|E)\\s+(${names})(?:\\s+(?:DE\\s+)?(20\\d{2}))?\\b`));
+  if (!match) return null;
+  const first = MESES[match[1]!]!, last = MESES[match[3]!]!;
+  const startYear = match[2] ? Number(match[2]) : Number(match[4] || anoAtual) - (match[4] && last < first ? 1 : 0);
+  const endYear = Number(match[4] || (last < first ? startYear + 1 : startYear));
+  const inicio = `${startYear}-${String(first).padStart(2, '0')}-01`;
+  const fim = `${endYear}-${String(last).padStart(2, '0')}-${obterUltimoDiaMes(endYear, last)}`;
+  return { inicio, fim, descricao: `${inicio} até ${fim}` };
 }
 
 export function extrairPeriodoClark(pergunta: string): ClarkPeriodo {

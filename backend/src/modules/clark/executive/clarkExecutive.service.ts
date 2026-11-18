@@ -1,3 +1,4 @@
+import { criarQuadroVendasClark } from './clarkSalesReport';
 import { GoogleGenAI } from '@google/genai';
 import { gerarTextoClaudeClark } from '../../ai/claudeClark';
 import { ClarkAgentPlan, ClarkToolResult, ClarkVerificationResult } from '../clarkAgent.types';
@@ -24,6 +25,14 @@ export function criarPainelExecutivoClark(params: {
   const successes = params.results.filter((r) => r.ok && r.result && typeof r.result === 'object' &&
     r.tool !== 'responder_conversa' && r.tool !== 'navegar_modulo' && r.tool !== 'responder_ajuda');
   if (!successes.length) return null;
+  // Comparações com vários períodos permanecem no texto completo; não esconder o segundo resultado.
+  const periods = new Set(successes.map(r => `${r.args?.startDate || ''}/${r.args?.endDate || ''}`));
+  if (periods.size > 1) return null;
+  const sales = successes.find(r => r.tool === 'consultar_relatorio_vendas');
+  if (sales) {
+    const monthly = criarQuadroVendasClark(sales.result, params.periodo);
+    if (monthly) return monthly;
+  }
   const first = successes[0]!;
   const data = first.result as Record<string, any>;
   const status: ClarkExecutiveReport['status'] = params.verifier.ok && params.results.every((r) => r.ok)
@@ -83,7 +92,7 @@ export function criarPainelExecutivoClark(params: {
 function compactEvidence(report: ClarkExecutiveReport) {
   return JSON.stringify({
     metrics: report.metrics,
-    rows: report.rows.slice(0, 8),
+    rows: report.rows,
     diagnosis: report.diagnosis,
     risks: report.risks,
     caveats: report.caveats,

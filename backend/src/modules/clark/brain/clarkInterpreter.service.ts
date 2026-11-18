@@ -16,11 +16,11 @@ const TIMEOUT_MS = 20000;
 const LIMITE_DIFERENCA_DURACAO = 0.2;
 
 /**
- * Flag de proteção: o interpretador só roda com CLARK_INTERPRETER_ENABLED=true (desligado por padrão).
- * Mantém o fluxo por regex até o Brain consumir `periodoEfetivo` por completo.
+ * Interpretação livre ativa por padrão; CLARK_INTERPRETER_ENABLED=false permite voltar às regras.
+ * Sem provedor disponível, o plano local permanece como fallback.
  */
 export function interpretadorAtivoClark(): boolean {
-  return String(process.env.CLARK_INTERPRETER_ENABLED || '').trim().toLowerCase() === 'true';
+  return String(process.env.CLARK_INTERPRETER_ENABLED || 'true').trim().toLowerCase() === 'true';
 }
 
 export type ClarkIntencao = 'vendas' | 'comparativo' | 'ranking' | 'seguros' | 'relatorio' | 'conversa' | 'ajuda';
@@ -127,7 +127,7 @@ FERRAMENTAS (campo "tools", máximo 4; a mesma ferramenta pode repetir com "peri
 - consultar_vendas_resumo: total, peças e ticket do período. args: loja?, categoria?
 - consultar_vendas_por_loja | consultar_vendas_por_vendedor | consultar_vendas_por_categoria: rankings. args: loja?, categoria?, limite?
 - consultar_crescimento_mensal: variação mês a mês (já compara períodos equivalentes). args: loja?
-- consultar_relatorio_vendas: relatório completo do período.
+- consultar_relatorio_vendas: análise de vendas com resumo, categorias e evolução mês a mês. Para "analise as vendas de janeiro a outubro", use esta ferramenta, com a loja solicitada. Não substitua por um simples ranking.
 - consultar_seguros_por_vendedor | consultar_seguros_por_loja: seguros. args: limite?
 - responder_conversa: cumprimentos e conversa sem dados.
 - responder_ajuda: pergunta fora do que o Clark consegue consultar.

@@ -134,7 +134,10 @@ function criarAbaComColunas(
   nome: string,
   columns: Partial<ExcelJS.Column>[],
 ): ExcelJS.Worksheet {
-  const ws = workbook.addWorksheet(limparNomeAba(nome));
+  const base = limparNomeAba(nome);
+  let name = base, index = 2;
+  while (workbook.getWorksheet(name)) name = `${base.slice(0, 26)} ${index++}`;
+  const ws = workbook.addWorksheet(name);
   ws.columns = columns;
   return ws;
 }
@@ -496,6 +499,24 @@ function criarAbaRelatorioExecutivo(workbook: ExcelJS.Workbook, result: any) {
     { header: 'Valor', key: 'valor', width: 100 },
   ]);
 
+  if (Array.isArray(result?.mensal)) {
+    ws.addRow({ campo: 'Período', valor: `${result.periodo?.inicio} a ${result.periodo?.fim}` });
+    ws.addRow({ campo: 'Loja', valor: result.filtro_loja || 'Escopo autorizado' });
+    ws.addRow({ campo: 'Fonte', valor: result.resumo?.fonte_dados || 'Não informada' });
+    ws.addRow({ campo: 'Faturamento apurado', valor: result.resumo?.total_vendas });
+    ws.addRow({ campo: 'Unidades', valor: result.resumo?.total_pecas });
+    const monthly = criarAbaComColunas(workbook, 'Vendas mensais', [
+      { header: 'Mês', key: 'mes', width: 16 }, { header: 'Faturamento', key: 'total_vendas', width: 22 },
+      { header: 'Unidades', key: 'total_pecas', width: 18 }, { header: 'Média por unidade', key: 'ticket_medio', width: 22 },
+    ]);
+    for (const row of result.mensal) monthly.addRow(row);
+    monthly.getColumn('total_vendas').numFmt = '#,##0.00';
+    monthly.getColumn('ticket_medio').numFmt = '#,##0.00';
+    ws.addRow({ campo: 'Cobertura', valor: 'Aba mensal contém somente meses com registros. Ausência não significa zero.' });
+    aplicarEstiloTabela(monthly);
+    aplicarEstiloTabela(ws);
+    return;
+  }
   if (result?.relatorio) ws.addRow({ campo: 'Relatório', valor: safeString(result.relatorio) });
   if (result?.resumo) ws.addRow({ campo: 'Resumo', valor: safeString(result.resumo) });
 

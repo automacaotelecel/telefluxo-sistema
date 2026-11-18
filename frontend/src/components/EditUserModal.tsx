@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Eye, EyeOff, KeyRound, Shield, UserCog, X } from 'lucide-react';
+import { isTimOperation, teamHeaders, timGet } from './tim/timApi';
+import type { Metadata } from './tim/timApi';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 
@@ -35,7 +37,7 @@ export default function EditUserModal({ isOpen, onClose, userToEdit }: any) {
       password: '',
       role: userToEdit.role || '',
       department: userToEdit.department || '',
-      operation: userToEdit.operation || 'Geral',
+      operation: isTimOperation(userToEdit.operation) ? 'Tim' : userToEdit.operation || 'Geral',
       isAdmin: Boolean(userToEdit.isAdmin),
       managerId: userToEdit.managerId || '',
       allowedStores,
@@ -57,6 +59,14 @@ export default function EditUserModal({ isOpen, onClose, userToEdit }: any) {
       .catch((error) => console.error('Erro ao carregar gestores:', error));
   }, [isOpen, userToEdit]);
 
+  const [timStores, setTimStores] = useState<string[]>([]);
+  const [timStoresError, setTimStoresError] = useState('');
+  useEffect(() => {
+    if (!isOpen || !isTimOperation(formData.operation)) return;
+    const controller = new AbortController(); setTimStoresError('');
+    timGet<Metadata>('metadata', controller.signal).then(data => setTimStores(data.stores.filter(s => s.startsWith('TIM ')))).catch(e => { if (!controller.signal.aborted) setTimStoresError(String(e.message || e)); });
+    return () => controller.abort();
+  }, [isOpen, formData.operation]);
   if (!isOpen) return null;
 
   const handleSubmit = async (event: React.FormEvent) => {
@@ -66,7 +76,7 @@ export default function EditUserModal({ isOpen, onClose, userToEdit }: any) {
       setSaving(true);
       const response = await fetch(`${API_URL}/users/${userToEdit.id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: teamHeaders(),
         body: JSON.stringify(formData),
       });
 
@@ -153,7 +163,7 @@ export default function EditUserModal({ isOpen, onClose, userToEdit }: any) {
               required
               value={formData.operation}
               className="w-full rounded-2xl border bg-slate-50 p-4 text-sm font-bold outline-none focus:border-orange-500"
-              onChange={(event) => setFormData({ ...formData, operation: event.target.value })}
+              onChange={(event) => setFormData({ ...formData, operation: event.target.value, allowedStores: isTimOperation(formData.operation) !== isTimOperation(event.target.value) ? [] : formData.allowedStores })}
             >
               <option value="Geral">Geral / Gestão</option>
               <option value="Samsung">Samsung</option>
@@ -164,6 +174,17 @@ export default function EditUserModal({ isOpen, onClose, userToEdit }: any) {
             </select>
           </div>
 
+          {isTimOperation(formData.operation) && (
+            <section className="rounded-2xl border border-blue-200 bg-blue-50 p-4">
+              <p className="text-xs font-black text-blue-900 mb-1">Filiais TIM autorizadas</p>
+              <p className="text-[11px] text-blue-700 mb-3">Selecione as filiais para contas restritas. Perfis de diretoria/rede têm acesso conforme sua função.</p>
+              {timStoresError && <p className="text-[11px] text-red-700 mb-2">{timStoresError}</p>}
+              {timStores.length === 0 && <p className="text-xs text-blue-700">Nenhuma filial carregada. Sincronize os dados da TIM primeiro.</p>}
+              <div className="grid grid-cols-2 gap-2 max-h-40 overflow-auto">
+                {[...new Set([...timStores, ...formData.allowedStores.filter(s => s.startsWith('TIM '))])].sort().map(store => <label key={store} className="text-[11px] flex items-center gap-2 bg-white p-2 rounded-lg border border-blue-100"><input type="checkbox" className="accent-blue-600" checked={formData.allowedStores.includes(store)} onChange={() => setFormData(prev => ({...prev, allowedStores: prev.allowedStores.includes(store) ? prev.allowedStores.filter(x => x !== store) : [...prev.allowedStores, store]}))}/>{store}</label>)}
+              </div>
+            </section>
+          )}
           <div>
             <label className="ml-2 text-[10px] font-black uppercase text-slate-400">Gestor direto</label>
             <select

@@ -18,7 +18,8 @@ import rhRoutes from './modules/rh/rh.routes';
 import inventoryAuditRoutes from './modules/inventoryAudit/inventoryAudit.routes';
 import productMasterRoutes from './modules/productMaster/productMaster.routes';
 import { createMetasRoutes } from './modules/metas/metas.routes';
-import { issueMetasToken } from './modules/metas/metas.session';
+import { issueMetasToken, readMetasToken, verifyMetasToken } from './modules/metas/metas.session';
+import { createTimRoutes } from './modules/tim/tim.routes';
 import { refreshProductMaster, resolveProductMaster } from './modules/productMaster/productMaster.service';
 import { recordProductMasterIssue } from './modules/productMaster/productMasterIssues.service';
 import { matchNotebook, parseNotebookIdentity } from './modules/pontoPedido/pontoPedidoDeviceMatch';
@@ -551,6 +552,12 @@ app.use(cors({
 
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ limit: '100mb', extended: true }));
+
+// OPERAÇÃO TIM
+app.use('/api/tim', createTimRoutes({
+    prisma,
+    dbPath: path.join(DATABASE_DIR, 'tim_operacao.db')
+}));
 
 app.use('/uploads', express.static(path.join(ROOT_DIR, 'uploads')));
 
@@ -1822,6 +1829,22 @@ async function loadGoogleSheetTranslations(): Promise<TranslationRow[]> {
 // 1. SISTEMA OPERACIONAL (USUÁRIOS E LOGIN)
 // ==========================================
 
+function userWithoutPasswordTree(value: any): any {
+    if (Array.isArray(value)) {
+        return value.map(userWithoutPasswordTree);
+    }
+
+    if (!value || typeof value !== 'object' || value instanceof Date) {
+        return value;
+    }
+
+    return Object.fromEntries(
+        Object.entries(value)
+            .filter(([key]) => key !== 'password')
+            .map(([key, item]) => [key, userWithoutPasswordTree(item)])
+    );
+}
+
 app.post('/login', async (req, res) => {
     const { email, password } = req.body;
     try {
@@ -1848,7 +1871,7 @@ app.post('/login', async (req, res) => {
 
             const metasToken = issueMetasToken(user.id, user.password);
 
-            res.json({ ...userWithoutPassword, metasToken });
+            res.json({ ...userWithoutPasswordTree(userWithoutPassword), metasToken });
         } else {
             res.status(401).json({ error: "Senha incorreta." });
         }
@@ -1873,7 +1896,7 @@ app.get('/users', async (req, res) => {
         // Remove a senha do retorno para segurança (Opcional, mas recomendado)
         const safeUsers = users.map(user => {
             const { password, ...userWithoutPassword } = user;
-            return userWithoutPassword;
+            return userWithoutPasswordTree(userWithoutPassword);
         });
 
         res.json(safeUsers);
@@ -1882,8 +1905,38 @@ app.get('/users', async (req, res) => {
     }
 });
 
+// TIM uses the existing signed session. Restrict role/operation changes so an
+// anonymous caller cannot grant themselves access to a commercial operation.
+async function requireTeamWrite(req: Request, res: Response, next: express.NextFunction) {
+    try {
+        const token = String(req.header('authorization') || '').replace(/^Bearer\s+/i, '');
+        const uid = readMetasToken(token);
+        if (!uid) return res.status(401).json({ error: 'Sessão administrativa ausente. Entre novamente.' });
+        const actor = await prisma.user.findUnique({ where: { id: uid } });
+        if (!actor || verifyMetasToken(token, actor.password) !== uid || String(actor.status || '').toLowerCase() !== 'active') {
+            return res.status(401).json({ error: 'Sessão administrativa inválida.' });
+        }
+        const role = String(actor.role || '').trim().toUpperCase();
+        const op = String(actor.operation || '').trim().toUpperCase();
+        const storeRole = /LOJA|VENDEDOR|OPERADOR|COLABORADOR/.test(role);
+        const leader = ['CEO', 'DIRETOR', 'DIRETORIA', 'MASTER'].includes(role);
+        if (storeRole || (!leader && !actor.isAdmin)) return res.status(403).json({ error: 'Apenas gestores administrativos autorizados podem editar usuários.' });
+        const globalAdmin = leader || ['', 'GERAL', 'GESTÃO', 'GESTAO'].includes(op);
+        if (!globalAdmin) {
+            const target = req.params.id ? await prisma.user.findUnique({ where: { id: req.params.id } }) : null;
+            const desiredOp = String(req.body?.operation || target?.operation || '').trim().toUpperCase();
+            const desiredRole = String(req.body?.role || target?.role || '').trim().toUpperCase();
+            if ((target && (String(target.operation || '').trim().toUpperCase() !== op || ['CEO','DIRETOR','DIRETORIA','MASTER'].includes(String(target.role || '').trim().toUpperCase()))) || desiredOp !== op || ['CEO','DIRETOR','DIRETORIA','MASTER','SOCIO','SÓCIO'].includes(desiredRole)) {
+                return res.status(403).json({ error: 'A gestão de usuários de outra operação exige perfil administrativo de rede.' });
+            }
+        }
+        next();
+    } catch (error) { console.error('[Equipe] validação de sessão', error); return res.status(500).json({ error: 'Falha na validação de acesso.' }); }
+}
 
-app.post('/users', async (req, res) => {
+
+
+app.post('/users', requireTeamWrite, async (req, res) => {
     const { name, email, password, role, department, operation, isAdmin, managerId, allowedStores } = req.body;
     try {
         const id = crypto.randomUUID(); 
@@ -1912,9 +1965,15 @@ app.post('/users', async (req, res) => {
 
 // ATUALIZAÇÃO DA ROTA PUT /users/:id
 // ATUALIZAÇÃO DA ROTA PUT (GARANTINDO QUE SALVA AS LOJAS)
-app.put('/users/:id', async (req, res) => {
+app.put('/users/:id', requireTeamWrite, async (req, res) => {
     const { name, email, role, department, operation, isAdmin, managerId, password, allowedStores } = req.body;
     const userId = req.params.id;
+
+    if (!userId) {
+        return res.status(400).json({
+            error: "ID do usuário não informado."
+        });
+    }
 
     try {
         const opValue = operation || "Outros";
@@ -1945,7 +2004,7 @@ app.put('/users/:id', async (req, res) => {
         if (updated) {
             const { password: _, ...userSafe } = updated;
             res.json(userSafe);
-        } else {
+        } else {  
             res.json(null);
         }
 
@@ -1955,11 +2014,26 @@ app.put('/users/:id', async (req, res) => {
     }
 });
 
-app.delete('/users/:id', async (req, res) => {
-    try { 
-        await prisma.user.delete({ where: { id: req.params.id } }); 
-        res.json({ message: "Usuário removido" }); 
-    } catch (e) { res.status(500).json({ error: "Erro delete" }); }
+app.delete('/users/:id', requireTeamWrite, async (req, res) => {
+    const userId = req.params.id;
+
+    if (!userId) {
+        return res.status(400).json({
+            error: "ID do usuário não informado."
+        });
+    }
+
+    try {
+        await prisma.user.delete({
+            where: { id: userId }
+        });
+
+        res.json({ message: "Usuário removido" });
+    } catch (e) {
+        res.status(500).json({
+            error: "Erro ao excluir usuário."
+        });
+    }
 });
 
 // ==========================================

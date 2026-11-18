@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, UserPlus, Shield, Store, Lock } from 'lucide-react';
+import { isTimOperation, teamHeaders, timGet } from './tim/timApi';
+import type { Metadata } from './tim/timApi';
 
 export default function NewUserModal({ isOpen, onClose }: any) {
   // Estado do formulário
@@ -41,6 +43,16 @@ export default function NewUserModal({ isOpen, onClose }: any) {
     }
   }, [isOpen]);
 
+  const [timStores, setTimStores] = useState<string[]>([]);
+  const [timStoresError, setTimStoresError] = useState('');
+  useEffect(() => {
+    if (!isOpen || !isTimOperation(formData.operation)) return;
+    const controller = new AbortController();
+    setTimStoresError('');
+    timGet<Metadata>('metadata', controller.signal).then(data => setTimStores(data.stores.filter(s => s.startsWith('TIM ')))).catch(e => { if (!controller.signal.aborted) setTimStoresError(String(e.message || e)); });
+    return () => controller.abort();
+  }, [isOpen, formData.operation]);
+  const visibleStores = isTimOperation(formData.operation) ? timStores : availableStores;
   if (!isOpen) return null;
 
   const handleStoreToggle = (store: string) => {
@@ -66,7 +78,7 @@ export default function NewUserModal({ isOpen, onClose }: any) {
     try {
         const res = await fetch(`${API_URL}/users`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: teamHeaders(),
             body: JSON.stringify(formData)
         });
     
@@ -129,7 +141,7 @@ export default function NewUserModal({ isOpen, onClose }: any) {
           </div>
 
           <select required className="w-full p-4 bg-slate-50 border rounded-2xl font-bold text-sm outline-none"
-            value={formData.operation} onChange={e => setFormData({...formData, operation: e.target.value})}>
+            value={formData.operation} onChange={e => setFormData({...formData, operation: e.target.value, allowedStores: isTimOperation(formData.operation) !== isTimOperation(e.target.value) ? [] : formData.allowedStores})}>
             <option value="Geral">Operação: Geral / Gestão</option>
             <option value="Financeiro">Operação: Financeiro</option>
             <option value="Tim">Operação: Tim</option>
@@ -138,17 +150,18 @@ export default function NewUserModal({ isOpen, onClose }: any) {
           </select>
 
           {/* === ÁREA DE SELEÇÃO DE LOJAS (Carregada do Banco de Dados) === */}
-          {formData.role === 'LOJA' && (
+          {(formData.role === 'LOJA' || isTimOperation(formData.operation)) && (
               <div className="bg-blue-50 p-4 rounded-2xl border border-blue-100">
                   <div className="flex items-center gap-2 mb-2 text-blue-800 font-bold text-xs uppercase tracking-widest">
-                      <Store size={14}/> Lojas Disponíveis ({availableStores.length})
+                      <Store size={14}/> Lojas Disponíveis ({visibleStores.length})
                   </div>
                   
-                  {availableStores.length === 0 ? (
+                  {isTimOperation(formData.operation) && timStoresError && <p className="text-xs text-red-700">{timStoresError}</p>}
+                  {visibleStores.length === 0 ? (
                       <p className="text-xs text-blue-400 p-2 italic">Nenhuma loja encontrada no banco de dados.</p>
                   ) : (
                       <div className="grid grid-cols-2 gap-2 max-h-40 overflow-y-auto custom-scrollbar pr-2">
-                          {availableStores.map(store => (
+                          {visibleStores.map(store => (
                               <label key={store} className="flex items-center gap-2 bg-white p-2 rounded-lg border border-blue-100 cursor-pointer hover:bg-blue-50 transition-colors">
                                   <input 
                                     type="checkbox" 

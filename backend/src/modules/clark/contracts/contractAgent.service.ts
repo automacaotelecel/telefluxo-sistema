@@ -57,6 +57,8 @@ REGRAS DE CONFIABILIDADE E SEGURANÇA:
 8. Formate em Markdown: abertura direta e concisa; subtítulos (##) quando úteis; parágrafos curtos; listas para cláusulas; **negrito** para valores, riscos e datas. Em comparações, prefira uma tabela Markdown legível quando houver vários critérios.
 9. Se for questionada a importância ou risco de cláusula, separe o conteúdo literal do contrato de sua interpretação e indique que a avaliação é documental, não aconselhamento jurídico.
 10. Nunca cite documentos que não foram anexados. Se algo não puder ser extraído ou a pergunta for ambígua, seja transparente.
+12. Para análise ampla, organize: síntese objetiva; quadro de condições (Assunto | Condição | Arquivo e cláusula); divergências e informações não localizadas; próximos pontos a conferir. Para pergunta específica, responda somente ao solicitado.
+13. Em condições de aluguel, procure valor mínimo, percentual sobre vendas e sua base, vencimento, reajuste, carência, encargos e multas. Não some cobranças alternativas; transcreva a regra de prevalência quando existir. Identifique cada documento separadamente.
 11. As mensagens anteriores ajudam a entender referências da conversa, mas nunca se sobrepõem ao conteúdo dos contratos atuais.`;
 
     // Os limites de quantidade e texto são validados no controller. Nomes

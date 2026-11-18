@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import EditUserModal from './EditUserModal';
 import ProductMasterIssuesPanel from './ProductMasterIssuesPanel';
+import { teamHeaders } from './tim/timApi';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 
@@ -29,7 +30,7 @@ function operationKey(value: unknown) {
 
 function operationBadge(operation: string) {
   if (operation === 'SAMSUNG') return 'border-blue-100 bg-blue-50 text-blue-700';
-  if (operation === 'TIM') return 'border-violet-100 bg-violet-50 text-violet-700';
+  if (operation === 'TIM') return 'border-blue-100 bg-blue-50 text-blue-700';
   if (operation === 'FINANCEIRO') return 'border-emerald-100 bg-emerald-50 text-emerald-700';
   if (operation === 'AUTOMAÇÃO') return 'border-cyan-100 bg-cyan-50 text-cyan-700';
   if (operation === 'GERAL') return 'border-orange-100 bg-orange-50 text-orange-700';
@@ -91,7 +92,7 @@ export default function UserList() {
   const handleDelete = async (id: string) => {
     if (!confirm('Tem certeza que deseja remover este membro da equipe?')) return;
 
-    const response = await fetch(`${API_URL}/users/${id}`, { method: 'DELETE' });
+    const response = await fetch(`${API_URL}/users/${id}`, { method: 'DELETE', headers: teamHeaders() });
     const data = await response.json().catch(() => ({}));
 
     if (!response.ok) {
