@@ -131,7 +131,10 @@ export function createTimRoutes({prisma,dbPath}:Params){
       const group=async(col:string,limit=100)=>db!.all(`SELECT ${col} AS name, ${metric} FROM ${t} WHERE ${clause} GROUP BY ${col} ORDER BY ${primary} DESC, name LIMIT ${limit}`,...args);
       const groups:Record<string,unknown>={};
       if(q(req,'detailsOnly')!=='true'){
-        groups.stores=await group('store',500);groups.categories=await group('category',500);groups.areas=await group('area',100);
+        groups.stores=kind==='stock'
+          ? await db.all(`SELECT store AS name, CASE WHEN COUNT(DISTINCT COALESCE(NULLIF(area,''),'SEM AREA'))=1 THEN MIN(COALESCE(NULLIF(area,''),'SEM AREA')) ELSE 'AREAS DIVERSAS' END AS area, ${metric} FROM ${t} WHERE ${clause} GROUP BY store ORDER BY ${primary} DESC,name LIMIT 500`,...args)
+          : await group('store',500);
+        groups.categories=await group('category',500);groups.areas=await group('area',100);
         if(kind!=='stock'){
           groups.sellers=await db.all(`SELECT seller AS name,store,${metric} FROM ${t} WHERE ${clause} GROUP BY seller,store ORDER BY ${primary} DESC,name LIMIT 500`,...args);
           groups.daily=await db.all(`SELECT date AS name,${metric} FROM ${t} WHERE ${clause} GROUP BY date ORDER BY date`,...args);

@@ -69,6 +69,15 @@ function normalizeText(value: unknown): string {
     .toUpperCase();
 }
 
+const PARTAGE_ALIASES = ['PARTAGE','TAGUATINGA SHOPPING QQ','QQ TAGUATINGA SHOPPING','TAGUATINGA QQ','SAMSUNG - MRF - QQ TAGUATINGA SHOPPING'];
+const auditStoreKey = (value: unknown) => {
+  const text = normalizeText(value);
+  return PARTAGE_ALIASES.includes(text) ? 'PARTAGE' : text;
+};
+const auditStoreDisplay = (value: string) => auditStoreKey(value) === 'PARTAGE' ? 'PARTAGE' : value;
+const auditStoreAliases = (value: string) => auditStoreKey(value) === 'PARTAGE' ? PARTAGE_ALIASES : [value];
+const auditSessionDisplay = <T extends {storeName:string}>(session:T):T => ({...session, storeName:auditStoreDisplay(session.storeName)});
+
 function normalizeAuditType(value: unknown): AuditType {
   const normalized = normalizeText(value).replace(/[^A-Z0-9]/g, '');
   if (['GERAL', 'TODOS', 'UNIFICADO'].includes(normalized)) return 'GERAL';
@@ -269,8 +278,8 @@ function canSeeAllStores(user: AuditUser): boolean {
 
 function canAccessStore(user: AuditUser, requestedStore: string): boolean {
   if (canSeeAllStores(user)) return true;
-  const target = normalizeText(requestedStore);
-  return allowedStoreNames(user).some((store) => normalizeText(store) === target);
+  const target = auditStoreKey(requestedStore);
+  return allowedStoreNames(user).some((store) => auditStoreKey(store) === target);
 }
 
 async function resolveUser(userId: unknown): Promise<AuditUser | null> {
@@ -291,7 +300,7 @@ async function resolveUser(userId: unknown): Promise<AuditUser | null> {
 async function getAuditStockRows(storeName?: string): Promise<AuditStockRow[]> {
   const rows = await prisma.stock.findMany({
     where: {
-      ...(storeName ? { storeName } : {}),
+      ...(storeName ? { storeName: {in:auditStoreAliases(storeName)} } : {}),
       // O Bipador principal confere somente o estoque comercial.
       // AMOSTRA e DOA possuem áreas próprias e ficam fora desta foto.
       stockType: { equals: 'ESTOQUE' },
@@ -360,6 +369,7 @@ async function getAuditStockRows(storeName?: string): Promise<AuditStockRow[]> {
 
     enriched.push({
       ...row,
+      storeName: auditStoreDisplay(row.storeName),
       category: masterCategory || row.category,
     });
   }
@@ -368,7 +378,7 @@ async function getAuditStockRows(storeName?: string): Promise<AuditStockRow[]> {
 }
 
 async function assertStoreAccess(user: AuditUser, requestedStore: string): Promise<string | null> {
-  const target = normalizeText(requestedStore);
+  const target = auditStoreKey(requestedStore);
   if (!target) return null;
 
   const rows = await prisma.stock.findMany({
@@ -380,11 +390,12 @@ async function assertStoreAccess(user: AuditUser, requestedStore: string): Promi
     select: { storeName: true },
   });
 
-  const matchedStore = rows.find((row: any) => normalizeText(row.storeName) === target)?.storeName || null;
+  const rawStore = rows.find((row: any) => auditStoreKey(row.storeName) === target)?.storeName || null;
+  const matchedStore = rawStore ? auditStoreDisplay(rawStore) : null;
   if (!matchedStore) return null;
   if (canSeeAllStores(user)) return matchedStore;
 
-  const allowed = new Set(allowedStoreNames(user).map(normalizeText));
+  const allowed = new Set(allowedStoreNames(user).map(auditStoreKey));
   return allowed.has(target) ? matchedStore : null;
 }
 
@@ -904,7 +915,7 @@ async function buildSampleConferencePayload(sessionId: string) {
   const notFound = items.filter((item) => item.stockStatus === 'NOT_FOUND').length;
 
   return {
-    session,
+    session: auditSessionDisplay(session),
     stats: {
       total: items.length,
       withDamage,
@@ -938,8 +949,8 @@ router.get('/sample-sessions', async (req: Request, res: Response) => {
     if (canSeeAllStores(user)) {
       sessions = store
         ? await prisma.$queryRawUnsafe<SampleConferenceSessionRow[]>(
-            `SELECT * FROM "SampleConferenceSession" WHERE "storeName" = ? ORDER BY "startedAt" DESC LIMIT ?`,
-            store,
+            `SELECT * FROM "SampleConferenceSession" WHERE "storeName" IN (${auditStoreAliases(store).map(()=>'?').join(',')}) ORDER BY "startedAt" DESC LIMIT ?`,
+            ...auditStoreAliases(store),
             limit,
           )
         : await prisma.$queryRawUnsafe<SampleConferenceSessionRow[]>(
@@ -949,9 +960,9 @@ router.get('/sample-sessions', async (req: Request, res: Response) => {
     } else {
       sessions = store
         ? await prisma.$queryRawUnsafe<SampleConferenceSessionRow[]>(
-            `SELECT * FROM "SampleConferenceSession" WHERE "userId" = ? AND "storeName" = ? ORDER BY "startedAt" DESC LIMIT ?`,
+            `SELECT * FROM "SampleConferenceSession" WHERE "userId" = ? AND "storeName" IN (${auditStoreAliases(store).map(()=>'?').join(',')}) ORDER BY "startedAt" DESC LIMIT ?`,
             user.id,
-            store,
+            ...auditStoreAliases(store),
             limit,
           )
         : await prisma.$queryRawUnsafe<SampleConferenceSessionRow[]>(
@@ -961,7 +972,7 @@ router.get('/sample-sessions', async (req: Request, res: Response) => {
           );
     }
 
-    return res.json({ success: true, sessions });
+    return res.json({ success: true, sessions:sessions.map(auditSessionDisplay) });
   } catch (error: any) {
     console.error('Erro inventory-audit/sample-sessions:', error);
     return res.status(500).json({ error: error?.message || 'Erro ao carregar conferências de amostras.' });
@@ -978,9 +989,9 @@ router.post('/sample-sessions', async (req: Request, res: Response) => {
     if (!store) return res.status(403).json({ error: 'Loja inválida ou sem permissão para este usuário.' });
 
     const activeRows = await prisma.$queryRawUnsafe<SampleConferenceSessionRow[]>(
-      `SELECT * FROM "SampleConferenceSession" WHERE "userId" = ? AND "storeName" = ? AND "status" = 'ACTIVE' ORDER BY "startedAt" DESC LIMIT 1`,
+      `SELECT * FROM "SampleConferenceSession" WHERE "userId" = ? AND "storeName" IN (${auditStoreAliases(store).map(()=>'?').join(',')}) AND "status" = 'ACTIVE' ORDER BY "startedAt" DESC LIMIT 1`,
       user.id,
-      store,
+      ...auditStoreAliases(store),
     );
     const active = activeRows[0];
 
@@ -1097,7 +1108,7 @@ router.post('/sample-sessions/:id/scan', async (req: Request, res: Response) => 
       },
     });
 
-    const sameStore = stockHit && normalizeText(stockHit.storeName) === normalizeText(access.session.storeName);
+    const sameStore = stockHit && auditStoreKey(stockHit.storeName) === auditStoreKey(access.session.storeName);
     const stockStatus: SampleConferenceItemRow['stockStatus'] = !stockHit
       ? 'NOT_FOUND'
       : sameStore
@@ -1258,13 +1269,13 @@ router.get('/stores', async (req: Request, res: Response) => {
 
     const config = auditTypeConfig(req.query.auditType);
     const rows = await getAuditStockRows(undefined);
-    const allowed = new Set(allowedStoreNames(user).map(normalizeText));
+    const allowed = new Set(allowedStoreNames(user).map(auditStoreKey));
     const unrestricted = canSeeAllStores(user);
 
     const grouped = new Map<string, AuditStockRow[]>();
     for (const row of rows) {
       if (!categoryMatchesAuditType(config.auditType, row.category)) continue;
-      if (!unrestricted && !allowed.has(normalizeText(row.storeName))) continue;
+      if (!unrestricted && !allowed.has(auditStoreKey(row.storeName))) continue;
       const list = grouped.get(row.storeName) || [];
       list.push(row);
       grouped.set(row.storeName, list);
@@ -1306,7 +1317,7 @@ router.get('/sessions', async (req: Request, res: Response) => {
 
     const sessions = await prisma.inventoryAuditSession.findMany({
       where: {
-        ...(store ? { storeName: store } : {}),
+        ...(store ? { storeName: {in:auditStoreAliases(store)} } : {}),
         ...(auditType ? { auditType } : {}),
         ...(canSeeAllStores(user) ? {} : { userId: user.id }),
       },
@@ -1314,7 +1325,7 @@ router.get('/sessions', async (req: Request, res: Response) => {
       take: limit,
     });
 
-    return res.json({ success: true, sessions });
+    return res.json({ success: true, sessions:sessions.map(auditSessionDisplay) });
   } catch (error: any) {
     console.error('Erro inventory-audit/sessions:', error);
     return res.status(500).json({ error: error?.message || 'Erro ao carregar conferências.' });
@@ -1364,7 +1375,7 @@ router.post('/sessions', async (req: Request, res: Response) => {
       await prisma.inventoryAuditSession.updateMany({
         where: {
           userId: user.id,
-          storeName: store,
+          storeName: {in:auditStoreAliases(store)},
           status: 'ACTIVE',
           auditType: { not: 'GERAL' },
         },
@@ -1375,7 +1386,7 @@ router.post('/sessions', async (req: Request, res: Response) => {
     const existing = await prisma.inventoryAuditSession.findFirst({
       where: {
         userId: user.id,
-        storeName: store,
+        storeName: {in:auditStoreAliases(store)},
         auditType: config.auditType,
         status: 'ACTIVE',
       },
@@ -1506,7 +1517,7 @@ async function scanUnified(req: Request, res: Response, session: any) {
   if (accessoryItems.length === 0 && (barcode || lookupKey)) {
     const currentStockHits = await prisma.stock.findMany({
       where: {
-        storeName: session.storeName,
+        storeName: auditStoreDisplay(session.storeName),
         stockType: { equals: 'ESTOQUE' },
         quantity: { gt: 0 },
         OR: [
@@ -1785,7 +1796,7 @@ async function scanUnified(req: Request, res: Response, session: any) {
     });
 
     const sameStoreHits = hits.filter(
-      (row: any) => normalizeText(row.storeName) === normalizeText(session.storeName),
+      (row: any) => auditStoreKey(row.storeName) === auditStoreKey(session.storeName),
     );
     const found = sameStoreHits[0] || hits[0] || null;
 
@@ -1798,7 +1809,7 @@ async function scanUnified(req: Request, res: Response, session: any) {
       };
     }
 
-    if (found && normalizeText(found.storeName) === normalizeText(session.storeName)) {
+    if (found && auditStoreKey(found.storeName) === auditStoreKey(session.storeName)) {
       if (selected?.auditType === 'ACESSORIOS') {
         message = `${found.description} existe no estoque comercial da ${session.storeName}. O código de barras deste produto ainda não está vinculado à foto atual; faça uma nova sincronização do estoque e abra uma nova conferência.`;
       } else if (rawValue === found.reference || rawValue === found.productCode) {
@@ -1980,8 +1991,8 @@ router.get('/dashboard', async (req: Request, res: Response) => {
     let targetStores = allStoreNames;
 
     if (requestedStore) {
-      const normalizedRequested = normalizeText(requestedStore);
-      const matched = allStoreNames.find((name) => normalizeText(name) === normalizedRequested);
+      const normalizedRequested = auditStoreKey(requestedStore);
+      const matched = allStoreNames.find((name) => auditStoreKey(name) === normalizedRequested);
       if (!matched) return res.status(404).json({ error: 'Loja não encontrada na base atual de estoque.' });
       targetStores = [matched];
     }
@@ -1990,7 +2001,7 @@ router.get('/dashboard', async (req: Request, res: Response) => {
       startedAt: { gte: from, lte: to },
       auditType: dashboardAudit.auditType,
     };
-    sessionWhere.storeName = { in: targetStores };
+    sessionWhere.storeName = { in: [...new Set(targetStores.flatMap(auditStoreAliases))] };
 
     const sessions = await prisma.inventoryAuditSession.findMany({
       where: sessionWhere,
@@ -2049,7 +2060,7 @@ router.get('/dashboard', async (req: Request, res: Response) => {
         id: session.id,
         userId: session.userId,
         operatorName: session.operatorName,
-        storeName: session.storeName,
+        storeName: auditStoreDisplay(session.storeName),
         status: session.status,
         startedAt: session.startedAt,
         completedAt: session.completedAt,
@@ -2065,12 +2076,12 @@ router.get('/dashboard', async (req: Request, res: Response) => {
 
     const latestByStore = new Map<string, any>();
     for (const metric of sessionMetrics) {
-      const key = normalizeText(metric.storeName);
+      const key = auditStoreKey(metric.storeName);
       if (!latestByStore.has(key)) latestByStore.set(key, metric);
     }
 
     const stores = targetStores.map((storeName) => {
-      const latest = latestByStore.get(normalizeText(storeName));
+      const latest = latestByStore.get(auditStoreKey(storeName));
       if (!latest) {
         return {
           storeName,

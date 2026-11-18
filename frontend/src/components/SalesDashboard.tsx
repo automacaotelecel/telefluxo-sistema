@@ -24,7 +24,7 @@ const STORE_MAP: Record<string, string> = {
     "12309173000922": "PATIO BRASIL",
     "12309173000760": "TAGUATINGA SHOPPING",
     "12309173001147": "TERRAÇO SHOPPING",
-    "12309173001651": "TAGUATINGA SHOPPING QQ",
+    "12309173001651": "PARTAGE",
     "12309173001732": "UBERLÂNDIA SHOPPING",
     "12309173001813": "UBERABA SHOPPING",
     "12309173001570": "FLAMBOYANT SHOPPING",
@@ -40,26 +40,11 @@ const STORE_MAP: Record<string, string> = {
     "12309173001066": "CD TAGUATINGA"
 };
 
-const getStoreName = (raw: string, saleDate?: string) => {
+const getStoreName = (raw: string, _saleDate?: string) => {
   if (!raw) return 'N/D';
-
   const clean = String(raw).replace(/\D/g, '');
-
-  if (clean === '12309173001651') {
-    const texto = String(saleDate || '').trim();
-    const br = texto.match(/^(\d{2})\/(\d{2})\/(\d{4})/);
-
-    const dataISO = br
-      ? `${br[3]}-${br[2]}-${br[1]}`
-      : /^\d{4}-\d{2}-\d{2}/.test(texto)
-        ? texto.slice(0, 10)
-        : '';
-
-    return dataISO && dataISO >= '2026-10-19'
-      ? 'PARTAGE'
-      : 'TAGUATINGA SHOPPING QQ';
-  }
-
+  const name = raw.trim().toUpperCase().replace(/\s+/g, ' ');
+  if (['TAGUATINGA SHOPPING QQ', 'QQ TAGUATINGA SHOPPING', 'TAGUATINGA QQ', 'PARTAGE'].includes(name)) return 'PARTAGE';
   return STORE_MAP[clean] || STORE_MAP[raw] || raw;
 };
 

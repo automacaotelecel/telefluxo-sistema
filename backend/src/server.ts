@@ -20,6 +20,7 @@ import productMasterRoutes from './modules/productMaster/productMaster.routes';
 import { createMetasRoutes } from './modules/metas/metas.routes';
 import { issueMetasToken, readMetasToken, verifyMetasToken } from './modules/metas/metas.session';
 import { createTimRoutes } from './modules/tim/tim.routes';
+import { cacheWriteBarrier, samsungReadCache } from './modules/performance/readCache';
 import { refreshProductMaster, resolveProductMaster } from './modules/productMaster/productMaster.service';
 import { recordProductMasterIssue } from './modules/productMaster/productMasterIssues.service';
 import { matchNotebook, parseNotebookIdentity } from './modules/pontoPedido/pontoPedidoDeviceMatch';
@@ -552,6 +553,9 @@ app.use(cors({
 
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ limit: '100mb', extended: true }));
+
+// PERFORMANCE - INVALIDAÇÃO AUTOMÁTICA DO CACHE
+app.use(cacheWriteBarrier);
 
 // OPERAÇÃO TIM
 app.use('/api/tim', createTimRoutes({
@@ -2308,7 +2312,7 @@ const LOJAS_MAP_GLOBAL: Record<string, string> = {
     "12309173000922": "PATIO BRASIL",
     "12309173000760": "TAGUATINGA SHOPPING",
     "12309173001147": "TERRAÇO SHOPPING",
-    "12309173001651": "TAGUATINGA SHOPPING QQ",
+    "12309173001651": "PARTAGE",
     "12309173001732": "UBERLÂNDIA SHOPPING",
     "12309173001813": "UBERABA SHOPPING",
     "12309173001570": "FLAMBOYANT SHOPPING",
@@ -2686,7 +2690,7 @@ const ESTOQUE_DETALHADO_STORE_REGIONS: Record<string, string> = {
   'PATIO BRASIL': 'DF',
   'TAGUATINGA SHOPPING': 'DF',
   'TERRAÇO SHOPPING': 'DF',
-  'TAGUATINGA SHOPPING QQ': 'DF',
+  'PARTAGE': 'DF',
   'UBERLÂNDIA SHOPPING': 'MINAS GERAIS',
   'UBERABA SHOPPING': 'MINAS GERAIS',
   'FLAMBOYANT SHOPPING': 'GOIÁS',
@@ -2700,7 +2704,6 @@ const ESTOQUE_DETALHADO_STORE_REGIONS: Record<string, string> = {
   'MANAIRA SHOPPING': 'NORDESTE',
   'IGUATEMI FORTALEZA': 'NORDESTE',
   'CD TAGUATINGA': 'CD',
-  'PARTAGE': 'DF',
 };
 
 function estoqueDetalhadoNormalizeText(value: any): string {
@@ -4683,9 +4686,9 @@ function smartAlertsRegionByStore(store: string): string {
     'JK SHOPPING': 'DF',
     'PARK SHOPPING': 'DF',
     'PATIO BRASIL': 'DF',
+    'PARTAGE': 'DF',
     'TAGUATINGA SHOPPING': 'DF',
     'TERRAÇO SHOPPING': 'DF',
-    'TAGUATINGA SHOPPING QQ': 'DF',
     'UBERLÂNDIA SHOPPING': 'MINAS GERAIS',
     'UBERABA SHOPPING': 'MINAS GERAIS',
     'FLAMBOYANT SHOPPING': 'GOIÁS',
@@ -9680,37 +9683,71 @@ const isDailySupplement = (row: any) => {
     const { userId, period } = params;
     const cnpj = String(params.cnpj || '').replace(/\D/g, '');
 
-    const selectedLoad = await homeLoadSalesRows({
+    const previousPeriod = homePreviousComparablePeriod(period);
+const todayIso = getBrazilTodayIso();
+
+// PERFORMANCE - Reaproveitamento de consultas simultâneas
+const reads = new Map<
+  string,
+  ReturnType<typeof homeLoadSalesRows>
+>();
+
+const sales = (startDate: string, endDate: string) => {
+  const key = `${startDate}|${endDate}`;
+
+  let pending = reads.get(key);
+
+  if (!pending) {
+    pending = homeLoadSalesRows({
+      userId,
+      startDate,
+      endDate,
+      cnpj,
+    });
+
+    reads.set(key, pending);
+  }
+
+  return pending;
+};
+
+  // PERFORMANCE - Processamento paralelo
+  const [
+    selectedLoad,
+    previousFullMonthLoad,
+    monthToEndLoad,
+    todayLoad,
+    kpiRows,
+    annualInsurance,
+  ] = await Promise.all([
+    sales(period.startDate, period.endDate),
+
+    sales(
+      previousPeriod.fullMonthStart,
+      previousPeriod.fullMonthEnd
+    ),
+
+    sales(period.monthStart, period.endDate),
+
+    sales(todayIso, todayIso),
+
+    period.isCurrentMonth
+      ? homeLoadCurrentKpiRows({
+          userId,
+          cnpj,
+          store: params.store ?? null,
+        })
+      : Promise.resolve([]),
+
+    homeLoadAnnualInsurance({
       userId,
       startDate: period.startDate,
       endDate: period.endDate,
       cnpj,
-    });
+    }),
+  ]);
 
-    const previousPeriod = homePreviousComparablePeriod(period);
-
-    const previousFullMonthLoad = await homeLoadSalesRows({
-      userId,
-      startDate: previousPeriod.fullMonthStart,
-      endDate: previousPeriod.fullMonthEnd,
-      cnpj,
-    });
-
-    const monthToEndLoad = await homeLoadSalesRows({
-      userId,
-      startDate: period.monthStart,
-      endDate: period.endDate,
-      cnpj,
-    });
-
-    const todayIso = getBrazilTodayIso();
-
-    const todayLoad = await homeLoadSalesRows({
-      userId,
-      startDate: todayIso,
-      endDate: todayIso,
-      cnpj,
-    });
+    
 
     const salesRows = selectedLoad.rows;
 
@@ -9740,17 +9777,6 @@ const isDailySupplement = (row: any) => {
         previousPeriod.startDate,
         previousPeriod.endDate
       );
-
-    const kpiRows = period.isCurrentMonth
-      ? await homeLoadCurrentKpiRows({ userId, cnpj, store: params.store ?? null })
-      : [];
-
-    const annualInsurance = await homeLoadAnnualInsurance({
-        userId,
-        startDate: period.startDate,
-        endDate: period.endDate,
-        cnpj,
-      });
 
     const faturamentoMes = salesRows.reduce(
       (sum: number, row: any) => sum + homeToNumber(row.total_liquido),
@@ -10207,63 +10233,219 @@ const isDailySupplement = (row: any) => {
     };
   }
 
+  // ============================================================
+// PERFORMANCE - CACHE POR USUÁRIO E PERMISSÕES
+// ============================================================
+
+function performanceScopeKey(
+  req: Request,
+  user: any
+): string | null {
+
+  const token = String(req.header('authorization') || '')
+    .replace(/^Bearer\s+/i, '')
+    .trim();
+
+  if (
+    !token ||
+    !user ||
+    verifyMetasToken(token, user.password) !== String(user.id)
+  ) {
+    return null;
+  }
+
+  return JSON.stringify([
+    user.id,
+    user.role,
+    user.isAdmin,
+    user.operation,
+    user.status,
+    getAllowedStoreNamesFromUser(user).sort(),
+    userHasNetworkScope(user),
+    getBrazilTodayIso(),
+  ]);
+}
+
+// ============================================================
+// PERFORMANCE - CACHE DO COMPARATIVO ANUAL
+// ============================================================
+
+async function cachedAnnualStoreCompare(
+  req: Request,
+  params: {
+    userId: string;
+    yearA: number;
+    yearB: number;
+    month: number;
+  }
+) {
+
+  const token = String(req.header('authorization') || '')
+    .replace(/^Bearer\s+/i, '')
+    .trim();
+
+  const user = token && params.userId
+    ? await prisma.user.findUnique({
+        where: { id: params.userId }
+      })
+    : null;
+
+  const scope = performanceScopeKey(req, user);
+
+  const key = scope
+    ? JSON.stringify([
+        'annual-store',
+        scope,
+        params.yearA,
+        params.yearB,
+        params.month,
+      ])
+    : null;
+
+  return samsungReadCache.load(
+    key,
+    () => buildAnnualStoreCompareRows(params)
+  );
+}
+
   app.get('/api/home/resumo', async (req, res) => {
-    try {
-      const userId = String(req.query.userId || '').trim();
-      if (!userId || userId === 'undefined' || userId === 'null') {
-        return res.status(401).json({ success: false, error: 'Usuário não informado.' });
-      }
+  try {
 
-      const user = await prisma.user.findUnique({ where: { id: userId } });
-      if (!user) {
-        return res.status(401).json({ success: false, error: 'Usuário não encontrado.' });
-      }
+    const userId = String(req.query.userId || '').trim();
 
-      const hasNetworkScope = userHasNetworkScope(user);
-      const isClarkDirector = ['CEO', 'DIRETOR', 'DIRETORIA'].includes(normStore(user.role));
-      const allowedStores = getAllowedStoreNamesFromUser(user);
-
-      if (!hasNetworkScope && allowedStores.length === 0) {
-        return res.status(403).json({ success: false, error: 'Usuário sem loja vinculada.' });
-      }
-
-      const period = homeResolvePeriod(req.query.startDate, req.query.endDate);
-      const snapshot = await homeBuildSnapshot({ userId, period });
-      const visibleStores = snapshot.stores;
-
-      return res.json({
-        success: true,
-        generatedAt: new Date().toISOString(),
-        scope: {
-          type: hasNetworkScope ? 'network' : 'store',
-          label: hasNetworkScope
-            ? 'Visão consolidada da rede'
-            : allowedStores.length > 1
-              ? 'Visão consolidada das lojas permitidas'
-              : 'Dados restritos à sua unidade',
-          stores: hasNetworkScope ? snapshot.stores.map((item: any) => item.loja) : allowedStores,
-          canCompareStores: hasNetworkScope || allowedStores.length > 1,
-          canUseClark: isClarkDirector,
-        },
-        period: snapshot.period,
-        kpis: {
-          ...snapshot.kpis,
-          llojasAtivas: visibleStores.length,
-        },
-        trend: snapshot.trend,
-        stores: visibleStores,
-        operations: snapshot.operations,
-        radar: [],
-        clarkBriefing: null,
-      });
-    } catch (error: any) {
-      console.error('❌ Erro /api/home/resumo:', error);
-      return res.status(500).json({
+    if (
+      !userId ||
+      userId === 'undefined' ||
+      userId === 'null'
+    ) {
+      return res.status(401).json({
         success: false,
-        error: error?.message || 'Erro ao montar resumo da home.',
+        error: 'Usuário não informado.'
       });
     }
-  });
+
+    const user = await prisma.user.findUnique({
+      where: { id: userId }
+    });
+
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        error: 'Usuário não encontrado.'
+      });
+    }
+
+    const hasNetworkScope = userHasNetworkScope(user);
+
+    const isClarkDirector = [
+      'CEO',
+      'DIRETOR',
+      'DIRETORIA'
+    ].includes(normStore(user.role));
+
+    const allowedStores = getAllowedStoreNamesFromUser(user);
+
+    if (!hasNetworkScope && allowedStores.length === 0) {
+      return res.status(403).json({
+        success: false,
+        error: 'Usuário sem loja vinculada.'
+      });
+    }
+
+    const period = homeResolvePeriod(
+      req.query.startDate,
+      req.query.endDate
+    );
+
+    // PERFORMANCE - Chave individual de cache
+    const scopeKey = performanceScopeKey(req, user);
+
+    const cacheKey = scopeKey
+      ? JSON.stringify([
+          'home',
+          scopeKey,
+          period.startDate,
+          period.endDate,
+        ])
+      : null;
+
+    res.setHeader('Cache-Control', 'private, no-store');
+
+    const started = Date.now();
+
+    const result = await samsungReadCache.load(
+      cacheKey,
+      async () => {
+
+        const snapshot = await homeBuildSnapshot({
+          userId,
+          period
+        });
+
+        const visibleStores = snapshot.stores;
+
+        return {
+          success: true,
+
+          generatedAt: new Date().toISOString(),
+
+          scope: {
+            type: hasNetworkScope ? 'network' : 'store',
+
+            label: hasNetworkScope
+              ? 'Visão consolidada da rede'
+              : allowedStores.length > 1
+                ? 'Visão consolidada das lojas permitidas'
+                : 'Dados restritos à sua unidade',
+
+            stores: hasNetworkScope
+              ? snapshot.stores.map((item: any) => item.loja)
+              : allowedStores,
+
+            canCompareStores:
+              hasNetworkScope || allowedStores.length > 1,
+
+            canUseClark: isClarkDirector,
+          },
+
+          period: snapshot.period,
+
+          kpis: {
+            ...snapshot.kpis,
+            llojasAtivas: visibleStores.length,
+          },
+
+          trend: snapshot.trend,
+
+          stores: visibleStores,
+
+          operations: snapshot.operations,
+
+          radar: [],
+
+          clarkBriefing: null,
+        };
+      }
+    );
+
+    // PERFORMANCE - Medição do tempo de processamento
+    res.setHeader(
+      'Server-Timing',
+      `home;dur=${Date.now() - started}`
+    );
+
+    return res.json(result);
+
+  } catch (error: any) {
+
+    console.error('❌ Erro /api/home/resumo:', error);
+
+    return res.status(500).json({
+      success: false,
+      error: error?.message || 'Erro ao montar resumo da home.',
+    });
+  }
+});
 
 // =======================================================
 // 🔎 BUSCA GLOBAL + DRILL-DOWN DE LOJA + RELATÓRIO EXECUTIVO
@@ -19449,7 +19631,9 @@ app.get('/anuais/summary', async (req, res) => {
     const yearB = Number(req.query.yearB || 2026);
     const month = Number(req.query.month || 0);
 
-    const rows = await buildAnnualStoreCompareRows({ userId, yearA, yearB, month });
+    const rows = await cachedAnnualStoreCompare(req, {
+      userId, yearA, yearB, month
+    });
 
     const byYear: Record<number, { venda_total: number; seguro_total: number; venda_qtd: number; seguro_qtd: number }> = {
       [yearA]: { venda_total: 0, seguro_total: 0, venda_qtd: 0, seguro_qtd: 0 },
@@ -19496,7 +19680,9 @@ app.get('/anuais/lojas_compare', async (req, res) => {
     const yearB = Number(req.query.yearB || 2026);
     const month = Number(req.query.month || 0);
 
-    const rows = await buildAnnualStoreCompareRows({ userId, yearA, yearB, month });
+    const rows = await cachedAnnualStoreCompare(req, {
+      userId, yearA, yearB, month
+    });
 
     res.json({
       yearA,

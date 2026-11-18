@@ -53,7 +53,7 @@ const STORE_MAP: Record<string, string> = {
   "12309173000922": "PATIO BRASIL",
   "12309173000760": "TAGUATINGA SHOPPING",
   "12309173001147": "TERRAÇO SHOPPING",
-  "12309173001651": "TAGUATINGA SHOPPING QQ",
+  "12309173001651": "PARTAGE",
   "12309173001732": "UBERLÂNDIA SHOPPING",
   "12309173001813": "UBERABA SHOPPING",
   "12309173001570": "FLAMBOYANT SHOPPING",
@@ -70,6 +70,9 @@ const STORE_MAP: Record<string, string> = {
 };
 
 const STORE_ALIAS_MAP: Record<string, string> = {
+  'TAGUATINGA SHOPPING QQ': 'PARTAGE',
+  'QQ TAGUATINGA SHOPPING': 'PARTAGE',
+  'TAGUATINGA QQ': 'PARTAGE',
   'CNB SHOPPING': 'CONJUNTO NACIONAL',
   'UBERLÂNDIA': 'UBERLÂNDIA SHOPPING',
   'UBERLANDIA': 'UBERLÂNDIA SHOPPING',
@@ -104,7 +107,7 @@ const STORE_REGION_MAP: Record<string, string> = {
   'PATIO BRASIL': 'DF',
   'TAGUATINGA SHOPPING': 'DF',
   'TERRAÇO SHOPPING': 'DF',
-  'TAGUATINGA SHOPPING QQ': 'DF',
+  'PARTAGE': 'DF',
   'UBERLÂNDIA SHOPPING': 'MINAS GERAIS',
   'UBERLANDIA SHOPPING': 'MINAS GERAIS',
   'UBERABA SHOPPING': 'MINAS GERAIS',
@@ -246,14 +249,13 @@ const getStoreName = (raw: string) => {
 const shortenStoreName = (name: string) => {
   return name
     .replace('CONJUNTO NACIONAL QUIOSQUE', 'CONJ. NACIONAL QQ')
-    .replace('CONJUNTO NACIONAL', 'CONJ. NACIONAL')
-    .replace('TAGUATINGA SHOPPING QQ', 'TAGUATINGA QQ');
+    .replace('CONJUNTO NACIONAL', 'CONJ. NACIONAL');
 };
 
 const getStoreRegion = (storeName: string, rawRegion?: string) => {
   const canonicalStore = getStoreName(storeName);
   // Para as filiais conhecidas, a UF prevalece sobre a região genérica do ERP.
-  if (['SHOPPING RECIFE', 'MANAIRA SHOPPING', 'IGUATEMI FORTALEZA'].includes(canonicalStore)) {
+  if (['PARTAGE', 'SHOPPING RECIFE', 'MANAIRA SHOPPING', 'IGUATEMI FORTALEZA'].includes(canonicalStore)) {
     return STORE_REGION_MAP[canonicalStore];
   }
   const cleanRegion = String(rawRegion || '').trim().toUpperCase();

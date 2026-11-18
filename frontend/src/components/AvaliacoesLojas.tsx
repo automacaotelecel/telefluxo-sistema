@@ -40,7 +40,7 @@ const LOJAS_MAP_GLOBAL: Record<string, string> = {
   "12309173000922": "PATIO BRASIL",
   "12309173000760": "TAGUATINGA SHOPPING",
   "12309173001147": "TERRAÇO SHOPPING",
-  "12309173001651": "TAGUATINGA SHOPPING QQ",
+  "12309173001651": "PARTAGE",
   "12309173001732": "UBERLÂNDIA SHOPPING",
   "12309173001813": "UBERABA SHOPPING",
   "12309173001570": "FLAMBOYANT SHOPPING",
@@ -241,7 +241,8 @@ export default function AvaliacoesLojas() {
         vendasData.sales.forEach((venda: any) => {
           const cnpj = String(venda.cnpj_empresa || venda.CNPJ_EMPRESA || '').replace(/\D/g, '');
           const nomeBanco = LOJAS_MAP_GLOBAL[cnpj] || venda.loja || venda.LOJA || 'OUTROS';
-          const lojaNorm = normalizeText(nomeBanco);
+          const rawNorm = normalizeText(nomeBanco);
+          const lojaNorm = ['TAGUATINGA SHOPPING QQ','QQ TAGUATINGA SHOPPING','TAGUATINGA QQ'].includes(rawNorm) ? 'PARTAGE' : rawNorm;
           const qtd = Number(venda.quantidade || venda.QUANTIDADE || 0);
           
           if (!vendasAgrupadas[lojaNorm]) vendasAgrupadas[lojaNorm] = 0;
@@ -253,6 +254,7 @@ export default function AvaliacoesLojas() {
       const dadosFinais: AvaliacaoLoja[] = parsedRows.slice(1).map(row => {
         const lojaPlanilha = row[0] || ''; 
         let nomeNorm = normalizeText(lojaPlanilha);
+        if (['TAGUATINGA SHOPPING QQ','QQ TAGUATINGA SHOPPING','TAGUATINGA QQ'].includes(nomeNorm)) nomeNorm = 'PARTAGE';
         
         const nomeAlvoBanco = NOME_ALIASES[nomeNorm] || nomeNorm;
         
@@ -269,7 +271,7 @@ export default function AvaliacoesLojas() {
         const conversao = vendasLoja > 0 ? (qtdAvaliacoes / vendasLoja) * 100 : 0;
 
         return {
-          loja: lojaPlanilha,
+          loja: nomeNorm === 'PARTAGE' ? 'PARTAGE' : lojaPlanilha,
           nota: notaStr,
           avaliacoes: qtdAvaliacoes,
           vendas: vendasLoja,
