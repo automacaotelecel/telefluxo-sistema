@@ -6,7 +6,7 @@ export type Period = { month: string; first: string; last: string; records: numb
 export type Dataset = {periods:Period[];stores:string[];options:Record<string,string[]>};
 export type Metadata = {updated_at:string|null;stock_updated_at:string|null;scope:'network'|'stores';stores:string[];datasets:Record<Kind,Dataset>};
 export type Row = Record<string,string|number|null>;
-export type Report = {kind:Kind;summary:Metric;groups:Record<string,Group[]>;periods:Period[];rows:Row[];total:number;page:number;size:number;revision:string};
+export type Report = {kind:Kind;summary:Metric;groups:Record<string,Group[]>;periods:Period[];rows:Row[];total:number;page:number;size:number;revision:string;burstStatus?:'loaded'|'partial'|'missing'|'unsupported'};
 export const API=(import.meta.env.VITE_API_URL || (['localhost','127.0.0.1'].includes(window.location.hostname)?'http://localhost:3000':'https://telefluxo-aplicacao.onrender.com')).replace(/\/$/,'');
 export async function timGet<T>(route:string, signal?:AbortSignal):Promise<T>{
   const token=sessionStorage.getItem('telefluxo_metas_token');

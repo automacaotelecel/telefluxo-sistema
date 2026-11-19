@@ -137,6 +137,61 @@ const toLocalIsoDate = (value: Date) => {
     return `${year}-${month}-${day}`;
 };
 
+// Ordenação local da aba Vendedores: não altera a base nem os demais rankings.
+type SellerSortKey = 'loja' | 'nome' | 'faturamento' | 'tendencia' |
+    'mes_anterior' | 'crescimento' | 'pct_acessorios' | 'conv_peliculas' |
+    'seguros' | 'pct_seguro';
+type SellerSort = { key: SellerSortKey; direction: 'asc' | 'desc' };
+
+const sellerTextColumn = (key: SellerSortKey) => key === 'loja' || key === 'nome';
+
+function sortSellerRows(rows: any[], sort: SellerSort) {
+    const collator = new Intl.Collator('pt-BR', { sensitivity: 'base', numeric: true });
+    const direction = sort.direction === 'asc' ? 1 : -1;
+    return [...rows].sort((a, b) => {
+        const x = a[sort.key];
+        const y = b[sort.key];
+        const text = sellerTextColumn(sort.key);
+        const valid = (v: any) => v != null && String(v).trim() !== '' &&
+            (text || Number.isFinite(Number(v)));
+        // Valores indisponíveis permanecem no final em ambos os sentidos.
+        const xValid = valid(x), yValid = valid(y);
+        if (xValid !== yValid) return xValid ? -1 : 1;
+        const comparison = !xValid ? 0 : text
+            ? collator.compare(String(x), String(y))
+            : Number(x) - Number(y);
+        return direction * comparison ||
+            collator.compare(String(a.loja ?? ''), String(b.loja ?? '')) ||
+            collator.compare(String(a.nome ?? ''), String(b.nome ?? ''));
+    });
+}
+
+function SellerSortHeader({ column, label, sort, onSort, className, alignRight = false }: {
+    column: SellerSortKey;
+    label: string;
+    sort: SellerSort;
+    onSort: (column: SellerSortKey) => void;
+    className: string;
+    alignRight?: boolean;
+}) {
+    const active = sort.key === column;
+    return (
+        <th scope="col" className={className} aria-sort={active ? (sort.direction === 'asc' ? 'ascending' : 'descending') : undefined}>
+            <button
+                type="button"
+                onClick={() => onSort(column)}
+                title={`Ordenar por ${label}`}
+                className={`inline-flex w-full items-center gap-1 whitespace-nowrap rounded-sm uppercase tracking-wider font-black hover:opacity-75 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#1428A0] ${alignRight ? 'justify-end' : 'justify-start'}`}
+            >
+                {label}
+                <span aria-hidden="true" className="shrink-0 inline-flex items-center">
+                    {active ? (sort.direction === 'asc' ? <ChevronUp size={12}/> : <ChevronDown size={12}/>) : <ChevronDown size={10} className="opacity-30"/>}
+                </span>
+            </button>
+        </th>
+    );
+}
+
 export default function SalesDashboard() {
   const [rawData, setRawData] = useState<any[]>([]);
   const [flowRawData, setFlowRawData] = useState<any[]>([]);
@@ -153,6 +208,17 @@ export default function SalesDashboard() {
   });
   const [chartData, setChartData] = useState<any[]>([]);
   const [ranking, setRanking] = useState<any[]>([]);
+  const [sellerSort, setSellerSort] = useState<SellerSort>({ key: 'faturamento', direction: 'desc' });
+  const sortedSellerRanking = useMemo(() => sortSellerRows(ranking, sellerSort), [ranking, sellerSort]);
+  const onSellerSort = (key: SellerSortKey) => {
+      setSellerSort(previous => ({
+          key,
+          direction: previous.key === key
+              ? (previous.direction === 'desc' ? 'asc' : 'desc')
+              : (sellerTextColumn(key) ? 'asc' : 'desc'),
+      }));
+  };
+
   const [productRanking, setProductRanking] = useState<any[]>([]);
 
   const [isProductModalOpen, setIsProductModalOpen] = useState(false);
@@ -1153,20 +1219,20 @@ setRanking(finalRanking);
                     <thead className="sticky top-0 bg-white shadow-sm z-10">
                         <tr className="text-[9px] font-black text-slate-400 uppercase tracking-wider">
                             <th className="p-3 text-center">#</th>
-                            <th className="p-3">Loja</th>
-                            <th className="p-3">Vendedor</th>
-                            <th className="p-3 text-right text-[#1428A0]">Faturamento</th>
-                            <th className="p-3 text-right text-purple-600">Tendência</th>
-                            <th className="p-3 text-right">Mês Ant.</th>
-                            <th className="p-3 text-right">Cresc.</th>
-                            <th className="p-3 text-right text-indigo-500">Conv Acess</th>
-                            <th className="p-3 text-right text-amber-500">Conv Películas</th>
-                            <th className="p-3 text-right text-emerald-600">R$ Seguros</th>
-                            <th className="p-3 text-right text-emerald-600">% Seg</th>
+                            <SellerSortHeader column="loja" label="Loja" sort={sellerSort} onSort={onSellerSort} className="p-3"/>
+                            <SellerSortHeader column="nome" label="Vendedor" sort={sellerSort} onSort={onSellerSort} className="p-3"/>
+                            <SellerSortHeader column="faturamento" label="Faturamento" sort={sellerSort} onSort={onSellerSort} className="p-3 text-right text-[#1428A0]" alignRight/>
+                            <SellerSortHeader column="tendencia" label="Tendência" sort={sellerSort} onSort={onSellerSort} className="p-3 text-right text-purple-600" alignRight/>
+                            <SellerSortHeader column="mes_anterior" label="Mês Ant." sort={sellerSort} onSort={onSellerSort} className="p-3 text-right" alignRight/>
+                            <SellerSortHeader column="crescimento" label="Cresc." sort={sellerSort} onSort={onSellerSort} className="p-3 text-right" alignRight/>
+                            <SellerSortHeader column="pct_acessorios" label="Conv Acess" sort={sellerSort} onSort={onSellerSort} className="p-3 text-right text-indigo-500" alignRight/>
+                            <SellerSortHeader column="conv_peliculas" label="Conv Películas" sort={sellerSort} onSort={onSellerSort} className="p-3 text-right text-amber-500" alignRight/>
+                            <SellerSortHeader column="seguros" label="R$ Seguros" sort={sellerSort} onSort={onSellerSort} className="p-3 text-right text-emerald-600" alignRight/>
+                            <SellerSortHeader column="pct_seguro" label="% Seg" sort={sellerSort} onSort={onSellerSort} className="p-3 text-right text-emerald-600" alignRight/>
                         </tr>
                     </thead>
                     <tbody className="text-xs font-bold text-slate-700">
-                        {ranking.map((v, i) => {
+                        {sortedSellerRanking.map((v, i) => {
                             const rowKey = v.key || `${v.loja}-${v.nome}-${i}`;
                             const isExpanded = expandedSeller === rowKey;
 

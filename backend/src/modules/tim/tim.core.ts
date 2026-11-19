@@ -59,6 +59,19 @@ export const SCHEMA = `CREATE TABLE IF NOT EXISTS tim_imports (digest TEXT PRIMA
   CREATE INDEX IF NOT EXISTS idx_tim_${k}_store ON ${table(k)}(store);
   ${k==='stock'?'':`CREATE INDEX IF NOT EXISTS idx_tim_${k}_date ON ${table(k)}(date);`}
   CREATE INDEX IF NOT EXISTS idx_tim_${k}_category ON ${table(k)}(category);`).join('\n');
+export const BURST_SCHEMA = `CREATE TABLE IF NOT EXISTS tim_burst (
+  id INTEGER PRIMARY KEY, source_row INTEGER NOT NULL, date TEXT NOT NULL, store TEXT NOT NULL, credit REAL NOT NULL);
+  CREATE INDEX IF NOT EXISTS idx_tim_burst_date_store ON tim_burst(date,store);
+  CREATE INDEX IF NOT EXISTS idx_tim_sales_store_date ON tim_sales(store,date);`;
+export type BurstRow = {source_row:number;date:string;store:string;credit:number};
+export function validateBurst(input:unknown):BurstRow[] {
+  if(!Array.isArray(input)||!input.length||input.length>250000) throw new Error('burst: envie de 1 a 250.000 linhas.');
+  const seen=new Set<number>();
+  return input.map((r:any)=>{
+    if(!r||!Number.isInteger(r.source_row)||r.source_row<2||seen.has(r.source_row)||!validDate(r.date)||typeof r.store!=='string'||!r.store.startsWith('TIM ')||r.store.length>200||typeof r.credit!=='number'||!Number.isFinite(r.credit)||Math.abs(r.credit)>1e11) throw new Error('burst: registro inválido ou linha duplicada.');
+    seen.add(r.source_row);return {source_row:r.source_row,date:r.date,store:storeKey(r.store),credit:r.credit};
+  });
+}
 export function validDate(value:unknown):value is string {
   if(typeof value!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const d=new Date(`${value}T00:00:00Z`);return Number.isFinite(d.getTime())&&d.toISOString().slice(0,10)===value;
